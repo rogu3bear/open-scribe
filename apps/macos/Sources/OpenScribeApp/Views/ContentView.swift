@@ -42,6 +42,9 @@ struct ContentView: View {
         }
         .padding(32)
         .frame(minWidth: 600, minHeight: 360, alignment: .topLeading)
+        .onAppear {
+            AppTelemetry.sceneAppeared("primary", status: status)
+        }
     }
 }
 

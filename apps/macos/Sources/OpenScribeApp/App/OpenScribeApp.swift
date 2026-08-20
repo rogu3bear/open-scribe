@@ -20,8 +20,10 @@ struct OpenScribeApp: App {
         }
         .defaultSize(width: 680, height: 440)
 
-        MenuBarExtra("Open Scribe", systemImage: "waveform") {
+        MenuBarExtra {
             MenuBarContent(status: status)
+        } label: {
+            MenuBarLabel(status: status)
         }
 
         Settings {

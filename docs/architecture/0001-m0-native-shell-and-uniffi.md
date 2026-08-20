@@ -17,7 +17,7 @@ Milestone 0 requires a primary SwiftUI window, `MenuBarExtra`, Settings, and Swi
 - Generate Swift bindings in UniFFI library mode from the built Rust static library, then deterministically normalize the Swift and C sources with toolchain formatters. Keep generated Swift/C files as checked source and verify regeneration byte-for-byte.
 - Assemble an unsigned development `.app` with bundle identifier `app.open-scribe.dev`. This is not the future distribution identifier.
 - Use no entitlements or sandbox profile because M0 accesses no protected resource.
-- Prove the boundary with Rust tests, a Swift test that calls generated bindings, binding-consistency comparison, Swift build, and development-app launch/process observation.
+- Prove the boundary with Rust tests, a Swift test that calls generated bindings, binding-consistency comparison, Swift build, exact development-app process observation, and low-frequency local scene logs for the primary window and menu-bar label.
 
 ## Alternatives
 
@@ -40,4 +40,4 @@ Later ADRs may replace SwiftPM packaging, the development identifier, or binding
 
 ## Proof
 
-`./script/check.sh --m0-native` must run the focused Rust test, regenerate and compare bindings, run Swift tests, assemble the development app, launch it, and observe its process. Passing proof is local L5 development evidence only, not signing, distribution, capture, or release evidence.
+`./script/check.sh --m0-native` must run the focused Rust test, regenerate and compare bindings, run Swift tests, assemble the development app, launch its exact staged executable, and observe primary-window and menu-bar scene logs from that process. Passing proof is local L5 development evidence only, not signing, distribution, capture, or release evidence.

@@ -19,5 +19,8 @@ struct SettingsView: View {
         .formStyle(.grouped)
         .frame(width: 460, height: 300)
         .padding()
+        .onAppear {
+            AppTelemetry.sceneAppeared("settings", status: status)
+        }
     }
 }

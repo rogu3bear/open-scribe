@@ -4,22 +4,21 @@ set -euo pipefail
 script_dir="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
 repo_root="$(CDPATH='' cd -- "$script_dir/.." && pwd)"
 macos_root="$repo_root/apps/macos"
-verify=false
-show_logs=false
+app_name="OpenScribeApp"
+bundle_id="app.open-scribe.dev"
+mode="run"
 
 for argument in "$@"; do
 	case "$argument" in
-	--verify)
-		verify=true
-		;;
-	--logs)
-		show_logs=true
-		;;
-	--debug | --telemetry)
-		# M0 is always a debug build and has no telemetry subsystem.
+	--verify | --logs | --debug | --telemetry)
+		if [[ "$mode" != "run" ]]; then
+			printf '%s\n' 'Choose exactly one mode.' >&2
+			exit 64
+		fi
+		mode="$argument"
 		;;
 	*)
-		printf 'Unknown argument: %s\n' "$argument" >&2
+		printf 'usage: %s [--verify|--logs|--debug|--telemetry]\n' "$0" >&2
 		exit 64
 		;;
 	esac
@@ -54,44 +53,87 @@ cmp "$bindings_tmp/OpenScribeFFI.h" \
 
 swift build --package-path "$macos_root"
 
-if [[ "$verify" == true ]]; then
-	swift test --package-path "$macos_root"
+binary_dir="$(swift build --package-path "$macos_root" --show-bin-path)"
+app_bundle="$repo_root/dist/Open Scribe.app"
+app_binary="$app_bundle/Contents/MacOS/$app_name"
+pid_file="$macos_root/.build/$app_name.pid"
+
+if [[ -f "$pid_file" ]]; then
+	prior_pid="$(<"$pid_file")"
+	if [[ "$prior_pid" =~ ^[0-9]+$ ]]; then
+		prior_command="$(ps -p "$prior_pid" -o command= 2>/dev/null || true)"
+		if [[ "$prior_command" == "$app_binary" ]]; then
+			kill "$prior_pid"
+		fi
+	fi
+	rm -f "$pid_file"
 fi
 
-binary_dir="$(swift build --package-path "$macos_root" --show-bin-path)"
-app_bundle="$macos_root/.build/Open Scribe.app"
-app_binary="$app_bundle/Contents/MacOS/OpenScribeApp"
-
-pkill -x OpenScribeApp 2>/dev/null || true
 rm -rf "$app_bundle"
 mkdir -p "$app_bundle/Contents/MacOS"
 mkdir -p "$app_bundle/Contents/Resources"
 cp "$binary_dir/OpenScribeApp" "$app_binary"
 cp "$macos_root/Support/Info.plist" "$app_bundle/Contents/Info.plist"
+chmod +x "$app_binary"
 
-open -n "$app_bundle"
-
-if [[ "$verify" == true ]]; then
-	launch_observed=false
+launch_app() {
+	/usr/bin/open -n "$app_bundle"
 	for _ in {1..20}; do
-		if pgrep -x OpenScribeApp >/dev/null; then
-			launch_observed=true
+		app_pid="$(pgrep -n -f "$app_binary" || true)"
+		if [[ -n "$app_pid" ]]; then
+			printf '%s\n' "$app_pid" >"$pid_file"
+			return 0
+		fi
+		sleep 0.2
+	done
+	printf '%s\n' 'M0_NATIVE_RED: exact app process was not observed after launch' >&2
+	return 1
+}
+
+case "$mode" in
+run)
+	launch_app
+	;;
+--verify)
+	swift test --package-path "$macos_root"
+	launch_app
+	app_pid="$(<"$pid_file")"
+	observed_command="$(ps -p "$app_pid" -o command=)"
+	[[ "$observed_command" == "$app_binary" ]] || {
+		printf '%s\n' 'M0_NATIVE_RED: observed process does not match staged app' >&2
+		exit 1
+	}
+	scene_receipt=""
+	for _ in {1..20}; do
+		scene_receipt="$(/usr/bin/log show \
+			--last 1m \
+			--info \
+			--style compact \
+			--predicate "processIdentifier == $app_pid && subsystem == \"$bundle_id\" && category == \"Scenes\"" \
+			2>/dev/null)"
+		if [[ "$scene_receipt" == *"scene=primary"* && "$scene_receipt" == *"scene=menu-bar"* ]]; then
 			break
 		fi
 		sleep 0.2
 	done
-
-	if [[ "$launch_observed" != true ]]; then
-		printf '%s\n' 'M0_NATIVE_RED: app process was not observed after launch' >&2
+	[[ "$scene_receipt" == *"scene=primary"* && "$scene_receipt" == *"scene=menu-bar"* ]] || {
+		printf '%s\n' 'M0_NATIVE_RED: primary or menu-bar scene telemetry was not observed' >&2
 		exit 1
-	fi
-
+	}
 	printf '%s\n' \
 		'M0_NATIVE_GREEN' \
-		'proof=rust_staticlib,uniffi_regeneration,swift_build,swift_binding_test,development_app_assembly,local_process_launch' \
+		'proof=rust_staticlib,uniffi_regeneration,swift_build,swift_binding_test,development_app_assembly,exact_process_launch,primary_scene_log,menu_bar_scene_log' \
 		'excludes=capture,persistence,recovery,transcription,diarization,ocr,context,providers,llm,signing,notarization,release'
-fi
-
-if [[ "$show_logs" == true ]]; then
-	printf '%s\n' 'M0 has no runtime logging or telemetry subsystem.'
-fi
+	;;
+--debug)
+	exec lldb -- "$app_binary"
+	;;
+--logs)
+	launch_app
+	exec /usr/bin/log stream --info --style compact --predicate "process == \"$app_name\""
+	;;
+--telemetry)
+	launch_app
+	exec /usr/bin/log stream --info --style compact --predicate "subsystem == \"$bundle_id\""
+	;;
+esac

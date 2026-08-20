@@ -15,6 +15,7 @@ xcuserdata/
 
 # macOS
 .DS_Store
+/dist/
 
 # Local secrets and signing material
 .env

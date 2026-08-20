@@ -62,7 +62,7 @@ Before mutation, inspect the exact checkout, branch, worktree, dirty state, appl
 - Authority: local M0 implementation and verification requested by the operator.
 - Command: `./script/check.sh --m0-native`.
 - Expected result: `M0_NATIVE_GREEN` followed by `M0_NATIVE_CHECK_GREEN`.
-- Proof: scaffold checks, one Rust boundary test, byte-consistent generated bindings, one Swift binding test, development app assembly, and observed local app process.
+- Proof: scaffold checks, one Rust boundary test, byte-consistent generated bindings, one Swift binding test, development app assembly, exact staged process identity, and primary/menu-bar scene logs from that process.
 - Rollback: remove only the M0-native implementation and ADR 0001; no durable or external state exists.
 - Stop if: generated bindings drift, Swift bypasses Rust state, a protected capability appears, or the receipt is represented as signing/release proof.
 
