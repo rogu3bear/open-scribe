@@ -4,7 +4,7 @@ Open Scribe handles highly sensitive conversation and screen-derived evidence. S
 
 ## Current status
 
-This repository contains a non-functional scaffold and no published application or deployed website. There are no supported release versions yet.
+This repository contains a bounded M0 native development proof, but no protected product capability, published application, or deployed website. The proof processes no user data and has no entitlements, persistence, provider, or network lane. There are no supported release versions yet.
 
 ## Reporting a vulnerability
 

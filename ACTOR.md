@@ -50,7 +50,7 @@ Before mutation, inspect the exact checkout, branch, worktree, dirty state, appl
 
 - Use when: checking whether a product lane has actually been implemented.
 - Authority: local fail-closed inspection.
-- Command: `./script/check.sh`, `./script/build_and_run.sh --verify`, `./script/build_web.sh`, `./script/test_capture.sh`, `./script/verify_bundle.sh`, or `./script/release.sh`.
+- Command: `./script/check.sh`, `./script/build_web.sh`, `./script/test_capture.sh`, `./script/verify_bundle.sh`, or `./script/release.sh`.
 - Expected result now: exit 64 with an explicit `NOT_IMPLEMENTED` message.
 - Proof: inspect the exit code and named excluded capability.
 - Rollback: none.

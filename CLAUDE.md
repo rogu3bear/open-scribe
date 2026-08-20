@@ -4,9 +4,9 @@ This file routes work to repository truth. `CLAUDE.md` is its byte-identical mir
 
 ## Current stage
 
-The repository currently contains founding doctrine and a **non-functional monorepo scaffold**. No capture, transcription, diarization, OCR, context observation, provider, deployment, signing, or release capability exists. Structure checks prove structure only.
+The repository contains founding doctrine, a non-functional product scaffold, and a **functional Milestone 0 native development proof**. The proof is limited to a SwiftUI shell rendering coarse non-media Rust state through UniFFI. No capture, persistence, transcription, diarization, OCR, context observation, provider, deployment, signing, or release capability exists. Structure checks prove structure only; `./script/check.sh --m0-native` proves only the bounded development shell named by its receipt.
 
-The active boundary is documentation and scaffold establishment. Do not begin product implementation unless the operator explicitly authorizes the next execution lane.
+The active boundary ends at the M0 native proof. Do not begin another product, website, distribution, or release lane unless the operator explicitly authorizes it.
 
 ## Mandatory orientation
 
