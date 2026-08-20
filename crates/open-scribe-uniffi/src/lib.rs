@@ -16,12 +16,14 @@ pub struct NativeStatus {
 /// Returns the current M0 capability posture as one coarse query.
 #[uniffi::export]
 pub fn native_status() -> NativeStatus {
+    let status = open_scribe_core::status_snapshot();
+
     NativeStatus {
-        product_name: "Open Scribe".to_owned(),
-        core_version: env!("CARGO_PKG_VERSION").to_owned(),
-        persistence: "Not implemented".to_owned(),
-        capture: "Not implemented".to_owned(),
-        intelligence: "Not implemented".to_owned(),
+        product_name: status.product_name.to_owned(),
+        core_version: status.core_version.to_owned(),
+        persistence: status.persistence.to_owned(),
+        capture: status.capture.to_owned(),
+        intelligence: status.intelligence.to_owned(),
     }
 }
 
@@ -36,7 +38,10 @@ mod tests {
         let status = native_status();
 
         assert_eq!(status.product_name, "Open Scribe");
-        assert_eq!(status.core_version, env!("CARGO_PKG_VERSION"));
+        assert_eq!(
+            status.core_version,
+            open_scribe_core::status_snapshot().core_version
+        );
         assert_eq!(status.persistence, "Not implemented");
         assert_eq!(status.capture, "Not implemented");
         assert_eq!(status.intelligence, "Not implemented");

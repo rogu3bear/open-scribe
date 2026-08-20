@@ -19,7 +19,7 @@ A native Apple-Silicon macOS application will use SwiftUI and narrow Apple-frame
 | `open-scribe-domain` | placeholder, WASM-safe | deterministic session states and transitions | persistence or platform capture |
 | `open-scribe-evidence` | placeholder, WASM-safe | evidence IDs, relationships, claim-validation semantics | model execution or native storage |
 | native Rust crates | placeholders | store, ASR, diarization, memory, models, orchestration | Apple UI or direct permission UX |
-| `open-scribe-uniffi` | M0 proof | one coarse non-media status query; later control/query boundary | frame-rate audio, video, or pointer serialization |
+| `open-scribe-uniffi` | M0 proof | adapt one Rust-core status snapshot into a coarse non-media query; later control/query boundary | product-state authority or frame-rate audio, video, or pointer serialization |
 | `web` | reserved | public Leptos site and explanatory demo | native capture or app backend |
 | `docs/legal` | present drafts | single legal-text source for future app/site consumers | duplicated edited copies |
 

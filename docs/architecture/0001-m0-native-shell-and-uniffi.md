@@ -13,7 +13,7 @@ Milestone 0 requires a primary SwiftUI window, `MenuBarExtra`, Settings, and Swi
 ## Decision
 
 - Use a SwiftPM macOS 13 executable with explicit primary, menu-bar, and Settings scenes.
-- Keep all presentation in Swift. Expose one immutable Rust `NativeStatus` record through one synchronous `native_status` query.
+- Keep all presentation in Swift. Construct the immutable capability snapshot in `open-scribe-core`; let `open-scribe-uniffi` adapt it into one `NativeStatus` record exposed by one synchronous `native_status` query.
 - Generate Swift bindings in UniFFI library mode from the built Rust static library, then deterministically normalize the Swift and C sources with toolchain formatters. Keep generated Swift/C files as checked source and verify regeneration byte-for-byte.
 - Assemble an unsigned development `.app` with bundle identifier `app.open-scribe.dev`. This is not the future distribution identifier.
 - Use no entitlements or sandbox profile because M0 accesses no protected resource.

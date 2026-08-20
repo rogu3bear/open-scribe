@@ -2,7 +2,7 @@ import XCTest
 @testable import OpenScribeApp
 
 final class RustStatusSourceTests: XCTestCase {
-    func testRustStatusIsRenderedAsTruthfulUnavailableState() {
+    func testRustStatusSourceLoadsTruthfulUnavailableState() {
         let status = RustStatusSource.load()
 
         XCTAssertEqual(status.productName, "Open Scribe")
