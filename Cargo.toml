@@ -1,0 +1,22 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/open-scribe-types",
+    "crates/open-scribe-domain",
+    "crates/open-scribe-evidence",
+    "crates/open-scribe-store",
+    "crates/open-scribe-asr",
+    "crates/open-scribe-diarize",
+    "crates/open-scribe-memory",
+    "crates/open-scribe-models",
+    "crates/open-scribe-core",
+    "crates/open-scribe-uniffi",
+]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/rogu3bear/open-scribe"
+authors = ["Open Scribe contributors"]
+publish = false

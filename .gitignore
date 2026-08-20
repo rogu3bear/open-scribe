@@ -1,0 +1,31 @@
+# Rust
+/target/
+
+# Swift and Xcode
+.build/
+DerivedData/
+*.xcuserstate
+xcuserdata/
+
+# Leptos / web
+/web/target/
+/web/dist/
+/web/pkg/
+/web/node_modules/
+
+# macOS
+.DS_Store
+
+# Local secrets and signing material
+.env
+.env.*
+!.env.example
+*.p12
+*.provisionprofile
+*.mobileprovision
+
+# Local logs and generated diagnostics
+*.log
+/artifacts/
+/diagnostics/
+/var/
