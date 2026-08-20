@@ -5,6 +5,9 @@
 ADR 0001 is accepted only for the Milestone 0 native development proof. It does
 not settle distribution or later product capabilities.
 
+ADR 0002 pins the M0 Rust proof toolchain and defines its least-privilege CI
+boundary. It does not admit packaging, signing, deployment, or release work.
+
 ## Required founding decisions
 
 | Proposed ADR | Status |
@@ -20,7 +23,7 @@ not settle distribution or later product capabilities.
 | Sparkle/update mechanism | open |
 | remote-provider content-scope policy | founding invariant; implementation ADR pending |
 | website foundation import and upstream-sync policy | open |
-| toolchain and dependency pinning | open |
+| toolchain and dependency pinning | Rust M0 proof pin recorded by ADR 0002; Swift/Xcode and later lanes open |
 
 ## ADR admission requirements
 

@@ -27,9 +27,13 @@ required_paths=(
 	THIRD_PARTY_NOTICES.md
 	Cargo.lock
 	Cargo.toml
+	rust-toolchain.toml
+	.github/workflows/m0-native.yml
 	apps/macos/README.md
 	web/README.md
 	docs/product/FOUNDING_PRD.md
+	docs/architecture/0001-m0-native-shell-and-uniffi.md
+	docs/architecture/0002-m0-proof-toolchain-and-ci.md
 	docs/legal/privacy.md
 	docs/legal/terms.md
 	docs/design/DESIGN.md

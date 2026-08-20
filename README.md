@@ -22,7 +22,7 @@ crates/open-scribe-*/        Rust package boundaries and placeholders
 web/                         reserved Leptos/Cloudflare website root
 docs/                        product, architecture, legal, design, model, format, and release truth
 script/                      fail-closed canonical entry points
-.github/workflows/           scaffold-only CI
+.github/workflows/           bounded M0 native proof CI
 `
 
 ## What can be verified now
@@ -39,7 +39,7 @@ Run the bounded M0 native gate:
 ./script/check.sh --m0-native
 ```
 
-This validates the founding scaffold, Rust status query, generated UniFFI consistency, Swift binding call, development app assembly, and local launch. It does **not** prove the website, capture, persistence, recovery, transcription, providers, ML, deployment, signing, notarization, or release.
+This validates the founding scaffold, Rust status query, generated UniFFI consistency, Swift binding call, development app assembly, exact local process, and primary-window/menu-bar/Settings scene receipts. It does **not** prove the website, capture, persistence, recovery, transcription, providers, ML, deployment, signing, notarization, or release.
 
 All default product/release scripts intentionally fail until their corresponding implementation and proof exist.
 

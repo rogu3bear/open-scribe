@@ -1,0 +1,29 @@
+name: M0 native proof
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: m0-native-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  native-proof:
+    name: SwiftUI / Rust / UniFFI
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - name: Check out exact revision
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install shell proof tools
+        run: brew install shellcheck shfmt
+
+      - name: Verify bounded native proof
+        run: ./script/check.sh --m0-native

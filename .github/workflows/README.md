@@ -1,7 +1,15 @@
-# CI Skeleton
+# Milestone 0 CI
 
-No executable GitHub Actions workflow is installed yet.
+`m0-native.yml` runs the complete bounded native proof on pull requests and on
+`main`. It has read-only repository permission, receives no secrets, pins its
+only action by commit, and invokes `./script/check.sh --m0-native`.
 
-The first workflow must run `./script/check.sh --scaffold` and identify itself as scaffold validation only. Product CI must later add distinct required jobs for native Rust, WASM-safe Rust, Swift/macOS, UniFFI consistency, Leptos SSR/hydration/Worker builds, security/dependency audit, fixture tests, packaging smoke, and release-only notarization.
+The M0 gate includes scaffold, native Rust, WASM-safe Rust, Swift/macOS, UniFFI
+consistency, exact development-process, and all-three-scene checks. It explicitly
+excludes the website, protected product capabilities, packaging, signing,
+notarization, deployment, and release.
 
-Action revisions, runner image, permissions, fork behavior, secret boundaries, and signing isolation must be explicitly selected and pinned before enabling CI. A missing job may not be represented as green.
+Later milestones must add separate jobs for Leptos SSR/hydration/Worker builds,
+security/dependency audit, fixtures, packaging smoke, and release-only
+notarization. Signing material may never enter the untrusted pull-request job. A
+missing job may not be represented as green.

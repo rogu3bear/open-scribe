@@ -68,4 +68,4 @@ ADR 0001 settles the M0 development topology and binding proof only. Exact Rust 
 
 ## Current validation
 
-`./script/check.sh --scaffold` validates founding structure only. `./script/check.sh --m0-native` validates the focused Rust record, generated UniFFI consistency, Swift binding call, development app assembly, exact process launch, and primary/menu-bar scene logs. Neither proves capture, persistence, recovery, signing, distribution, or release.
+`./script/check.sh --scaffold` validates founding structure only. `./script/check.sh --m0-native` validates the focused Rust record, generated UniFFI consistency, Swift binding call, development app assembly, exact process launch, and primary/menu-bar/Settings scene logs. Neither proves capture, persistence, recovery, signing, distribution, or release.

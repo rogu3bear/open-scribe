@@ -15,5 +15,5 @@ universal packaging, and later capability boundaries remain unresolved.
 
 `./script/build_and_run.sh` assembles the unsigned development bundle under
 `dist/Open Scribe.app`. Its default mode launches the app; `--verify` binds the
-exact process and primary/menu-bar scene logs; `--debug`, `--logs`, and
+exact process and primary/menu-bar/Settings scene logs; `--debug`, `--logs`, and
 `--telemetry` provide LLDB or filtered unified-log sessions.

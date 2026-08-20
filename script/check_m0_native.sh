@@ -12,5 +12,5 @@ git diff --check
 
 printf '%s\n' \
 	'M0_NATIVE_CHECK_GREEN' \
-	'proof=scaffold,rust_status_test,generated_binding_consistency,swift_binding_test,exact_development_app_launch,primary_scene_log,menu_bar_scene_log,diff_hygiene' \
+	'proof=scaffold,rust_status_test,generated_binding_consistency,swift_binding_test,exact_development_app_launch,primary_scene_log,menu_bar_scene_log,settings_scene_log,diff_hygiene' \
 	'excludes=website,capture,persistence,recovery,transcription,diarization,ocr,context,providers,llm,signing,notarization,release'

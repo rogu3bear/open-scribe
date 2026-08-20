@@ -61,7 +61,7 @@ pid_file="$macos_root/.build/$app_name.pid"
 if [[ -f "$pid_file" ]]; then
 	prior_pid="$(<"$pid_file")"
 	if [[ "$prior_pid" =~ ^[0-9]+$ ]]; then
-		prior_command="$(ps -p "$prior_pid" -o command= 2>/dev/null || true)"
+		prior_command="$(ps -p "$prior_pid" -o comm= 2>/dev/null || true)"
 		if [[ "$prior_command" == "$app_binary" ]]; then
 			kill "$prior_pid"
 		fi
@@ -77,7 +77,11 @@ cp "$macos_root/Support/Info.plist" "$app_bundle/Contents/Info.plist"
 chmod +x "$app_binary"
 
 launch_app() {
-	/usr/bin/open -n "$app_bundle"
+	if [[ "$#" -gt 0 ]]; then
+		/usr/bin/open -n "$app_bundle" --args "$@"
+	else
+		/usr/bin/open -n "$app_bundle"
+	fi
 	for _ in {1..20}; do
 		app_pid="$(pgrep -n -f "$app_binary" || true)"
 		if [[ -n "$app_pid" ]]; then
@@ -96,9 +100,9 @@ run)
 	;;
 --verify)
 	swift test --package-path "$macos_root"
-	launch_app
+	launch_app --m0-proof-settings
 	app_pid="$(<"$pid_file")"
-	observed_command="$(ps -p "$app_pid" -o command=)"
+	observed_command="$(ps -p "$app_pid" -o comm=)"
 	[[ "$observed_command" == "$app_binary" ]] || {
 		printf '%s\n' 'M0_NATIVE_RED: observed process does not match staged app' >&2
 		exit 1
@@ -111,18 +115,18 @@ run)
 			--style compact \
 			--predicate "processIdentifier == $app_pid && subsystem == \"$bundle_id\" && category == \"Scenes\"" \
 			2>/dev/null)"
-		if [[ "$scene_receipt" == *"scene=primary"* && "$scene_receipt" == *"scene=menu-bar"* ]]; then
+		if [[ "$scene_receipt" == *"scene=primary"* && "$scene_receipt" == *"scene=menu-bar"* && "$scene_receipt" == *"scene=settings"* ]]; then
 			break
 		fi
 		sleep 0.2
 	done
-	[[ "$scene_receipt" == *"scene=primary"* && "$scene_receipt" == *"scene=menu-bar"* ]] || {
-		printf '%s\n' 'M0_NATIVE_RED: primary or menu-bar scene telemetry was not observed' >&2
+	[[ "$scene_receipt" == *"scene=primary"* && "$scene_receipt" == *"scene=menu-bar"* && "$scene_receipt" == *"scene=settings"* ]] || {
+		printf '%s\n' 'M0_NATIVE_RED: primary, menu-bar, or settings scene telemetry was not observed' >&2
 		exit 1
 	}
 	printf '%s\n' \
 		'M0_NATIVE_GREEN' \
-		'proof=rust_staticlib,uniffi_regeneration,swift_build,swift_binding_test,development_app_assembly,exact_process_launch,primary_scene_log,menu_bar_scene_log' \
+		'proof=rust_staticlib,uniffi_regeneration,swift_build,swift_binding_test,development_app_assembly,exact_process_launch,primary_scene_log,menu_bar_scene_log,settings_scene_log' \
 		'excludes=capture,persistence,recovery,transcription,diarization,ocr,context,providers,llm,signing,notarization,release'
 	;;
 --debug)
