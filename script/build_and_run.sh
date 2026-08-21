@@ -6,6 +6,9 @@ repo_root="$(CDPATH='' cd -- "$script_dir/.." && pwd)"
 macos_root="$repo_root/apps/macos"
 app_name="OpenScribeApp"
 bundle_id="app.open-scribe.dev"
+xcode_project="$macos_root/OpenScribe.xcodeproj"
+derived_data="$macos_root/.build/xcode"
+rust_target_dir="$macos_root/.build/rust-macos13"
 mode="run"
 
 for argument in "$@"; do
@@ -29,12 +32,12 @@ mkdir -p "$macos_root/.build"
 bindings_tmp="$(mktemp -d "$macos_root/.build/uniffi.XXXXXX")"
 trap 'rm -rf "$bindings_tmp"' EXIT
 
-cargo build --locked -p open-scribe-uniffi
-cargo run --locked -p open-scribe-uniffi \
+rust_library="$(bash "$script_dir/build_rust_macos.sh" "$rust_target_dir")"
+CARGO_TARGET_DIR="$rust_target_dir" cargo run --locked -p open-scribe-uniffi \
 	--features bindgen \
 	--bin uniffi-bindgen \
 	-- generate \
-	--library target/debug/libopen_scribe_uniffi.a \
+	--library "$rust_library" \
 	--language swift \
 	--out-dir "$bindings_tmp"
 xcrun swift-format format --in-place "$bindings_tmp/OpenScribeCore.swift"
@@ -51,10 +54,7 @@ cmp "$bindings_tmp/OpenScribeFFI.h" \
 	exit 1
 }
 
-swift build --package-path "$macos_root"
-
-binary_dir="$(swift build --package-path "$macos_root" --show-bin-path)"
-app_bundle="$repo_root/dist/Open Scribe.app"
+app_bundle="$derived_data/Build/Products/Debug/OpenScribeApp.app"
 app_binary="$app_bundle/Contents/MacOS/$app_name"
 pid_file="$macos_root/.build/$app_name.pid"
 
@@ -69,12 +69,17 @@ if [[ -f "$pid_file" ]]; then
 	rm -f "$pid_file"
 fi
 
-rm -rf "$app_bundle"
-mkdir -p "$app_bundle/Contents/MacOS"
-mkdir -p "$app_bundle/Contents/Resources"
-cp "$binary_dir/OpenScribeApp" "$app_binary"
-cp "$macos_root/Support/Info.plist" "$app_bundle/Contents/Info.plist"
-chmod +x "$app_binary"
+xcodebuild \
+	-project "$xcode_project" \
+	-scheme OpenScribeApp \
+	-configuration Debug \
+	-derivedDataPath "$derived_data" \
+	ARCHS=arm64 \
+	ONLY_ACTIVE_ARCH=YES \
+	LIBRARY_SEARCH_PATHS="$(dirname "$rust_library")" \
+	MACOSX_DEPLOYMENT_TARGET=13.0 \
+	CODE_SIGNING_ALLOWED=NO \
+	build
 
 launch_app() {
 	if [[ "$#" -gt 0 ]]; then
@@ -99,7 +104,17 @@ run)
 	launch_app
 	;;
 --verify)
-	swift test --package-path "$macos_root"
+	xcodebuild \
+		-project "$xcode_project" \
+		-scheme OpenScribeApp \
+		-configuration Debug \
+		-derivedDataPath "$derived_data" \
+		ARCHS=arm64 \
+		ONLY_ACTIVE_ARCH=YES \
+		LIBRARY_SEARCH_PATHS="$(dirname "$rust_library")" \
+		MACOSX_DEPLOYMENT_TARGET=13.0 \
+		CODE_SIGNING_ALLOWED=NO \
+		test
 	launch_app --m0-proof-settings
 	app_pid="$(<"$pid_file")"
 	observed_command="$(ps -p "$app_pid" -o comm=)"
@@ -125,8 +140,8 @@ run)
 		exit 1
 	}
 	printf '%s\n' \
-		'M0_NATIVE_GREEN' \
-		'proof=rust_staticlib,uniffi_regeneration,swift_build,swift_binding_test,development_app_assembly,exact_process_launch,primary_scene_log,menu_bar_scene_log,settings_scene_log' \
+		'NATIVE_FIXTURE_XCODE_GREEN' \
+		'proof=rust_staticlib,uniffi_regeneration,xcode_app_build,xcode_test_host,swift_binding_test,xcode_owned_development_app,exact_process_launch,primary_scene_log,menu_bar_scene_log,settings_scene_log' \
 		'excludes=capture,persistence,recovery,transcription,diarization,ocr,context,providers,llm,signing,notarization,release'
 	;;
 --debug)

@@ -28,16 +28,23 @@ required_paths=(
 	Cargo.lock
 	Cargo.toml
 	rust-toolchain.toml
+	.swift-version
+	.xcode-version
+	.xcode-build-version
 	.github/workflows/m0-native.yml
 	apps/macos/README.md
 	web/README.md
 	docs/product/FOUNDING_PRD.md
 	docs/architecture/0001-m0-native-shell-and-uniffi.md
 	docs/architecture/0002-m0-proof-toolchain-and-ci.md
+	docs/architecture/0003-m0-web-foundation-and-toolchains.md
 	docs/legal/privacy.md
 	docs/legal/terms.md
 	docs/design/DESIGN.md
 	docs/threat-model.md
+	web/Cargo.toml
+	web/toolchain.env
+	web/wrangler.toml
 )
 
 for required_path in "${required_paths[@]}"; do
@@ -69,6 +76,7 @@ check_budget SOUL.md 600
 
 metadata_json="$(cargo metadata --locked --no-deps --format-version 1)"
 expected_packages=(
+	open-scribe-web
 	open-scribe-types
 	open-scribe-domain
 	open-scribe-evidence
@@ -96,6 +104,16 @@ shared_manifests=(
 	crates/open-scribe-domain/Cargo.toml
 	crates/open-scribe-evidence/Cargo.toml
 )
+
+if rg -n -i '(d1_databases|database_id|migrations_dir|features[[:space:]]*=[^]]*"d1")' \
+	web/Cargo.toml web/wrangler.toml; then
+	fail "the stateless M0 website retained a database assumption"
+fi
+
+if rg -n -i '(todo|contact|realtime|websocket)' \
+	web/src web/style web/assets web/wrangler.toml; then
+	fail "the M0 website retained a starter feature or route"
+fi
 
 if rg -n 'open-scribe-(store|asr|diarize|memory|models|core|uniffi)' "${shared_manifests[@]}"; then
 	fail "a WASM-safe crate depends on a native crate"
