@@ -1,0 +1,5 @@
+[env]
+MACOSX_DEPLOYMENT_TARGET = { value = "13.0", force = true }
+
+[target.wasm32-unknown-unknown]
+rustflags = ["--cfg", "getrandom_backend=\"wasm_js\""]

@@ -1,0 +1,5 @@
+module OpenScribeFFI {
+    header "include/OpenScribeFFI.h"
+    link "open_scribe_uniffi"
+    export *
+}

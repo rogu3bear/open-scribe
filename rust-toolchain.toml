@@ -1,0 +1,5 @@
+[toolchain]
+channel = "1.93.1"
+components = ["rustfmt"]
+targets = ["aarch64-apple-darwin", "wasm32-unknown-unknown"]
+profile = "minimal"

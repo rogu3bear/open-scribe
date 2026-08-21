@@ -1,0 +1,26 @@
+[package]
+name = "open-scribe-uniffi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[dependencies]
+open-scribe-core = { path = "../open-scribe-core" }
+open-scribe-types = { path = "../open-scribe-types" }
+thiserror = "2"
+uniffi = "0.32.0"
+
+[features]
+bindgen = ["uniffi/cli"]
+
+[lib]
+path = "src/lib.rs"
+crate-type = ["lib", "staticlib"]
+
+[[bin]]
+name = "uniffi-bindgen"
+path = "src/bin/uniffi-bindgen.rs"
+required-features = ["bindgen"]

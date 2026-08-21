@@ -1,0 +1,568 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		1F1D1AD4B3B9F501CC0AB5DF /* FixtureSessionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F5696F23409FC2574DF65AD5 /* FixtureSessionTests.swift */; };
+		262A2A7F0F8421EC6AD0E79E /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C62801D03FDD064235316905 /* ContentView.swift */; };
+		302DB5C18FFCD7389677DAA3 /* OpenScribeApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 32118F0168D462A2AF9207B5 /* OpenScribeApp.swift */; };
+		3D040E77A31B5F287D42504A /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 74480CF189E8E48F995656F2 /* SettingsView.swift */; };
+		3D25B82DFEFE01398833B042 /* RustStatusSourceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F999B06ACC1C80F559FDEF6B /* RustStatusSourceTests.swift */; };
+		4A61A3F920D148E6A9BCE201 /* DeterministicMediaWriter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A61A3F920D148E6A9BCE201 /* DeterministicMediaWriter.swift */; };
+		4B61A3F920D148E6A9BCE201 /* MediaOpenProtocolTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5B61A3F920D148E6A9BCE201 /* MediaOpenProtocolTests.swift */; };
+		5AA4F437F283C41AEB8ABF86 /* AppStatus.swift in Sources */ = {isa = PBXBuildFile; fileRef = 41902E24EA44F8922EE152D7 /* AppStatus.swift */; };
+		5DB6CB212CE4D1617F1E34D4 /* AccessibilityAnnouncer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6712658CEAD0838E764A5BBF /* AccessibilityAnnouncer.swift */; };
+		5EF7FA04058A5A444EC69D6C /* MenuBarContent.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8957201D2FE0F213BBA3D310 /* MenuBarContent.swift */; };
+		7B61FB95E7DAEDF66275BDED /* AppTelemetry.swift in Sources */ = {isa = PBXBuildFile; fileRef = BC2B884506AEDD909F7A06DD /* AppTelemetry.swift */; };
+		80867FCED39F6D49A72CD0FB /* SessionPresentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = 68710CE895B2216A5675AE4A /* SessionPresentation.swift */; };
+		A09E75C3AF1D4CC0EACE3670 /* OpenScribeCore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A609D9E7F66672E1E60113B7 /* OpenScribeCore.swift */; };
+		B7FFA456C63F04859D1B2472 /* CompactLiveView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA0F0D94D6B878C1D7BCA3F7 /* CompactLiveView.swift */; };
+		E3B6D8732CBAD3A7D047B7AE /* FixtureSessionStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 87CA610842D2D723210F765F /* FixtureSessionStore.swift */; };
+		EDDBA4832BEA98E75718E55F /* SymbolResolver.swift in Sources */ = {isa = PBXBuildFile; fileRef = 46B615557F7DEE8F964B69CE /* SymbolResolver.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		884D2F147FAACE5736B4ACF5 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = DBBE390BCF7BDC354D64B22A /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 5A41F5C4788D8F20D20F31F2;
+			remoteInfo = OpenScribeApp;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXFileReference section */
+		32118F0168D462A2AF9207B5 /* OpenScribeApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenScribeApp.swift; sourceTree = "<group>"; };
+		41902E24EA44F8922EE152D7 /* AppStatus.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppStatus.swift; sourceTree = "<group>"; };
+		46B615557F7DEE8F964B69CE /* SymbolResolver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SymbolResolver.swift; sourceTree = "<group>"; };
+		5A61A3F920D148E6A9BCE201 /* DeterministicMediaWriter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeterministicMediaWriter.swift; sourceTree = "<group>"; };
+		5B61A3F920D148E6A9BCE201 /* MediaOpenProtocolTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaOpenProtocolTests.swift; sourceTree = "<group>"; };
+		6712658CEAD0838E764A5BBF /* AccessibilityAnnouncer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccessibilityAnnouncer.swift; sourceTree = "<group>"; };
+		68710CE895B2216A5675AE4A /* SessionPresentation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionPresentation.swift; sourceTree = "<group>"; };
+		74480CF189E8E48F995656F2 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
+		7E6CCF0ABF9686858E86AD53 /* OpenScribeAppTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = OpenScribeAppTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		87CA610842D2D723210F765F /* FixtureSessionStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FixtureSessionStore.swift; sourceTree = "<group>"; };
+		8957201D2FE0F213BBA3D310 /* MenuBarContent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarContent.swift; sourceTree = "<group>"; };
+		A609D9E7F66672E1E60113B7 /* OpenScribeCore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenScribeCore.swift; sourceTree = "<group>"; };
+		BC2B884506AEDD909F7A06DD /* AppTelemetry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppTelemetry.swift; sourceTree = "<group>"; };
+		C62801D03FDD064235316905 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
+		F5696F23409FC2574DF65AD5 /* FixtureSessionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FixtureSessionTests.swift; sourceTree = "<group>"; };
+		F999B06ACC1C80F559FDEF6B /* RustStatusSourceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RustStatusSourceTests.swift; sourceTree = "<group>"; };
+		FA0F0D94D6B878C1D7BCA3F7 /* CompactLiveView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CompactLiveView.swift; sourceTree = "<group>"; };
+		FF5F704250A82C972C63B8EC /* OpenScribeApp.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = OpenScribeApp.app; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXGroup section */
+		07C8A65DACD732A874A58FD3 /* OpenScribeApp */ = {
+			isa = PBXGroup;
+			children = (
+				4CEC83BA4C2296F23519D224 /* App */,
+				ABE6BAAD9816151D47F181AD /* Generated */,
+				6A61A3F920D148E6A9BCE201 /* Media */,
+				3925FB7D95E16F7A5E141B08 /* Models */,
+				12C6110004107026CDFB4A6C /* Stores */,
+				4F036DA076828A4DAC45FCC5 /* Support */,
+				71D5EF4D1A0BA7E04FA1A6D8 /* Views */,
+			);
+			path = OpenScribeApp;
+			sourceTree = "<group>";
+		};
+		12C6110004107026CDFB4A6C /* Stores */ = {
+			isa = PBXGroup;
+			children = (
+				87CA610842D2D723210F765F /* FixtureSessionStore.swift */,
+			);
+			path = Stores;
+			sourceTree = "<group>";
+		};
+		178A83E9B36A068891E05E41 /* Sources */ = {
+			isa = PBXGroup;
+			children = (
+				07C8A65DACD732A874A58FD3 /* OpenScribeApp */,
+			);
+			path = Sources;
+			sourceTree = "<group>";
+		};
+		3925FB7D95E16F7A5E141B08 /* Models */ = {
+			isa = PBXGroup;
+			children = (
+				41902E24EA44F8922EE152D7 /* AppStatus.swift */,
+				68710CE895B2216A5675AE4A /* SessionPresentation.swift */,
+			);
+			path = Models;
+			sourceTree = "<group>";
+		};
+		4CEC83BA4C2296F23519D224 /* App */ = {
+			isa = PBXGroup;
+			children = (
+				32118F0168D462A2AF9207B5 /* OpenScribeApp.swift */,
+			);
+			path = App;
+			sourceTree = "<group>";
+		};
+		4F036DA076828A4DAC45FCC5 /* Support */ = {
+			isa = PBXGroup;
+			children = (
+				6712658CEAD0838E764A5BBF /* AccessibilityAnnouncer.swift */,
+				BC2B884506AEDD909F7A06DD /* AppTelemetry.swift */,
+				46B615557F7DEE8F964B69CE /* SymbolResolver.swift */,
+			);
+			path = Support;
+			sourceTree = "<group>";
+		};
+		6A61A3F920D148E6A9BCE201 /* Media */ = {
+			isa = PBXGroup;
+			children = (
+				5A61A3F920D148E6A9BCE201 /* DeterministicMediaWriter.swift */,
+			);
+			path = Media;
+			sourceTree = "<group>";
+		};
+		709304684170899F88B322E6 /* OpenScribeAppTests */ = {
+			isa = PBXGroup;
+			children = (
+				F5696F23409FC2574DF65AD5 /* FixtureSessionTests.swift */,
+				5B61A3F920D148E6A9BCE201 /* MediaOpenProtocolTests.swift */,
+				F999B06ACC1C80F559FDEF6B /* RustStatusSourceTests.swift */,
+			);
+			path = OpenScribeAppTests;
+			sourceTree = "<group>";
+		};
+		71D5EF4D1A0BA7E04FA1A6D8 /* Views */ = {
+			isa = PBXGroup;
+			children = (
+				FA0F0D94D6B878C1D7BCA3F7 /* CompactLiveView.swift */,
+				C62801D03FDD064235316905 /* ContentView.swift */,
+				8957201D2FE0F213BBA3D310 /* MenuBarContent.swift */,
+				74480CF189E8E48F995656F2 /* SettingsView.swift */,
+			);
+			path = Views;
+			sourceTree = "<group>";
+		};
+		9283AD7DF59676AF21085352 = {
+			isa = PBXGroup;
+			children = (
+				178A83E9B36A068891E05E41 /* Sources */,
+				B086A723AD43BE4EF9E908F2 /* Tests */,
+				FD243F5DFD4E6763DC4609E8 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		ABE6BAAD9816151D47F181AD /* Generated */ = {
+			isa = PBXGroup;
+			children = (
+				A609D9E7F66672E1E60113B7 /* OpenScribeCore.swift */,
+			);
+			path = Generated;
+			sourceTree = "<group>";
+		};
+		B086A723AD43BE4EF9E908F2 /* Tests */ = {
+			isa = PBXGroup;
+			children = (
+				709304684170899F88B322E6 /* OpenScribeAppTests */,
+			);
+			path = Tests;
+			sourceTree = "<group>";
+		};
+		FD243F5DFD4E6763DC4609E8 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				FF5F704250A82C972C63B8EC /* OpenScribeApp.app */,
+				7E6CCF0ABF9686858E86AD53 /* OpenScribeAppTests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		5A41F5C4788D8F20D20F31F2 /* OpenScribeApp */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 30FFC86E63F97789654A6830 /* Build configuration list for PBXNativeTarget "OpenScribeApp" */;
+			buildPhases = (
+				61886A31F6B09994395C0CCC /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = OpenScribeApp;
+			packageProductDependencies = (
+			);
+			productName = OpenScribeApp;
+			productReference = FF5F704250A82C972C63B8EC /* OpenScribeApp.app */;
+			productType = "com.apple.product-type.application";
+		};
+		E6C00F23DE59C6C0E966C3E0 /* OpenScribeAppTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 04C9AD486EC98BDD54A1D407 /* Build configuration list for PBXNativeTarget "OpenScribeAppTests" */;
+			buildPhases = (
+				15F2E7AEE356B8C952431BE3 /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				D7192A90A801D8A4FC303BC8 /* PBXTargetDependency */,
+			);
+			name = OpenScribeAppTests;
+			packageProductDependencies = (
+			);
+			productName = OpenScribeAppTests;
+			productReference = 7E6CCF0ABF9686858E86AD53 /* OpenScribeAppTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		DBBE390BCF7BDC354D64B22A /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 1430;
+				TargetAttributes = {
+					5A41F5C4788D8F20D20F31F2 = {
+						DevelopmentTeam = "";
+					};
+					E6C00F23DE59C6C0E966C3E0 = {
+						DevelopmentTeam = "";
+					};
+				};
+			};
+			buildConfigurationList = AE45D83D8AB3C0187DD0EC01 /* Build configuration list for PBXProject "OpenScribe" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				en,
+			);
+			mainGroup = 9283AD7DF59676AF21085352;
+			minimizedProjectReferenceProxies = 1;
+			preferredProjectObjectVersion = 77;
+			productRefGroup = FD243F5DFD4E6763DC4609E8 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				5A41F5C4788D8F20D20F31F2 /* OpenScribeApp */,
+				E6C00F23DE59C6C0E966C3E0 /* OpenScribeAppTests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXSourcesBuildPhase section */
+		15F2E7AEE356B8C952431BE3 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				1F1D1AD4B3B9F501CC0AB5DF /* FixtureSessionTests.swift in Sources */,
+				4B61A3F920D148E6A9BCE201 /* MediaOpenProtocolTests.swift in Sources */,
+				3D25B82DFEFE01398833B042 /* RustStatusSourceTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		61886A31F6B09994395C0CCC /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				5DB6CB212CE4D1617F1E34D4 /* AccessibilityAnnouncer.swift in Sources */,
+				5AA4F437F283C41AEB8ABF86 /* AppStatus.swift in Sources */,
+				7B61FB95E7DAEDF66275BDED /* AppTelemetry.swift in Sources */,
+				B7FFA456C63F04859D1B2472 /* CompactLiveView.swift in Sources */,
+				262A2A7F0F8421EC6AD0E79E /* ContentView.swift in Sources */,
+				4A61A3F920D148E6A9BCE201 /* DeterministicMediaWriter.swift in Sources */,
+				E3B6D8732CBAD3A7D047B7AE /* FixtureSessionStore.swift in Sources */,
+				5EF7FA04058A5A444EC69D6C /* MenuBarContent.swift in Sources */,
+				302DB5C18FFCD7389677DAA3 /* OpenScribeApp.swift in Sources */,
+				A09E75C3AF1D4CC0EACE3670 /* OpenScribeCore.swift in Sources */,
+				80867FCED39F6D49A72CD0FB /* SessionPresentation.swift in Sources */,
+				3D040E77A31B5F287D42504A /* SettingsView.swift in Sources */,
+				EDDBA4832BEA98E75718E55F /* SymbolResolver.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		D7192A90A801D8A4FC303BC8 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 5A41F5C4788D8F20D20F31F2 /* OpenScribeApp */;
+			targetProxy = 884D2F147FAACE5736B4ACF5 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		097113A7139649D465E22023 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ARCHS = arm64;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGNING_ALLOWED = NO;
+				COPY_PHASE_STRIP = NO;
+				CURRENT_PROJECT_VERSION = 1;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				DEVELOPMENT_TEAM = "";
+				ENABLE_HARDENED_RUNTIME = NO;
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				MACOSX_DEPLOYMENT_TARGET = 13.0;
+				MARKETING_VERSION = 0.0.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 6.0;
+			};
+			name = Release;
+		};
+		1ADB22E8E86F8E482BF9C8D6 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ARCHS = arm64;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGNING_ALLOWED = NO;
+				COPY_PHASE_STRIP = NO;
+				CURRENT_PROJECT_VERSION = 1;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				DEVELOPMENT_TEAM = "";
+				ENABLE_HARDENED_RUNTIME = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				MACOSX_DEPLOYMENT_TARGET = 13.0;
+				MARKETING_VERSION = 0.0.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 6.0;
+			};
+			name = Debug;
+		};
+		36197567C2C571757143130A /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				COMBINE_HIDPI_IMAGES = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				HEADER_SEARCH_PATHS = (
+					"$(SRCROOT)/Sources/OpenScribeFFI/include",
+				);
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@loader_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "app.open-scribe.dev.tests";
+				SDKROOT = macosx;
+				SWIFT_INCLUDE_PATHS = (
+					"$(SRCROOT)/Sources/OpenScribeFFI",
+				);
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/OpenScribeApp.app/Contents/MacOS/OpenScribeApp";
+			};
+			name = Release;
+		};
+		5F9C0D7202D4F8B49534CB54 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				COMBINE_HIDPI_IMAGES = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				HEADER_SEARCH_PATHS = (
+					"$(SRCROOT)/Sources/OpenScribeFFI/include",
+				);
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@loader_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "app.open-scribe.dev.tests";
+				SDKROOT = macosx;
+				SWIFT_INCLUDE_PATHS = (
+					"$(SRCROOT)/Sources/OpenScribeFFI",
+				);
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/OpenScribeApp.app/Contents/MacOS/OpenScribeApp";
+			};
+			name = Debug;
+		};
+		A6956F99B476DE9ADB00D941 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				COMBINE_HIDPI_IMAGES = YES;
+				HEADER_SEARCH_PATHS = (
+					"$(SRCROOT)/Sources/OpenScribeFFI/include",
+				);
+				INFOPLIST_FILE = Support/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				LIBRARY_SEARCH_PATHS = (
+					"$(SRCROOT)/../../target/debug",
+				);
+				OTHER_LDFLAGS = (
+					"$(inherited)",
+					"-lopen_scribe_uniffi",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "app.open-scribe.dev";
+				PRODUCT_NAME = OpenScribeApp;
+				SDKROOT = macosx;
+				SWIFT_INCLUDE_PATHS = (
+					"$(SRCROOT)/Sources/OpenScribeFFI",
+				);
+			};
+			name = Release;
+		};
+		E549EECC4CAC879C7578A4E0 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				COMBINE_HIDPI_IMAGES = YES;
+				HEADER_SEARCH_PATHS = (
+					"$(SRCROOT)/Sources/OpenScribeFFI/include",
+				);
+				INFOPLIST_FILE = Support/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				LIBRARY_SEARCH_PATHS = (
+					"$(SRCROOT)/../../target/debug",
+				);
+				OTHER_LDFLAGS = (
+					"$(inherited)",
+					"-lopen_scribe_uniffi",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "app.open-scribe.dev";
+				PRODUCT_NAME = OpenScribeApp;
+				SDKROOT = macosx;
+				SWIFT_INCLUDE_PATHS = (
+					"$(SRCROOT)/Sources/OpenScribeFFI",
+				);
+			};
+			name = Debug;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		04C9AD486EC98BDD54A1D407 /* Build configuration list for PBXNativeTarget "OpenScribeAppTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				5F9C0D7202D4F8B49534CB54 /* Debug */,
+				36197567C2C571757143130A /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		30FFC86E63F97789654A6830 /* Build configuration list for PBXNativeTarget "OpenScribeApp" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				E549EECC4CAC879C7578A4E0 /* Debug */,
+				A6956F99B476DE9ADB00D941 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		AE45D83D8AB3C0187DD0EC01 /* Build configuration list for PBXProject "OpenScribe" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				1ADB22E8E86F8E482BF9C8D6 /* Debug */,
+				097113A7139649D465E22023 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = DBBE390BCF7BDC354D64B22A /* Project object */;
+}

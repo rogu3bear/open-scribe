@@ -1,0 +1,4 @@
+[bindings.swift]
+module_name = "OpenScribeCore"
+ffi_module_name = "OpenScribeFFI"
+generate_immutable_records = true

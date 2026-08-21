@@ -1,0 +1,21 @@
+[package]
+name = "open-scribe-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[dependencies]
+open-scribe-asr = { path = "../open-scribe-asr" }
+open-scribe-diarize = { path = "../open-scribe-diarize" }
+open-scribe-domain = { path = "../open-scribe-domain" }
+open-scribe-evidence = { path = "../open-scribe-evidence" }
+open-scribe-memory = { path = "../open-scribe-memory" }
+open-scribe-models = { path = "../open-scribe-models" }
+open-scribe-store = { path = "../open-scribe-store" }
+open-scribe-types = { path = "../open-scribe-types" }
+
+[lib]
+path = "src/lib.rs"

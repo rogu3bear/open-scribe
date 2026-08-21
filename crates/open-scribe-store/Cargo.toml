@@ -1,0 +1,25 @@
+[package]
+name = "open-scribe-store"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[dependencies]
+open-scribe-domain = { path = "../open-scribe-domain" }
+open-scribe-evidence = { path = "../open-scribe-evidence" }
+open-scribe-types = { path = "../open-scribe-types" }
+rusqlite = { version = "0.40.2", features = ["bundled"] }
+rustix = { version = "1.1.4", features = ["fs"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+uuid = { version = "1", features = ["v7"] }
+
+[dev-dependencies]
+tempfile = "3"
+
+[lib]
+path = "src/lib.rs"
