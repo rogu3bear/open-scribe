@@ -1,0 +1,7 @@
+/pkg/*
+  Cache-Control: public, max-age=31536000, immutable
+  X-Content-Type-Options: nosniff
+
+/asset-manifest.json
+  Cache-Control: no-store
+  X-Content-Type-Options: nosniff

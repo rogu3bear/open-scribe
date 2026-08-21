@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "web",
     "crates/open-scribe-types",
     "crates/open-scribe-domain",
     "crates/open-scribe-evidence",

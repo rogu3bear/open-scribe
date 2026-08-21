@@ -1,0 +1,65 @@
+[package]
+name = "open-scribe-web"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish.workspace = true
+description = "Stateless SSR website foundation for Open Scribe on Cloudflare Workers."
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[[bin]]
+name = "open-scribe-web"
+path = "src/main.rs"
+
+[[bin]]
+name = "render-web-ssr"
+path = "src/bin/render_web_ssr.rs"
+required-features = ["ssr"]
+
+[dependencies]
+axum = { version = "0.8", default-features = false, optional = true }
+base64 = { version = "0.22", optional = true }
+console_error_panic_hook = { version = "0.1", optional = true }
+getrandom = { version = "0.4", features = ["wasm_js"] }
+getrandom03 = { package = "getrandom", version = "0.3", features = ["wasm_js"] }
+leptos = { version = "0.8" }
+leptos_axum = { version = "0.8.8", default-features = false, features = ["wasm"], optional = true }
+leptos_meta = { version = "0.8" }
+leptos_router = { version = "0.8" }
+sha2 = { version = "0.10", optional = true }
+tower-service = { version = "0.3", optional = true }
+wasm-bindgen = "=0.2.121"
+worker = { version = "0.7.5", features = ["http", "axum"], optional = true }
+
+[features]
+hydrate = ["dep:console_error_panic_hook", "leptos/hydrate"]
+ssr = [
+    "dep:axum",
+    "dep:base64",
+    "dep:leptos_axum",
+    "dep:sha2",
+    "dep:tower-service",
+    "dep:worker",
+    "leptos/ssr",
+    "leptos_meta/ssr",
+    "leptos_router/ssr",
+]
+
+[package.metadata.leptos]
+output-name = "open-scribe-web"
+site-root = "target/site"
+site-pkg-dir = "pkg"
+style-file = "style/main.css"
+assets-dir = "assets"
+site-addr = "127.0.0.1:57581"
+reload-port = 57582
+browserquery = "defaults"
+bin-target = "open-scribe-web"
+bin-features = ["ssr"]
+bin-default-features = false
+lib-features = ["hydrate"]
+lib-default-features = false

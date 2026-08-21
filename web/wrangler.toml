@@ -1,0 +1,11 @@
+name = "open-scribe-web"
+main = "build/_worker.js"
+compatibility_date = "2026-04-22"
+upload_source_maps = true
+
+[build]
+command = "./script/build_web.sh"
+
+[assets]
+directory = "./target/site"
+binding = "ASSETS"

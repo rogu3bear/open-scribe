@@ -1,16 +1,25 @@
-# Open Scribe Website Root
+# Open Scribe Website
 
-**Status:** reserved; no Leptos application, Worker, deployment configuration, or public route exists.
+**Status:** functional Milestone 0 source and local build proof; not deployed.
 
-The intended foundation is `rogu3bear/leptos-cloudflare` (internal template identity `leptos-cf`), imported at an explicitly selected revision and then fully de-templated. The site will be separate from native app operation and initially stateless unless a concrete reviewed need justifies D1.
+This directory contains the stateless Leptos 0.8 and Cloudflare Worker
+foundation. It renders useful product identity and honest development status in
+SSR HTML, builds the hydration bundle, fingerprints client assets, and compiles
+the Worker entrypoint. It contains no database, intake form, user session,
+native bridge, media path, or browser recording demonstration.
 
-Before importing the foundation, record:
+Run the repository-owned build from the repository root:
 
-- exact upstream commit and history strategy;
-- Leptos/Rust/wasm-bindgen/Worker toolchain pins;
-- canonical Cloudflare project/account authority;
-- asset, CSP, route, legal-text, and deployment boundaries;
-- complete starter-content/token removal criteria;
-- the executed design-research direction.
+```bash
+./script/build_web.sh
+```
 
-No browser demonstration may imply native capture capability.
+The receipt is `WEB_BUILD_GREEN`. Generated local output includes:
+
+- `target/web-ssr/index.html`, a useful no-hydration SSR snapshot;
+- `target/site/`, the hashed hydration and stylesheet assets;
+- `web/build/`, the Worker bundle and static-asset routing shim.
+
+The command does not invoke Wrangler or access Cloudflare. A build is not a
+deployment, a public route, or proof of any native capability. ADR 0003 owns the
+selective import, upstream-sync policy, toolchain pins, and rollback.
