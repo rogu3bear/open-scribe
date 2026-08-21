@@ -31,13 +31,13 @@ required_paths=(
 	.swift-version
 	.xcode-version
 	.xcode-build-version
-	.github/workflows/m0-native.yml
 	apps/macos/README.md
 	web/README.md
 	docs/product/FOUNDING_PRD.md
 	docs/architecture/0001-m0-native-shell-and-uniffi.md
 	docs/architecture/0002-m0-proof-toolchain-and-ci.md
 	docs/architecture/0003-m0-web-foundation-and-toolchains.md
+	docs/architecture/0018-local-proof-and-disabled-repository-actions.md
 	docs/legal/privacy.md
 	docs/legal/terms.md
 	docs/design/DESIGN.md
@@ -50,6 +50,10 @@ required_paths=(
 for required_path in "${required_paths[@]}"; do
 	[[ -f "$required_path" ]] || fail "missing required path: $required_path"
 done
+
+if [[ -d .github/workflows ]] && find .github/workflows -type f -print -quit | grep -q .; then
+	fail "GitHub Actions is disabled by ADR 0018; repository workflow files are not allowed"
+fi
 
 cmp -s AGENTS.md CLAUDE.md || fail "AGENTS.md and CLAUDE.md are not byte-identical"
 

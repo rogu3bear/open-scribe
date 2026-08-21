@@ -22,7 +22,7 @@ Release is a chain of distinct proof planes: source, built application, signed/n
 ### Release stages and authority
 
 - `script/release.sh prepare <version>` is local/reversible. It requires every M0–M4 milestone receipt for the exact tree, adopted legal/security sources, a closed P0 ledger, clean lockfiles, capability/runtime agreement, notices/model/SBOM generation, release notes, version allocation, and all non-secret tests. It produces an unsigned plan and content-addressed inputs only.
-- A protected release workflow, triggered only from an approved immutable tag and protected environment, builds once, imports Developer ID/notary/Sparkle credentials into an ephemeral keychain, archives/signs/notarizes/packages/verifies, emits the signed receipt/artifacts, then destroys the keychain. Pull requests, forks, ordinary CI, and preview builds never receive release secrets or publish access.
+- A protected release transaction outside GitHub Actions, triggered only from an approved immutable tag and protected execution environment, builds once, imports Developer ID/notary/Sparkle credentials into an ephemeral keychain, archives/signs/notarizes/packages/verifies, emits the signed receipt/artifacts, then destroys the keychain. Pull requests, forks, repository automation, and preview builds never receive release secrets or publish access.
 - Artifact verification and clean-machine/update/network-denial matrices run against copies of the exact signed outputs. Failure at any point leaves a candidate, not a release. The pipeline does not rebuild after proof; publishing promotes those already-hashed bytes.
 - GitHub Release publication is a separate protected action. Assets are `Open-Scribe-<semver>-arm64.dmg`, `Open-Scribe-<semver>-arm64.zip`, checksums, release manifest, SPDX, notices, model manifest, release notes, and source archive. A version/asset is policy-immutable: automation rejects an existing tag, release, filename, or differing asset rather than replacing it.
 - Website preparation consumes the verified release manifest and policy-immutable GitHub asset URLs, generates `/releases/<version>/...`, the signed appcast, `/download`, and `/download/latest`, and produces a content-addressed Worker/Assets bundle. It may not build a different app or infer capabilities.
@@ -60,7 +60,7 @@ Release secrets exist only in a protected ephemeral environment, with least-priv
 
 ## Migration and rollback
 
-The release scripts remain fail-closed stubs until every predecessor receipt and this workflow are implemented. Each stage is added first in dry-run/plan mode, then artifact mode, then protected publication. Existing M0 website truth stays public-source-only until a complete candidate exists. Rollback follows the immutable-version rules above and never weakens a signature, hash, capability, legal, or P0 assertion.
+The release scripts remain fail-closed stubs until every predecessor receipt and this protected transaction are implemented. Each stage is added first in dry-run/plan mode, then artifact mode, then protected publication. Existing M0 website truth stays public-source-only until a complete candidate exists. Rollback follows the immutable-version rules above and never weakens a signature, hash, capability, legal, or P0 assertion.
 
 ## Proof
 

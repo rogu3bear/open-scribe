@@ -22,7 +22,7 @@ crates/open-scribe-*/        shared semantics plus bounded native session prepar
 web/                         stateless Leptos Worker/Assets development foundation
 docs/                        product, architecture, legal, design, model, format, and release truth
 script/                      fail-closed canonical entry points
-.github/workflows/           bounded P1 foundation proof CI
+.github/                     repository metadata; GitHub Actions is intentionally disabled
 `
 
 ## What can be verified now
@@ -40,6 +40,8 @@ Run the complete bounded foundation gate:
 ```
 
 This validates the founding scaffold, useful SSR and Worker artifacts, WASM-safe shared crates, generated UniFFI consistency, Xcode-owned fixture surfaces, durable session preparation, and the bounded create-new CAF media-open handshake. It does **not** prove microphone or system-audio capture, `Recording`, real forced-termination recovery, playable media, transcription, providers, ML, deployment, signing, notarization, distribution, or release.
+
+GitHub Actions is intentionally disabled for this repository. Pull requests are admitted through exact-checkout local receipts, an independent review of the candidate tree, and explicit merge readback; no hosted status check is a proof authority.
 
 All default product/release scripts intentionally fail until their corresponding implementation and proof exist.
 

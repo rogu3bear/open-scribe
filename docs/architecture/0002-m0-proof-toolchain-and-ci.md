@@ -1,10 +1,12 @@
 # ADR 0002 — Milestone 0 Proof Toolchain and CI Boundary
 
-- Status: Accepted for Milestone 0 only
+- Status: Superseded by ADR 0018
 - Date: 2026-08-20
 - Owner/approver: repository operator, through the explicit instruction to carry the M0 proof on one PR
 - Founding clauses refined: PRD 25.3–25.4, 31 Milestone 0, 34, and 39
 - Supersedes: nothing
+
+> Historical decision only. ADR 0018 removes GitHub Actions from the repository proof plane. The toolchain pins remain current; the hosted-job clauses below are not current authority.
 
 ## Context and evidence
 
