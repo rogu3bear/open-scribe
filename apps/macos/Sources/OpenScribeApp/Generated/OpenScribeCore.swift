@@ -592,6 +592,8 @@ private struct FfiConverterString: FfiConverter {
 
 public protocol NativeRecordingPreparationProtocol: AnyObject, Sendable {
 
+  func acceptFirstSample(receipt: NativeFirstSampleReceipt) throws -> NativeFirstSampleEvidence
+
   func acceptMediaOpen(receipt: NativeMediaOpenReceipt) throws -> NativeMediaOpenEvidence
 
   func authorizeInitialMedia(
@@ -659,6 +661,18 @@ open class NativeRecordingPreparation: NativeRecordingPreparationProtocol, @unch
         uniffiCallStatus in
         uniffi_open_scribe_uniffi_fn_constructor_nativerecordingpreparation_open(
           FfiConverterString.lower(managedRoot), uniffiCallStatus
+        )
+      })
+  }
+
+  open func acceptFirstSample(receipt: NativeFirstSampleReceipt) throws -> NativeFirstSampleEvidence
+  {
+    return try FfiConverterTypeNativeFirstSampleEvidence_lift(
+      try rustCallWithError(FfiConverterTypeNativeStorageError_lift) {
+        uniffiCallStatus in
+        uniffi_open_scribe_uniffi_fn_method_nativerecordingpreparation_accept_first_sample(
+          self.uniffiCloneHandle(),
+          FfiConverterTypeNativeFirstSampleReceipt_lower(receipt), uniffiCallStatus
         )
       })
   }
@@ -810,6 +824,176 @@ public func FfiConverterTypeNativeCommand_lift(_ buf: RustBuffer) throws -> Nati
 #endif
 public func FfiConverterTypeNativeCommand_lower(_ value: NativeCommand) -> RustBuffer {
   return FfiConverterTypeNativeCommand.lower(value)
+}
+
+public struct NativeFirstSampleEvidence: Equatable, Hashable {
+  public let sessionId: String
+  public let segmentId: String
+  public let firstSampleSessionNanoseconds: Int64
+  public let journalDurable: Bool
+  public let mediaFilesOpen: Bool
+  public let firstSampleDurable: Bool
+  public let recordingStarted: Bool
+  public let lastJournalSequence: UInt64
+
+  // Default memberwise initializers are never public by default, so we
+  // declare one manually.
+  public init(
+    sessionId: String, segmentId: String, firstSampleSessionNanoseconds: Int64,
+    journalDurable: Bool, mediaFilesOpen: Bool, firstSampleDurable: Bool, recordingStarted: Bool,
+    lastJournalSequence: UInt64
+  ) {
+    self.sessionId = sessionId
+    self.segmentId = segmentId
+    self.firstSampleSessionNanoseconds = firstSampleSessionNanoseconds
+    self.journalDurable = journalDurable
+    self.mediaFilesOpen = mediaFilesOpen
+    self.firstSampleDurable = firstSampleDurable
+    self.recordingStarted = recordingStarted
+    self.lastJournalSequence = lastJournalSequence
+  }
+
+}
+
+#if compiler(>=6)
+  extension NativeFirstSampleEvidence: Sendable {}
+#endif
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeNativeFirstSampleEvidence: FfiConverterRustBuffer {
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws
+    -> NativeFirstSampleEvidence
+  {
+    return
+      try NativeFirstSampleEvidence(
+        sessionId: FfiConverterString.read(from: &buf),
+        segmentId: FfiConverterString.read(from: &buf),
+        firstSampleSessionNanoseconds: FfiConverterInt64.read(from: &buf),
+        journalDurable: FfiConverterBool.read(from: &buf),
+        mediaFilesOpen: FfiConverterBool.read(from: &buf),
+        firstSampleDurable: FfiConverterBool.read(from: &buf),
+        recordingStarted: FfiConverterBool.read(from: &buf),
+        lastJournalSequence: FfiConverterUInt64.read(from: &buf)
+      )
+  }
+
+  public static func write(_ value: NativeFirstSampleEvidence, into buf: inout [UInt8]) {
+    FfiConverterString.write(value.sessionId, into: &buf)
+    FfiConverterString.write(value.segmentId, into: &buf)
+    FfiConverterInt64.write(value.firstSampleSessionNanoseconds, into: &buf)
+    FfiConverterBool.write(value.journalDurable, into: &buf)
+    FfiConverterBool.write(value.mediaFilesOpen, into: &buf)
+    FfiConverterBool.write(value.firstSampleDurable, into: &buf)
+    FfiConverterBool.write(value.recordingStarted, into: &buf)
+    FfiConverterUInt64.write(value.lastJournalSequence, into: &buf)
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeFirstSampleEvidence_lift(_ buf: RustBuffer) throws
+  -> NativeFirstSampleEvidence
+{
+  return try FfiConverterTypeNativeFirstSampleEvidence.lift(buf)
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeFirstSampleEvidence_lower(_ value: NativeFirstSampleEvidence)
+  -> RustBuffer
+{
+  return FfiConverterTypeNativeFirstSampleEvidence.lower(value)
+}
+
+public struct NativeFirstSampleReceipt: Equatable, Hashable {
+  public let sessionId: String
+  public let trackId: String
+  public let segmentId: String
+  public let openToken: String
+  public let writerGeneration: UInt64
+  public let relativePath: String
+  public let firstSampleHostTime: UInt64
+  public let firstSampleFrameCount: UInt64
+  public let observedByteLength: UInt64
+
+  // Default memberwise initializers are never public by default, so we
+  // declare one manually.
+  public init(
+    sessionId: String, trackId: String, segmentId: String, openToken: String,
+    writerGeneration: UInt64, relativePath: String, firstSampleHostTime: UInt64,
+    firstSampleFrameCount: UInt64, observedByteLength: UInt64
+  ) {
+    self.sessionId = sessionId
+    self.trackId = trackId
+    self.segmentId = segmentId
+    self.openToken = openToken
+    self.writerGeneration = writerGeneration
+    self.relativePath = relativePath
+    self.firstSampleHostTime = firstSampleHostTime
+    self.firstSampleFrameCount = firstSampleFrameCount
+    self.observedByteLength = observedByteLength
+  }
+
+}
+
+#if compiler(>=6)
+  extension NativeFirstSampleReceipt: Sendable {}
+#endif
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeNativeFirstSampleReceipt: FfiConverterRustBuffer {
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws
+    -> NativeFirstSampleReceipt
+  {
+    return
+      try NativeFirstSampleReceipt(
+        sessionId: FfiConverterString.read(from: &buf),
+        trackId: FfiConverterString.read(from: &buf),
+        segmentId: FfiConverterString.read(from: &buf),
+        openToken: FfiConverterString.read(from: &buf),
+        writerGeneration: FfiConverterUInt64.read(from: &buf),
+        relativePath: FfiConverterString.read(from: &buf),
+        firstSampleHostTime: FfiConverterUInt64.read(from: &buf),
+        firstSampleFrameCount: FfiConverterUInt64.read(from: &buf),
+        observedByteLength: FfiConverterUInt64.read(from: &buf)
+      )
+  }
+
+  public static func write(_ value: NativeFirstSampleReceipt, into buf: inout [UInt8]) {
+    FfiConverterString.write(value.sessionId, into: &buf)
+    FfiConverterString.write(value.trackId, into: &buf)
+    FfiConverterString.write(value.segmentId, into: &buf)
+    FfiConverterString.write(value.openToken, into: &buf)
+    FfiConverterUInt64.write(value.writerGeneration, into: &buf)
+    FfiConverterString.write(value.relativePath, into: &buf)
+    FfiConverterUInt64.write(value.firstSampleHostTime, into: &buf)
+    FfiConverterUInt64.write(value.firstSampleFrameCount, into: &buf)
+    FfiConverterUInt64.write(value.observedByteLength, into: &buf)
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeFirstSampleReceipt_lift(_ buf: RustBuffer) throws
+  -> NativeFirstSampleReceipt
+{
+  return try FfiConverterTypeNativeFirstSampleReceipt.lift(buf)
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeFirstSampleReceipt_lower(_ value: NativeFirstSampleReceipt)
+  -> RustBuffer
+{
+  return FfiConverterTypeNativeFirstSampleReceipt.lower(value)
 }
 
 public struct NativeMediaOpenAuthorization: Equatable, Hashable {
@@ -1978,6 +2162,11 @@ private let initializationResult: InitializationResult = {
     return InitializationResult.apiChecksumMismatch
   }
   if uniffi_open_scribe_uniffi_checksum_func_native_status() != 55397 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_open_scribe_uniffi_checksum_method_nativerecordingpreparation_accept_first_sample()
+    != 28606
+  {
     return InitializationResult.apiChecksumMismatch
   }
   if uniffi_open_scribe_uniffi_checksum_method_nativerecordingpreparation_accept_media_open()

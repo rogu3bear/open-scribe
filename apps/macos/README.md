@@ -1,11 +1,11 @@
 # macOS Application Root
 
-**Status:** Milestone 0 native development shell plus deterministic post-M0
-state fixtures implemented. An Xcode-owned unsigned development app now renders
-one Rust-owned fixture snapshot through generated UniFFI bindings in both its
-menu and compact window. A bounded test adapter creates a Rust-authorized CAF
-file and returns coarse media-open evidence after durable session preparation;
-it ingests no microphone or system sample and never asserts `Recording`.
+**Status:** Milestone 0 native development shell plus a bounded early-M1
+microphone foundation. The Xcode-owned unsigned app renders one Rust fixture in
+its menu and compact window. A UI-unwired AVAudioEngine adapter uses a bounded
+Swift buffer pool and serial managed CAF writer; synthetic-buffer tests produce
+durable coarse first-sample evidence without asserting `Recording`. No live
+permission prompt, device capture, or signed entitlement enforcement is proven.
 
 This root will contain the native SwiftUI application, MenuBarExtra, Settings, accessibility, permission UX, and bounded Apple-framework adapters for AVFoundation/CoreAudio, ScreenCaptureKit, Vision, display/window overlays, Calendar, Contacts, Keychain, and optional Apple-only model integration.
 
@@ -16,14 +16,16 @@ identifier, no-entitlement posture, and binding lifecycle. ADR 0004 owns the
 fixture state and presentation contract. ADR 0007 supersedes SwiftPM as the app
 and test-host owner: `OpenScribe.xcodeproj` now builds the same checked Swift
 sources and Rust static library. SwiftPM remains for code organization only.
-Production entitlements, capture adapters, distribution identity, signing,
-notarization, and release remain unimplemented.
+The checked entitlement source and effective Xcode sandbox/Hardened Runtime
+settings are implemented. UI wiring, live capture proof, distribution identity,
+signing, notarization, and release remain unimplemented.
 
 `./script/build_and_run.sh` builds the Xcode app into the ignored local Derived
 Data root. Its default mode launches the app; `--verify` runs the Xcode test
 host, binds the exact process, and observes primary/menu-bar/Settings scene logs;
 `--debug`, `--logs`, and `--telemetry` provide LLDB or filtered unified-log
 sessions. `./script/check_m1_xcode_fixture.sh` is the pre-capture UI checkpoint;
-`./script/check.sh --m1-media-open` adds durable preparation plus the test-only
-CAF handshake. Neither proves capture, permission flows, `Recording`, playable
-recovery, signing, distribution, or release.
+`./script/check.sh --m1-microphone-foundation` includes all earlier gates plus
+the synthetic first-sample path and permissions/build metadata. It does not
+prove live capture, a permission prompt, `Recording`, playable recovery, signed
+entitlement enforcement, distribution, or release.
