@@ -10,6 +10,7 @@ publish.workspace = true
 [dependencies]
 open-scribe-core = { path = "../open-scribe-core" }
 open-scribe-types = { path = "../open-scribe-types" }
+thiserror = "2"
 uniffi = "0.32.0"
 
 [features]

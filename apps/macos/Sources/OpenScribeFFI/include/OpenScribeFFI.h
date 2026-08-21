@@ -241,6 +241,59 @@ typedef void (*UniffiForeignFutureCompleteVoid)(uint64_t,
                                                 UniffiForeignFutureResultVoid);
 
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_FN_CLONE_NATIVERECORDINGPREPARATION
+#define UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_FN_CLONE_NATIVERECORDINGPREPARATION
+uint64_t uniffi_open_scribe_uniffi_fn_clone_nativerecordingpreparation(
+    uint64_t handle, RustCallStatus *_Nonnull out_status);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_FN_FREE_NATIVERECORDINGPREPARATION
+#define UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_FN_FREE_NATIVERECORDINGPREPARATION
+void uniffi_open_scribe_uniffi_fn_free_nativerecordingpreparation(
+    uint64_t handle, RustCallStatus *_Nonnull out_status);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_FN_CONSTRUCTOR_NATIVERECORDINGPREPARATION_OPEN
+#define UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_FN_CONSTRUCTOR_NATIVERECORDINGPREPARATION_OPEN
+uint64_t
+uniffi_open_scribe_uniffi_fn_constructor_nativerecordingpreparation_open(
+    RustBuffer managed_root, RustCallStatus *_Nonnull out_status);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_FN_METHOD_NATIVERECORDINGPREPARATION_ACCEPT_MEDIA_OPEN
+#define UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_FN_METHOD_NATIVERECORDINGPREPARATION_ACCEPT_MEDIA_OPEN
+RustBuffer
+uniffi_open_scribe_uniffi_fn_method_nativerecordingpreparation_accept_media_open(
+    uint64_t ptr, RustBuffer receipt, RustCallStatus *_Nonnull out_status);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_FN_METHOD_NATIVERECORDINGPREPARATION_AUTHORIZE_INITIAL_MEDIA
+#define UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_FN_METHOD_NATIVERECORDINGPREPARATION_AUTHORIZE_INITIAL_MEDIA
+RustBuffer
+uniffi_open_scribe_uniffi_fn_method_nativerecordingpreparation_authorize_initial_media(
+    uint64_t ptr, RustBuffer session_id, RustBuffer source_kind,
+    RustBuffer source_display_name, RustCallStatus *_Nonnull out_status);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_FN_METHOD_NATIVERECORDINGPREPARATION_PREPARE_SESSION
+#define UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_FN_METHOD_NATIVERECORDINGPREPARATION_PREPARE_SESSION
+RustBuffer
+uniffi_open_scribe_uniffi_fn_method_nativerecordingpreparation_prepare_session(
+    uint64_t ptr, RustBuffer title, RustCallStatus *_Nonnull out_status);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_FN_FUNC_NATIVE_APPLY_FIXTURE_COMMAND
+#define UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_FN_FUNC_NATIVE_APPLY_FIXTURE_COMMAND
+RustBuffer uniffi_open_scribe_uniffi_fn_func_native_apply_fixture_command(
+    RustBuffer fixture, RustBuffer command,
+    RustCallStatus *_Nonnull out_status);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_FN_FUNC_NATIVE_FIXTURE
+#define UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_FN_FUNC_NATIVE_FIXTURE
+RustBuffer uniffi_open_scribe_uniffi_fn_func_native_fixture(
+    RustBuffer fixture, RustCallStatus *_Nonnull out_status);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_FN_FUNC_NATIVE_FIXTURE_CATALOG
+#define UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_FN_FUNC_NATIVE_FIXTURE_CATALOG
+RustBuffer uniffi_open_scribe_uniffi_fn_func_native_fixture_catalog(
+    RustCallStatus *_Nonnull out_status
+
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_FN_FUNC_NATIVE_STATUS
 #define UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_FN_FUNC_NATIVE_STATUS
 RustBuffer uniffi_open_scribe_uniffi_fn_func_native_status(
@@ -498,9 +551,60 @@ void ffi_open_scribe_uniffi_rust_future_free_void(uint64_t handle);
 void ffi_open_scribe_uniffi_rust_future_complete_void(
     uint64_t handle, RustCallStatus *_Nonnull out_status);
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_CHECKSUM_FUNC_NATIVE_APPLY_FIXTURE_COMMAND
+#define UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_CHECKSUM_FUNC_NATIVE_APPLY_FIXTURE_COMMAND
+uint16_t
+uniffi_open_scribe_uniffi_checksum_func_native_apply_fixture_command(void
+
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_CHECKSUM_FUNC_NATIVE_FIXTURE
+#define UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_CHECKSUM_FUNC_NATIVE_FIXTURE
+uint16_t uniffi_open_scribe_uniffi_checksum_func_native_fixture(void
+
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_CHECKSUM_FUNC_NATIVE_FIXTURE_CATALOG
+#define UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_CHECKSUM_FUNC_NATIVE_FIXTURE_CATALOG
+uint16_t uniffi_open_scribe_uniffi_checksum_func_native_fixture_catalog(void
+
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_CHECKSUM_FUNC_NATIVE_STATUS
 #define UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_CHECKSUM_FUNC_NATIVE_STATUS
 uint16_t uniffi_open_scribe_uniffi_checksum_func_native_status(void
+
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_CHECKSUM_METHOD_NATIVERECORDINGPREPARATION_ACCEPT_MEDIA_OPEN
+#define UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_CHECKSUM_METHOD_NATIVERECORDINGPREPARATION_ACCEPT_MEDIA_OPEN
+uint16_t
+uniffi_open_scribe_uniffi_checksum_method_nativerecordingpreparation_accept_media_open(
+    void
+
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_CHECKSUM_METHOD_NATIVERECORDINGPREPARATION_AUTHORIZE_INITIAL_MEDIA
+#define UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_CHECKSUM_METHOD_NATIVERECORDINGPREPARATION_AUTHORIZE_INITIAL_MEDIA
+uint16_t
+uniffi_open_scribe_uniffi_checksum_method_nativerecordingpreparation_authorize_initial_media(
+    void
+
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_CHECKSUM_METHOD_NATIVERECORDINGPREPARATION_PREPARE_SESSION
+#define UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_CHECKSUM_METHOD_NATIVERECORDINGPREPARATION_PREPARE_SESSION
+uint16_t
+uniffi_open_scribe_uniffi_checksum_method_nativerecordingpreparation_prepare_session(
+    void
+
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_CHECKSUM_CONSTRUCTOR_NATIVERECORDINGPREPARATION_OPEN
+#define UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_CHECKSUM_CONSTRUCTOR_NATIVERECORDINGPREPARATION_OPEN
+uint16_t
+uniffi_open_scribe_uniffi_checksum_constructor_nativerecordingpreparation_open(
+    void
 
 );
 #endif

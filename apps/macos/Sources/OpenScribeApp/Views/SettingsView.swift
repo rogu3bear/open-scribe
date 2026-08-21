@@ -1,26 +1,26 @@
 import SwiftUI
 
 struct SettingsView: View {
-    let status: AppStatus
+  let status: AppStatus
 
-    var body: some View {
-        Form {
-            Section("Native core") {
-                LabeledContent("Product", value: status.productName)
-                LabeledContent("Rust version", value: status.coreVersion)
-            }
+  var body: some View {
+    Form {
+      Section("Native core") {
+        LabeledContent("Product", value: status.productName)
+        LabeledContent("Rust version", value: status.coreVersion)
+      }
 
-            Section("Unavailable in Milestone 0") {
-                LabeledContent("Persistence", value: status.persistence)
-                LabeledContent("Capture", value: status.capture)
-                LabeledContent("Intelligence", value: status.intelligence)
-            }
-        }
-        .formStyle(.grouped)
-        .frame(width: 460, height: 300)
-        .padding()
-        .onAppear {
-            AppTelemetry.sceneAppeared("settings", status: status)
-        }
+      Section("Current implementation") {
+        LabeledContent("Persistence", value: status.persistence)
+        LabeledContent("Capture", value: status.capture)
+        LabeledContent("Intelligence", value: status.intelligence)
+      }
     }
+    .formStyle(.grouped)
+    .frame(width: 460, height: 300)
+    .padding()
+    .onAppear {
+      AppTelemetry.sceneAppeared("settings", status: status)
+    }
+  }
 }
