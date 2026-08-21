@@ -22,6 +22,8 @@
     <string>13.0</string>
     <key>NSHighResolutionCapable</key>
     <true/>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Open Scribe uses the microphone only when you explicitly start a recording that includes it.</string>
     <key>NSPrincipalClass</key>
     <string>NSApplication</string>
 </dict>

@@ -28,7 +28,7 @@ final class MediaOpenProtocolTests: XCTestCase {
     )
     XCTAssertFalse(FileManager.default.fileExists(atPath: authorization.absolutePath))
 
-    let writer = try DeterministicMediaWriter(authorization: authorization)
+    let writer = try ManagedCAFWriter(authorization: authorization)
     try writer.writeDeterministicFrames(4_800)
     let evidence = try controller.acceptMediaOpen(receipt: writer.receipt())
     XCTAssertTrue(evidence.journalDurable)
@@ -37,6 +37,14 @@ final class MediaOpenProtocolTests: XCTestCase {
     XCTAssertEqual(evidence.lastJournalSequence, 3)
 
     try writer.writeDeterministicFrames(480)
+    let firstSample = try controller.acceptFirstSample(
+      receipt: writer.firstSampleReceipt(hostTime: 42_000, frameCount: 480)
+    )
+    XCTAssertTrue(firstSample.firstSampleDurable)
+    XCTAssertEqual(firstSample.firstSampleSessionNanoseconds, 0)
+    XCTAssertFalse(firstSample.recordingStarted)
+    XCTAssertEqual(firstSample.lastJournalSequence, 4)
+
     let media = try AVAudioFile(
       forReading: URL(fileURLWithPath: authorization.absolutePath)
     )
@@ -65,9 +73,9 @@ final class MediaOpenProtocolTests: XCTestCase {
       sourceKind: .microphone,
       sourceDisplayName: "Synthetic microphone"
     )
-    let writer = try DeterministicMediaWriter(authorization: authorization)
-    XCTAssertThrowsError(try DeterministicMediaWriter(authorization: authorization)) { error in
-      XCTAssertEqual(error as? DeterministicMediaWriterError, .pathAlreadyExists)
+    let writer = try ManagedCAFWriter(authorization: authorization)
+    XCTAssertThrowsError(try ManagedCAFWriter(authorization: authorization)) { error in
+      XCTAssertEqual(error as? ManagedCAFWriterError, .pathAlreadyExists)
     }
 
     try writer.writeDeterministicFrames(480)
