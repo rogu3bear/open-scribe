@@ -1,26 +1,27 @@
 # Open Scribe Architecture
 
-> **Budget:** 700 words. Current repository fact and intended-but-unbuilt design are separated explicitly.
+> **Budget:** 700 words. Current fact and intended design remain distinct.
 
 ## Current repository fact
 
-Open Scribe has a Milestone 0 native development shell and no product capability runtime. The repository contains founding doctrine, documentation, a Cargo workspace, a SwiftPM macOS app with primary window, MenuBarExtra, and Settings, and a coarse UniFFI query returning truthful non-media capability state. Capture, persistence, transcription, context, providers, ML, website runtime, signing, and release remain unimplemented.
+Open Scribe has an M0 native/site foundation and bounded early-M1 session preparation, but no capture runtime or deployment. Rust owns fixtures, durable journal/SQLite preparation, and managed media-open validation; coarse data crosses UniFFI. One Swift store drives both fixture surfaces. A test adapter opens Rust-authorized CAF files without asserting `Recording`. The Leptos build produces useful stateless SSR. Capture, playable recovery, ML, context, providers, signing, deployment, and release remain unimplemented.
 
 ## Intended runtime shape
 
-A native Apple-Silicon macOS application will use SwiftUI and narrow Apple-framework adapters. Rust will own durable product state and deterministic policy. A coarse UniFFI control bridge will connect them. A separate Leptos SSR/hydration site will run on Cloudflare Workers. Only genuinely platform-neutral semantics will be shared through WASM-safe Rust crates; the website will never be required for app operation.
+The Apple-Silicon app uses SwiftUI and narrow Apple adapters. Rust owns durable state and policy; coarse UniFFI connects them. A separate Leptos SSR/hydration site targets Cloudflare Workers. Only platform-neutral semantics enter WASM-safe crates, and the app never requires the site.
 
 ## Intended ownership
 
 | Component | Status | Owns | Must not own |
 |---|---|---|---|
-| `apps/macos` | M0 shell | SwiftUI scenes, MenuBarExtra, Settings; later Apple adapters | durable product policy or evidence truth |
-| `crates/open-scribe-types` | placeholder, WASM-safe | stable cross-boundary value types | I/O or native APIs |
-| `open-scribe-domain` | placeholder, WASM-safe | deterministic session states and transitions | persistence or platform capture |
+| `apps/macos` | fixture shell + media-open adapter | SwiftUI, fixture store, create-new CAF handling | durable policy, capture claims, evidence truth |
+| `crates/open-scribe-types` | implemented, WASM-safe | stable session/source/condition records | I/O or native APIs |
+| `open-scribe-domain` | implemented, WASM-safe | transitions and presentation | persistence or capture |
 | `open-scribe-evidence` | placeholder, WASM-safe | evidence IDs, relationships, claim-validation semantics | model execution or native storage |
-| native Rust crates | placeholders | store, ASR, diarization, memory, models, orchestration | Apple UI or direct permission UX |
-| `open-scribe-uniffi` | M0 proof | adapt one Rust-core status snapshot into a coarse non-media query; later control/query boundary | product-state authority or frame-rate audio, video, or pointer serialization |
-| `web` | reserved | public Leptos site and explanatory demo | native capture or app backend |
+| `open-scribe-store` | bounded preparation | session intent, journal, SQLite, media authorization/receipt | buffers, capture, UI state |
+| other native Rust crates | placeholders | later ML and memory | Apple UI or permission UX |
+| `open-scribe-uniffi` | coarse boundary | fixtures, preparation, media-open receipts | state authority or hot-path data |
+| `web` | M0 foundation | stateless Leptos SSR | capture, app backend, database, deployment authority |
 | `docs/legal` | present drafts | single legal-text source for future app/site consumers | duplicated edited copies |
 
 ## Intended critical flows
@@ -33,14 +34,14 @@ A native Apple-Silicon macOS application will use SwiftUI and narrow Apple-frame
 4. Only then may UI report Recording.
 5. Media remains recoverable independently of transcript or ML.
 
-This flow is unimplemented and unproven.
+Durable preparation and the create-new CAF handshake are tested. No captured sample enters the file, and step 4 remains impossible.
 
 ### Derived meeting memory
 
 1. Evidence events enter Rust through bounded typed interfaces.
 2. A provider may propose a structured delta but cannot write storage.
 3. Rust validates status, scope, provenance, and evidence references.
-4. Accepted interpretation remains distinct from evidence and supports adjudication.
+4. Interpretation stays distinct from evidence and supports adjudication.
 
 This flow is unimplemented and unproven.
 
@@ -49,7 +50,9 @@ This flow is unimplemented and unproven.
 | Concern | Canonical owner | Derived consumers |
 |---|---|---|
 | Founding product/architecture | `docs/product/FOUNDING_PRD.md` | north star, anchors, architecture, ADRs |
-| Session/evidence schema | future versioned Rust schema | SQLite, Swift views, exports, web demo fixtures |
+| Session fixture schema | `open-scribe-types` + ADR 0004 | domain snapshots, UniFFI, Swift fixture views |
+| Prepared session schema | `open-scribe-store` schema v2 + ADR 0006 | SQLite projection, journal, recovery classification |
+| Evidence/export schema | future versioned Rust schema | exports and runtime views |
 | Legal text | `docs/legal/*` | app and website rendering |
 | Capability claims | future checked manifest | UI, website copy, release notes |
 | Model metadata/licenses | future `docs/models` manifest | model manager, notices, website |
@@ -57,15 +60,15 @@ This flow is unimplemented and unproven.
 ## Boundaries
 
 - Media/frame hot paths stay outside ordinary UniFFI callbacks.
-- Shared crates cannot depend on native crates, filesystem, SQLite, Apple frameworks, network clients, or model runtimes.
+- Shared crates cannot depend on native crates, I/O, SQLite, Apple APIs, network clients, or model runtimes.
 - SQLite/filesystem state is local authority; UI caches and summaries are derived.
 - Remote providers receive only per-category authorization and never execute tools.
 - Website and Cloudflare state prove nothing about native app behavior.
 
 ## Open architecture decisions
 
-ADR 0001 settles the M0 development topology and binding proof only. Exact Rust toolchain pin, template import revision, distribution packaging and bundle identity, sandbox/entitlement strategy, minimum-macOS fallback policy beyond the M0 floor, SQLite/event schema, capture containers/segmentation, ASR and diarization engines, Sparkle integration, and signing identity remain unresolved. Required ADRs are tracked in `docs/architecture/README.md`.
+ADRs 0001–0004 settle M0. ADRs 0005–0007 admit M1; only preparation/media-open prerequisites exist. ADRs 0008–0010 cover M2, 0011–0012 M3, 0013–0014 M4, and 0015–0017 M5. Capture and later proof remain open; Cloudflare deployment is unauthorized. See `docs/architecture/README.md`.
 
 ## Current validation
 
-`./script/check.sh --scaffold` validates founding structure only. `./script/check.sh --m0-native` validates the focused Rust record, generated UniFFI consistency, Swift binding call, development app assembly, exact process launch, and primary/menu-bar/Settings scene logs. Neither proves capture, persistence, recovery, signing, distribution, or release.
+`--scaffold` checks structure/WASM; `--m0-native` checks the app plane; `build_web.sh` checks SSR/Worker artifacts and content hashes. `--state-fixtures` checks transitions, UniFFI, Swift surfaces, accessibility truth, and launch. `--m1-storage` adds durable preparation/recovery classification; `--m1-media-open` adds a create-new CAF and validated receipt. None proves capture, `Recording`, forced-process/playable recovery, deployment, signing, distribution, or release.

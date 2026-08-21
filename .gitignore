@@ -9,6 +9,7 @@ xcuserdata/
 
 # Leptos / web
 /web/target/
+/web/build/
 /web/dist/
 /web/pkg/
 /web/node_modules/
@@ -30,3 +31,4 @@ xcuserdata/
 /artifacts/
 /diagnostics/
 /var/
+/.agent/

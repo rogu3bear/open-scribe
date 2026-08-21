@@ -1,8 +1,12 @@
 # Model Authority
 
-No model runtime or model weight is selected, downloaded, bundled, or approved.
+No model runtime or model weight is implemented, downloaded, bundled, or
+approved. ADRs 0008 and 0014 select intended engines and accepted artifact
+formats; exact weights remain unavailable until their supply-chain and runtime
+proof passes.
 
-A future machine-readable manifest must record for every model:
+ADR 0017 assigns the future machine-readable authority to
+`docs/models/manifest.v1.json`. It must record for every model:
 
 - stable identifier and purpose;
 - upstream source, revision, file hashes, and size;

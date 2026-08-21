@@ -4,9 +4,9 @@ This file routes work to repository truth. `CLAUDE.md` is its byte-identical mir
 
 ## Current stage
 
-The repository contains founding doctrine, a non-functional product scaffold, and a **functional Milestone 0 native development proof**. The proof is limited to a SwiftUI shell rendering coarse non-media Rust state through UniFFI. No capture, persistence, transcription, diarization, OCR, context observation, provider, deployment, signing, or release capability exists. Structure checks prove structure only; `./script/check.sh --m0-native` proves only the bounded development shell named by its receipt.
+The repository contains founding doctrine, a **functional Milestone 0 native and website development proof**, and bounded early-M1 preparation work. The native shell renders coarse Rust state through UniFFI; Rust can durably prepare a session journal and SQLite projection, authorize one managed CAF path, and validate Swift's create-new media-open receipt. No microphone or system-audio capture, `Recording` assertion, playable recovery, transcription, diarization, OCR, context observation, provider, deployment, signing, or release capability exists. Each check proves only the scope and exclusions named by its receipt.
 
-The active boundary ends at the M0 native proof. Do not begin another product, website, distribution, or release lane unless the operator explicitly authorizes it.
+The active boundary ends at the bounded `M1_MEDIA_OPEN_GREEN` preparation proof. Do not infer reliable recording from an opened test media file, and do not begin later M1 capture, another product, distribution, or release lane until this candidate is merged and the operator admits the next sequential work.
 
 ## Mandatory orientation
 

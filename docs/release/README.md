@@ -15,3 +15,8 @@ A source build is not a release receipt. Public-release status requires proof bo
 - public website claims matching demonstrated capability.
 
 `script/release.sh` and `script/verify_bundle.sh` intentionally fail until these lanes are implemented and authorized.
+
+ADRs 0015–0017 decide the future capability-true website, production bundle,
+Sparkle, notarization, and staged release authority. They admit implementation
+only after the preceding runtime gates and do not change the current no-release
+status. Cloudflare deployment remains separately authorization-gated.
