@@ -81,6 +81,31 @@ pub struct NativeMediaOpenEvidence {
     pub last_journal_sequence: u64,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct NativeFirstSampleReceipt {
+    pub session_id: String,
+    pub track_id: String,
+    pub segment_id: String,
+    pub open_token: String,
+    pub writer_generation: u64,
+    pub relative_path: String,
+    pub first_sample_host_time: u64,
+    pub first_sample_frame_count: u64,
+    pub observed_byte_length: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct NativeFirstSampleEvidence {
+    pub session_id: String,
+    pub segment_id: String,
+    pub first_sample_session_nanoseconds: i64,
+    pub journal_durable: bool,
+    pub media_files_open: bool,
+    pub first_sample_durable: bool,
+    pub recording_started: bool,
+    pub last_journal_sequence: u64,
+}
+
 #[derive(Debug, thiserror::Error, uniffi::Error)]
 pub enum NativeStorageError {
     #[error("The storage root is invalid.")]
@@ -178,6 +203,36 @@ impl NativeRecordingPreparation {
             segment_id: evidence.segment_id,
             journal_durable: evidence.journal_durable,
             media_files_open: evidence.media_files_open,
+            recording_started: evidence.recording_started,
+            last_journal_sequence: evidence.last_journal_sequence,
+        })
+    }
+
+    pub fn accept_first_sample(
+        &self,
+        receipt: NativeFirstSampleReceipt,
+    ) -> Result<NativeFirstSampleEvidence, NativeStorageError> {
+        let evidence = self
+            .controller()?
+            .accept_coarse_first_sample(open_scribe_core::CoarseFirstSampleReceipt {
+                session_id: open_scribe_types::SessionId(receipt.session_id),
+                track_id: receipt.track_id,
+                segment_id: receipt.segment_id,
+                open_token: receipt.open_token,
+                writer_generation: receipt.writer_generation,
+                relative_path: receipt.relative_path,
+                first_sample_host_time: receipt.first_sample_host_time,
+                first_sample_frame_count: receipt.first_sample_frame_count,
+                observed_byte_length: receipt.observed_byte_length,
+            })
+            .map_err(map_storage_error)?;
+        Ok(NativeFirstSampleEvidence {
+            session_id: evidence.session_id.0,
+            segment_id: evidence.segment_id,
+            first_sample_session_nanoseconds: evidence.first_sample_session_nanoseconds,
+            journal_durable: evidence.journal_durable,
+            media_files_open: evidence.media_files_open,
+            first_sample_durable: evidence.first_sample_durable,
             recording_started: evidence.recording_started,
             last_journal_sequence: evidence.last_journal_sequence,
         })
@@ -655,18 +710,37 @@ mod tests {
 
         let evidence = controller
             .accept_media_open(NativeMediaOpenReceipt {
-                session_id: authorization.session_id,
-                track_id: authorization.track_id,
-                segment_id: authorization.segment_id,
-                open_token: authorization.open_token,
+                session_id: authorization.session_id.clone(),
+                track_id: authorization.track_id.clone(),
+                segment_id: authorization.segment_id.clone(),
+                open_token: authorization.open_token.clone(),
                 writer_generation: authorization.writer_generation,
-                relative_path: authorization.relative_path,
+                relative_path: authorization.relative_path.clone(),
                 initial_byte_length: byte_length,
             })
             .unwrap();
         assert!(evidence.journal_durable);
         assert!(evidence.media_files_open);
         assert!(!evidence.recording_started);
+
+        file.write_all(b"first-sample").unwrap();
+        file.sync_all().unwrap();
+        let first_sample = controller
+            .accept_first_sample(NativeFirstSampleReceipt {
+                session_id: authorization.session_id,
+                track_id: authorization.track_id,
+                segment_id: authorization.segment_id,
+                open_token: authorization.open_token,
+                writer_generation: authorization.writer_generation,
+                relative_path: authorization.relative_path,
+                first_sample_host_time: 42_000,
+                first_sample_frame_count: 480,
+                observed_byte_length: file.metadata().unwrap().len(),
+            })
+            .unwrap();
+        assert!(first_sample.first_sample_durable);
+        assert_eq!(first_sample.first_sample_session_nanoseconds, 0);
+        assert!(!first_sample.recording_started);
         fs::remove_dir_all(root).unwrap();
     }
 }

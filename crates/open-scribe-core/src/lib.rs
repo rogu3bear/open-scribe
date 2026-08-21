@@ -10,8 +10,9 @@ pub use open_scribe_domain::{
     Command, Fixture, Presentation, SessionSnapshot, TimerBehavior, TransitionError, announcement,
 };
 pub use open_scribe_store::{
-    AuthorizeMediaOpenRequest, MediaOpenAuthorization, MediaOpenEvidence, MediaOpenReceipt,
-    MediaSourceKind, PrepareSessionRequest, PreparedSessionReceipt, SessionOrigin, StoreError,
+    AuthorizeMediaOpenRequest, FirstSampleEvidence, FirstSampleReceipt, MediaOpenAuthorization,
+    MediaOpenEvidence, MediaOpenReceipt, MediaSourceKind, PrepareSessionRequest,
+    PreparedSessionReceipt, SessionOrigin, StoreError,
 };
 
 pub struct CoarseMediaOpenReceipt {
@@ -22,6 +23,18 @@ pub struct CoarseMediaOpenReceipt {
     pub writer_generation: u64,
     pub relative_path: String,
     pub initial_byte_length: u64,
+}
+
+pub struct CoarseFirstSampleReceipt {
+    pub session_id: open_scribe_types::SessionId,
+    pub track_id: String,
+    pub segment_id: String,
+    pub open_token: String,
+    pub writer_generation: u64,
+    pub relative_path: String,
+    pub first_sample_host_time: u64,
+    pub first_sample_frame_count: u64,
+    pub observed_byte_length: u64,
 }
 
 /// Native Rust authority used by the coarse Swift preparation adapter.
@@ -65,6 +78,23 @@ impl RecordingPreparationController {
             sample_rate_hz: 48_000,
             channels: 1,
             initial_byte_length: receipt.initial_byte_length,
+        })
+    }
+
+    pub fn accept_coarse_first_sample(
+        &mut self,
+        receipt: CoarseFirstSampleReceipt,
+    ) -> Result<FirstSampleEvidence, StoreError> {
+        self.store.accept_first_sample(FirstSampleReceipt {
+            session_id: receipt.session_id,
+            track_id: receipt.track_id,
+            segment_id: receipt.segment_id,
+            open_token: receipt.open_token,
+            writer_generation: receipt.writer_generation,
+            relative_path: receipt.relative_path,
+            first_sample_host_time: receipt.first_sample_host_time,
+            first_sample_frame_count: receipt.first_sample_frame_count,
+            observed_byte_length: receipt.observed_byte_length,
         })
     }
 }

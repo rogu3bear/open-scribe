@@ -139,6 +139,35 @@ pub struct MediaOpenEvidence {
     pub last_journal_sequence: u64,
 }
 
+/// Coarse evidence that the Swift writer durably wrote its first valid capture buffer.
+/// Media samples and frame-rate telemetry remain Swift-owned.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FirstSampleReceipt {
+    pub session_id: SessionId,
+    pub track_id: String,
+    pub segment_id: String,
+    pub open_token: String,
+    pub writer_generation: u64,
+    pub relative_path: String,
+    pub first_sample_host_time: u64,
+    pub first_sample_frame_count: u64,
+    pub observed_byte_length: u64,
+}
+
+/// Rust-validated first-sample evidence. Active-session recovery is not yet
+/// implemented, so this evidence deliberately does not start Recording.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FirstSampleEvidence {
+    pub session_id: SessionId,
+    pub segment_id: String,
+    pub first_sample_session_nanoseconds: i64,
+    pub journal_durable: bool,
+    pub media_files_open: bool,
+    pub first_sample_durable: bool,
+    pub recording_started: bool,
+    pub last_journal_sequence: u64,
+}
+
 impl PreparedSessionReceipt {
     /// Preparation alone is deliberately insufficient to report Recording.
     #[must_use]
@@ -155,6 +184,8 @@ pub enum RecoveryDisposition {
     MediaOpenPrepared,
     MediaOpenProjectionRepaired,
     MediaOpenAwaitingReceipt,
+    FirstSamplePrepared,
+    FirstSampleProjectionRepaired,
     MissingMediaFile,
     InvalidMediaFile,
     MissingDirectory,
@@ -186,6 +217,8 @@ enum MediaFailurePoint {
     AuthorizationDatabaseProjection,
     ReceiptJournalSync,
     ReceiptDatabaseProjection,
+    FirstSampleJournalSync,
+    FirstSampleDatabaseProjection,
 }
 
 #[derive(Debug)]
@@ -348,6 +381,14 @@ impl SessionStore {
         receipt: MediaOpenReceipt,
     ) -> Result<MediaOpenEvidence, StoreError> {
         self.accept_media_open_inner(receipt, None)
+    }
+
+    /// Persists coarse first-sample evidence without entering Recording.
+    pub fn accept_first_sample(
+        &mut self,
+        receipt: FirstSampleReceipt,
+    ) -> Result<FirstSampleEvidence, StoreError> {
+        self.accept_first_sample_inner(receipt, None)
     }
 
     fn authorize_media_open_inner(
@@ -562,6 +603,130 @@ impl SessionStore {
         })
     }
 
+    fn accept_first_sample_inner(
+        &mut self,
+        receipt: FirstSampleReceipt,
+        failure: Option<MediaFailurePoint>,
+    ) -> Result<FirstSampleEvidence, StoreError> {
+        validate_first_sample_receipt_shape(&receipt)?;
+        let stored = self.media_authorization_row(&receipt.segment_id)?;
+        if stored.session_id != receipt.session_id.0
+            || stored.track_id != receipt.track_id
+            || stored.open_token != receipt.open_token
+            || stored.writer_generation != receipt.writer_generation
+            || stored.relative_path != receipt.relative_path
+        {
+            return Err(StoreError::IntegrityMismatch(
+                "first-sample receipt does not match Rust authorization",
+            ));
+        }
+        let accepted_byte_length = stored
+            .byte_length
+            .ok_or(StoreError::InvalidState("media-open evidence is missing"))?;
+        let expected_device = stored.file_device.ok_or(StoreError::IntegrityMismatch(
+            "accepted media device is missing",
+        ))?;
+        let expected_inode = stored.file_inode.ok_or(StoreError::IntegrityMismatch(
+            "accepted media inode is missing",
+        ))?;
+        if receipt.observed_byte_length <= accepted_byte_length {
+            return Err(StoreError::IntegrityMismatch(
+                "first-sample evidence did not grow the media file",
+            ));
+        }
+        let validated = self.validate_media_file(
+            &stored.session_id,
+            &stored.relative_path,
+            MediaLengthRequirement::AtLeast(receipt.observed_byte_length),
+        )?;
+        if validated.device != expected_device || validated.inode != expected_inode {
+            return Err(StoreError::IntegrityMismatch(
+                "accepted media file identity changed",
+            ));
+        }
+
+        if stored.lifecycle == "capturing" {
+            let payload: String = self.connection.query_row(
+                "SELECT payload_json FROM session_events
+                 WHERE session_id = ?1 AND event_kind = 'first_sample_captured'
+                 ORDER BY sequence DESC LIMIT 1",
+                [&stored.session_id],
+                |row| row.get(0),
+            )?;
+            let payload: Value = serde_json::from_str(&payload)?;
+            if payload_u64(&payload, "first_sample_host_time")? != receipt.first_sample_host_time
+                || payload_u64(&payload, "first_sample_frame_count")?
+                    != receipt.first_sample_frame_count
+                || payload_u64(&payload, "observed_byte_length")? != receipt.observed_byte_length
+            {
+                return Err(StoreError::IntegrityMismatch(
+                    "repeated first-sample receipt changed accepted evidence",
+                ));
+            }
+            return Ok(FirstSampleEvidence {
+                session_id: receipt.session_id,
+                segment_id: receipt.segment_id,
+                first_sample_session_nanoseconds: 0,
+                journal_durable: true,
+                media_files_open: true,
+                first_sample_durable: true,
+                recording_started: false,
+                last_journal_sequence: self.last_journal_sequence(&stored.session_id)?,
+            });
+        }
+        if stored.lifecycle != "open" {
+            return Err(StoreError::InvalidState(
+                "segment is not awaiting first-sample evidence",
+            ));
+        }
+        let (session_lifecycle, journal_durable, media_files_open): (String, bool, bool) =
+            self.connection.query_row(
+                "SELECT lifecycle, journal_durable, media_files_open
+                 FROM sessions WHERE id = ?1",
+                [&stored.session_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )?;
+        if session_lifecycle != "preparing" || !journal_durable || !media_files_open {
+            return Err(StoreError::InvalidState(
+                "session is not ready for first-sample evidence",
+            ));
+        }
+
+        let payload = json!({
+            "track_id": stored.track_id,
+            "segment_id": receipt.segment_id,
+            "open_token": stored.open_token,
+            "writer_generation": stored.writer_generation,
+            "relative_path": stored.relative_path,
+            "first_sample_host_time": receipt.first_sample_host_time,
+            "first_sample_frame_count": receipt.first_sample_frame_count,
+            "first_sample_session_nanoseconds": 0,
+            "observed_byte_length": receipt.observed_byte_length,
+            "file_device": expected_device,
+            "file_inode": expected_inode,
+        });
+        let journal_record = self.append_session_journal(
+            &receipt.session_id.0,
+            "first_sample_captured",
+            Some(&receipt.relative_path),
+            payload.clone(),
+        )?;
+        interrupt_media_if(failure, MediaFailurePoint::FirstSampleJournalSync)?;
+        self.project_first_sample(&receipt.session_id.0, &payload, &journal_record)?;
+        interrupt_media_if(failure, MediaFailurePoint::FirstSampleDatabaseProjection)?;
+
+        Ok(FirstSampleEvidence {
+            session_id: receipt.session_id,
+            segment_id: receipt.segment_id,
+            first_sample_session_nanoseconds: 0,
+            journal_durable: true,
+            media_files_open: true,
+            first_sample_durable: true,
+            recording_started: false,
+            last_journal_sequence: journal_record.body.sequence,
+        })
+    }
+
     fn session_directory(&self, session_id: &str) -> Result<PathBuf, StoreError> {
         let directory = self.sessions_root.join(session_id);
         require_real_directory(&directory)?;
@@ -744,6 +909,68 @@ impl SessionStore {
             session_id,
             event_sequence,
             "segment_opened",
+            journal_record.body.wall_time_milliseconds,
+            payload,
+            prior_digest.as_deref(),
+            &digest,
+        )?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    fn project_first_sample(
+        &mut self,
+        session_id: &str,
+        payload: &Value,
+        journal_record: &JournalRecord,
+    ) -> Result<(), StoreError> {
+        let segment_id = payload_string(payload, "segment_id")?;
+        let first_sample_host_time = payload_u64(payload, "first_sample_host_time")?;
+        let _first_sample_frame_count = payload_u64(payload, "first_sample_frame_count")?;
+        let (event_sequence, prior_digest) = next_database_event(&self.connection, session_id)?;
+        let digest = event_digest(
+            session_id,
+            event_sequence,
+            "first_sample_captured",
+            payload,
+            prior_digest.as_deref(),
+        )?;
+        let now = wall_time_milliseconds();
+        let transaction = self.connection.transaction()?;
+        let changed = transaction.execute(
+            "UPDATE segments
+             SET lifecycle = 'capturing', original_start = ?2,
+                 mapped_start_ns = 0, sample_count = NULL
+             WHERE id = ?1 AND session_id = ?3 AND lifecycle = 'open'",
+            params![segment_id, first_sample_host_time as i64, session_id],
+        )?;
+        if changed != 1 {
+            return Err(StoreError::InvalidState(
+                "segment projection is not awaiting first-sample evidence",
+            ));
+        }
+        transaction.execute(
+            "UPDATE sources SET lifecycle = 'capturing'
+             WHERE session_id = ?1 AND lifecycle = 'open'",
+            [session_id],
+        )?;
+        transaction.execute(
+            "UPDATE tracks SET lifecycle = 'capturing'
+             WHERE session_id = ?1 AND lifecycle = 'open'",
+            [session_id],
+        )?;
+        transaction.execute(
+            "UPDATE sessions SET updated_at_ms = ?2
+             WHERE id = ?1 AND lifecycle = 'preparing'
+               AND journal_durable = 1 AND media_files_open = 1",
+            params![session_id, now],
+        )?;
+        insert_event_with_id(
+            &transaction,
+            &journal_record.body.event_id,
+            session_id,
+            event_sequence,
+            "first_sample_captured",
             journal_record.body.wall_time_milliseconds,
             payload,
             prior_digest.as_deref(),
@@ -985,6 +1212,10 @@ impl SessionStore {
             .iter()
             .rev()
             .find(|record| record.body.event_kind == "segment_opened");
+        let first_sample_record = records
+            .iter()
+            .rev()
+            .find(|record| record.body.event_kind == "first_sample_captured");
 
         let Some(authorization_record) = authorization_record else {
             return Ok(if repaired_directory {
@@ -1032,11 +1263,51 @@ impl SessionStore {
                 [session_id],
                 |row| row.get(0),
             )?;
-            if media_open {
-                return Ok(RecoveryDisposition::MediaOpenPrepared);
+            if !media_open {
+                self.project_media_open(session_id, &opened_record.body.payload, opened_record)?;
             }
-            self.project_media_open(session_id, &opened_record.body.payload, opened_record)?;
-            return Ok(RecoveryDisposition::MediaOpenProjectionRepaired);
+
+            if let Some(first_sample_record) = first_sample_record {
+                let payload = &first_sample_record.body.payload;
+                if payload_string(payload, "segment_id")? != segment_id
+                    || payload_string(payload, "relative_path")? != relative_path
+                    || payload_u64(payload, "file_device")? != expected_device
+                    || payload_u64(payload, "file_inode")? != expected_inode
+                    || payload_i64(payload, "first_sample_session_nanoseconds")? != 0
+                {
+                    return Ok(RecoveryDisposition::IntegrityMismatch);
+                }
+                let observed_byte_length = payload_u64(payload, "observed_byte_length")?;
+                if self
+                    .validate_media_file(
+                        session_id,
+                        relative_path,
+                        MediaLengthRequirement::AtLeast(observed_byte_length),
+                    )
+                    .is_err()
+                {
+                    return Ok(RecoveryDisposition::InvalidMediaFile);
+                }
+                let segment_lifecycle: String = self.connection.query_row(
+                    "SELECT lifecycle FROM segments WHERE id = ?1 AND session_id = ?2",
+                    params![segment_id, session_id],
+                    |row| row.get(0),
+                )?;
+                if segment_lifecycle == "capturing" {
+                    return Ok(RecoveryDisposition::FirstSamplePrepared);
+                }
+                if segment_lifecycle != "open" {
+                    return Ok(RecoveryDisposition::IntegrityMismatch);
+                }
+                self.project_first_sample(session_id, payload, first_sample_record)?;
+                return Ok(RecoveryDisposition::FirstSampleProjectionRepaired);
+            }
+
+            return Ok(if media_open {
+                RecoveryDisposition::MediaOpenPrepared
+            } else {
+                RecoveryDisposition::MediaOpenProjectionRepaired
+            });
         }
 
         let relative_path = payload_string(&authorization_record.body.payload, "relative_path")?;
@@ -1643,6 +1914,34 @@ fn validate_media_receipt_shape(receipt: &MediaOpenReceipt) -> Result<(), StoreE
     Ok(())
 }
 
+fn validate_first_sample_receipt_shape(receipt: &FirstSampleReceipt) -> Result<(), StoreError> {
+    if Uuid::parse_str(&receipt.session_id.0).is_err()
+        || Uuid::parse_str(&receipt.track_id).is_err()
+        || Uuid::parse_str(&receipt.segment_id).is_err()
+        || Uuid::parse_str(&receipt.open_token).is_err()
+    {
+        return Err(StoreError::InvalidRequest(
+            "first-sample receipt identity is not a UUID",
+        ));
+    }
+    if receipt.writer_generation != 1 || !valid_media_relative_path(&receipt.relative_path) {
+        return Err(StoreError::InvalidRequest(
+            "first-sample receipt path or writer generation is unsupported",
+        ));
+    }
+    if receipt.first_sample_host_time == 0
+        || receipt.first_sample_host_time > i64::MAX as u64
+        || receipt.first_sample_frame_count == 0
+        || receipt.first_sample_frame_count > i64::MAX as u64
+        || receipt.observed_byte_length > i64::MAX as u64
+    {
+        return Err(StoreError::InvalidRequest(
+            "first-sample timing, frame count, or length is invalid",
+        ));
+    }
+    Ok(())
+}
+
 fn valid_relative_path(relative_path: &str) -> bool {
     let path = Path::new(relative_path);
     !path.is_absolute()
@@ -2067,6 +2366,166 @@ mod tests {
             sample_rate_hz: authorization.sample_rate_hz,
             channels: authorization.channels,
             initial_byte_length,
+        }
+    }
+
+    fn append_first_sample(authorization: &MediaOpenAuthorization) -> u64 {
+        let mut writer = OpenOptions::new()
+            .append(true)
+            .open(&authorization.absolute_path)
+            .unwrap();
+        writer.write_all(b"first-captured-sample").unwrap();
+        writer.sync_all().unwrap();
+        writer.metadata().unwrap().len()
+    }
+
+    fn first_sample_receipt(
+        authorization: &MediaOpenAuthorization,
+        observed_byte_length: u64,
+    ) -> FirstSampleReceipt {
+        FirstSampleReceipt {
+            session_id: authorization.session_id.clone(),
+            track_id: authorization.track_id.clone(),
+            segment_id: authorization.segment_id.clone(),
+            open_token: authorization.open_token.clone(),
+            writer_generation: authorization.writer_generation,
+            relative_path: authorization.relative_path.clone(),
+            first_sample_host_time: 42_000,
+            first_sample_frame_count: 480,
+            observed_byte_length,
+        }
+    }
+
+    #[test]
+    fn first_sample_is_durable_evidence_but_never_starts_recording() {
+        let temp = TempDir::new().unwrap();
+        let mut store = open_store(&temp);
+        let prepared = store.prepare_session(request()).unwrap();
+        let authorization = store
+            .authorize_media_open(media_request(prepared.session_id.clone()))
+            .unwrap();
+        let initial_byte_length = write_test_caf(&authorization);
+        store
+            .accept_media_open(media_receipt(&authorization, initial_byte_length))
+            .unwrap();
+
+        let observed_byte_length = append_first_sample(&authorization);
+
+        let evidence = store
+            .accept_first_sample(first_sample_receipt(&authorization, observed_byte_length))
+            .unwrap();
+
+        assert!(evidence.journal_durable);
+        assert!(evidence.media_files_open);
+        assert!(evidence.first_sample_durable);
+        assert!(!evidence.recording_started);
+        assert_eq!(evidence.first_sample_session_nanoseconds, 0);
+        assert_eq!(evidence.last_journal_sequence, 4);
+        assert_eq!(
+            store
+                .connection
+                .query_row(
+                    "SELECT sample_count FROM segments WHERE id = ?1",
+                    [&authorization.segment_id],
+                    |row| row.get::<_, Option<i64>>(0),
+                )
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            store
+                .connection
+                .query_row(
+                    "SELECT lifecycle FROM sessions WHERE id = ?1",
+                    [&prepared.session_id.0],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap(),
+            "preparing"
+        );
+    }
+
+    #[test]
+    fn first_sample_requires_open_media_and_rejects_changed_replay() {
+        let temp = TempDir::new().unwrap();
+        let mut store = open_store(&temp);
+        let prepared = store.prepare_session(request()).unwrap();
+        let authorization = store
+            .authorize_media_open(media_request(prepared.session_id))
+            .unwrap();
+        let initial_byte_length = write_test_caf(&authorization);
+        let premature = first_sample_receipt(&authorization, initial_byte_length + 1);
+
+        assert!(matches!(
+            store.accept_first_sample(premature),
+            Err(StoreError::InvalidState("media-open evidence is missing"))
+        ));
+        store
+            .accept_media_open(media_receipt(&authorization, initial_byte_length))
+            .unwrap();
+        let observed_byte_length = append_first_sample(&authorization);
+        let receipt = first_sample_receipt(&authorization, observed_byte_length);
+        let accepted = store.accept_first_sample(receipt.clone()).unwrap();
+        let repeated = store.accept_first_sample(receipt.clone()).unwrap();
+        assert_eq!(accepted, repeated);
+
+        let mut changed = receipt;
+        changed.first_sample_frame_count += 1;
+        assert!(matches!(
+            store.accept_first_sample(changed),
+            Err(StoreError::IntegrityMismatch(
+                "repeated first-sample receipt changed accepted evidence"
+            ))
+        ));
+    }
+
+    #[test]
+    fn first_sample_interruption_recovery_converges_without_recording() {
+        for (phase, expected_first) in [
+            (
+                MediaFailurePoint::FirstSampleJournalSync,
+                RecoveryDisposition::FirstSampleProjectionRepaired,
+            ),
+            (
+                MediaFailurePoint::FirstSampleDatabaseProjection,
+                RecoveryDisposition::FirstSamplePrepared,
+            ),
+        ] {
+            let temp = TempDir::new().unwrap();
+            let root = temp.path().join("Open Scribe");
+            {
+                let mut store = SessionStore::open(&root).unwrap();
+                let prepared = store.prepare_session(request()).unwrap();
+                let authorization = store
+                    .authorize_media_open(media_request(prepared.session_id))
+                    .unwrap();
+                let initial_byte_length = write_test_caf(&authorization);
+                store
+                    .accept_media_open(media_receipt(&authorization, initial_byte_length))
+                    .unwrap();
+                let observed_byte_length = append_first_sample(&authorization);
+                let error = store
+                    .accept_first_sample_inner(
+                        first_sample_receipt(&authorization, observed_byte_length),
+                        Some(phase),
+                    )
+                    .unwrap_err();
+                assert!(matches!(error, StoreError::InjectedInterruption));
+            }
+
+            let mut reopened = SessionStore::open(&root).unwrap();
+            let first = reopened.recover_preparations().unwrap().remove(0);
+            assert_eq!(first.disposition, expected_first);
+            let second = reopened.recover_preparations().unwrap().remove(0);
+            assert_eq!(second.disposition, RecoveryDisposition::FirstSamplePrepared);
+            assert_eq!(
+                reopened
+                    .connection
+                    .query_row("SELECT lifecycle FROM sessions", [], |row| row
+                        .get::<_, String>(0))
+                    .unwrap(),
+                "preparing"
+            );
         }
     }
 
