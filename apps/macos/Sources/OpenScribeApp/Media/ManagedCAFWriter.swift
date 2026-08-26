@@ -8,6 +8,7 @@ enum ManagedCAFWriterError: Error, Equatable {
   case bufferAllocationFailed
   case mediaAttributesUnavailable
   case conversionFailed
+  case alreadySealed
 }
 
 private final class SingleBufferConverterInput: @unchecked Sendable {
@@ -41,9 +42,12 @@ protocol CapturedAudioWriting: AnyObject, Sendable {
 final class ManagedCAFWriter: CapturedAudioWriting, @unchecked Sendable {
   let authorization: NativeMediaOpenAuthorization
 
-  private let file: AVAudioFile
+  private var file: AVAudioFile?
   private let fileURL: URL
   private var converters: [String: AVAudioConverter] = [:]
+  private var finalSampleCount: UInt64 = 0
+  private var sealedFinalSampleHostTime: UInt64?
+  private var sealedReceipt: NativeSealSegmentReceipt?
 
   init(authorization: NativeMediaOpenAuthorization) throws {
     guard authorization.writerGeneration == 1 else {
@@ -83,6 +87,7 @@ final class ManagedCAFWriter: CapturedAudioWriting, @unchecked Sendable {
   }
 
   func writeDeterministicFrames(_ frameCount: AVAudioFrameCount) throws {
+    guard let file else { throw ManagedCAFWriterError.alreadySealed }
     guard frameCount > 0,
       let buffer = AVAudioPCMBuffer(
         pcmFormat: file.processingFormat,
@@ -99,11 +104,13 @@ final class ManagedCAFWriter: CapturedAudioWriting, @unchecked Sendable {
       samples[index] = (phase - 128) * 128
     }
     try file.write(from: buffer)
+    finalSampleCount += UInt64(frameCount)
     try synchronize()
   }
 
   @discardableResult
   func writeCapturedBuffer(_ input: AVAudioPCMBuffer) throws -> AVAudioFrameCount {
+    guard let file else { throw ManagedCAFWriterError.alreadySealed }
     guard input.frameLength > 0 else { return 0 }
     let output: AVAudioPCMBuffer
     if input.format == file.processingFormat {
@@ -143,11 +150,13 @@ final class ManagedCAFWriter: CapturedAudioWriting, @unchecked Sendable {
       throw ManagedCAFWriterError.conversionFailed
     }
     try file.write(from: output)
+    finalSampleCount += UInt64(output.frameLength)
     try synchronize()
     return output.frameLength
   }
 
   func receipt() throws -> NativeMediaOpenReceipt {
+    guard file != nil else { throw ManagedCAFWriterError.alreadySealed }
     let attributes = try FileManager.default.attributesOfItem(atPath: fileURL.path)
     guard let byteLength = attributes[.size] as? NSNumber else {
       throw ManagedCAFWriterError.mediaAttributesUnavailable
@@ -166,6 +175,7 @@ final class ManagedCAFWriter: CapturedAudioWriting, @unchecked Sendable {
   func firstSampleReceipt(hostTime: UInt64, frameCount: UInt64) throws
     -> NativeFirstSampleReceipt
   {
+    guard file != nil else { throw ManagedCAFWriterError.alreadySealed }
     let attributes = try FileManager.default.attributesOfItem(atPath: fileURL.path)
     guard let byteLength = attributes[.size] as? NSNumber else {
       throw ManagedCAFWriterError.mediaAttributesUnavailable
@@ -181,6 +191,39 @@ final class ManagedCAFWriter: CapturedAudioWriting, @unchecked Sendable {
       firstSampleFrameCount: frameCount,
       observedByteLength: byteLength.uint64Value
     )
+  }
+
+  /// Closes the AVAudioFile before returning one coarse, immutable boundary
+  /// receipt. Rust independently reopens and digests the managed file.
+  func sealSegmentReceipt(finalSampleHostTime: UInt64) throws -> NativeSealSegmentReceipt {
+    if let sealedFinalSampleHostTime {
+      guard sealedFinalSampleHostTime == finalSampleHostTime else {
+        throw ManagedCAFWriterError.alreadySealed
+      }
+      if let sealedReceipt { return sealedReceipt }
+    } else {
+      guard file != nil else { throw ManagedCAFWriterError.alreadySealed }
+      sealedFinalSampleHostTime = finalSampleHostTime
+      file = nil
+    }
+    try synchronize()
+    let attributes = try FileManager.default.attributesOfItem(atPath: fileURL.path)
+    guard let byteLength = attributes[.size] as? NSNumber else {
+      throw ManagedCAFWriterError.mediaAttributesUnavailable
+    }
+    let receipt = NativeSealSegmentReceipt(
+      sessionId: authorization.sessionId,
+      trackId: authorization.trackId,
+      segmentId: authorization.segmentId,
+      openToken: authorization.openToken,
+      writerGeneration: authorization.writerGeneration,
+      relativePath: authorization.relativePath,
+      finalSampleHostTime: finalSampleHostTime,
+      finalSampleCount: finalSampleCount,
+      finalByteLength: byteLength.uint64Value
+    )
+    sealedReceipt = receipt
+    return receipt
   }
 
   private func synchronize() throws {

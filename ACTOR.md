@@ -2,74 +2,82 @@
 
 > **Budget:** 600 words. Record only commands successfully executed in this repository.
 
-Before mutation, inspect the checkout, dirty state, anchors, and rollback.
+Before mutation, inspect checkout identity, dirt, anchors, and rollback.
 
 ## Inspect repository identity
 
-- Use when: beginning or resuming work.
+- Use when: starting/resuming.
 - Command: `git status --short --branch` and `git worktree list --porcelain`.
-- Expected: exact branch, worktree, and dirty paths.
+- Expected: exact branch, worktree, dirt.
 - Stop if: the checkout, owner, or dirty state conflicts with the assigned lane.
 
 ## Inspect workspace packages
 
-- Use when: changing Rust crate membership or dependencies.
+- Use when: changing Rust membership/dependencies.
 - Command: `cargo metadata --locked --no-deps --format-version 1`.
-- Expected: every intended crate appears once in this repository.
+- Expected: each intended crate appears once here.
 - Stop if: a shared crate gains a native dependency or metadata resolves outside this root.
 
 ## Validate the founding scaffold
 
-- Use when: changing doctrine, manifests, placeholder crates, scripts, or scaffold layout.
+- Use when: changing doctrine, manifests, placeholders, scripts, or scaffold.
 - Command: `./script/check.sh --scaffold`.
 - Expected: exit 0 with `SCAFFOLD_GREEN`.
-- Stop if: the default product check is bypassed, a missing runtime is represented as implemented, or the command reports a boundary violation.
+- Stop if: runtime is overstated or a boundary fails.
 
 ## Inspect final local changes
 
-- Use when: preparing a handoff.
+- Use when: preparing handoff.
 - Command: `git diff --check`, `git diff --stat`, and `git status --short --branch`.
-- Expected: no whitespace error and a bounded path list.
+- Expected: clean whitespace and bounded paths.
 - Stop if: unexpected files, another writer's changes, or generated artifacts appear.
 
 ## Validate the Milestone 0 native proof
 
-- Use when: changing the SwiftUI shell, UniFFI boundary, generated bindings, or native build path.
+- Use when: changing SwiftUI, UniFFI, bindings, or native build.
 - Command: `./script/check.sh --m0-native`.
 - Expected: `M0_NATIVE_GREEN`, then `M0_NATIVE_CHECK_GREEN`.
-- Proof: scaffold, Rust boundary, generated bindings, Swift binding, development app assembly, staged process identity, and scene logs.
-- Stop if: generated bindings drift, Swift bypasses Rust state, a protected capability appears, or the receipt is represented as signing/release proof.
+- Proof: scaffold, Rust/Swift boundary, bindings, app assembly, process identity, scene logs.
+- Stop if: bindings drift, Swift bypasses Rust truth, protected capability appears, or signing/release is claimed.
 
 ## Close Milestone 0
 
 - Use when: admitting work beyond M0.
 - Command: `./script/check.sh --m0`.
-- Expected: `M0_COMPLETE_GREEN` on the exact checkout.
-- Stop if: any component fails or the receipt is represented as deployment, capture, distribution, release, or Milestone 1 authority.
+- Expected: `M0_COMPLETE_GREEN`.
+- Stop if: any component fails or a higher proof is claimed.
 
 ## Validate deterministic state fixtures
 
-- Use when: changing session records/transitions, coarse UniFFI commands/snapshots, or fixture-driven native surfaces.
+- Use when: changing session semantics, coarse UniFFI, or fixture surfaces.
 - Command: `./script/check.sh --state-fixtures`.
-- Expected: `STATE_FIXTURES_GREEN` on this checkout.
+- Expected: `STATE_FIXTURES_GREEN`.
 - Proof: Rust/UniFFI guards, WASM checks, fresh bindings, Swift state/accessibility tests, unsigned-app launch, and diff hygiene.
-- Stop if: hot-path values cross UniFFI, Starting becomes durable, Recording lacks journal/media-open evidence, menu and window diverge, or fixture proof is claimed as capture/I/O.
+- Stop if: hot-path values cross UniFFI, Starting becomes durable, recording truth diverges, or fixtures are claimed as I/O.
 
 ## Validate durable preparation and media-open
 
-- Use when: changing the native store, journal, recovery projection, coarse media protocol, or Swift writer harness.
+- Use when: changing store/journal recovery, coarse media, or Swift writer.
 - Commands: `./script/check.sh --m1-storage` for Rust preparation; `./script/check.sh --m1-media-open` for Swift/Rust media-open integration.
 - Expected: the command's named green receipt.
-- Proof: WAL/full-sync schema, chained journal, interruption/tamper checks, create-new CAF, fresh bindings, Xcode tests, and M0 regressions.
-- Stop if: preparation enters Recording, invalid evidence is repaired, media buffers cross UniFFI, or either receipt is claimed as capture or process-termination proof.
+- Proof: durable schema/journal, interruption/tamper checks, create-new CAF, fresh bindings, Xcode/M0.
+- Stop if: preparation becomes Recording, invalid evidence is repaired, buffers cross UniFFI, or higher proof is claimed.
 
 ## Validate the microphone foundation
 
-- Use when: changing first-sample evidence, the managed CAF writer, microphone adapter, permission mapping, or app security settings.
+- Use when: changing first sample, CAF writer, microphone adapter, permissions, or security settings.
 - Command: `./script/check.sh --m1-microphone-foundation`.
-- Expected: `M1_MICROPHONE_FOUNDATION_GREEN` on this checkout.
-- Proof: earlier gates; durable one-shot first-sample recovery; bounded Swift buffer path; synthetic conversion; coarse bindings; permission, entitlement, and unsigned build metadata; focused tests; diff hygiene.
-- Stop if: a buffer or frame-rate stream crosses UniFFI, first-sample evidence asserts Recording, the adapter blocks its callback, or the receipt is claimed as live-device, signed-runtime, recovery, or release proof.
+- Expected: `M1_MICROPHONE_FOUNDATION_GREEN`.
+- Proof: earlier gates, durable first sample, bounded Swift buffers, synthetic conversion, coarse bindings, permissions/entitlements, unsigned build, focused tests.
+- Stop if: hot media crosses UniFFI, first sample asserts Recording, callbacks block, or higher proof is claimed.
+
+## Validate bounded segment sealing
+
+- Use when: changing CAF close/seal, final receipts, digests, projection, or seal recovery.
+- Command: `./script/check.sh --m1-segment-sealing`.
+- Expected: `M1_SEGMENT_SEALING_GREEN`.
+- Proof: earlier gates; close-before-receipt; Rust identity/length/header/SHA-256; journal-first, segment-local projection; interruption convergence.
+- Stop if: post-seal writes occur, unrelated state closes, writer counters are overstated, Recording is asserted, or a higher plane is claimed.
 
 ## Admission rule
 
