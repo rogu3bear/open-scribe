@@ -106,6 +106,31 @@ pub struct NativeFirstSampleEvidence {
     pub last_journal_sequence: u64,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct NativeSealSegmentReceipt {
+    pub session_id: String,
+    pub track_id: String,
+    pub segment_id: String,
+    pub open_token: String,
+    pub writer_generation: u64,
+    pub relative_path: String,
+    pub final_sample_host_time: u64,
+    pub final_sample_count: u64,
+    pub final_byte_length: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct NativeSealedSegmentEvidence {
+    pub session_id: String,
+    pub segment_id: String,
+    pub final_sample_count: u64,
+    pub final_byte_length: u64,
+    pub digest_sha256: String,
+    pub segment_sealed: bool,
+    pub recording_started: bool,
+    pub last_journal_sequence: u64,
+}
+
 #[derive(Debug, thiserror::Error, uniffi::Error)]
 pub enum NativeStorageError {
     #[error("The storage root is invalid.")]
@@ -233,6 +258,36 @@ impl NativeRecordingPreparation {
             journal_durable: evidence.journal_durable,
             media_files_open: evidence.media_files_open,
             first_sample_durable: evidence.first_sample_durable,
+            recording_started: evidence.recording_started,
+            last_journal_sequence: evidence.last_journal_sequence,
+        })
+    }
+
+    pub fn seal_segment(
+        &self,
+        receipt: NativeSealSegmentReceipt,
+    ) -> Result<NativeSealedSegmentEvidence, NativeStorageError> {
+        let evidence = self
+            .controller()?
+            .seal_coarse_segment(open_scribe_core::CoarseSealSegmentReceipt {
+                session_id: open_scribe_types::SessionId(receipt.session_id),
+                track_id: receipt.track_id,
+                segment_id: receipt.segment_id,
+                open_token: receipt.open_token,
+                writer_generation: receipt.writer_generation,
+                relative_path: receipt.relative_path,
+                final_sample_host_time: receipt.final_sample_host_time,
+                final_sample_count: receipt.final_sample_count,
+                final_byte_length: receipt.final_byte_length,
+            })
+            .map_err(map_storage_error)?;
+        Ok(NativeSealedSegmentEvidence {
+            session_id: evidence.session_id.0,
+            segment_id: evidence.segment_id,
+            final_sample_count: evidence.sample_count,
+            final_byte_length: evidence.final_byte_length,
+            digest_sha256: evidence.digest_sha256,
+            segment_sealed: evidence.segment_sealed,
             recording_started: evidence.recording_started,
             last_journal_sequence: evidence.last_journal_sequence,
         })

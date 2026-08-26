@@ -12,7 +12,7 @@ pub use open_scribe_domain::{
 pub use open_scribe_store::{
     AuthorizeMediaOpenRequest, FirstSampleEvidence, FirstSampleReceipt, MediaOpenAuthorization,
     MediaOpenEvidence, MediaOpenReceipt, MediaSourceKind, PrepareSessionRequest,
-    PreparedSessionReceipt, SessionOrigin, StoreError,
+    PreparedSessionReceipt, SealSegmentReceipt, SealedSegmentEvidence, SessionOrigin, StoreError,
 };
 
 pub struct CoarseMediaOpenReceipt {
@@ -35,6 +35,18 @@ pub struct CoarseFirstSampleReceipt {
     pub first_sample_host_time: u64,
     pub first_sample_frame_count: u64,
     pub observed_byte_length: u64,
+}
+
+pub struct CoarseSealSegmentReceipt {
+    pub session_id: open_scribe_types::SessionId,
+    pub track_id: String,
+    pub segment_id: String,
+    pub open_token: String,
+    pub writer_generation: u64,
+    pub relative_path: String,
+    pub final_sample_host_time: u64,
+    pub final_sample_count: u64,
+    pub final_byte_length: u64,
 }
 
 /// Native Rust authority used by the coarse Swift preparation adapter.
@@ -95,6 +107,23 @@ impl RecordingPreparationController {
             first_sample_host_time: receipt.first_sample_host_time,
             first_sample_frame_count: receipt.first_sample_frame_count,
             observed_byte_length: receipt.observed_byte_length,
+        })
+    }
+
+    pub fn seal_coarse_segment(
+        &mut self,
+        receipt: CoarseSealSegmentReceipt,
+    ) -> Result<SealedSegmentEvidence, StoreError> {
+        self.store.seal_segment(SealSegmentReceipt {
+            session_id: receipt.session_id,
+            track_id: receipt.track_id,
+            segment_id: receipt.segment_id,
+            open_token: receipt.open_token,
+            writer_generation: receipt.writer_generation,
+            relative_path: receipt.relative_path,
+            final_sample_host_time: receipt.final_sample_host_time,
+            sample_count: receipt.final_sample_count,
+            final_byte_length: receipt.final_byte_length,
         })
     }
 }

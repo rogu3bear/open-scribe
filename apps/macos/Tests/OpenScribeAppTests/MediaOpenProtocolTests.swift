@@ -37,13 +37,32 @@ final class MediaOpenProtocolTests: XCTestCase {
     XCTAssertEqual(evidence.lastJournalSequence, 3)
 
     try writer.writeDeterministicFrames(480)
+    let firstSampleReceipt = try writer.firstSampleReceipt(hostTime: 42_000, frameCount: 480)
     let firstSample = try controller.acceptFirstSample(
-      receipt: writer.firstSampleReceipt(hostTime: 42_000, frameCount: 480)
+      receipt: firstSampleReceipt
     )
     XCTAssertTrue(firstSample.firstSampleDurable)
     XCTAssertEqual(firstSample.firstSampleSessionNanoseconds, 0)
     XCTAssertFalse(firstSample.recordingStarted)
     XCTAssertEqual(firstSample.lastJournalSequence, 4)
+
+    let sealReceipt = try writer.sealSegmentReceipt(finalSampleHostTime: 52_000)
+    let sealed = try controller.sealSegment(receipt: sealReceipt)
+    XCTAssertTrue(sealed.segmentSealed)
+    XCTAssertFalse(sealed.recordingStarted)
+    XCTAssertEqual(sealed.finalSampleCount, 5_280)
+    XCTAssertEqual(sealed.finalByteLength, firstSampleReceipt.observedByteLength)
+    XCTAssertEqual(sealed.digestSha256.count, 64)
+    XCTAssertEqual(sealed.lastJournalSequence, 5)
+    let replayedReceipt = try writer.sealSegmentReceipt(finalSampleHostTime: 52_000)
+    XCTAssertEqual(replayedReceipt.finalByteLength, sealReceipt.finalByteLength)
+    XCTAssertEqual(try controller.sealSegment(receipt: replayedReceipt), sealed)
+    XCTAssertThrowsError(try writer.sealSegmentReceipt(finalSampleHostTime: 52_001)) { error in
+      XCTAssertEqual(error as? ManagedCAFWriterError, .alreadySealed)
+    }
+    XCTAssertThrowsError(try writer.writeDeterministicFrames(1)) { error in
+      XCTAssertEqual(error as? ManagedCAFWriterError, .alreadySealed)
+    }
 
     let media = try AVAudioFile(
       forReading: URL(fileURLWithPath: authorization.absolutePath)
@@ -62,6 +81,7 @@ final class MediaOpenProtocolTests: XCTestCase {
     )
     XCTAssertTrue(journal.contains("segment_open_intent"))
     XCTAssertTrue(journal.contains("segment_opened"))
+    XCTAssertTrue(journal.contains("segment_sealed"))
     XCTAssertFalse(journal.contains("Deterministic media-open proof"))
   }
 

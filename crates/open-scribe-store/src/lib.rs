@@ -10,7 +10,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsStr;
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Seek, Write};
 use std::os::fd::{AsFd, OwnedFd};
 use std::path::{Component, Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -168,6 +168,33 @@ pub struct FirstSampleEvidence {
     pub last_journal_sequence: u64,
 }
 
+/// Coarse evidence produced only after Swift has stopped writing and closed the
+/// segment. Rust independently validates the final file and calculates its digest.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SealSegmentReceipt {
+    pub session_id: SessionId,
+    pub track_id: String,
+    pub segment_id: String,
+    pub open_token: String,
+    pub writer_generation: u64,
+    pub relative_path: String,
+    pub final_sample_host_time: u64,
+    pub sample_count: u64,
+    pub final_byte_length: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SealedSegmentEvidence {
+    pub session_id: SessionId,
+    pub segment_id: String,
+    pub sample_count: u64,
+    pub final_byte_length: u64,
+    pub digest_sha256: String,
+    pub segment_sealed: bool,
+    pub recording_started: bool,
+    pub last_journal_sequence: u64,
+}
+
 impl PreparedSessionReceipt {
     /// Preparation alone is deliberately insufficient to report Recording.
     #[must_use]
@@ -186,6 +213,8 @@ pub enum RecoveryDisposition {
     MediaOpenAwaitingReceipt,
     FirstSamplePrepared,
     FirstSampleProjectionRepaired,
+    SegmentSealedPrepared,
+    SegmentSealProjectionRepaired,
     MissingMediaFile,
     InvalidMediaFile,
     MissingDirectory,
@@ -219,6 +248,8 @@ enum MediaFailurePoint {
     ReceiptDatabaseProjection,
     FirstSampleJournalSync,
     FirstSampleDatabaseProjection,
+    SegmentSealJournalSync,
+    SegmentSealDatabaseProjection,
 }
 
 #[derive(Debug)]
@@ -301,6 +332,7 @@ enum JournalValidation {
 
 struct StoredMediaAuthorization {
     session_id: String,
+    source_id: String,
     track_id: String,
     relative_path: String,
     media_format: String,
@@ -316,6 +348,7 @@ struct ValidatedMediaFile {
     byte_length: u64,
     device: u64,
     inode: u64,
+    digest_sha256: Option<String>,
 }
 
 #[derive(Clone, Copy)]
@@ -389,6 +422,15 @@ impl SessionStore {
         receipt: FirstSampleReceipt,
     ) -> Result<FirstSampleEvidence, StoreError> {
         self.accept_first_sample_inner(receipt, None)
+    }
+
+    /// Accepts a closed, synchronized segment, independently digests the file,
+    /// and binds the writer-reported final counters to that immutable evidence.
+    pub fn seal_segment(
+        &mut self,
+        receipt: SealSegmentReceipt,
+    ) -> Result<SealedSegmentEvidence, StoreError> {
+        self.seal_segment_inner(receipt, None)
     }
 
     fn authorize_media_open_inner(
@@ -538,6 +580,7 @@ impl SessionStore {
                     &stored.session_id,
                     &stored.relative_path,
                     MediaLengthRequirement::AtLeast(expected_byte_length),
+                    false,
                 )
                 .map_err(|error| match error {
                     StoreError::Io(io_error) if io_error.kind() == std::io::ErrorKind::NotFound => {
@@ -569,6 +612,7 @@ impl SessionStore {
             &stored.session_id,
             &stored.relative_path,
             MediaLengthRequirement::Exact(receipt.initial_byte_length),
+            false,
         )?;
         let payload = json!({
             "track_id": stored.track_id,
@@ -638,6 +682,7 @@ impl SessionStore {
             &stored.session_id,
             &stored.relative_path,
             MediaLengthRequirement::AtLeast(receipt.observed_byte_length),
+            false,
         )?;
         if validated.device != expected_device || validated.inode != expected_inode {
             return Err(StoreError::IntegrityMismatch(
@@ -722,6 +767,143 @@ impl SessionStore {
             journal_durable: true,
             media_files_open: true,
             first_sample_durable: true,
+            recording_started: false,
+            last_journal_sequence: journal_record.body.sequence,
+        })
+    }
+
+    fn seal_segment_inner(
+        &mut self,
+        receipt: SealSegmentReceipt,
+        failure: Option<MediaFailurePoint>,
+    ) -> Result<SealedSegmentEvidence, StoreError> {
+        validate_seal_receipt_shape(&receipt)?;
+        let stored = self.media_authorization_row(&receipt.segment_id)?;
+        if stored.session_id != receipt.session_id.0
+            || stored.track_id != receipt.track_id
+            || stored.open_token != receipt.open_token
+            || stored.writer_generation != receipt.writer_generation
+            || stored.relative_path != receipt.relative_path
+        {
+            return Err(StoreError::IntegrityMismatch(
+                "segment-seal receipt does not match Rust authorization",
+            ));
+        }
+        let expected_device = stored
+            .file_device
+            .ok_or(StoreError::InvalidState("media-open evidence is missing"))?;
+        let expected_inode = stored
+            .file_inode
+            .ok_or(StoreError::InvalidState("media-open evidence is missing"))?;
+        let first_payload: String = self
+            .connection
+            .query_row(
+                "SELECT payload_json FROM session_events
+             WHERE session_id = ?1 AND event_kind = 'first_sample_captured'
+             ORDER BY sequence DESC LIMIT 1",
+                [&stored.session_id],
+                |row| row.get(0),
+            )
+            .map_err(|error| match error {
+                rusqlite::Error::QueryReturnedNoRows => {
+                    StoreError::InvalidState("first-sample evidence is missing")
+                }
+                other => StoreError::Sqlite(other),
+            })?;
+        let first_payload: Value = serde_json::from_str(&first_payload)?;
+        if payload_string(&first_payload, "segment_id")? != receipt.segment_id
+            || payload_string(&first_payload, "track_id")? != receipt.track_id
+            || receipt.final_sample_host_time
+                < payload_u64(&first_payload, "first_sample_host_time")?
+            || receipt.sample_count < payload_u64(&first_payload, "first_sample_frame_count")?
+        {
+            return Err(StoreError::IntegrityMismatch(
+                "segment-seal timing or sample total precedes the first sample",
+            ));
+        }
+        let validated = self.validate_media_file(
+            &stored.session_id,
+            &stored.relative_path,
+            MediaLengthRequirement::Exact(receipt.final_byte_length),
+            true,
+        )?;
+        if validated.device != expected_device || validated.inode != expected_inode {
+            return Err(StoreError::IntegrityMismatch(
+                "accepted media file identity changed",
+            ));
+        }
+        let digest = validated
+            .digest_sha256
+            .ok_or(StoreError::IntegrityMismatch(
+                "sealed media digest is missing",
+            ))?;
+
+        if stored.lifecycle == "sealed" {
+            let payload: String = self.connection.query_row(
+                "SELECT payload_json FROM session_events
+                 WHERE session_id = ?1 AND event_kind = 'segment_sealed'
+                 ORDER BY sequence DESC LIMIT 1",
+                [&stored.session_id],
+                |row| row.get(0),
+            )?;
+            let payload: Value = serde_json::from_str(&payload)?;
+            if payload_u64(&payload, "final_sample_host_time")? != receipt.final_sample_host_time
+                || payload_u64(&payload, "sample_count")? != receipt.sample_count
+                || payload_u64(&payload, "final_byte_length")? != receipt.final_byte_length
+                || payload_string(&payload, "digest_sha256")? != digest
+            {
+                return Err(StoreError::IntegrityMismatch(
+                    "repeated segment-seal receipt changed accepted evidence",
+                ));
+            }
+            return Ok(SealedSegmentEvidence {
+                session_id: receipt.session_id,
+                segment_id: receipt.segment_id,
+                sample_count: receipt.sample_count,
+                final_byte_length: receipt.final_byte_length,
+                digest_sha256: digest,
+                segment_sealed: true,
+                recording_started: false,
+                last_journal_sequence: self.last_journal_sequence(&stored.session_id)?,
+            });
+        }
+        if stored.lifecycle != "capturing" {
+            return Err(StoreError::InvalidState(
+                "segment is not awaiting seal evidence",
+            ));
+        }
+
+        let payload = json!({
+            "source_id": stored.source_id,
+            "track_id": stored.track_id,
+            "segment_id": receipt.segment_id,
+            "open_token": stored.open_token,
+            "writer_generation": stored.writer_generation,
+            "relative_path": stored.relative_path,
+            "final_sample_host_time": receipt.final_sample_host_time,
+            "sample_count": receipt.sample_count,
+            "final_byte_length": receipt.final_byte_length,
+            "digest_sha256": digest,
+            "file_device": expected_device,
+            "file_inode": expected_inode,
+        });
+        let journal_record = self.append_session_journal(
+            &receipt.session_id.0,
+            "segment_sealed",
+            Some(&receipt.relative_path),
+            payload.clone(),
+        )?;
+        interrupt_media_if(failure, MediaFailurePoint::SegmentSealJournalSync)?;
+        self.project_segment_seal(&receipt.session_id.0, &payload, &journal_record)?;
+        interrupt_media_if(failure, MediaFailurePoint::SegmentSealDatabaseProjection)?;
+
+        Ok(SealedSegmentEvidence {
+            session_id: receipt.session_id,
+            segment_id: receipt.segment_id,
+            sample_count: receipt.sample_count,
+            final_byte_length: receipt.final_byte_length,
+            digest_sha256: payload_string(&payload, "digest_sha256")?.to_owned(),
+            segment_sealed: true,
             recording_started: false,
             last_journal_sequence: journal_record.body.sequence,
         })
@@ -980,28 +1162,113 @@ impl SessionStore {
         Ok(())
     }
 
+    fn project_segment_seal(
+        &mut self,
+        session_id: &str,
+        payload: &Value,
+        journal_record: &JournalRecord,
+    ) -> Result<(), StoreError> {
+        let segment_id = payload_string(payload, "segment_id")?;
+        let source_id = payload_string(payload, "source_id")?;
+        let track_id = payload_string(payload, "track_id")?;
+        let sample_count = payload_u64(payload, "sample_count")?;
+        let final_byte_length = payload_u64(payload, "final_byte_length")?;
+        let digest = payload_string(payload, "digest_sha256")?;
+        let (event_sequence, prior_digest) = next_database_event(&self.connection, session_id)?;
+        let event_hash = event_digest(
+            session_id,
+            event_sequence,
+            "segment_sealed",
+            payload,
+            prior_digest.as_deref(),
+        )?;
+        let now = wall_time_milliseconds();
+        let transaction = self.connection.transaction()?;
+        let changed = transaction.execute(
+            "UPDATE segments
+             SET lifecycle = 'sealed', sample_count = ?2, byte_length = ?3,
+                 digest = ?4, seal_state = 'sealed'
+             WHERE id = ?1 AND session_id = ?5 AND lifecycle = 'capturing'",
+            params![
+                segment_id,
+                sample_count as i64,
+                final_byte_length as i64,
+                digest,
+                session_id,
+            ],
+        )?;
+        if changed != 1 {
+            return Err(StoreError::InvalidState(
+                "segment projection is not awaiting seal evidence",
+            ));
+        }
+        let source_changed = transaction.execute(
+            "UPDATE sources SET lifecycle = 'sealed'
+             WHERE id = ?1 AND session_id = ?2 AND lifecycle = 'capturing'",
+            params![source_id, session_id],
+        )?;
+        let track_changed = transaction.execute(
+            "UPDATE tracks SET lifecycle = 'sealed'
+             WHERE id = ?1 AND session_id = ?2 AND lifecycle = 'capturing'",
+            params![track_id, session_id],
+        )?;
+        if source_changed != 1 || track_changed != 1 {
+            return Err(StoreError::InvalidState(
+                "source or track projection is not awaiting seal evidence",
+            ));
+        }
+        transaction.execute(
+            "UPDATE sessions
+             SET media_files_open = EXISTS(
+                    SELECT 1 FROM segments
+                    WHERE session_id = ?1 AND lifecycle IN ('opening', 'open', 'capturing')
+                 ),
+                 updated_at_ms = ?2
+             WHERE id = ?1 AND lifecycle = 'preparing'",
+            params![session_id, now],
+        )?;
+        insert_event_with_id(
+            &transaction,
+            &journal_record.body.event_id,
+            session_id,
+            event_sequence,
+            "segment_sealed",
+            journal_record.body.wall_time_milliseconds,
+            payload,
+            prior_digest.as_deref(),
+            &event_hash,
+        )?;
+        transaction.commit()?;
+        Ok(())
+    }
+
     fn media_authorization_row(
         &self,
         segment_id: &str,
     ) -> Result<StoredMediaAuthorization, StoreError> {
         self.connection
             .query_row(
-                "SELECT session_id, track_id, relative_path, media_format, lifecycle,
-                        open_token, writer_generation, byte_length, file_device, file_inode
-                 FROM segments WHERE id = ?1",
+                "SELECT segments.session_id, tracks.source_id, segments.track_id,
+                        segments.relative_path, segments.media_format, segments.lifecycle,
+                        segments.open_token, segments.writer_generation, segments.byte_length,
+                        segments.file_device, segments.file_inode
+                 FROM segments
+                 JOIN tracks ON tracks.id = segments.track_id
+                 WHERE segments.id = ?1",
                 [segment_id],
                 |row| {
                     Ok(StoredMediaAuthorization {
                         session_id: row.get(0)?,
-                        track_id: row.get(1)?,
-                        relative_path: row.get(2)?,
-                        media_format: row.get(3)?,
-                        lifecycle: row.get(4)?,
-                        open_token: row.get(5)?,
-                        writer_generation: row.get::<_, i64>(6)? as u64,
-                        byte_length: row.get::<_, Option<i64>>(7)?.map(|value| value as u64),
-                        file_device: row.get::<_, Option<i64>>(8)?.map(|value| value as u64),
-                        file_inode: row.get::<_, Option<i64>>(9)?.map(|value| value as u64),
+                        source_id: row.get(1)?,
+                        track_id: row.get(2)?,
+                        relative_path: row.get(3)?,
+                        media_format: row.get(4)?,
+                        lifecycle: row.get(5)?,
+                        open_token: row.get(6)?,
+                        writer_generation: row.get::<_, i64>(7)? as u64,
+                        byte_length: row.get::<_, Option<i64>>(8)?.map(|value| value as u64),
+                        file_device: row.get::<_, Option<i64>>(9)?.map(|value| value as u64),
+                        file_inode: row.get::<_, Option<i64>>(10)?.map(|value| value as u64),
                     })
                 },
             )
@@ -1018,6 +1285,7 @@ impl SessionStore {
         session_id: &str,
         relative_path: &str,
         length_requirement: MediaLengthRequirement,
+        calculate_digest: bool,
     ) -> Result<ValidatedMediaFile, StoreError> {
         if !valid_media_relative_path(relative_path) {
             return Err(StoreError::IntegrityMismatch("invalid media relative path"));
@@ -1074,12 +1342,26 @@ impl SessionStore {
             ));
         }
         let mut header = [0_u8; 8];
-        use std::io::Read;
         let mut file = File::from(media_fd);
         file.read_exact(&mut header)?;
         if &header != CAF_HEADER {
             return Err(StoreError::IntegrityMismatch("media header is not CAF"));
         }
+        let digest_sha256 = if calculate_digest {
+            file.rewind()?;
+            let mut hasher = Sha256::new();
+            let mut buffer = [0_u8; 64 * 1024];
+            loop {
+                let read = file.read(&mut buffer)?;
+                if read == 0 {
+                    break;
+                }
+                hasher.update(&buffer[..read]);
+            }
+            Some(format!("{:x}", hasher.finalize()))
+        } else {
+            None
+        };
         file.sync_all()?;
         fd_fs::fsync(&track).map_err(|_| {
             StoreError::IntegrityMismatch("media directory could not be synchronized")
@@ -1088,6 +1370,7 @@ impl SessionStore {
             byte_length,
             device: stat.st_dev as u64,
             inode: stat.st_ino as u64,
+            digest_sha256,
         })
     }
 
@@ -1216,6 +1499,10 @@ impl SessionStore {
             .iter()
             .rev()
             .find(|record| record.body.event_kind == "first_sample_captured");
+        let sealed_record = records
+            .iter()
+            .rev()
+            .find(|record| record.body.event_kind == "segment_sealed");
 
         let Some(authorization_record) = authorization_record else {
             return Ok(if repaired_directory {
@@ -1245,6 +1532,7 @@ impl SessionStore {
                 session_id,
                 relative_path,
                 MediaLengthRequirement::AtLeast(byte_length),
+                false,
             ) {
                 Ok(validated) => validated,
                 Err(_) => {
@@ -1257,6 +1545,44 @@ impl SessionStore {
             let expected_inode = payload_u64(&opened_record.body.payload, "file_inode")?;
             if validated.device != expected_device || validated.inode != expected_inode {
                 return Ok(RecoveryDisposition::InvalidMediaFile);
+            }
+            if let Some(sealed_record) = sealed_record {
+                let payload = &sealed_record.body.payload;
+                if payload_string(payload, "segment_id")? != segment_id
+                    || payload_string(payload, "relative_path")? != relative_path
+                    || payload_u64(payload, "file_device")? != expected_device
+                    || payload_u64(payload, "file_inode")? != expected_inode
+                {
+                    return Ok(RecoveryDisposition::IntegrityMismatch);
+                }
+                let final_byte_length = payload_u64(payload, "final_byte_length")?;
+                let sealed = match self.validate_media_file(
+                    session_id,
+                    relative_path,
+                    MediaLengthRequirement::Exact(final_byte_length),
+                    true,
+                ) {
+                    Ok(sealed) => sealed,
+                    Err(_) => return Ok(RecoveryDisposition::InvalidMediaFile),
+                };
+                if sealed.digest_sha256.as_deref()
+                    != Some(payload_string(payload, "digest_sha256")?)
+                {
+                    return Ok(RecoveryDisposition::IntegrityMismatch);
+                }
+                let segment_lifecycle: String = self.connection.query_row(
+                    "SELECT lifecycle FROM segments WHERE id = ?1 AND session_id = ?2",
+                    params![segment_id, session_id],
+                    |row| row.get(0),
+                )?;
+                if segment_lifecycle == "sealed" {
+                    return Ok(RecoveryDisposition::SegmentSealedPrepared);
+                }
+                if segment_lifecycle != "capturing" {
+                    return Ok(RecoveryDisposition::IntegrityMismatch);
+                }
+                self.project_segment_seal(session_id, payload, sealed_record)?;
+                return Ok(RecoveryDisposition::SegmentSealProjectionRepaired);
             }
             let media_open: bool = self.connection.query_row(
                 "SELECT media_files_open FROM sessions WHERE id = ?1",
@@ -1283,6 +1609,7 @@ impl SessionStore {
                         session_id,
                         relative_path,
                         MediaLengthRequirement::AtLeast(observed_byte_length),
+                        false,
                     )
                     .is_err()
                 {
@@ -1324,6 +1651,7 @@ impl SessionStore {
                 session_id,
                 relative_path,
                 MediaLengthRequirement::Exact(metadata.len()),
+                false,
             )
             .is_ok()
         {
@@ -1942,6 +2270,34 @@ fn validate_first_sample_receipt_shape(receipt: &FirstSampleReceipt) -> Result<(
     Ok(())
 }
 
+fn validate_seal_receipt_shape(receipt: &SealSegmentReceipt) -> Result<(), StoreError> {
+    if Uuid::parse_str(&receipt.session_id.0).is_err()
+        || Uuid::parse_str(&receipt.track_id).is_err()
+        || Uuid::parse_str(&receipt.segment_id).is_err()
+        || Uuid::parse_str(&receipt.open_token).is_err()
+    {
+        return Err(StoreError::InvalidRequest(
+            "segment-seal receipt identity is not a UUID",
+        ));
+    }
+    if receipt.writer_generation != 1 || !valid_media_relative_path(&receipt.relative_path) {
+        return Err(StoreError::InvalidRequest(
+            "segment-seal receipt path or writer generation is unsupported",
+        ));
+    }
+    if receipt.final_sample_host_time == 0
+        || receipt.final_sample_host_time > i64::MAX as u64
+        || receipt.sample_count == 0
+        || receipt.sample_count > i64::MAX as u64
+        || receipt.final_byte_length > i64::MAX as u64
+    {
+        return Err(StoreError::InvalidRequest(
+            "segment-seal timing, sample count, or length is invalid",
+        ));
+    }
+    Ok(())
+}
+
 fn valid_relative_path(relative_path: &str) -> bool {
     let path = Path::new(relative_path);
     !path.is_absolute()
@@ -2394,6 +2750,227 @@ mod tests {
             first_sample_frame_count: 480,
             observed_byte_length,
         }
+    }
+
+    fn seal_receipt(
+        authorization: &MediaOpenAuthorization,
+        final_byte_length: u64,
+    ) -> SealSegmentReceipt {
+        SealSegmentReceipt {
+            session_id: authorization.session_id.clone(),
+            track_id: authorization.track_id.clone(),
+            segment_id: authorization.segment_id.clone(),
+            open_token: authorization.open_token.clone(),
+            writer_generation: authorization.writer_generation,
+            relative_path: authorization.relative_path.clone(),
+            final_sample_host_time: 52_000,
+            sample_count: 960,
+            final_byte_length,
+        }
+    }
+
+    fn prepared_first_sample(
+        store: &mut SessionStore,
+    ) -> (PreparedSessionReceipt, MediaOpenAuthorization, u64) {
+        let prepared = store.prepare_session(request()).unwrap();
+        let authorization = store
+            .authorize_media_open(media_request(prepared.session_id.clone()))
+            .unwrap();
+        let initial_byte_length = write_test_caf(&authorization);
+        store
+            .accept_media_open(media_receipt(&authorization, initial_byte_length))
+            .unwrap();
+        let observed_byte_length = append_first_sample(&authorization);
+        store
+            .accept_first_sample(first_sample_receipt(&authorization, observed_byte_length))
+            .unwrap();
+        (prepared, authorization, observed_byte_length)
+    }
+
+    #[test]
+    fn sealed_segment_binds_writer_totals_to_an_independent_digest_without_recording() {
+        let temp = TempDir::new().unwrap();
+        let mut store = open_store(&temp);
+        let (prepared, authorization, final_byte_length) = prepared_first_sample(&mut store);
+        let receipt = seal_receipt(&authorization, final_byte_length);
+
+        let evidence = store.seal_segment(receipt.clone()).unwrap();
+        assert!(evidence.segment_sealed);
+        assert!(!evidence.recording_started);
+        assert_eq!(evidence.sample_count, 960);
+        assert_eq!(evidence.digest_sha256.len(), 64);
+        assert_eq!(store.seal_segment(receipt.clone()).unwrap(), evidence);
+        assert_eq!(
+            store
+                .connection
+                .query_row(
+                    "SELECT lifecycle, sample_count, byte_length, seal_state
+                     FROM segments WHERE id = ?1",
+                    [&authorization.segment_id],
+                    |row| Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, String>(3)?,
+                    )),
+                )
+                .unwrap(),
+            (
+                "sealed".to_owned(),
+                960,
+                final_byte_length as i64,
+                "sealed".to_owned()
+            )
+        );
+        assert_eq!(
+            store
+                .connection
+                .query_row(
+                    "SELECT lifecycle, media_files_open FROM sessions WHERE id = ?1",
+                    [&prepared.session_id.0],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, bool>(1)?)),
+                )
+                .unwrap(),
+            ("preparing".to_owned(), false)
+        );
+
+        let mut changed = receipt;
+        changed.sample_count += 1;
+        assert!(matches!(
+            store.seal_segment(changed),
+            Err(StoreError::IntegrityMismatch(
+                "repeated segment-seal receipt changed accepted evidence"
+            ))
+        ));
+    }
+
+    #[test]
+    fn segment_seal_interruption_recovery_converges_without_recording() {
+        for (phase, expected_first) in [
+            (
+                MediaFailurePoint::SegmentSealJournalSync,
+                RecoveryDisposition::SegmentSealProjectionRepaired,
+            ),
+            (
+                MediaFailurePoint::SegmentSealDatabaseProjection,
+                RecoveryDisposition::SegmentSealedPrepared,
+            ),
+        ] {
+            let temp = TempDir::new().unwrap();
+            let root = temp.path().join("Open Scribe");
+            {
+                let mut store = SessionStore::open(&root).unwrap();
+                let (_, authorization, final_byte_length) = prepared_first_sample(&mut store);
+                let error = store
+                    .seal_segment_inner(
+                        seal_receipt(&authorization, final_byte_length),
+                        Some(phase),
+                    )
+                    .unwrap_err();
+                assert!(matches!(error, StoreError::InjectedInterruption));
+            }
+
+            let mut reopened = SessionStore::open(&root).unwrap();
+            assert_eq!(
+                reopened.recover_preparations().unwrap()[0].disposition,
+                expected_first
+            );
+            assert_eq!(
+                reopened.recover_preparations().unwrap()[0].disposition,
+                RecoveryDisposition::SegmentSealedPrepared
+            );
+            assert_eq!(
+                reopened
+                    .connection
+                    .query_row(
+                        "SELECT lifecycle, media_files_open FROM sessions",
+                        [],
+                        |row| Ok((row.get::<_, String>(0)?, row.get::<_, bool>(1)?)),
+                    )
+                    .unwrap(),
+                ("preparing".to_owned(), false)
+            );
+        }
+    }
+
+    #[test]
+    fn sealing_one_segment_does_not_close_parallel_projection() {
+        let temp = TempDir::new().unwrap();
+        let mut store = open_store(&temp);
+        let (prepared, authorization, final_byte_length) = prepared_first_sample(&mut store);
+        let parallel_source = Uuid::now_v7().to_string();
+        let parallel_track = Uuid::now_v7().to_string();
+        let parallel_segment = Uuid::now_v7().to_string();
+        store
+            .connection
+            .execute(
+                "INSERT INTO sources (id, schema_version, session_id, kind, display_name, lifecycle)
+                 VALUES (?1, ?2, ?3, 'system_audio', 'Parallel fixture', 'capturing')",
+                params![parallel_source, SCHEMA_VERSION, prepared.session_id.0],
+            )
+            .unwrap();
+        store
+            .connection
+            .execute(
+                "INSERT INTO tracks (id, schema_version, session_id, source_id, kind, lifecycle)
+                 VALUES (?1, ?2, ?3, ?4, 'system_audio', 'capturing')",
+                params![
+                    parallel_track,
+                    SCHEMA_VERSION,
+                    prepared.session_id.0,
+                    parallel_source,
+                ],
+            )
+            .unwrap();
+        store
+            .connection
+            .execute(
+                "INSERT INTO segments (
+                    id, schema_version, session_id, track_id, sequence, relative_path,
+                    lifecycle, mapped_start_ns, media_format, seal_state, recovery_state
+                 ) VALUES (?1, ?2, ?3, ?4, 0, 'audio/parallel/000000-0.caf',
+                           'capturing', 0, ?5, 'open', 'not_required')",
+                params![
+                    parallel_segment,
+                    SCHEMA_VERSION,
+                    prepared.session_id.0,
+                    parallel_track,
+                    MEDIA_FORMAT_CAF_PCM_S16LE,
+                ],
+            )
+            .unwrap();
+
+        store
+            .seal_segment(seal_receipt(&authorization, final_byte_length))
+            .unwrap();
+
+        assert_eq!(
+            store
+                .connection
+                .query_row(
+                    "SELECT sources.lifecycle, tracks.lifecycle, segments.lifecycle,
+                            sessions.media_files_open
+                     FROM segments
+                     JOIN tracks ON tracks.id = segments.track_id
+                     JOIN sources ON sources.id = tracks.source_id
+                     JOIN sessions ON sessions.id = segments.session_id
+                     WHERE segments.id = ?1",
+                    [&parallel_segment],
+                    |row| Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, bool>(3)?,
+                    )),
+                )
+                .unwrap(),
+            (
+                "capturing".to_owned(),
+                "capturing".to_owned(),
+                "capturing".to_owned(),
+                true,
+            )
+        );
     }
 
     #[test]

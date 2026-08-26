@@ -35,8 +35,12 @@ if [[ "$#" -eq 1 && "$1" == "--m1-microphone-foundation" ]]; then
 	exec "$script_dir/check_m1_microphone_foundation.sh"
 fi
 
+if [[ "$#" -eq 1 && "$1" == "--m1-segment-sealing" ]]; then
+	exec "$script_dir/check_m1_segment_sealing.sh"
+fi
+
 printf '%s\n' \
 	"NOT_IMPLEMENTED: full repository check" \
-	"Use './script/check.sh --scaffold' for founding structure, './script/check.sh --m0-native' for the bounded native proof, './script/check.sh --m0' for complete Milestone 0, './script/check.sh --state-fixtures' for deterministic post-M0 state truth, './script/check.sh --m1-xcode-fixture' for the pre-capture Xcode checkpoint, './script/check.sh --m1-storage' for durable session preparation, './script/check.sh --m1-media-open' for the pre-capture media-writer protocol and native macOS 13 build metadata, or './script/check.sh --m1-microphone-foundation' for the deterministic first-sample and production-shaped microphone-adapter boundary." \
+	"Use './script/check.sh --scaffold' for founding structure, './script/check.sh --m0-native' for the bounded native proof, './script/check.sh --m0' for complete Milestone 0, './script/check.sh --state-fixtures' for deterministic post-M0 state truth, './script/check.sh --m1-xcode-fixture' for the pre-capture Xcode checkpoint, './script/check.sh --m1-storage' for durable session preparation, './script/check.sh --m1-media-open' for the pre-capture media-writer protocol and native macOS 13 build metadata, './script/check.sh --m1-microphone-foundation' for the deterministic first-sample and production-shaped microphone-adapter boundary, or './script/check.sh --m1-segment-sealing' for closed synthetic CAF integrity evidence." \
 	"Neither receipt proves the website, capture, recovery, deployment, signing, or release." >&2
 exit 64

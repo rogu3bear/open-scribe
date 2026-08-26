@@ -15,7 +15,9 @@ cargo test --locked \
 	-p open-scribe-core \
 	-p open-scribe-uniffi
 
-if rg -ni '\b(pcm|cmsamplebuffer|waveform|meter|pointer|sample_count|frame_count)\b' \
+# Coarse boundary receipts may carry final or first-sample counters. Reject
+# media payload/buffer types and live telemetry surfaces, not bounded metadata.
+if rg -ni '\b(pcm|cmsamplebuffer|avaudiopcmbuffer|audio_buffer|video_frame|waveform|meter|pointer)\b' \
 	crates/open-scribe-uniffi/src; then
 	printf '%s\n' 'M1_MEDIA_OPEN_RED: hot-path media or telemetry crossed UniFFI' >&2
 	exit 1

@@ -4,9 +4,9 @@ This file routes work to repository truth. `CLAUDE.md` is its byte-identical mir
 
 ## Current stage
 
-The repository contains founding doctrine, a **functional Milestone 0 native and website development proof**, and bounded early-M1 microphone-foundation work. The native shell renders coarse Rust state through UniFFI. Rust durably prepares a session, authorizes managed CAF media, and records one coarse first-sample receipt. Swift contains a production-shaped but UI-unwired AVAudioEngine adapter, bounded buffer pool, managed writer, permission-state mapping, and least-privilege entitlement source. No live microphone or system-audio capture proof, `Recording` assertion, playable recovery, transcription, context observation, deployment, signing, or release capability exists.
+The repository contains founding doctrine, a **functional Milestone 0 native and website development proof**, and bounded early-M1 microphone and segment-sealing foundation work. The native shell renders coarse Rust state through UniFFI. Rust durably prepares a session, authorizes managed CAF media, records one coarse first-sample receipt, and independently digests one closed synthetic segment. Swift contains a production-shaped but UI-unwired AVAudioEngine adapter, bounded buffer pool, managed writer, close-before-seal receipt, permission-state mapping, and least-privilege entitlement source. No live microphone or system-audio capture proof, `Recording` assertion, playable recovery, transcription, context observation, deployment, signing, or release capability exists.
 
-The active boundary ends at `M1_MICROPHONE_FOUNDATION_GREEN`. Do not infer reliable recording from synthetic-buffer tests or unsigned build settings. Do not begin live capture, distribution, or a later milestone until this candidate is merged and the operator admits the next sequential work.
+The active boundary ends at `M1_SEGMENT_SEALING_GREEN`. Do not infer reliable recording or playable recovery from synthetic-buffer, digest, or unsigned build proof. Do not begin live capture, distribution, or a later milestone until this candidate is merged and the operator admits the next sequential work.
 
 ## Mandatory orientation
 

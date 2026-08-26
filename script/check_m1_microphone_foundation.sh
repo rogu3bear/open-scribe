@@ -44,11 +44,7 @@ done
 
 proof_root="$(mktemp -d "$repo_root/apps/macos/.build/m1-microphone-check.XXXXXX")"
 trap 'rm -rf "$proof_root"' EXIT
-rust_library="$repo_root/apps/macos/.build/rust-macos13/aarch64-apple-darwin/debug/libopen_scribe_uniffi.a"
-if [[ ! -f "$rust_library" ]]; then
-	printf '%s\n' 'M1_MICROPHONE_FOUNDATION_RED: exact macOS 13 Rust library is absent' >&2
-	exit 1
-fi
+rust_library="$(bash "$script_dir/build_rust_macos.sh" "$proof_root/rust")"
 xcode_log="$proof_root/xcodebuild.log"
 if ! xcodebuild \
 	-project "$project" \

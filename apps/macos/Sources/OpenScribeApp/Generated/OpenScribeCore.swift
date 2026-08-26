@@ -602,6 +602,8 @@ public protocol NativeRecordingPreparationProtocol: AnyObject, Sendable {
 
   func prepareSession(title: String) throws -> NativePreparedSession
 
+  func sealSegment(receipt: NativeSealSegmentReceipt) throws -> NativeSealedSegmentEvidence
+
 }
 open class NativeRecordingPreparation: NativeRecordingPreparationProtocol, @unchecked Sendable {
   fileprivate let handle: UInt64
@@ -710,6 +712,17 @@ open class NativeRecordingPreparation: NativeRecordingPreparationProtocol, @unch
         uniffi_open_scribe_uniffi_fn_method_nativerecordingpreparation_prepare_session(
           self.uniffiCloneHandle(),
           FfiConverterString.lower(title), uniffiCallStatus
+        )
+      })
+  }
+
+  open func sealSegment(receipt: NativeSealSegmentReceipt) throws -> NativeSealedSegmentEvidence {
+    return try FfiConverterTypeNativeSealedSegmentEvidence_lift(
+      try rustCallWithError(FfiConverterTypeNativeStorageError_lift) {
+        uniffiCallStatus in
+        uniffi_open_scribe_uniffi_fn_method_nativerecordingpreparation_seal_segment(
+          self.uniffiCloneHandle(),
+          FfiConverterTypeNativeSealSegmentReceipt_lower(receipt), uniffiCallStatus
         )
       })
   }
@@ -1311,6 +1324,175 @@ public func FfiConverterTypeNativePreparedSession_lower(_ value: NativePreparedS
   -> RustBuffer
 {
   return FfiConverterTypeNativePreparedSession.lower(value)
+}
+
+public struct NativeSealSegmentReceipt: Equatable, Hashable {
+  public let sessionId: String
+  public let trackId: String
+  public let segmentId: String
+  public let openToken: String
+  public let writerGeneration: UInt64
+  public let relativePath: String
+  public let finalSampleHostTime: UInt64
+  public let finalSampleCount: UInt64
+  public let finalByteLength: UInt64
+
+  // Default memberwise initializers are never public by default, so we
+  // declare one manually.
+  public init(
+    sessionId: String, trackId: String, segmentId: String, openToken: String,
+    writerGeneration: UInt64, relativePath: String, finalSampleHostTime: UInt64,
+    finalSampleCount: UInt64, finalByteLength: UInt64
+  ) {
+    self.sessionId = sessionId
+    self.trackId = trackId
+    self.segmentId = segmentId
+    self.openToken = openToken
+    self.writerGeneration = writerGeneration
+    self.relativePath = relativePath
+    self.finalSampleHostTime = finalSampleHostTime
+    self.finalSampleCount = finalSampleCount
+    self.finalByteLength = finalByteLength
+  }
+
+}
+
+#if compiler(>=6)
+  extension NativeSealSegmentReceipt: Sendable {}
+#endif
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeNativeSealSegmentReceipt: FfiConverterRustBuffer {
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws
+    -> NativeSealSegmentReceipt
+  {
+    return
+      try NativeSealSegmentReceipt(
+        sessionId: FfiConverterString.read(from: &buf),
+        trackId: FfiConverterString.read(from: &buf),
+        segmentId: FfiConverterString.read(from: &buf),
+        openToken: FfiConverterString.read(from: &buf),
+        writerGeneration: FfiConverterUInt64.read(from: &buf),
+        relativePath: FfiConverterString.read(from: &buf),
+        finalSampleHostTime: FfiConverterUInt64.read(from: &buf),
+        finalSampleCount: FfiConverterUInt64.read(from: &buf),
+        finalByteLength: FfiConverterUInt64.read(from: &buf)
+      )
+  }
+
+  public static func write(_ value: NativeSealSegmentReceipt, into buf: inout [UInt8]) {
+    FfiConverterString.write(value.sessionId, into: &buf)
+    FfiConverterString.write(value.trackId, into: &buf)
+    FfiConverterString.write(value.segmentId, into: &buf)
+    FfiConverterString.write(value.openToken, into: &buf)
+    FfiConverterUInt64.write(value.writerGeneration, into: &buf)
+    FfiConverterString.write(value.relativePath, into: &buf)
+    FfiConverterUInt64.write(value.finalSampleHostTime, into: &buf)
+    FfiConverterUInt64.write(value.finalSampleCount, into: &buf)
+    FfiConverterUInt64.write(value.finalByteLength, into: &buf)
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeSealSegmentReceipt_lift(_ buf: RustBuffer) throws
+  -> NativeSealSegmentReceipt
+{
+  return try FfiConverterTypeNativeSealSegmentReceipt.lift(buf)
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeSealSegmentReceipt_lower(_ value: NativeSealSegmentReceipt)
+  -> RustBuffer
+{
+  return FfiConverterTypeNativeSealSegmentReceipt.lower(value)
+}
+
+public struct NativeSealedSegmentEvidence: Equatable, Hashable {
+  public let sessionId: String
+  public let segmentId: String
+  public let finalSampleCount: UInt64
+  public let finalByteLength: UInt64
+  public let digestSha256: String
+  public let segmentSealed: Bool
+  public let recordingStarted: Bool
+  public let lastJournalSequence: UInt64
+
+  // Default memberwise initializers are never public by default, so we
+  // declare one manually.
+  public init(
+    sessionId: String, segmentId: String, finalSampleCount: UInt64, finalByteLength: UInt64,
+    digestSha256: String, segmentSealed: Bool, recordingStarted: Bool, lastJournalSequence: UInt64
+  ) {
+    self.sessionId = sessionId
+    self.segmentId = segmentId
+    self.finalSampleCount = finalSampleCount
+    self.finalByteLength = finalByteLength
+    self.digestSha256 = digestSha256
+    self.segmentSealed = segmentSealed
+    self.recordingStarted = recordingStarted
+    self.lastJournalSequence = lastJournalSequence
+  }
+
+}
+
+#if compiler(>=6)
+  extension NativeSealedSegmentEvidence: Sendable {}
+#endif
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeNativeSealedSegmentEvidence: FfiConverterRustBuffer {
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws
+    -> NativeSealedSegmentEvidence
+  {
+    return
+      try NativeSealedSegmentEvidence(
+        sessionId: FfiConverterString.read(from: &buf),
+        segmentId: FfiConverterString.read(from: &buf),
+        finalSampleCount: FfiConverterUInt64.read(from: &buf),
+        finalByteLength: FfiConverterUInt64.read(from: &buf),
+        digestSha256: FfiConverterString.read(from: &buf),
+        segmentSealed: FfiConverterBool.read(from: &buf),
+        recordingStarted: FfiConverterBool.read(from: &buf),
+        lastJournalSequence: FfiConverterUInt64.read(from: &buf)
+      )
+  }
+
+  public static func write(_ value: NativeSealedSegmentEvidence, into buf: inout [UInt8]) {
+    FfiConverterString.write(value.sessionId, into: &buf)
+    FfiConverterString.write(value.segmentId, into: &buf)
+    FfiConverterUInt64.write(value.finalSampleCount, into: &buf)
+    FfiConverterUInt64.write(value.finalByteLength, into: &buf)
+    FfiConverterString.write(value.digestSha256, into: &buf)
+    FfiConverterBool.write(value.segmentSealed, into: &buf)
+    FfiConverterBool.write(value.recordingStarted, into: &buf)
+    FfiConverterUInt64.write(value.lastJournalSequence, into: &buf)
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeSealedSegmentEvidence_lift(_ buf: RustBuffer) throws
+  -> NativeSealedSegmentEvidence
+{
+  return try FfiConverterTypeNativeSealedSegmentEvidence.lift(buf)
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeSealedSegmentEvidence_lower(_ value: NativeSealedSegmentEvidence)
+  -> RustBuffer
+{
+  return FfiConverterTypeNativeSealedSegmentEvidence.lower(value)
 }
 
 public struct NativeSessionSnapshot: Equatable, Hashable {
@@ -2181,6 +2363,9 @@ private let initializationResult: InitializationResult = {
   }
   if uniffi_open_scribe_uniffi_checksum_method_nativerecordingpreparation_prepare_session() != 12714
   {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_open_scribe_uniffi_checksum_method_nativerecordingpreparation_seal_segment() != 47037 {
     return InitializationResult.apiChecksumMismatch
   }
   if uniffi_open_scribe_uniffi_checksum_constructor_nativerecordingpreparation_open() != 38169 {
