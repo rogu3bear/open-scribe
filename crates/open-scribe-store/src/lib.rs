@@ -795,24 +795,13 @@ impl SessionStore {
         let expected_inode = stored
             .file_inode
             .ok_or(StoreError::InvalidState("media-open evidence is missing"))?;
-        let first_payload: String = self
-            .connection
-            .query_row(
-                "SELECT payload_json FROM session_events
-             WHERE session_id = ?1 AND event_kind = 'first_sample_captured'
-             ORDER BY sequence DESC LIMIT 1",
-                [&stored.session_id],
-                |row| row.get(0),
-            )
-            .map_err(|error| match error {
-                rusqlite::Error::QueryReturnedNoRows => {
-                    StoreError::InvalidState("first-sample evidence is missing")
-                }
-                other => StoreError::Sqlite(other),
-            })?;
-        let first_payload: Value = serde_json::from_str(&first_payload)?;
-        if payload_string(&first_payload, "segment_id")? != receipt.segment_id
-            || payload_string(&first_payload, "track_id")? != receipt.track_id
+        let first_payload = self.segment_event_payload(
+            &stored.session_id,
+            "first_sample_captured",
+            &receipt.segment_id,
+            "first-sample evidence is missing",
+        )?;
+        if payload_string(&first_payload, "track_id")? != receipt.track_id
             || receipt.final_sample_host_time
                 < payload_u64(&first_payload, "first_sample_host_time")?
             || receipt.sample_count < payload_u64(&first_payload, "first_sample_frame_count")?
@@ -839,15 +828,18 @@ impl SessionStore {
             ))?;
 
         if stored.lifecycle == "sealed" {
-            let payload: String = self.connection.query_row(
-                "SELECT payload_json FROM session_events
-                 WHERE session_id = ?1 AND event_kind = 'segment_sealed'
-                 ORDER BY sequence DESC LIMIT 1",
-                [&stored.session_id],
-                |row| row.get(0),
+            let payload = self.segment_event_payload(
+                &stored.session_id,
+                "segment_sealed",
+                &receipt.segment_id,
+                "segment-seal evidence is missing",
             )?;
-            let payload: Value = serde_json::from_str(&payload)?;
-            if payload_u64(&payload, "final_sample_host_time")? != receipt.final_sample_host_time
+            if payload_string(&payload, "track_id")? != receipt.track_id
+                || payload_string(&payload, "open_token")? != receipt.open_token
+                || payload_string(&payload, "relative_path")? != receipt.relative_path
+                || payload_u64(&payload, "writer_generation")? != receipt.writer_generation
+                || payload_u64(&payload, "final_sample_host_time")?
+                    != receipt.final_sample_host_time
                 || payload_u64(&payload, "sample_count")? != receipt.sample_count
                 || payload_u64(&payload, "final_byte_length")? != receipt.final_byte_length
                 || payload_string(&payload, "digest_sha256")? != digest
@@ -1280,6 +1272,30 @@ impl SessionStore {
             })
     }
 
+    fn segment_event_payload(
+        &self,
+        session_id: &str,
+        event_kind: &str,
+        segment_id: &str,
+        missing_message: &'static str,
+    ) -> Result<Value, StoreError> {
+        let mut statement = self.connection.prepare(
+            "SELECT payload_json FROM session_events
+             WHERE session_id = ?1 AND event_kind = ?2
+             ORDER BY sequence DESC",
+        )?;
+        let payloads = statement.query_map(params![session_id, event_kind], |row| {
+            row.get::<_, String>(0)
+        })?;
+        for payload in payloads {
+            let payload: Value = serde_json::from_str(&payload?)?;
+            if payload_string(&payload, "segment_id")? == segment_id {
+                return Ok(payload);
+            }
+        }
+        Err(StoreError::InvalidState(missing_message))
+    }
+
     fn validate_media_file(
         &self,
         session_id: &str,
@@ -1323,7 +1339,9 @@ impl SessionStore {
                 StoreError::IntegrityMismatch("media file is missing, replaced, or symlinked")
             }
         })?;
-        let stat = fd_fs::fstat(&media_fd)
+        let mut file = File::from(media_fd);
+        file.sync_all()?;
+        let stat = fd_fs::fstat(&file)
             .map_err(|_| StoreError::IntegrityMismatch("media file identity could not be read"))?;
         if fd_fs::FileType::from_raw_mode(stat.st_mode) != fd_fs::FileType::RegularFile {
             return Err(StoreError::IntegrityMismatch(
@@ -1342,7 +1360,6 @@ impl SessionStore {
             ));
         }
         let mut header = [0_u8; 8];
-        let mut file = File::from(media_fd);
         file.read_exact(&mut header)?;
         if &header != CAF_HEADER {
             return Err(StoreError::IntegrityMismatch("media header is not CAF"));
@@ -1351,18 +1368,58 @@ impl SessionStore {
             file.rewind()?;
             let mut hasher = Sha256::new();
             let mut buffer = [0_u8; 64 * 1024];
-            loop {
-                let read = file.read(&mut buffer)?;
+            let mut remaining = byte_length;
+            while remaining > 0 {
+                let read_limit = usize::try_from(remaining.min(buffer.len() as u64))
+                    .map_err(|_| StoreError::IntegrityMismatch("media length is unsupported"))?;
+                let read = file.read(&mut buffer[..read_limit])?;
                 if read == 0 {
-                    break;
+                    return Err(StoreError::IntegrityMismatch(
+                        "sealed media ended before its accepted byte length",
+                    ));
                 }
                 hasher.update(&buffer[..read]);
+                remaining -= read as u64;
+            }
+            let mut extra = [0_u8; 1];
+            if file.read(&mut extra)? != 0 {
+                return Err(StoreError::IntegrityMismatch(
+                    "sealed media exceeds its accepted byte length",
+                ));
             }
             Some(format!("{:x}", hasher.finalize()))
         } else {
             None
         };
-        file.sync_all()?;
+        let post_read_stat = fd_fs::fstat(&file).map_err(|_| {
+            StoreError::IntegrityMismatch("sealed media identity could not be revalidated")
+        })?;
+        if post_read_stat.st_dev != stat.st_dev
+            || post_read_stat.st_ino != stat.st_ino
+            || post_read_stat.st_size != stat.st_size
+        {
+            return Err(StoreError::IntegrityMismatch(
+                "media file changed while Rust validated it",
+            ));
+        }
+        let rebound_fd = fd_fs::openat(
+            &track,
+            *file_component,
+            fd_fs::OFlags::RDWR | fd_fs::OFlags::CLOEXEC | fd_fs::OFlags::NOFOLLOW,
+            fd_fs::Mode::empty(),
+        )
+        .map_err(|_| StoreError::IntegrityMismatch("media path changed while Rust validated it"))?;
+        let rebound_stat = fd_fs::fstat(&rebound_fd).map_err(|_| {
+            StoreError::IntegrityMismatch("media path identity could not be rebound")
+        })?;
+        if rebound_stat.st_dev != stat.st_dev
+            || rebound_stat.st_ino != stat.st_ino
+            || rebound_stat.st_size != stat.st_size
+        {
+            return Err(StoreError::IntegrityMismatch(
+                "media path no longer names the validated file",
+            ));
+        }
         fd_fs::fsync(&track).map_err(|_| {
             StoreError::IntegrityMismatch("media directory could not be synchronized")
         })?;
@@ -1491,18 +1548,6 @@ impl SessionStore {
             .iter()
             .rev()
             .find(|record| record.body.event_kind == "segment_open_intent");
-        let opened_record = records
-            .iter()
-            .rev()
-            .find(|record| record.body.event_kind == "segment_opened");
-        let first_sample_record = records
-            .iter()
-            .rev()
-            .find(|record| record.body.event_kind == "first_sample_captured");
-        let sealed_record = records
-            .iter()
-            .rev()
-            .find(|record| record.body.event_kind == "segment_sealed");
 
         let Some(authorization_record) = authorization_record else {
             return Ok(if repaired_directory {
@@ -1512,6 +1557,10 @@ impl SessionStore {
             });
         };
         let segment_id = payload_string(&authorization_record.body.payload, "segment_id")?;
+        let opened_record = journal_record_for_segment(records, "segment_opened", segment_id)?;
+        let first_sample_record =
+            journal_record_for_segment(records, "first_sample_captured", segment_id)?;
+        let sealed_record = journal_record_for_segment(records, "segment_sealed", segment_id)?;
         let projected: bool = self.connection.query_row(
             "SELECT EXISTS(SELECT 1 FROM segments WHERE id = ?1 AND session_id = ?2)",
             params![segment_id, session_id],
@@ -2313,6 +2362,21 @@ fn valid_media_relative_path(relative_path: &str) -> bool {
         && Path::new(relative_path).components().count() == 3
 }
 
+fn journal_record_for_segment<'a>(
+    records: &'a [JournalRecord],
+    event_kind: &str,
+    segment_id: &str,
+) -> Result<Option<&'a JournalRecord>, StoreError> {
+    for record in records.iter().rev() {
+        if record.body.event_kind == event_kind
+            && payload_string(&record.body.payload, "segment_id")? == segment_id
+        {
+            return Ok(Some(record));
+        }
+    }
+    Ok(None)
+}
+
 fn payload_string<'a>(payload: &'a Value, key: &str) -> Result<&'a str, StoreError> {
     payload
         .get(key)
@@ -2787,6 +2851,36 @@ mod tests {
         (prepared, authorization, observed_byte_length)
     }
 
+    fn insert_parallel_database_event(
+        store: &mut SessionStore,
+        session_id: &str,
+        event_kind: &str,
+        payload: &Value,
+    ) {
+        let (sequence, prior_digest) = next_database_event(&store.connection, session_id).unwrap();
+        let digest = event_digest(
+            session_id,
+            sequence,
+            event_kind,
+            payload,
+            prior_digest.as_deref(),
+        )
+        .unwrap();
+        let transaction = store.connection.transaction().unwrap();
+        insert_event(
+            &transaction,
+            session_id,
+            sequence,
+            event_kind,
+            wall_time_milliseconds(),
+            payload,
+            prior_digest.as_deref(),
+            &digest,
+        )
+        .unwrap();
+        transaction.commit().unwrap();
+    }
+
     #[test]
     fn sealed_segment_binds_writer_totals_to_an_independent_digest_without_recording() {
         let temp = TempDir::new().unwrap();
@@ -2842,6 +2936,61 @@ mod tests {
                 "repeated segment-seal receipt changed accepted evidence"
             ))
         ));
+    }
+
+    #[test]
+    fn segment_seal_and_replay_ignore_later_parallel_events() {
+        let temp = TempDir::new().unwrap();
+        let mut store = open_store(&temp);
+        let (prepared, authorization, final_byte_length) = prepared_first_sample(&mut store);
+        let parallel_segment = Uuid::now_v7().to_string();
+        insert_parallel_database_event(
+            &mut store,
+            &prepared.session_id.0,
+            "first_sample_captured",
+            &json!({
+                "segment_id": parallel_segment,
+                "track_id": Uuid::now_v7().to_string(),
+            }),
+        );
+
+        let receipt = seal_receipt(&authorization, final_byte_length);
+        let accepted = store.seal_segment(receipt.clone()).unwrap();
+        insert_parallel_database_event(
+            &mut store,
+            &prepared.session_id.0,
+            "segment_sealed",
+            &json!({ "segment_id": parallel_segment }),
+        );
+
+        assert_eq!(store.seal_segment(receipt).unwrap(), accepted);
+    }
+
+    #[test]
+    fn recovery_event_lookup_is_segment_keyed() {
+        let session_id = Uuid::now_v7().to_string();
+        let target_segment = Uuid::now_v7().to_string();
+        let parallel_segment = Uuid::now_v7().to_string();
+        let mut target = new_journal_record(&session_id, wall_time_milliseconds()).unwrap();
+        target.body.event_kind = "segment_sealed".to_owned();
+        target.body.payload = json!({ "segment_id": target_segment });
+        let mut parallel = target.clone();
+        parallel.body.sequence += 1;
+        parallel.body.payload = json!({ "segment_id": parallel_segment });
+
+        let records = [target, parallel];
+        assert_eq!(
+            payload_string(
+                &journal_record_for_segment(&records, "segment_sealed", &target_segment)
+                    .unwrap()
+                    .unwrap()
+                    .body
+                    .payload,
+                "segment_id",
+            )
+            .unwrap(),
+            target_segment
+        );
     }
 
     #[test]

@@ -54,9 +54,14 @@ cargo test --locked \
 	-p open-scribe-store \
 	-p open-scribe-core \
 	-p open-scribe-uniffi
+candidate_base="$(git merge-base HEAD main 2>/dev/null || true)"
+if [[ -z "$candidate_base" || "$candidate_base" == "$(git rev-parse HEAD)" ]]; then
+	candidate_base="$(git rev-parse HEAD^)"
+fi
+git diff --check "$candidate_base" HEAD
 git diff --check
 
 printf '%s\n' \
 	'M1_SEGMENT_SEALING_GREEN' \
-	'proof=swift_closes_managed_caf_before_receipt,writer_reported_final_counters,exact_file_length,stable_file_identity,caf_header,independent_rust_sha256,segment_local_source_and_track_projection,parallel_projection_preservation,journal_before_projection,idempotent_replay,seal_interruption_recovery,coarse_uniffi_round_trip,no_recording_transition,fresh_bindings,clean_arm64_macos13_xcode_test,microphone_foundation_regression,diff_hygiene' \
+	'proof=swift_closes_managed_caf_before_receipt,writer_reported_final_counters,exact_file_length,stable_file_identity,caf_header,independent_rust_sha256,segment_local_source_and_track_projection,parallel_projection_preservation,journal_before_projection,idempotent_replay,seal_interruption_recovery,coarse_uniffi_round_trip,no_recording_transition,fresh_bindings,clean_arm64_macos13_xcode_test,microphone_foundation_regression,candidate_range_and_worktree_diff_hygiene' \
 	'excludes=live_permission_prompt,live_microphone_runtime_capture,system_audio_capture,multiple_required_source_runtime,recording_transition,active_session_or_playable_recovery,thirty_second_rotation,pause_or_route_sealing,two_hour_capture,playback,disk_pressure,signing,notarization,distribution,deployment,public_release'
