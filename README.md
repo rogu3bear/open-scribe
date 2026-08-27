@@ -2,7 +2,7 @@
 
 Open Scribe is a greenfield, open-source macOS conversation instrument intended to record conversations reliably, preserve local evidence, and connect derived meeting memory back to its sources.
 
-> **Repository status: Milestone 0 development proof plus bounded early-M1 microphone and segment-sealing foundations.** A stateless Leptos Worker build produces useful SSR, and a development-only SwiftUI shell renders coarse Rust state through UniFFI. Rust durably prepares a session, records managed-media and one-shot first-sample evidence, and independently digests one closed synthetic CAF segment. Swift has a production-shaped but UI-unwired AVAudioEngine adapter, bounded writer path, close-before-seal receipt, permission-state mapping, and entitlement source. Synthetic-buffer tests do not prove live microphone/system capture, `Recording`, playable recovery, deployment, signing, distribution, or public release.
+> **Repository status: Milestone 0 development proof plus a bounded early-M1 live-microphone slice.** A stateless Leptos Worker build produces useful SSR, and a development-only SwiftUI app renders coarse Rust state through UniFFI. Rust durably prepares a session, validates one managed track and first-sample evidence, and independently digests a closed CAF segment. Swift wires a menu-bar control to AVAudioEngine, bounded buffers, a managed writer, and permission UX. One explicit local gate captured, sealed, and validated a short playable microphone CAF. This does not prove system audio, multi-source `Recording`, playable forced-termination recovery, transcription, signing, distribution, or public release.
 
 The founding product contract is `docs/product/FOUNDING_PRD.md`. Start with `NORTH_STAR.md`, `ANCHOR.md`, and `AGENTS.md` for the compact operating view.
 
@@ -39,7 +39,7 @@ Run the complete bounded foundation gate:
 ./script/check.sh --m1-segment-sealing
 ```
 
-This validates the preceding gates plus a managed CAF writer, bounded Swift buffer path, deterministic conversion, durable coarse first-sample receipt, close-before-seal behavior, exact file identity/length/header validation, Rust-computed SHA-256, segment-local projection, permission-state mapping, least-privilege entitlement source, and effective unsigned Xcode build settings. It does **not** prove a live permission prompt, live microphone or system-audio capture, signed entitlement enforcement, `Recording`, CAF packet/playability validation, real forced-termination recovery, deployment, signing, notarization, distribution, or public release.
+This validates the deterministic foundations plus a managed CAF writer, bounded Swift buffer path, durable coarse first-sample receipt, close-before-seal behavior, exact file identity/length/header validation, Rust-computed SHA-256, permission-state mapping, least-privilege entitlement source, and unsigned Xcode build settings. Run `./script/check.sh --m1-live-microphone` explicitly for the separate real-device microphone and playable-CAF proof. Neither gate proves system audio, multi-source `Recording`, forced-termination recovery, transcription, signed entitlement enforcement, deployment, notarization, distribution, or public release.
 
 GitHub Actions is intentionally disabled for this repository. Pull requests are admitted through exact-checkout local receipts, an independent review of the candidate tree, and explicit merge readback; no hosted status check is a proof authority.
 

@@ -1,6 +1,7 @@
 # Open Scribe Founding Threat Model
 
-**Status:** initial scope only; no implementation or completed security review exists.
+**Status:** initial scope with bounded storage and microphone mitigations; no
+completed security review or release qualification exists.
 
 ## Assets
 

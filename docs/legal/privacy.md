@@ -4,7 +4,12 @@
 
 Open Scribe is intended to be a local-first macOS conversation recorder. The founding design requires explicit capture, visible scope, local storage, no required account, no required telemetry, local OCR reduction, discarded raw screen pixels by default, and per-category authorization before any remote provider receives content.
 
-No application or service currently exists in this repository, so this draft makes no claim about deployed behavior.
+A bounded, unsigned development application exists in this repository. Its
+admitted runtime proof covers one deliberate short microphone capture into a
+managed local CAF and retains no proof audio. It does not implement system
+audio, multi-source Recording, recovery, transcription, model downloads,
+providers, updates, telemetry, or a public service. This draft makes no claim
+about a released or deployed product.
 
 Before release, this notice must accurately disclose:
 
