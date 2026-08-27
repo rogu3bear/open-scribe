@@ -14,7 +14,18 @@ A source build is not a release receipt. Public-release status requires proof bo
 - signed Sparkle appcast when updates are enabled;
 - public website claims matching demonstrated capability.
 
-`script/release.sh` and `script/verify_bundle.sh` intentionally fail until these lanes are implemented and authorized.
+`script/release.sh prepare <semver>` is now the read-only first release stage. It
+binds a candidate version to the exact source SHA/tree, examines tree cleanliness,
+M0–M4 gate availability, legal/security adoption, the P0 ledger, capability,
+supply-chain and model manifests, release notes, and artifact-verification
+availability. It returns `RELEASE_PREPARE_HOLD` with every observed blocker and
+does not allocate a version, execute milestone proofs, sign, notarize, package,
+publish, deploy, or mutate the tree. `./script/check.sh --release-prepare`
+validates that contract.
+
+`script/verify_bundle.sh` remains intentionally fail-closed until the signed
+artifact lane is implemented and authorized. A future `RELEASE_PREPARE_READY`
+receipt proves only that local inputs exist; it is not a release receipt.
 
 ADRs 0015–0017 decide the future capability-true website, production bundle,
 Sparkle, notarization, and staged release authority. They admit implementation

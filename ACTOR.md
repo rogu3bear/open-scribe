@@ -87,4 +87,6 @@ Before mutation, inspect checkout identity, dirt, anchors, and rollback.
 
 ## Admission rule
 
+Release readiness: `./script/release.sh prepare <semver>`; a hold names exact blockers and performs no publication.
+
 Do not add hypothetical build, launch, test, deploy, signing, notarization, capture, or release actions. Execute and inspect them first. Canonical unimplemented scripts fail closed by design.
