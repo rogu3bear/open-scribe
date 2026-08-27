@@ -4,7 +4,7 @@
 
 ## Current repository fact
 
-Open Scribe has M0 native/site and bounded early-M1 microphone/sealing foundations, but no live capture or deployment proof. Rust owns durable preparation, media validation, first-sample evidence, and one closed-segment digest; UniFFI stays coarse. Swift has a UI-unwired AVAudioEngine adapter, bounded buffers, serial CAF writer, close-before-seal receipt, permission mapping, and entitlement source. Synthetic tests never assert `Recording`. Playable recovery, ML, context, providers, signing, deployment, and release remain unimplemented.
+Open Scribe has M0 native/site and early-M1 microphone/sealing proof. Rust owns preparation, one-track validation, first-sample evidence, and segment digests; UniFFI stays coarse. Swift wires a menu-bar control to AVAudioEngine, bounded buffers, a CAF writer, permission mapping, and close-before-seal evidence. A local gate validated a temporary playable microphone CAF. System audio, multi-source `Recording`, recovery, ML, signing, deployment, and release remain unimplemented.
 
 ## Intended runtime shape
 
@@ -14,7 +14,7 @@ The Apple-Silicon app uses SwiftUI and narrow Apple adapters. Rust owns durable 
 
 | Component | Status | Owns | Must not own |
 |---|---|---|---|
-| `apps/macos` | fixture shell + microphone foundation | SwiftUI, Apple adapters, bounded buffers, CAF writer, permission UX | durable policy, capture claims, evidence truth |
+| `apps/macos` | fixture shell + live microphone slice | SwiftUI, Apple adapters, bounded buffers, CAF writer, permission UX | durable policy, capture claims, evidence truth |
 | `crates/open-scribe-types` | implemented, WASM-safe | stable session/source/condition records | I/O or native APIs |
 | `open-scribe-domain` | implemented, WASM-safe | transitions and presentation | persistence or capture |
 | `open-scribe-evidence` | placeholder, WASM-safe | evidence IDs and validation semantics | model execution or native storage |
@@ -34,7 +34,7 @@ The Apple-Silicon app uses SwiftUI and narrow Apple adapters. Rust owns durable 
 4. Only then may UI report Recording.
 5. Media remains recoverable independently of transcript or ML.
 
-Tests cover preparation, create-new CAF, synthetic first sample, close, and binding writer counters to Rust-validated identity, length, header, and SHA-256. The adapter is UI-unwired and not live-proven; CAF packets/playability and step 4 remain unproved.
+Tests cover preparation, create-new CAF, synthetic first sample, close, and binding writer counters to Rust-validated identity, length, header, and SHA-256. One explicit real-device run also proves a short playable microphone segment. Required-source planning, system audio, `Recording`, rotation, long-session synchronization, and recovery remain unproved.
 
 ### Derived meeting memory
 
@@ -67,8 +67,8 @@ This is unimplemented.
 
 ## Architecture decisions
 
-ADRs 0001–0004 settle M0. ADRs 0005–0007 admit only M1 preparation, media-open, bounded first-sample, and closed synthetic-segment prerequisites. ADRs 0008–0017 cover later milestones. Live capture remains open; Cloudflare deployment is unauthorized. See `docs/architecture/README.md`.
+ADRs 0001–0004 settle M0. ADRs 0005–0007 admit M1 implementation; only preparation, one-track media evidence, closed segments, and a short live-microphone run are proven. ADRs 0008–0017 cover later milestones. Reliable recording remains open; Cloudflare deployment is unauthorized. See `docs/architecture/README.md`.
 
 ## Current validation
 
-`--scaffold` checks structure/WASM; `--m0-native` checks the app; `build_web.sh` checks web artifacts. `--state-fixtures` checks transitions. M1 gates add preparation, CAF open, the bounded Swift microphone path, permissions/build metadata, and one synthetic closed-segment digest. None proves live capture, `Recording`, forced-process/playable recovery, signed entitlements, deployment, signing, distribution, or public release.
+`--scaffold` checks structure/WASM; `--m0-native` checks the app; `build_web.sh` checks web artifacts. `--state-fixtures` checks transitions. M1 deterministic gates cover preparation through segment sealing; `--m1-live-microphone` separately proves one explicit temporary real-device capture. Neither proves `Recording`, system audio, forced-process/playable recovery, signed entitlements, deployment, signing, distribution, or public release.

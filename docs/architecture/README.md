@@ -25,13 +25,14 @@ and one Rust-authorized initial CAF path. A Swift-owned harness creates and
 retains a real 48 kHz mono PCM CAF; only coarse authorization and media-open
 receipts cross UniFFI. Rust independently validates the managed path, regular
 file identity, byte length, and CAF header before projecting `media_files_open`.
-The next bounded slice closes one synthetic Swift-written CAF before a coarse
+The admitted live-microphone slice closes one Swift-written CAF before a coarse
 seal receipt, then lets Rust revalidate file identity, exact byte length, and
-header, compute SHA-256, and journal/project the named segment only. Writer-reported
-sample totals are bound to the digest but are not independently derived. The
-durable lifecycle remains `preparing`: this does not capture a microphone or
-system source, authorize Recording, validate playable CAF packets, finalize
-sessions, or prove recovery after real process termination.
+header, compute SHA-256, and journal/project the named segment only. An explicit
+local gate also captures a short real-device segment and validates CAF
+playability before deleting the proof media. Writer-reported sample totals are
+bound to the digest but are not independently derived. The durable lifecycle
+remains `preparing`: this does not capture a system source, authorize Recording,
+finalize sessions, or prove recovery after real process termination.
 
 ADRs 0008–0010 admit Milestone 2 implementation: pinned local ASR and licensed
 model supply, authoritative transcript/diarization semantics, and versioned
@@ -55,7 +56,7 @@ channel, and staged release authority through canonical readback. They prove no 
 |---|---|
 | SwiftUI + Rust + Leptos ownership | native slice recorded by ADR 0001; website foundation recorded by ADR 0003 |
 | UniFFI control boundary and binding lifecycle | ADR 0001, M0 development lifecycle only |
-| capture ownership and hot-path boundary | ADR 0005; runtime proof open |
+| capture ownership and hot-path boundary | ADR 0005; short microphone runtime proven, system/multi-source proof open |
 | persistence/event/recovery model | ADR 0006; implementation and forced-termination proof open |
 | local ASR/model engine | ADR 0008; installed-model and offline runtime proof open |
 | diarization model and calibration | ADR 0009; exact weight/calibration and runtime proof open |

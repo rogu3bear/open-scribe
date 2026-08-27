@@ -79,6 +79,12 @@ Before mutation, inspect checkout identity, dirt, anchors, and rollback.
 - Proof: earlier gates; close-before-receipt; Rust identity/length/header/SHA-256; journal-first, segment-local projection; interruption convergence.
 - Stop if: post-seal writes occur, unrelated state closes, writer counters are overstated, Recording is asserted, or a higher plane is claimed.
 
+## Validate explicit live microphone capture
+
+- Command: `./script/check.sh --m1-live-microphone`.
+- Expected: `M1_LIVE_MICROPHONE_GREEN` after consent, capture, seal, digest, and playability checks; proof media is deleted.
+- Does not prove: multi-source Recording, recovery, signing, or release.
+
 ## Admission rule
 
 Do not add hypothetical build, launch, test, deploy, signing, notarization, capture, or release actions. Execute and inspect them first. Canonical unimplemented scripts fail closed by design.
