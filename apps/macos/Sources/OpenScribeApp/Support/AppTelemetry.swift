@@ -5,6 +5,8 @@ enum AppTelemetry {
   private static let subsystem = Bundle.main.bundleIdentifier ?? "app.open-scribe.dev"
   private static let scenes = Logger(subsystem: subsystem, category: "Scenes")
   private static let commands = Logger(subsystem: subsystem, category: "Commands")
+  private static let capture = Logger(subsystem: subsystem, category: "CaptureProof")
+  private static let launch = Logger(subsystem: subsystem, category: "Launch")
 
   static func sceneAppeared(_ scene: String, status: AppStatus) {
     scenes.info(
@@ -20,5 +22,13 @@ enum AppTelemetry {
 
   static func commandInvoked(_ command: String) {
     commands.info("command=\(command, privacy: .public)")
+  }
+
+  static func captureProof(stage: String, detail: String) {
+    capture.info("stage=\(stage, privacy: .public) detail=\(detail, privacy: .public)")
+  }
+
+  static func launchFailed(_ failure: String) {
+    launch.error("single_instance_failure=\(failure, privacy: .public)")
   }
 }

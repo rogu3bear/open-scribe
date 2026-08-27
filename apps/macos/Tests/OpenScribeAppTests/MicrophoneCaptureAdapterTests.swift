@@ -197,6 +197,50 @@ final class MicrophoneCaptureAdapterTests: XCTestCase {
     XCTAssertGreaterThan(media.length, 0)
   }
 
+  func testNinetySixKilohertzMonoBufferProducesDurableFrames() throws {
+    let root = FileManager.default.temporaryDirectory
+      .appendingPathComponent("open-scribe-microphone-tests", isDirectory: true)
+      .appendingPathComponent(UUID().uuidString.lowercased(), isDirectory: true)
+    managedRoots.append(root)
+    let controller = try NativeRecordingPreparation.open(managedRoot: root.path)
+    let prepared = try controller.prepareSession(title: "96 kHz microphone proof")
+    let authorization = try controller.authorizeInitialMedia(
+      sessionId: prepared.sessionId,
+      sourceKind: .microphone,
+      sourceDisplayName: "96 kHz synthetic microphone"
+    )
+    let writer = try ManagedCAFWriter(authorization: authorization)
+    _ = try controller.acceptMediaOpen(receipt: writer.receipt())
+
+    let inputFormat = try XCTUnwrap(
+      AVAudioFormat(
+        commonFormat: .pcmFormatFloat32,
+        sampleRate: 96_000,
+        channels: 1,
+        interleaved: false
+      )
+    )
+    let buffer = try XCTUnwrap(
+      AVAudioPCMBuffer(pcmFormat: inputFormat, frameCapacity: 4_096)
+    )
+    buffer.frameLength = 4_096
+    let samples = try XCTUnwrap(buffer.floatChannelData?[0])
+    for frame in 0..<Int(buffer.frameLength) {
+      samples[frame] = Float(frame % 64) / 64.0
+    }
+
+    let writtenFrames = try writer.writeCapturedBuffer(buffer)
+
+    XCTAssertGreaterThan(writtenFrames, 0)
+    let receipt = try writer.firstSampleReceipt(
+      hostTime: 42_000,
+      frameCount: UInt64(writtenFrames)
+    )
+    let evidence = try controller.acceptFirstSample(receipt: receipt)
+    XCTAssertTrue(evidence.firstSampleDurable)
+    XCTAssertFalse(evidence.recordingStarted)
+  }
+
   func testCaptureAdapterCannotRestartAfterStop() throws {
     let root = FileManager.default.temporaryDirectory
       .appendingPathComponent("open-scribe-microphone-tests", isDirectory: true)
@@ -250,14 +294,14 @@ final class MicrophoneCaptureAdapterTests: XCTestCase {
     try adapter.start(
       onFirstSample: { _ in XCTFail("invalid callback produced a receipt") },
       onFailure: { error in
-        XCTAssertEqual(error, .bufferCopyFailed)
+        XCTAssertEqual(error, .bufferFrameCapacityExceeded)
         failed.fulfill()
       }
     )
     let oversized = try XCTUnwrap(
-      AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 4_097)
+      AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 16_385)
     )
-    oversized.frameLength = 4_097
+    oversized.frameLength = 16_385
     backend.emit(oversized, hostTime: 1)
     backend.emit(oversized, hostTime: 2)
     wait(for: [failed], timeout: 1)
@@ -440,5 +484,28 @@ final class MicrophoneCaptureAdapterTests: XCTestCase {
     XCTAssertEqual(stopReturned.wait(timeout: .now() + 1), .success)
     backend.emit(buffer, hostTime: 2)
     XCTAssertEqual(writer.writeCount, 1)
+  }
+
+  func testStopReturnsTheLastSuccessfullyWrittenSampleHostTime() throws {
+    let format = try XCTUnwrap(
+      AVAudioFormat(
+        commonFormat: .pcmFormatFloat32,
+        sampleRate: 48_000,
+        channels: 1,
+        interleaved: false
+      )
+    )
+    let backend = FakeMicrophoneBackend(inputFormat: format)
+    let writer = BlockingCapturedWriter()
+    let adapter = MicrophoneCaptureAdapter(backend: backend, writer: writer)
+    try adapter.start(onFirstSample: { _ in }, onFailure: { _ in })
+    let buffer = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 64))
+    buffer.frameLength = 64
+
+    backend.emit(buffer, hostTime: 42_000)
+    XCTAssertEqual(writer.writeEntered.wait(timeout: .now() + 1), .success)
+    writer.allowWrite.signal()
+
+    XCTAssertEqual(adapter.stop(), 42_000)
   }
 }

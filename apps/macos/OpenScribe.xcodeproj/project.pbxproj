@@ -24,6 +24,10 @@
 		B7FFA456C63F04859D1B2472 /* CompactLiveView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA0F0D94D6B878C1D7BCA3F7 /* CompactLiveView.swift */; };
 		C061A3F920D148E6A9BCE201 /* MicrophoneCaptureAdapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = D061A3F920D148E6A9BCE201 /* MicrophoneCaptureAdapter.swift */; };
 		C162A3F920D148E6A9BCE201 /* MicrophoneCaptureAdapterTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D162A3F920D148E6A9BCE201 /* MicrophoneCaptureAdapterTests.swift */; };
+		C263A3F920D148E6A9BCE201 /* LiveMicrophoneRecordingController.swift in Sources */ = {isa = PBXBuildFile; fileRef = D263A3F920D148E6A9BCE201 /* LiveMicrophoneRecordingController.swift */; };
+		C363A3F920D148E6A9BCE201 /* LiveMicrophoneRecordingControllerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D363A3F920D148E6A9BCE201 /* LiveMicrophoneRecordingControllerTests.swift */; };
+		E463A3F920D148E6A9BCE201 /* SingleInstanceGuard.swift in Sources */ = {isa = PBXBuildFile; fileRef = F463A3F920D148E6A9BCE201 /* SingleInstanceGuard.swift */; };
+		E563A3F920D148E6A9BCE201 /* SingleInstanceGuardTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F563A3F920D148E6A9BCE201 /* SingleInstanceGuardTests.swift */; };
 		E3B6D8732CBAD3A7D047B7AE /* FixtureSessionStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 87CA610842D2D723210F765F /* FixtureSessionStore.swift */; };
 		EDDBA4832BEA98E75718E55F /* SymbolResolver.swift in Sources */ = {isa = PBXBuildFile; fileRef = 46B615557F7DEE8F964B69CE /* SymbolResolver.swift */; };
 /* End PBXBuildFile section */
@@ -56,6 +60,10 @@
 		C62801D03FDD064235316905 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		D061A3F920D148E6A9BCE201 /* MicrophoneCaptureAdapter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MicrophoneCaptureAdapter.swift; sourceTree = "<group>"; };
 		D162A3F920D148E6A9BCE201 /* MicrophoneCaptureAdapterTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MicrophoneCaptureAdapterTests.swift; sourceTree = "<group>"; };
+		D263A3F920D148E6A9BCE201 /* LiveMicrophoneRecordingController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveMicrophoneRecordingController.swift; sourceTree = "<group>"; };
+		D363A3F920D148E6A9BCE201 /* LiveMicrophoneRecordingControllerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveMicrophoneRecordingControllerTests.swift; sourceTree = "<group>"; };
+		F463A3F920D148E6A9BCE201 /* SingleInstanceGuard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SingleInstanceGuard.swift; sourceTree = "<group>"; };
+		F563A3F920D148E6A9BCE201 /* SingleInstanceGuardTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SingleInstanceGuardTests.swift; sourceTree = "<group>"; };
 		F5696F23409FC2574DF65AD5 /* FixtureSessionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FixtureSessionTests.swift; sourceTree = "<group>"; };
 		F999B06ACC1C80F559FDEF6B /* RustStatusSourceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RustStatusSourceTests.swift; sourceTree = "<group>"; };
 		FA0F0D94D6B878C1D7BCA3F7 /* CompactLiveView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CompactLiveView.swift; sourceTree = "<group>"; };
@@ -106,6 +114,7 @@
 			isa = PBXGroup;
 			children = (
 				32118F0168D462A2AF9207B5 /* OpenScribeApp.swift */,
+				F463A3F920D148E6A9BCE201 /* SingleInstanceGuard.swift */,
 			);
 			path = App;
 			sourceTree = "<group>";
@@ -123,6 +132,7 @@
 		6A61A3F920D148E6A9BCE201 /* Media */ = {
 			isa = PBXGroup;
 			children = (
+				D263A3F920D148E6A9BCE201 /* LiveMicrophoneRecordingController.swift */,
 				5A61A3F920D148E6A9BCE201 /* ManagedCAFWriter.swift */,
 				D061A3F920D148E6A9BCE201 /* MicrophoneCaptureAdapter.swift */,
 				5C61A3F920D148E6A9BCE201 /* MicrophonePermissionAuthority.swift */,
@@ -134,8 +144,10 @@
 			isa = PBXGroup;
 			children = (
 				F5696F23409FC2574DF65AD5 /* FixtureSessionTests.swift */,
+				D363A3F920D148E6A9BCE201 /* LiveMicrophoneRecordingControllerTests.swift */,
 				5B61A3F920D148E6A9BCE201 /* MediaOpenProtocolTests.swift */,
 				D162A3F920D148E6A9BCE201 /* MicrophoneCaptureAdapterTests.swift */,
+				F563A3F920D148E6A9BCE201 /* SingleInstanceGuardTests.swift */,
 				F999B06ACC1C80F559FDEF6B /* RustStatusSourceTests.swift */,
 			);
 			path = OpenScribeAppTests;
@@ -267,8 +279,10 @@
 			buildActionMask = 2147483647;
 			files = (
 				1F1D1AD4B3B9F501CC0AB5DF /* FixtureSessionTests.swift in Sources */,
+				C363A3F920D148E6A9BCE201 /* LiveMicrophoneRecordingControllerTests.swift in Sources */,
 				4B61A3F920D148E6A9BCE201 /* MediaOpenProtocolTests.swift in Sources */,
 				C162A3F920D148E6A9BCE201 /* MicrophoneCaptureAdapterTests.swift in Sources */,
+				E563A3F920D148E6A9BCE201 /* SingleInstanceGuardTests.swift in Sources */,
 				3D25B82DFEFE01398833B042 /* RustStatusSourceTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -282,6 +296,7 @@
 				7B61FB95E7DAEDF66275BDED /* AppTelemetry.swift in Sources */,
 				B7FFA456C63F04859D1B2472 /* CompactLiveView.swift in Sources */,
 				262A2A7F0F8421EC6AD0E79E /* ContentView.swift in Sources */,
+				C263A3F920D148E6A9BCE201 /* LiveMicrophoneRecordingController.swift in Sources */,
 				4A61A3F920D148E6A9BCE201 /* ManagedCAFWriter.swift in Sources */,
 				4C61A3F920D148E6A9BCE201 /* MicrophonePermissionAuthority.swift in Sources */,
 				E3B6D8732CBAD3A7D047B7AE /* FixtureSessionStore.swift in Sources */,
@@ -290,6 +305,7 @@
 				302DB5C18FFCD7389677DAA3 /* OpenScribeApp.swift in Sources */,
 				A09E75C3AF1D4CC0EACE3670 /* OpenScribeCore.swift in Sources */,
 				80867FCED39F6D49A72CD0FB /* SessionPresentation.swift in Sources */,
+				E463A3F920D148E6A9BCE201 /* SingleInstanceGuard.swift in Sources */,
 				3D040E77A31B5F287D42504A /* SettingsView.swift in Sources */,
 				EDDBA4832BEA98E75718E55F /* SymbolResolver.swift in Sources */,
 			);

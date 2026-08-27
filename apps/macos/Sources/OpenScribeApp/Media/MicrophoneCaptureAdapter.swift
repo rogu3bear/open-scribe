@@ -5,7 +5,9 @@ enum MicrophoneCaptureAdapterError: Error, Equatable {
   case invalidInputFormat
   case alreadyStarted
   case bufferPoolExhausted
-  case bufferCopyFailed
+  case bufferFrameCapacityExceeded
+  case bufferLayoutMismatch
+  case bufferByteSizeMismatch
   case missingHostTime
   case writerFailed
 }
@@ -28,7 +30,7 @@ final class AVAudioEngineMicrophoneBackend: MicrophoneCaptureBackend, @unchecked
   }
 
   var inputFormat: AVAudioFormat {
-    engine.inputNode.inputFormat(forBus: 0)
+    engine.inputNode.outputFormat(forBus: 0)
   }
 
   func installTap(
@@ -75,12 +77,14 @@ private final class CaptureBufferPool: @unchecked Sendable {
   enum CopyResult {
     case copied(AVAudioPCMBuffer)
     case exhausted
-    case invalid
+    case frameCapacityExceeded
+    case layoutMismatch
+    case byteSizeMismatch
   }
 
   func copyWithoutWaiting(_ source: AVAudioPCMBuffer) -> CopyResult {
     guard source.frameLength <= frameCapacity else {
-      return .invalid
+      return .frameCapacityExceeded
     }
     let sourceList = UnsafeMutableAudioBufferListPointer(source.mutableAudioBufferList)
     guard lock.try() else { return .exhausted }
@@ -94,7 +98,7 @@ private final class CaptureBufferPool: @unchecked Sendable {
     let destinationList = UnsafeMutableAudioBufferListPointer(destination.mutableAudioBufferList)
     guard sourceList.count == destinationList.count else {
       recycleWithoutWaiting(destination)
-      return .invalid
+      return .layoutMismatch
     }
     for index in 0..<sourceList.count {
       let sourceBuffer = sourceList[index]
@@ -104,7 +108,7 @@ private final class CaptureBufferPool: @unchecked Sendable {
         sourceBuffer.mDataByteSize <= destinationBuffer.mDataByteSize
       else {
         recycleWithoutWaiting(destination)
-        return .invalid
+        return .byteSizeMismatch
       }
       memcpy(destinationData, sourceData, Int(sourceBuffer.mDataByteSize))
       destinationBuffer.mDataByteSize = sourceBuffer.mDataByteSize
@@ -136,6 +140,10 @@ final class MicrophoneCaptureAdapter: @unchecked Sendable {
   typealias FailureHandler = @Sendable (MicrophoneCaptureAdapterError) -> Void
 
   private static let bufferSize: AVAudioFrameCount = 4_096
+  // AVAudioEngine treats the tap buffer size as a request. Hardware and
+  // aggregate devices may deliver larger callbacks, so the real-time pool has
+  // a separate, bounded capacity while the requested cadence stays small.
+  private static let maximumCallbackFrames: AVAudioFrameCount = 16_384
   private static let poolCount = 8
 
   private let backend: MicrophoneCaptureBackend
@@ -155,6 +163,7 @@ final class MicrophoneCaptureAdapter: @unchecked Sendable {
   private var failureReported = false
   private var firstSampleReported = false
   private var backendActive = false
+  private var lastWrittenSampleHostTime: UInt64?
 
   init(backend: MicrophoneCaptureBackend, writer: CapturedAudioWriting) {
     self.backend = backend
@@ -191,12 +200,12 @@ final class MicrophoneCaptureAdapter: @unchecked Sendable {
     guard
       let pool = CaptureBufferPool(
         format: format,
-        capacity: Self.bufferSize,
+        capacity: Self.maximumCallbackFrames,
         count: Self.poolCount
       )
     else {
       stateLock.unlock()
-      throw MicrophoneCaptureAdapterError.bufferCopyFailed
+      throw MicrophoneCaptureAdapterError.bufferLayoutMismatch
     }
     started = true
     hasStarted = true
@@ -213,8 +222,14 @@ final class MicrophoneCaptureAdapter: @unchecked Sendable {
       case .exhausted:
         self.reportFailureFromCallback(.bufferPoolExhausted, handler: onFailure)
         return
-      case .invalid:
-        self.reportFailureFromCallback(.bufferCopyFailed, handler: onFailure)
+      case .frameCapacityExceeded:
+        self.reportFailureFromCallback(.bufferFrameCapacityExceeded, handler: onFailure)
+        return
+      case .layoutMismatch:
+        self.reportFailureFromCallback(.bufferLayoutMismatch, handler: onFailure)
+        return
+      case .byteSizeMismatch:
+        self.reportFailureFromCallback(.bufferByteSizeMismatch, handler: onFailure)
         return
       }
       let hostTime = time.isHostTimeValid ? time.hostTime : 0
@@ -236,6 +251,7 @@ final class MicrophoneCaptureAdapter: @unchecked Sendable {
           let writtenFrames = try self.writer.writeCapturedBuffer(copy)
           guard writtenFrames > 0 else { return }
           self.stateLock.lock()
+          self.lastWrittenSampleHostTime = hostTime
           let shouldReport = self.started && !self.firstSampleReported
           if shouldReport {
             self.firstSampleReported = true
@@ -258,18 +274,18 @@ final class MicrophoneCaptureAdapter: @unchecked Sendable {
     do {
       try backend.start()
     } catch {
-      stopIsolated()
+      _ = stopIsolated()
       throw error
     }
   }
 
-  func stop() {
+  func stop() -> UInt64? {
     lifecycleQueue.sync {
       stopIsolated()
     }
   }
 
-  private func stopIsolated() {
+  private func stopIsolated() -> UInt64? {
     stateLock.lock()
     started = false
     stateLock.unlock()
@@ -281,6 +297,10 @@ final class MicrophoneCaptureAdapter: @unchecked Sendable {
     // finish, but stop does not return until every previously queued write has
     // completed. No capture callback waits on this barrier.
     writerQueue.sync {}
+    stateLock.lock()
+    let lastHostTime = lastWrittenSampleHostTime
+    stateLock.unlock()
+    return lastHostTime
   }
 
   private func reportFailureFromCallback(

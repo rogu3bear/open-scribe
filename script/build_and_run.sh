@@ -13,7 +13,7 @@ mode="run"
 
 for argument in "$@"; do
 	case "$argument" in
-	--verify | --logs | --debug | --telemetry)
+	--verify | --logs | --debug | --telemetry | --m1-live-microphone-proof)
 		if [[ "$mode" != "run" ]]; then
 			printf '%s\n' 'Choose exactly one mode.' >&2
 			exit 64
@@ -21,7 +21,7 @@ for argument in "$@"; do
 		mode="$argument"
 		;;
 	*)
-		printf 'usage: %s [--verify|--logs|--debug|--telemetry]\n' "$0" >&2
+		printf 'usage: %s [--verify|--logs|--debug|--telemetry|--m1-live-microphone-proof]\n' "$0" >&2
 		exit 64
 		;;
 	esac
@@ -30,7 +30,19 @@ done
 cd "$repo_root"
 mkdir -p "$macos_root/.build"
 bindings_tmp="$(mktemp -d "$macos_root/.build/uniffi.XXXXXX")"
-trap 'rm -rf "$bindings_tmp"' EXIT
+verify_app_pid=""
+
+cleanup() {
+	if [[ -n "$verify_app_pid" ]]; then
+		observed_command="$(ps -p "$verify_app_pid" -o comm= 2>/dev/null || true)"
+		if [[ "$observed_command" == "$app_binary" ]]; then
+			kill "$verify_app_pid" 2>/dev/null || true
+			wait "$verify_app_pid" 2>/dev/null || true
+		fi
+	fi
+	rm -rf "$bindings_tmp"
+}
+trap cleanup EXIT
 
 rust_library="$(bash "$script_dir/build_rust_macos.sh" "$rust_target_dir")"
 CARGO_TARGET_DIR="$rust_target_dir" cargo run --locked -p open-scribe-uniffi \
@@ -117,6 +129,7 @@ run)
 		test
 	launch_app --m0-proof-settings
 	app_pid="$(<"$pid_file")"
+	verify_app_pid="$app_pid"
 	observed_command="$(ps -p "$app_pid" -o comm=)"
 	[[ "$observed_command" == "$app_binary" ]] || {
 		printf '%s\n' 'M0_NATIVE_RED: observed process does not match staged app' >&2
@@ -154,5 +167,58 @@ run)
 --telemetry)
 	launch_app
 	exec /usr/bin/log stream --info --style compact --predicate "subsystem == \"$bundle_id\""
+	;;
+--m1-live-microphone-proof)
+	if pgrep -f "^$app_binary([[:space:]]|$)" >/dev/null 2>&1; then
+		printf '%s\n' 'M1_LIVE_MICROPHONE_RED: close the existing Open Scribe development app before running the proof' >&2
+		exit 1
+	fi
+	proof_root="$(mktemp -d "$macos_root/.build/m1-live-microphone.XXXXXX")"
+	trap 'rm -rf "$proof_root"' EXIT
+	launch_app --m1-live-microphone-proof-root "$proof_root"
+	app_pid="$(<"$pid_file")"
+	verify_app_pid="$app_pid"
+	capture_receipt=""
+	for _ in {1..120}; do
+		capture_receipt="$(/usr/bin/log show \
+			--last 5m \
+			--info \
+			--style compact \
+			--predicate "processIdentifier == $app_pid && subsystem == \"$bundle_id\" && category == \"CaptureProof\"" \
+			2>/dev/null)"
+		if [[ "$capture_receipt" == *"stage=saved detail=saved"* ]]; then
+			break
+		fi
+		if [[ "$capture_receipt" == *"stage=failed"* ]]; then
+			printf '%s\n' 'M1_LIVE_MICROPHONE_RED: the explicit app proof reported capture failure' >&2
+			printf '%s\n' "$capture_receipt" >&2
+			exit 1
+		fi
+		sleep 0.5
+	done
+	[[ "$capture_receipt" == *"stage=requested detail=explicit-command"* &&
+		"$capture_receipt" == *"stage=capturing detail=first-sample-durable"* &&
+		"$capture_receipt" == *"stage=saved detail=saved"* ]] || {
+		printf '%s\n' 'M1_LIVE_MICROPHONE_RED: requested, first-sample, and saved runtime receipts were not all observed' >&2
+		exit 1
+	}
+	caf_count="$(find "$proof_root" -type f -name '*.caf' | wc -l | tr -d ' ')"
+	[[ "$caf_count" == "1" ]] || {
+		printf 'M1_LIVE_MICROPHONE_RED: expected one managed CAF, found %s\n' "$caf_count" >&2
+		exit 1
+	}
+	caf_file="$(find "$proof_root" -type f -name '*.caf' -print -quit)"
+	caf_bytes="$(stat -f '%z' "$caf_file")"
+	[[ "$caf_bytes" -gt 4096 ]] || {
+		printf 'M1_LIVE_MICROPHONE_RED: managed CAF is unexpectedly small (%s bytes)\n' "$caf_bytes" >&2
+		exit 1
+	}
+	afinfo "$caf_file" >/dev/null
+	caf_digest="$(shasum -a 256 "$caf_file" | awk '{print $1}')"
+	printf '%s\n' \
+		'M1_LIVE_MICROPHONE_GREEN' \
+		"proof=explicit_command,microphone_tcc,real_avaudioengine_input,durable_first_sample,managed_caf,stop_barrier,close_before_seal,rust_independent_digest,playable_caf,bytes:$caf_bytes,sha256:$caf_digest" \
+		'excludes=recording_transition,system_or_application_audio,multiple_required_sources,active_session_recovery,forced_termination_recovery,rotation,two_hour_capture,transcription,diarization,signing,notarization,distribution,public_release' \
+		'media_retained=false'
 	;;
 esac

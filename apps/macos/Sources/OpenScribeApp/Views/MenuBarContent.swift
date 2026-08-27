@@ -4,12 +4,47 @@ import SwiftUI
 struct MenuBarContent: View {
   @Environment(\.openWindow) private var openWindow
   @ObservedObject var store: FixtureSessionStore
+  @ObservedObject var liveRecording: LiveMicrophoneRecordingController
+
+  @MainActor
+  init(
+    store: FixtureSessionStore,
+    liveRecording: LiveMicrophoneRecordingController? = nil
+  ) {
+    self.store = store
+    self.liveRecording = liveRecording ?? LiveMicrophoneRecordingController()
+  }
 
   var body: some View {
+    Text(liveRecording.statusText)
+      .accessibilityLabel(liveRecording.statusText)
+    if let errorMessage = liveRecording.errorMessage {
+      Text(errorMessage)
+        .foregroundStyle(.red)
+    }
+    if let savedPath = liveRecording.savedPath {
+      Text("Saved: \(URL(fileURLWithPath: savedPath).lastPathComponent)")
+        .foregroundStyle(.secondary)
+    }
+    if liveRecording.canStart {
+      Button("Record Microphone") {
+        Task {
+          await liveRecording.start()
+        }
+      }
+      .keyboardShortcut("r", modifiers: [.command, .shift])
+    }
+    if liveRecording.canStop {
+      Button("Stop Capture") {
+        liveRecording.stop()
+      }
+      .keyboardShortcut("s", modifiers: [.command, .shift])
+    }
+    Divider()
+    Text("Development session fixture")
+      .foregroundStyle(.secondary)
     Text(store.displayedLabel)
       .accessibilityLabel(store.displayedAccessibilityValue)
-    Text("Fixture only — no media captured")
-      .foregroundStyle(.secondary)
     ForEach(store.snapshot.sources, id: \.id) { source in
       Text("\(source.name): \(source.activity)")
     }
@@ -46,16 +81,23 @@ struct MenuBarContent: View {
 
 struct MenuBarLabel: View {
   @ObservedObject var store: FixtureSessionStore
+  @ObservedObject var liveRecording: LiveMicrophoneRecordingController
 
   var body: some View {
     Group {
-      if let symbol = store.snapshot.resolvedSymbolName {
+      if liveRecording.isCapturing {
+        Label("Capturing microphone", systemImage: "record.circle.fill")
+      } else if liveRecording.phase == .starting {
+        Label("Starting microphone", systemImage: "waveform")
+      } else if let symbol = store.snapshot.resolvedSymbolName {
         Label(store.displayedLabel, systemImage: symbol)
       } else {
         Text(store.displayedLabel)
       }
     }
-    .accessibilityLabel(store.displayedAccessibilityValue)
+    .accessibilityLabel(
+      liveRecording.isCapturing ? "Capturing microphone" : liveRecording.statusText
+    )
     .onAppear {
       AppTelemetry.sceneAppeared("menu-bar", snapshot: store.snapshot)
     }
