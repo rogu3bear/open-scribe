@@ -1,0 +1,93 @@
+{
+  "schema": "open-scribe.capabilities/v1",
+  "capabilities": [
+    {
+      "id": "native-development-shell",
+      "maturity": "Fixture",
+      "platform": "macOS 13 arm64",
+      "permissions": [],
+      "network": "none",
+      "inputs": ["deterministic Rust fixture"],
+      "outputs": ["SwiftUI window, menu-bar item, settings scene"],
+      "terminology": "Development fixture",
+      "proof_receipt": "M0_COMPLETE_GREEN"
+    },
+    {
+      "id": "short-live-microphone-capture",
+      "maturity": "Fixture",
+      "platform": "macOS 13 arm64",
+      "permissions": ["microphone"],
+      "network": "none",
+      "inputs": ["one explicitly selected Mac microphone"],
+      "outputs": ["one managed, sealed, playable CAF segment"],
+      "terminology": "Capturing microphone",
+      "proof_receipt": "M1_LIVE_MICROPHONE_GREEN"
+    },
+    {
+      "id": "multi-source-recording",
+      "maturity": "Unavailable",
+      "platform": "macOS 13 arm64",
+      "permissions": ["microphone", "screen and system audio"],
+      "network": "none",
+      "inputs": ["microphone", "selected application or system audio"],
+      "outputs": ["durable synchronized source tracks"],
+      "terminology": "Recording",
+      "proof_receipt": "M1_COMPLETE_GREEN"
+    },
+    {
+      "id": "forced-termination-recovery-and-playback",
+      "maturity": "Unavailable",
+      "platform": "macOS 13 arm64",
+      "permissions": [],
+      "network": "none",
+      "inputs": ["interrupted managed session"],
+      "outputs": ["recovered playable media"],
+      "terminology": "Recovered recording",
+      "proof_receipt": "M1_COMPLETE_GREEN"
+    },
+    {
+      "id": "local-transcription",
+      "maturity": "Unavailable",
+      "platform": "macOS 13 arm64",
+      "permissions": [],
+      "network": "not required after an authorized model installation",
+      "inputs": ["sealed or imported audio", "verified installed model"],
+      "outputs": ["timestamped provisional and final transcript"],
+      "terminology": "Transcript",
+      "proof_receipt": "M2_COMPLETE_GREEN"
+    },
+    {
+      "id": "speaker-review-and-conversation-library",
+      "maturity": "Unavailable",
+      "platform": "macOS 13 arm64",
+      "permissions": [],
+      "network": "none",
+      "inputs": ["local media and transcript"],
+      "outputs": ["reviewable speakers, searchable conversations, corrections"],
+      "terminology": "Conversations",
+      "proof_receipt": "M2_COMPLETE_GREEN"
+    },
+    {
+      "id": "context-and-evidence-lineage",
+      "maturity": "Unavailable",
+      "platform": "macOS 13 arm64",
+      "permissions": ["explicitly scoped screen access"],
+      "network": "none",
+      "inputs": ["bounded local context and conversation evidence"],
+      "outputs": ["sparse context events and navigable evidence relationships"],
+      "terminology": "Evidence",
+      "proof_receipt": "M3_COMPLETE_GREEN"
+    },
+    {
+      "id": "optional-intelligence",
+      "maturity": "Unavailable",
+      "platform": "macOS 13 arm64",
+      "permissions": ["separate authorization for each remote category when remote"],
+      "network": "optional and explicitly authorized",
+      "inputs": ["authorized evidence categories"],
+      "outputs": ["labeled derived claims with evidence links"],
+      "terminology": "Derived insight",
+      "proof_receipt": "M4_COMPLETE_GREEN"
+    }
+  ]
+}

@@ -27,6 +27,28 @@ validates that contract.
 artifact lane is implemented and authorized. A future `RELEASE_PREPARE_READY`
 receipt proves only that local inputs exist; it is not a release receipt.
 
+Release inputs are semantic, not presence flags:
+
+- `p0-ledger.v1.json` is valid but deliberately `open`; every entry must be
+  `Passed` with the canonical P0 set, owner, environment, exact artifact test,
+  candidate-bound receipt, and distributed-artifact SHA-256 before preparation
+  can advance.
+- `docs/capabilities/manifest.v1.json` labels only the M0 shell and short local
+  microphone run as `Fixture`; later product capabilities are `Unavailable`.
+- `docs/models/manifest.v1.json` truthfully declares that no large model weight
+  is bundled or admitted.
+- `docs/supply-chain/components.v1.json` is generated from the complete Cargo
+  graph and remains `open` while external-component obligations are reviewed.
+- `script/validate_release_input.sh` rejects malformed schemas and distinguishes
+  unresolved `HOLD` state from a closed input.
+- `script/verify_bundle.sh` now implements read-only app/DMG rejection and
+  verification paths. Its contract tests do not prove that a signed artifact
+  exists or passes.
+- `docs/release/signing-policy.v1.json` remains absent until the operator
+  approves the exact Developer ID team/common name, leaf-certificate SHA-256,
+  and Sparkle public key. The verifier cannot emit a production-identity pass
+  without that separate authority.
+
 ADRs 0015–0017 decide the future capability-true website, production bundle,
 Sparkle, notarization, and staged release authority. They admit implementation
 only after the preceding runtime gates and do not change the current no-release

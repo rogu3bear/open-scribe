@@ -1,0 +1,131 @@
+{
+  "schema": "open-scribe.release-p0-ledger/v1",
+  "status": "open",
+  "candidate": {
+    "version": null,
+    "source_sha": null,
+    "source_tree": null
+  },
+  "entries": [
+    {
+      "id": "explicit-capture-authority",
+      "state": "Open",
+      "owner": "Native runtime owner",
+      "environment": "exact local macOS artifact",
+      "artifact_test": "M1_COMPLETE_GREEN: deliberate start, progressive permission, source visibility, revocation",
+      "receipt": null
+    },
+    {
+      "id": "recording-state-truth",
+      "state": "Open",
+      "owner": "Durable-state owner",
+      "environment": "exact local macOS artifact and Rust store",
+      "artifact_test": "M1_COMPLETE_GREEN: Rust-owned Recording only after all required durable sources",
+      "receipt": null
+    },
+    {
+      "id": "required-source-identity",
+      "state": "Open",
+      "owner": "Platform capture owner",
+      "environment": "exact local macOS artifact with real microphone and selected system source",
+      "artifact_test": "M1_COMPLETE_GREEN: microphone plus validated selected application/system source",
+      "receipt": null
+    },
+    {
+      "id": "media-durability-and-long-session-sync",
+      "state": "Open",
+      "owner": "Durability owner",
+      "environment": "exact local macOS artifact under route, pressure, and two-hour runtime conditions",
+      "artifact_test": "M1_COMPLETE_GREEN: disk pressure, source change, two-hour synchronized capture",
+      "receipt": null
+    },
+    {
+      "id": "forced-termination-recovery",
+      "state": "Open",
+      "owner": "Durability owner",
+      "environment": "exact installed local artifact and managed session root",
+      "artifact_test": "M1_COMPLETE_GREEN: kill, relaunch, discover, recover, and play exact media",
+      "receipt": null
+    },
+    {
+      "id": "evidence-interpretation-separation",
+      "state": "Open",
+      "owner": "Evidence owner",
+      "environment": "exact local artifact with supporting and contradicting evidence fixtures",
+      "artifact_test": "M3_COMPLETE_GREEN: navigable evidence lineage and human adjudication",
+      "receipt": null
+    },
+    {
+      "id": "local-only-network-denial",
+      "state": "Open",
+      "owner": "Privacy owner",
+      "environment": "exact distributed candidate with all network denied",
+      "artifact_test": "M4_COMPLETE_GREEN: useful recorder and review journey with network denied",
+      "receipt": null
+    },
+    {
+      "id": "provider-category-scope",
+      "state": "Open",
+      "owner": "Provider-policy owner",
+      "environment": "exact local artifact with controlled provider and authorization fixtures",
+      "artifact_test": "M4_COMPLETE_GREEN: per-category authorization and provider receipts",
+      "receipt": null
+    },
+    {
+      "id": "deletion",
+      "state": "Open",
+      "owner": "Data-lifecycle owner",
+      "environment": "exact local artifact with managed storage, Trash, backup, and deletion fixtures",
+      "artifact_test": "M4_COMPLETE_GREEN: deletion is explicit, complete, recoverable where promised, and truthfully receipted",
+      "receipt": null
+    },
+    {
+      "id": "permission-revocation",
+      "state": "Open",
+      "owner": "Native runtime and provider-policy owners",
+      "environment": "exact local artifact with microphone, screen, file, and provider permissions revoked during use",
+      "artifact_test": "M1_TO_M4_COMPLETE_GREEN: revocation is visible, bounded, durable, and never silently widens scope",
+      "receipt": null
+    },
+    {
+      "id": "security-of-secrets",
+      "state": "Open",
+      "owner": "Security owner",
+      "environment": "exact distributed artifact, Keychain, logs, diagnostics, source, and provider fixtures",
+      "artifact_test": "M4_COMPLETE_GREEN: credentials remain request-scoped, Keychain-backed, and absent from persistence and logs",
+      "receipt": null
+    },
+    {
+      "id": "content-free-logs",
+      "state": "Open",
+      "owner": "Observability and security owners",
+      "environment": "exact distributed artifact across capture, transcript, OCR, provider, crash, and diagnostic paths",
+      "artifact_test": "M4_COMPLETE_GREEN: logs contain no transcript, OCR, audio, participant, prompt, credential, or private path content",
+      "receipt": null
+    },
+    {
+      "id": "update-integrity",
+      "state": "Open",
+      "owner": "Release owner",
+      "environment": "exact signed candidate plus clean N-1 update machines",
+      "artifact_test": "SIGNED_ARTIFACT_GREEN: signed feed, archive verification, N-1 update, rollback",
+      "receipt": null
+    },
+    {
+      "id": "legal-security-adoption",
+      "state": "Open",
+      "owner": "Repository operator and legal/security reviewers",
+      "environment": "canonical checked sources and authenticated disclosure-channel readback",
+      "artifact_test": "RELEASE_INPUTS_GREEN: adopted legal sources and verified private disclosure channel",
+      "receipt": null
+    },
+    {
+      "id": "website-binary-capability-equality",
+      "state": "Open",
+      "owner": "Release and website owners",
+      "environment": "exact distributed candidate and canonical multi-region public readback",
+      "artifact_test": "CANONICAL_READBACK_GREEN: website claims equal exact distributed runtime manifest",
+      "receipt": null
+    }
+  ]
+}

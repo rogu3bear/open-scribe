@@ -5,8 +5,9 @@ approved. ADRs 0008 and 0014 select intended engines and accepted artifact
 formats; exact weights remain unavailable until their supply-chain and runtime
 proof passes.
 
-ADR 0017 assigns the future machine-readable authority to
-`docs/models/manifest.v1.json`. It must record for every model:
+ADR 0017 assigns machine-readable authority to
+`docs/models/manifest.v1.json`. The checked manifest currently declares no
+models and no bundled large weight. A future admitted entry must record:
 
 - stable identifier and purpose;
 - upstream source, revision, file hashes, and size;

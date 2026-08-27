@@ -12,6 +12,9 @@ fail() {
 
 before_status="$(git status --porcelain=v1 --untracked-files=all)"
 
+"$script_dir/check_release_input_validation.sh"
+"$script_dir/check_verify_bundle.sh"
+
 invalid_output="$("$script_dir/release.sh" prepare invalid 2>&1 || true)"
 rg -q '^RELEASE_PREPARE_USAGE:' <<<"$invalid_output" ||
 	fail "invalid semantic versions do not fail with stable usage output"
@@ -32,11 +35,24 @@ for required in \
 	'^blocker=.*milestone_4_complete_receipt' \
 	'^blocker=.*legal_adoption' \
 	'^blocker=.*private_security_channel' \
-	'^blocker=.*p0_ledger' \
+	'^blocker=p0_ledger_open\|' \
+	'^blocker=supply_chain_manifest_open\|' \
+	'^blocker=capability_runtime_registry\|' \
+	'^blocker=signing_policy\|' \
 	'^blocker=.*release_notes' \
 	'^next=resolve every blocker'; do
 	rg -q "$required" <<<"$prepare_output" ||
 		fail "readiness output is missing: $required"
+done
+
+for forbidden in \
+	'^blocker=model_manifest\|' \
+	'^blocker=p0_ledger\|docs/release/p0-ledger.v1.json is absent' \
+	'^blocker=capability_claim_manifest\|' \
+	'^blocker=artifact_verification\|'; do
+	if rg -q "$forbidden" <<<"$prepare_output"; then
+		fail "readiness output retained resolved or superseded blocker: $forbidden"
+	fi
 done
 
 after_status="$(git status --porcelain=v1 --untracked-files=all)"
@@ -44,5 +60,5 @@ after_status="$(git status --porcelain=v1 --untracked-files=all)"
 
 printf '%s\n' \
 	'RELEASE_PREPARE_CHECK_GREEN' \
-	'proof=stable_semver_rejection,exact_source_binding,complete_predecessor_holds,legal_security_p0_holds,release_notes_hold,read_only_prepare' \
-	'excludes=milestone_completion,version_allocation,signing,notarization,packaging,publication,deployment,public_release'
+	'proof=release_input_schemas,open_input_semantics,bundle_verifier_rejection_contract,stable_semver_rejection,exact_source_binding,complete_predecessor_holds,legal_security_p0_holds,release_notes_hold,read_only_prepare' \
+	'excludes=milestone_completion,version_allocation,signed_artifact_success,notarization,packaging,publication,deployment,public_release'
