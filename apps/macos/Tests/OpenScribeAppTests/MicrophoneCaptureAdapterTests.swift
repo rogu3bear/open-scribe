@@ -1,4 +1,5 @@
 import AVFoundation
+import CoreMedia
 import XCTest
 
 @testable import OpenScribeApp
@@ -180,7 +181,7 @@ final class MicrophoneCaptureAdapterTests: XCTestCase {
     }
     backend.emit(buffer, hostTime: 42_000)
     wait(for: [firstSample, failure], timeout: 1)
-    adapter.stop()
+    _ = adapter.stop()
 
     let receipts = receiptBox.snapshot()
     XCTAssertEqual(receipts.count, 1)
@@ -268,7 +269,7 @@ final class MicrophoneCaptureAdapterTests: XCTestCase {
       writer: writer
     )
     try adapter.start(onFirstSample: { _ in }, onFailure: { _ in })
-    adapter.stop()
+    _ = adapter.stop()
 
     XCTAssertThrowsError(
       try adapter.start(onFirstSample: { _ in }, onFailure: { _ in })
@@ -305,7 +306,7 @@ final class MicrophoneCaptureAdapterTests: XCTestCase {
     backend.emit(oversized, hostTime: 1)
     backend.emit(oversized, hostTime: 2)
     wait(for: [failed], timeout: 1)
-    adapter.stop()
+    _ = adapter.stop()
     XCTAssertEqual(writer.writeCount, 0)
   }
 
@@ -333,7 +334,7 @@ final class MicrophoneCaptureAdapterTests: XCTestCase {
     buffer.frameLength = 64
     backend.emit(buffer, hostTime: 0)
     wait(for: [failed], timeout: 1)
-    adapter.stop()
+    _ = adapter.stop()
     XCTAssertEqual(writer.writeCount, 0)
   }
 
@@ -386,7 +387,7 @@ final class MicrophoneCaptureAdapterTests: XCTestCase {
     backend.emit(buffer, hostTime: 1)
     backend.emit(buffer, hostTime: 2)
     wait(for: [failed], timeout: 1)
-    adapter.stop()
+    _ = adapter.stop()
   }
 
   func testPoolExhaustionFailsClosedWithoutBlockingTheCallback() throws {
@@ -418,7 +419,7 @@ final class MicrophoneCaptureAdapterTests: XCTestCase {
     }
     writer.allowWrite.signal()
     wait(for: [failed], timeout: 1)
-    adapter.stop()
+    _ = adapter.stop()
   }
 
   func testStopSerializesAgainstStartAndLeavesBackendStopped() throws {
@@ -446,7 +447,7 @@ final class MicrophoneCaptureAdapterTests: XCTestCase {
     }
     XCTAssertEqual(startEntered.wait(timeout: .now() + 1), .success)
     DispatchQueue.global().async {
-      adapter.stop()
+      _ = adapter.stop()
       stopReturned.signal()
     }
     XCTAssertEqual(stopReturned.wait(timeout: .now() + 0.05), .timedOut)
@@ -476,7 +477,7 @@ final class MicrophoneCaptureAdapterTests: XCTestCase {
 
     let stopReturned = DispatchSemaphore(value: 0)
     DispatchQueue.global().async {
-      adapter.stop()
+      _ = adapter.stop()
       stopReturned.signal()
     }
     XCTAssertEqual(stopReturned.wait(timeout: .now() + 0.05), .timedOut)
@@ -507,5 +508,47 @@ final class MicrophoneCaptureAdapterTests: XCTestCase {
     writer.allowWrite.signal()
 
     XCTAssertEqual(adapter.stop(), 42_000)
+  }
+
+  func testSystemAudioPresentationTimeMapsToNativeHostClockUnits() throws {
+    let hostClock = CMClockGetHostTimeClock()
+    var sourceTimebase: CMTimebase?
+    XCTAssertEqual(
+      CMTimebaseCreateWithSourceClock(
+        allocator: kCFAllocatorDefault,
+        sourceClock: hostClock,
+        timebaseOut: &sourceTimebase
+      ),
+      noErr
+    )
+    let sourceAnchor = CMTime(value: 123_456, timescale: 48_000)
+    let hostAnchor = CMClockGetTime(hostClock)
+    let timebase = try XCTUnwrap(sourceTimebase)
+    XCTAssertEqual(
+      CMTimebaseSetRateAndAnchorTime(
+        timebase,
+        rate: 1,
+        anchorTime: sourceAnchor,
+        immediateSourceTime: hostAnchor
+      ),
+      noErr
+    )
+    let oneSecond = CMTime(value: 48_000, timescale: 48_000)
+    let presentationTime = CMTimeAdd(sourceAnchor, oneSecond)
+    let expectedHostTime = CMClockConvertHostTimeToSystemUnits(CMTimeAdd(hostAnchor, oneSecond))
+
+    XCTAssertEqual(
+      SystemAudioCaptureAdapter.hostTime(
+        from: presentationTime,
+        synchronizationClock: timebase
+      ),
+      expectedHostTime
+    )
+    XCTAssertNil(
+      SystemAudioCaptureAdapter.hostTime(
+        from: .invalid,
+        synchronizationClock: timebase
+      )
+    )
   }
 }

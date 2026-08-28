@@ -1,8 +1,10 @@
 # Open Scribe Design Contract
 
-**Status:** design strategy and implementation assumptions decided; product implementation and rendered verification pending.
+**Status:** design strategy approved; M0 and bounded M1 truth surfaces implemented; the complete local conversation loop and rendered release verification remain pending.
 
 **Decision date:** 2026-08-20
+
+**Strategy review:** 2026-08-27
 
 **Authority:** presentation and interaction projection of `docs/product/FOUNDING_PRD.md`; it does not supersede product purpose, architecture, milestone scope, or the state machine.
 
@@ -30,19 +32,20 @@ This document selects a direction for intended product and website work. It does
 
 ### Diagnosis — the crux
 
-Open Scribe is a chain-link product: capture authority → durable media → recovery → truthful state → readable evidence → derived interpretation. The weakest unbuilt link is the contract between durable Rust state and what SwiftUI is allowed to say. A polished recorder, website, transcript, or brand system created before that link is proven would amplify the most damaging possible failure: presenting Ready or Starting as Recording, hiding a failed source, or making derived output look more authoritative than evidence. The current M0 shell is honest precisely because it refuses those claims. This diagnosis is wrong if a deterministic coarse state contract cannot drive the menu bar, compact live surface, recovery presentation, and review status without frame-rate media data or speculative UI state.
+Open Scribe is a chain-link product: explicit capture authority → durable independent media → recovery → local conversation library → timestamped transcript → speaker review → evidence-linked interpretation. The repository has proved important portions of the first links, but the chain still stops before one complete operator journey: the working candidate contains a ScreenCaptureKit system-audio path but has not qualified it through real simultaneous capture and synchronization, ordinary and recovered recordings do not yet share a useful library, and transcription remains unimplemented. The critical challenge is therefore not feature scarcity or visual polish; it is finishing one trustworthy local conversation loop without spreading work across later intelligence, context, website, and release lanes. This diagnosis is wrong if recurring operators do not value the complete local loop after using it for two real meetings, or if a materially smaller slice produces the same revisit behavior.
 
 ### Guiding policy
 
-Concentrate design and the first authorized product implementation on one end-to-end truth chain: durable Rust lifecycle and conditions → coarse UniFFI state → redundant native menu/live presentation → transition and recovery proof. Use native platform defaults everywhere that is not part of this chain, because Open Scribe's specific advantage is inspectable local evidence and capture authority—not an AI aesthetic, cloud collaboration, or visual novelty.
+Concentrate all product and repository work on one native, local-first conversation loop: deliberate menu-bar capture or import → recoverable source audio → transcript and speaker review → searchable conversation document → evidence-linked export. Complete each weak link to an observable threshold before funding the next. Use native platform defaults outside this chain, because Open Scribe's specific advantage is inspectable local evidence and user-held capture authority—not an AI aesthetic, cloud collaboration, or visual novelty.
 
 Therefore Open Scribe will not:
 
-- grow product UI around the M0 diagnostic shell;
-- implement the website visual direction in parallel with the first native truth tranche;
+- grow product UI around the M0 diagnostic shell or expose fixtures as product behavior;
+- implement website promotion in parallel with the native conversation loop;
 - use custom native fonts, a decorative native palette, recording red as branding, or motion as status;
-- make transcript, AI memory, evidence graphs, or context observation the first product surface;
+- build context observation, remote providers, autonomous actions, team workspaces, or a plugin platform before the local loop is useful;
 - send frame-rate meters, waveforms, pointer samples, or media through the ordinary UniFFI state contract;
+- require an account, network connection, or remote model to record, recover, play, transcribe, review speakers, search, or export;
 - claim Recording, recovery, accessibility, website behavior, release, or deployment from a lower proof plane.
 
 ### Sources of power
@@ -54,21 +57,34 @@ Therefore Open Scribe will not:
 
 ### Proximate objective
 
-In the first operator-authorized post-M0 implementation tranche, produce one deterministic, non-media state fixture consumed by SwiftUI that covers Idle, Ready, Starting, Recording, Paused, Finalizing, Ready for Review, Degraded, Permission revoked, and Recovery required. It is done only when automated Rust/UniFFI tests prove that Recording is impossible before durable journal and media preconditions, and the native menu and compact live surface render every fixture with label, symbol, sources, timer behavior, accessibility value, and recovery action. The first tranche does not implement transcript, AI, context observation, website visuals, signing, or release.
+By 2026-09-10, qualify one exact local macOS artifact for a real meeting that deliberately captures microphone plus the validated all-system-audio mode into separate durable tracks, enters Recording only after both sources have first-sample evidence, survives source loss or forced termination without discarding playable media, and presents the result as one recoverable conversation. This objective does not require bit-for-bit deterministic audio or transcript output; it requires truthful lifecycle decisions and observable preservation outcomes. Transcription, diarization, context, signing, and public release do not satisfy or substitute for this objective.
 
 ### Coherent actions
 
 | Sequence | Action | Owner and resources | Start | Done-test | Reinforces |
 |---:|---|---|---|---|---|
-| 0 | Lock the decisions in this contract. | Repository design authority; this document and current research only. | Now. | Direction, state meanings, window target, symbols, typography, web palette, meter cadence, overlay values, no-list, and revision triggers are explicit. | Every later action uses one contract. |
-| 1 | Define the coarse lifecycle/condition payload and deterministic fixtures. | Rust core owner plus macOS integration owner; one bounded Rust/UniFFI tranche and contract tests. | First two weeks after explicit post-M0 authorization. | Every state/condition fixture round-trips; Recording requires durable preconditions; no frame-rate or media payload crosses the contract. | Makes actions 2 and 3 testable without fake capture. |
-| 2 | Build the two truth surfaces from the same fixture. | macOS UI owner; one bounded SwiftUI tranche using native components. | Immediately after action 1. | Menu bar and compact live surface render the full matrix; Ready/Starting cannot be mistaken for Recording under keyboard and VoiceOver inspection. | Exposes contract drift before real capture raises the stakes. |
-| 3 | Prove real transitions, failure, and recovery against the surfaces. | Capture/recovery integration owner with macOS UI owner; one joint runtime-proof tranche. | Only after capture implementation is explicitly authorized. | Starting → Recording occurs only after durable media/journal state; pause, source failure, permission revocation, forced termination, and recovery receipts match visible state. | Converts fixture truth into artifact truth. |
-| 4 | Unlock review and website presentation only after the truth chain passes. | Repository operator; no preallocated implementation lane. | After action 3's exact-head receipt. | A reviewed decision authorizes the next milestone; otherwise those lanes remain stopped. | Preserves concentration and prevents design debt built on false state. |
+| 0 | Preserve the admitted durable-state and microphone/recovery foundation. | Durable-state and native owners; current Rust/UniFFI/Swift code and focused tests. | Complete. | Required-source authority and forced-exit microphone recovery remain green on their admitted candidates; later work does not weaken them. | Gives action 1 a trustworthy base. |
+| 1 | Complete and qualify simultaneous microphone plus system-audio recording. | Platform capture, durable-state, and native UX owners; one concentrated M1 lane. | 2026-08-27. | `M1_COMPLETE_GREEN` proves deliberate start, progressive permission, visible sources, two durable tracks, truthful Recording, stop/seal/playback, source failure, disk pressure, two-hour sync, forced termination, and recovery on one exact artifact. | Produces the evidence-bearing input used by every later action. |
+| 2 | Unify live, recovered, and imported audio in one local conversation library. | Conversation-library owner with native UX and storage owners. | After action 1; target 2026-09-17. | A user can find, name, play, retain, delete through the declared lifecycle, and reopen live/recovered/imported conversations without an account or network. | Makes captured evidence revisitable and gives action 3 one input contract. |
+| 3 | Add local transcription and speaker review as replaceable derived work. | ASR, diarization, evidence, and native UX owners. | After action 2; target 2026-10-08. | `M2_COMPLETE_GREEN` proves provisional live text, final timestamped transcript, speaker correction, search, retry/replacement, and unchanged playable source audio under model failure and network denial. | Turns the library into useful conversation memory without owning the evidence. |
+| 4 | Add evidence lineage and optional, explicitly scoped intelligence. | Evidence, context, provider-policy, privacy, and native UX owners. | After action 3; target 2026-10-29. | `M3_COMPLETE_GREEN` and `M4_COMPLETE_GREEN` prove navigable supporting/contradicting evidence, human adjudication, local-only usefulness, deletion, content-free logs, and per-category authorization for any remote flow. | Makes extracted information useful without weakening source authority. |
+| 5 | Qualify the first-class repository and only then prepare `0.1.0`. | Build, security, legal, accessibility, release, and website owners; exact-candidate gates plus independent review. | After action 4; target 2026-11-12. | Contributor setup, canonical checks, manifests, notices, private disclosure, adopted legal text, complete P0 receipts, signed/notarized artifacts, clean-machine tests, release notes, and capability-true public readback all bind to the same immutable candidate. | Makes public trust consistent with product trust. |
+
+**Stop doing:** no context capture, remote provider integration, autonomous follow-up, collaboration workspace, plugin platform, broad website promotion, or release publication while an earlier action lacks its exact completion receipt.
+
+### Create-destroy review
+
+Three plausible alternatives were attacked before adopting this revision:
+
+1. **Transcript first:** faster visible novelty, but it leaves both-side capture and recovery incomplete; a good transcript cannot reconstruct missing audio. Rejected.
+2. **Repository/release polish first:** improves contributor perception, but risks packaging fixture capability as a product and diverts effort from the chain's weakest runtime link. Rejected; repository quality work remains coupled to each admitted slice and culminates after M4.
+3. **Broad parallel build:** capture, models, context, web, and release advance together, but each depends on unstable meanings from the prior link and no lane crosses a visible threshold. Rejected in favor of sequential concentration.
+
+After this revision the kernel scores 10/10 by passing all eight strategy diagnostic rows: named challenge, choiceful policy, coordinated and resourced actions, Open-Scribe-specific asymmetry, proximate first objective, explicit sources of power, a binding no-list, and an adversarial create-destroy review.
 
 ### Review trigger
 
-Re-test this diagnosis when the first exact native artifact completes the state matrix, or earlier if action 1 shows that one coarse contract cannot serve both menu and live surfaces. Revise decisions from observed failures; do not reopen them because an untested alternative is fashionable.
+Re-test this diagnosis when `M1_COMPLETE_GREEN` exists and again after two recurring operators use the exact app for two real meetings each. Revise the kernel if users do not revisit the local conversation record, if all-system-audio is not the capture mode they require, or if the complete loop does not displace their prior workflow. Do not reopen the sequence because an untested alternative is fashionable.
 
 ## 2. Repository design evidence
 

@@ -2,7 +2,7 @@
 
 Open Scribe is a greenfield, open-source macOS conversation instrument intended to record conversations reliably, preserve local evidence, and connect derived meeting memory back to its sources.
 
-> **Repository status: Milestone 0 development proof plus bounded early-M1 microphone recovery and required-source authority.** Rust durably declares the sources required for a session and enters `Recording` only after each has open managed media and first-sample evidence. The Swift microphone path uses that authority; forced-exit recovery remains byte preserving and playable. This does not prove ScreenCaptureKit system audio, real simultaneous multi-source capture, source-loss handling, two-hour operation, transcription, signing, distribution, or public release.
+> **Repository status: Milestone 0 development proof plus a bounded M1 multi-source source candidate.** Rust durably declares the sources required for a session, enters `Recording` only after each has open managed media and first-sample evidence, interrupts post-Recording failures, and recovers multi-track sessions atomically. Swift contains microphone and ScreenCaptureKit all-system-audio adapters wired to that authority. Focused Rust and unsigned native tests pass, but no real simultaneous system-audio runtime receipt exists. This does not prove live system-audio capture, real multi-source playback, source-loss handling, two-hour operation, transcription, signing, distribution, or public release.
 
 The founding product contract is `docs/product/FOUNDING_PRD.md`. Start with `NORTH_STAR.md`, `ANCHOR.md`, and `AGENTS.md` for the compact operating view.
 
@@ -17,7 +17,7 @@ The founding product contract is `docs/product/FOUNDING_PRD.md`. Start with `NOR
 ## Repository map
 
 `
-apps/macos/                  Xcode-owned shell plus bounded microphone adapter foundation
+apps/macos/                  Xcode-owned shell plus bounded microphone/system-audio source candidate
 crates/open-scribe-*/        shared semantics plus native preparation/media integrity evidence
 web/                         stateless Leptos Worker/Assets development foundation
 docs/                        product, architecture, legal, design, model, format, and release truth
@@ -46,7 +46,7 @@ journal, binding, failure-path, and media-preservation regression chain. That
 repository gate supports the recorder; it is not the runtime proof. Run
 `./script/check.sh --m1-forced-termination-recovery` for the exact real-device
 capture, external-kill, relaunch, recovery, persistent playback, and independent
-decode receipt. None proves system audio, multi-source `Recording`, source-loss
+decode receipt. None proves live system audio, real multi-source playback, source-loss
 handling, two-hour operation, transcription, signed entitlement enforcement,
 deployment, notarization, distribution, or public release.
 

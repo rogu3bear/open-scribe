@@ -461,6 +461,11 @@ struct PlayableRecoveryCandidate {
     file_inode: u64,
 }
 
+struct PlayableRecoveryProjection {
+    payload: Value,
+    journal_record: JournalRecord,
+}
+
 struct ValidatedMediaFile {
     byte_length: u64,
     device: u64,
@@ -780,7 +785,7 @@ impl SessionStore {
                     "repeated interruption changed accepted evidence",
                 ));
             }
-            if lifecycle == "preparing" {
+            if matches!(lifecycle.as_str(), "preparing" | "recording") {
                 self.project_session_interruption(&request.session_id.0, &last.body.payload, last)?;
             } else if lifecycle != "interrupted" {
                 return Err(StoreError::InvalidState(
@@ -801,7 +806,7 @@ impl SessionStore {
                 "session projection has no interruption evidence",
             ));
         }
-        if lifecycle != "preparing" {
+        if !matches!(lifecycle.as_str(), "preparing" | "recording") {
             return Err(StoreError::InvalidState(
                 "session is not awaiting interruption evidence",
             ));
@@ -840,7 +845,9 @@ impl SessionStore {
                  JOIN tracks ON tracks.session_id = sessions.id AND tracks.source_id = sources.id
                  JOIN segments ON segments.session_id = sessions.id
                               AND segments.track_id = tracks.id
-                 WHERE sessions.lifecycle IN ('preparing', 'recording', 'interrupted')
+                 WHERE sessions.lifecycle IN (
+                           'preparing', 'recording', 'interrupted', 'ready_for_review'
+                       )
                    AND segments.lifecycle = 'capturing'
                  ORDER BY sessions.id, segments.sequence",
             )?;
@@ -858,87 +865,111 @@ impl SessionStore {
             rows.collect::<Result<Vec<_>, _>>()?
         };
 
-        let mut plans = Vec::new();
+        let mut candidates_by_session = BTreeMap::<String, Vec<_>>::new();
         for candidate in candidates {
-            let journal_path = self
-                .session_directory(&candidate.session_id)?
-                .join(JOURNAL_NAME);
-            let records = match validate_journal(&journal_path, &candidate.session_id)? {
+            candidates_by_session
+                .entry(candidate.session_id.clone())
+                .or_default()
+                .push(candidate);
+        }
+
+        let mut plans_by_session = Vec::new();
+        for (session_id, candidates) in candidates_by_session {
+            let journal_path = self.session_directory(&session_id)?.join(JOURNAL_NAME);
+            let records = match validate_journal(&journal_path, &session_id)? {
                 JournalValidation::Valid(records) => records,
                 _ => continue,
             };
-            let Some(first_sample) = journal_record_for_segment(
-                &records,
-                "first_sample_captured",
-                &candidate.segment_id,
-            )?
-            else {
-                continue;
-            };
-            let observed_byte_length =
-                payload_u64(&first_sample.body.payload, "observed_byte_length")?;
-            let validated = match self.validate_media_file(
-                &candidate.session_id,
-                &candidate.relative_path,
-                MediaLengthRequirement::AtLeast(observed_byte_length),
-                true,
-            ) {
-                Ok(validated) => validated,
-                Err(_) => continue,
-            };
-            if validated.device != candidate.file_device || validated.inode != candidate.file_inode
-            {
-                continue;
+            let mut plans = Vec::new();
+            for candidate in candidates {
+                let Some(first_sample) = journal_record_for_segment(
+                    &records,
+                    "first_sample_captured",
+                    &candidate.segment_id,
+                )?
+                else {
+                    plans.clear();
+                    break;
+                };
+                let observed_byte_length =
+                    payload_u64(&first_sample.body.payload, "observed_byte_length")?;
+                let validated = match self.validate_media_file(
+                    &candidate.session_id,
+                    &candidate.relative_path,
+                    MediaLengthRequirement::AtLeast(observed_byte_length),
+                    true,
+                ) {
+                    Ok(validated) => validated,
+                    Err(_) => {
+                        plans.clear();
+                        break;
+                    }
+                };
+                if validated.device != candidate.file_device
+                    || validated.inode != candidate.file_inode
+                {
+                    plans.clear();
+                    break;
+                }
+                let Some(sample_count) = validated.recoverable_sample_count else {
+                    plans.clear();
+                    break;
+                };
+                let digest_sha256 = validated
+                    .digest_sha256
+                    .ok_or(StoreError::IntegrityMismatch("recovery digest is missing"))?;
+                let payload = json!({
+                    "source_id": candidate.source_id,
+                    "track_id": candidate.track_id,
+                    "segment_id": candidate.segment_id,
+                    "relative_path": candidate.relative_path,
+                    "sample_count": sample_count,
+                    "final_byte_length": validated.byte_length,
+                    "digest_sha256": digest_sha256,
+                    "file_device": validated.device,
+                    "file_inode": validated.inode,
+                    "truncated_bytes": 0,
+                });
+                plans.push(payload);
             }
-            let Some(sample_count) = validated.recoverable_sample_count else {
-                continue;
-            };
-            let digest_sha256 = validated
-                .digest_sha256
-                .ok_or(StoreError::IntegrityMismatch("recovery digest is missing"))?;
-            let payload = json!({
-                "source_id": candidate.source_id,
-                "track_id": candidate.track_id,
-                "segment_id": candidate.segment_id,
-                "relative_path": candidate.relative_path,
-                "sample_count": sample_count,
-                "final_byte_length": validated.byte_length,
-                "digest_sha256": digest_sha256,
-                "file_device": validated.device,
-                "file_inode": validated.inode,
-                "truncated_bytes": 0,
-            });
-            plans.push((candidate, payload));
+            if !plans.is_empty() {
+                plans_by_session.push((session_id, plans));
+            }
         }
 
-        for (candidate, payload) in plans {
-            let journal_path = self
-                .session_directory(&candidate.session_id)?
-                .join(JOURNAL_NAME);
-            let records = match validate_journal(&journal_path, &candidate.session_id)? {
-                JournalValidation::Valid(records) => records,
-                _ => return Err(StoreError::IntegrityMismatch("session journal changed")),
-            };
-            let journal_record = if records
-                .last()
-                .is_some_and(|record| record.body.event_kind == "playable_media_recovered")
-            {
-                let existing = records.last().expect("checked journal tail");
-                if existing.body.payload != payload {
-                    return Err(StoreError::IntegrityMismatch(
-                        "recovery plan changed accepted evidence",
-                    ));
-                }
-                existing.clone()
-            } else {
-                self.append_session_journal(
-                    &candidate.session_id,
-                    "playable_media_recovered",
-                    Some(&candidate.relative_path),
-                    payload.clone(),
-                )?
-            };
-            self.project_playable_recovery(&candidate.session_id, &payload, &journal_record)?;
+        for (session_id, plans) in plans_by_session {
+            let mut projections = Vec::new();
+            for payload in plans {
+                let segment_id = payload_string(&payload, "segment_id")?;
+                let relative_path = payload_string(&payload, "relative_path")?;
+                let journal_path = self.session_directory(&session_id)?.join(JOURNAL_NAME);
+                let records = match validate_journal(&journal_path, &session_id)? {
+                    JournalValidation::Valid(records) => records,
+                    _ => return Err(StoreError::IntegrityMismatch("session journal changed")),
+                };
+                let journal_record = if let Some(existing) =
+                    journal_record_for_segment(&records, "playable_media_recovered", segment_id)?
+                {
+                    if existing.body.payload != payload {
+                        return Err(StoreError::IntegrityMismatch(
+                            "recovery plan changed accepted evidence",
+                        ));
+                    }
+                    existing.clone()
+                } else {
+                    self.append_session_journal(
+                        &session_id,
+                        "playable_media_recovered",
+                        Some(relative_path),
+                        payload.clone(),
+                    )?
+                };
+                projections.push(PlayableRecoveryProjection {
+                    payload,
+                    journal_record,
+                });
+            }
+            self.project_playable_recovery_session(&session_id, &projections)?;
         }
         self.recovered_playable_sessions()
     }
@@ -955,8 +986,11 @@ impl SessionStore {
                  JOIN session_events ON session_events.session_id = sessions.id
                  WHERE sessions.lifecycle = 'ready_for_review'
                    AND segments.lifecycle = 'sealed'
-                   AND segments.recovery_state = 'recovered'
-                   AND session_events.event_kind = 'playable_media_recovered'
+                   AND EXISTS (
+                       SELECT 1 FROM session_events recovery_events
+                       WHERE recovery_events.session_id = sessions.id
+                         AND recovery_events.event_kind = 'playable_media_recovered'
+                   )
                  GROUP BY sessions.id, segments.id
                  ORDER BY sessions.updated_at_ms DESC, segments.sequence",
             )?;
@@ -1896,6 +1930,12 @@ impl SessionStore {
             ));
         }
         transaction.execute(
+            "UPDATE required_sources SET lifecycle = 'sealed'
+             WHERE session_id = ?1
+               AND kind = (SELECT kind FROM sources WHERE id = ?2 AND session_id = ?1)",
+            params![session_id, source_id],
+        )?;
+        transaction.execute(
             "UPDATE sessions
              SET media_files_open = EXISTS(
                     SELECT 1 FROM segments
@@ -1946,7 +1986,7 @@ impl SessionStore {
         let transaction = self.connection.transaction()?;
         let changed = transaction.execute(
             "UPDATE sessions SET lifecycle = 'interrupted', updated_at_ms = ?2
-             WHERE id = ?1 AND lifecycle = 'preparing'",
+             WHERE id = ?1 AND lifecycle IN ('preparing', 'recording')",
             params![session_id, journal_record.body.wall_time_milliseconds],
         )?;
         if changed != 1 {
@@ -1969,82 +2009,134 @@ impl SessionStore {
         Ok(())
     }
 
-    fn project_playable_recovery(
+    fn project_playable_recovery_session(
         &mut self,
         session_id: &str,
-        payload: &Value,
-        journal_record: &JournalRecord,
+        projections: &[PlayableRecoveryProjection],
     ) -> Result<(), StoreError> {
-        let source_id = payload_string(payload, "source_id")?;
-        let track_id = payload_string(payload, "track_id")?;
-        let segment_id = payload_string(payload, "segment_id")?;
-        let sample_count = payload_u64(payload, "sample_count")?;
-        let final_byte_length = payload_u64(payload, "final_byte_length")?;
-        let digest_sha256 = payload_string(payload, "digest_sha256")?;
-        let (event_sequence, prior_digest) = next_database_event(&self.connection, session_id)?;
-        let event_hash = event_digest(
-            session_id,
-            event_sequence,
-            "playable_media_recovered",
-            payload,
-            prior_digest.as_deref(),
-        )?;
-        let transaction = self.connection.transaction()?;
-        let changed = transaction.execute(
-            "UPDATE segments
-             SET lifecycle = 'sealed', sample_count = ?2, byte_length = ?3,
-                 digest = ?4, seal_state = 'sealed', recovery_state = 'recovered'
-             WHERE id = ?1 AND session_id = ?5 AND lifecycle = 'capturing'",
-            params![
-                segment_id,
-                sample_count as i64,
-                final_byte_length as i64,
-                digest_sha256,
-                session_id,
-            ],
-        )?;
-        if changed != 1 {
-            return Err(StoreError::InvalidState(
-                "segment projection is not awaiting playable recovery",
-            ));
+        if projections.is_empty() {
+            return Err(StoreError::InvalidRequest("recovery projection is empty"));
         }
-        let source_changed = transaction.execute(
-            "UPDATE sources SET lifecycle = 'sealed'
-             WHERE id = ?1 AND session_id = ?2 AND lifecycle = 'capturing'",
-            params![source_id, session_id],
+        let (mut event_sequence, mut prior_digest) =
+            next_database_event(&self.connection, session_id)?;
+        let transaction = self.connection.transaction()?;
+        let mut updated_at_ms = 0;
+        for projection in projections {
+            let payload = &projection.payload;
+            let journal_record = &projection.journal_record;
+            let source_id = payload_string(payload, "source_id")?;
+            let track_id = payload_string(payload, "track_id")?;
+            let segment_id = payload_string(payload, "segment_id")?;
+            let sample_count = payload_u64(payload, "sample_count")?;
+            let final_byte_length = payload_u64(payload, "final_byte_length")?;
+            let digest_sha256 = payload_string(payload, "digest_sha256")?;
+            let changed = transaction.execute(
+                "UPDATE segments
+                 SET lifecycle = 'sealed', sample_count = ?2, byte_length = ?3,
+                     digest = ?4, seal_state = 'sealed', recovery_state = 'recovered'
+                 WHERE id = ?1 AND session_id = ?5 AND lifecycle = 'capturing'",
+                params![
+                    segment_id,
+                    sample_count as i64,
+                    final_byte_length as i64,
+                    digest_sha256,
+                    session_id,
+                ],
+            )?;
+            if changed != 1 {
+                return Err(StoreError::InvalidState(
+                    "segment projection is not awaiting playable recovery",
+                ));
+            }
+            let source_changed = transaction.execute(
+                "UPDATE sources SET lifecycle = 'sealed'
+                 WHERE id = ?1 AND session_id = ?2 AND lifecycle = 'capturing'",
+                params![source_id, session_id],
+            )?;
+            let track_changed = transaction.execute(
+                "UPDATE tracks SET lifecycle = 'sealed'
+                 WHERE id = ?1 AND session_id = ?2 AND lifecycle = 'capturing'",
+                params![track_id, session_id],
+            )?;
+            if source_changed != 1 || track_changed != 1 {
+                return Err(StoreError::InvalidState(
+                    "source or track projection is not awaiting playable recovery",
+                ));
+            }
+            transaction.execute(
+                "UPDATE required_sources SET lifecycle = 'sealed'
+                 WHERE session_id = ?1
+                   AND kind = (SELECT kind FROM sources WHERE id = ?2 AND session_id = ?1)",
+                params![session_id, source_id],
+            )?;
+            let event_hash = event_digest(
+                session_id,
+                event_sequence,
+                "playable_media_recovered",
+                payload,
+                prior_digest.as_deref(),
+            )?;
+            insert_event_with_id(
+                &transaction,
+                &journal_record.body.event_id,
+                session_id,
+                event_sequence,
+                "playable_media_recovered",
+                journal_record.body.wall_time_milliseconds,
+                payload,
+                prior_digest.as_deref(),
+                &event_hash,
+            )?;
+            event_sequence += 1;
+            prior_digest = Some(event_hash);
+            updated_at_ms = updated_at_ms.max(journal_record.body.wall_time_milliseconds);
+        }
+        transaction.execute(
+            "UPDATE required_sources AS required
+             SET lifecycle = 'sealed'
+             WHERE required.session_id = ?1
+               AND EXISTS (
+                   SELECT 1 FROM sources
+                   JOIN tracks ON tracks.source_id = sources.id
+                   JOIN segments ON segments.track_id = tracks.id
+                   WHERE sources.session_id = required.session_id
+                     AND sources.kind = required.kind
+                     AND sources.lifecycle = 'sealed'
+                     AND tracks.lifecycle = 'sealed'
+                     AND segments.lifecycle = 'sealed'
+               )",
+            [session_id],
         )?;
-        let track_changed = transaction.execute(
-            "UPDATE tracks SET lifecycle = 'sealed'
-             WHERE id = ?1 AND session_id = ?2 AND lifecycle = 'capturing'",
-            params![track_id, session_id],
+        let incomplete_segments: i64 = transaction.query_row(
+            "SELECT COUNT(*) FROM segments
+             WHERE session_id = ?1 AND lifecycle IN ('opening', 'open', 'capturing')",
+            [session_id],
+            |row| row.get(0),
         )?;
-        if source_changed != 1 || track_changed != 1 {
+        let incomplete_sources: i64 = transaction.query_row(
+            "SELECT COUNT(*) FROM required_sources
+             WHERE session_id = ?1 AND lifecycle != 'sealed'",
+            [session_id],
+            |row| row.get(0),
+        )?;
+        if incomplete_segments != 0 || incomplete_sources != 0 {
             return Err(StoreError::InvalidState(
-                "source or track projection is not awaiting playable recovery",
+                "session recovery is missing a required playable source",
             ));
         }
         let session_changed = transaction.execute(
             "UPDATE sessions
              SET lifecycle = 'ready_for_review', media_files_open = 0, updated_at_ms = ?2
-             WHERE id = ?1 AND lifecycle IN ('preparing', 'recording', 'interrupted')",
-            params![session_id, journal_record.body.wall_time_milliseconds],
+             WHERE id = ?1 AND lifecycle IN (
+                       'preparing', 'recording', 'interrupted', 'ready_for_review'
+                   )",
+            params![session_id, updated_at_ms],
         )?;
         if session_changed != 1 {
             return Err(StoreError::InvalidState(
                 "session projection is not awaiting playable recovery",
             ));
         }
-        insert_event_with_id(
-            &transaction,
-            &journal_record.body.event_id,
-            session_id,
-            event_sequence,
-            "playable_media_recovered",
-            journal_record.body.wall_time_milliseconds,
-            payload,
-            prior_digest.as_deref(),
-            &event_hash,
-        )?;
         transaction.execute(
             "INSERT INTO recovery_runs (
                 id, schema_version, session_id, disposition, created_at_ms
@@ -2053,7 +2145,7 @@ impl SessionStore {
                 Uuid::now_v7().to_string(),
                 SCHEMA_VERSION,
                 session_id,
-                journal_record.body.wall_time_milliseconds,
+                updated_at_ms,
             ],
         )?;
         transaction.commit()?;
@@ -2284,7 +2376,7 @@ impl SessionStore {
         {
             let mut statement = self.connection.prepare(
                 "SELECT id, journal_durable FROM sessions
-                 WHERE lifecycle IN ('preparing', 'interrupted') ORDER BY id",
+                 WHERE lifecycle IN ('preparing', 'recording', 'interrupted') ORDER BY id",
             )?;
             let rows = statement.query_map([], |row| {
                 Ok((row.get::<_, String>(0)?, row.get::<_, bool>(1)?))
@@ -2564,7 +2656,7 @@ impl SessionStore {
             [session_id],
             |row| row.get(0),
         )?;
-        if lifecycle == "preparing" {
+        if matches!(lifecycle.as_str(), "preparing" | "recording") {
             self.project_session_interruption(
                 session_id,
                 &interruption.body.payload,
@@ -3889,6 +3981,52 @@ mod tests {
         (prepared, authorization, observed_byte_length)
     }
 
+    fn prepared_dual_first_samples(
+        store: &mut SessionStore,
+    ) -> (
+        PreparedSessionReceipt,
+        MediaOpenAuthorization,
+        MediaOpenAuthorization,
+    ) {
+        let prepared = store
+            .prepare_session_with_required_sources(
+                request(),
+                vec![MediaSourceKind::Microphone, MediaSourceKind::SystemAudio],
+            )
+            .unwrap();
+        let microphone = store
+            .authorize_media_open(AuthorizeMediaOpenRequest {
+                session_id: prepared.session_id.clone(),
+                source_kind: MediaSourceKind::Microphone,
+                source_display_name: "Mac microphone".to_owned(),
+            })
+            .unwrap();
+        let microphone_initial = write_test_caf(&microphone);
+        store
+            .accept_media_open(media_receipt(&microphone, microphone_initial))
+            .unwrap();
+        let system = store
+            .authorize_media_open(AuthorizeMediaOpenRequest {
+                session_id: prepared.session_id.clone(),
+                source_kind: MediaSourceKind::SystemAudio,
+                source_display_name: "Mac system audio".to_owned(),
+            })
+            .unwrap();
+        let system_initial = write_test_caf(&system);
+        store
+            .accept_media_open(media_receipt(&system, system_initial))
+            .unwrap();
+        let microphone_observed = append_first_sample(&microphone);
+        store
+            .accept_first_sample(first_sample_receipt(&microphone, microphone_observed))
+            .unwrap();
+        let system_observed = append_first_sample(&system);
+        store
+            .accept_first_sample(first_sample_receipt(&system, system_observed))
+            .unwrap();
+        (prepared, microphone, system)
+    }
+
     fn replace_with_recoverable_pcm_caf(authorization: &MediaOpenAuthorization, sample_count: u64) {
         let mut file = OpenOptions::new()
             .write(true)
@@ -4880,6 +5018,175 @@ mod tests {
     }
 
     #[test]
+    fn dual_source_recovery_projects_both_tracks_atomically_and_idempotently() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path().join("Open Scribe");
+        let session_id;
+        let microphone_path;
+        let system_path;
+        let microphone_bytes;
+        let system_bytes;
+        {
+            let mut store = SessionStore::open(&root).unwrap();
+            let (prepared, microphone, system) = prepared_dual_first_samples(&mut store);
+            session_id = prepared.session_id.clone();
+            replace_with_recoverable_pcm_caf(&microphone, 4_800);
+            replace_with_recoverable_pcm_caf(&system, 4_800);
+            microphone_path = microphone.absolute_path.clone();
+            system_path = system.absolute_path.clone();
+            microphone_bytes = fs::read(&microphone_path).unwrap();
+            system_bytes = fs::read(&system_path).unwrap();
+            store.confirm_recording(session_id.clone()).unwrap();
+            store
+                .interrupt_session(InterruptSessionRequest {
+                    session_id: session_id.clone(),
+                    reason: SessionInterruptionReason::CaptureFailed,
+                })
+                .unwrap();
+        }
+
+        let mut reopened = SessionStore::open(&root).unwrap();
+        let recovered = reopened.recover_playable_sessions().unwrap();
+        assert_eq!(recovered.len(), 2);
+        assert!(recovered.iter().all(|item| item.session_id == session_id));
+        assert_eq!(
+            database_value(
+                &reopened,
+                "SELECT COUNT(*) FROM segments WHERE lifecycle = 'sealed' AND recovery_state = 'recovered'",
+            ),
+            2
+        );
+        assert_eq!(
+            database_value(
+                &reopened,
+                "SELECT COUNT(*) FROM required_sources WHERE lifecycle = 'sealed'",
+            ),
+            2
+        );
+        assert_eq!(
+            database_value(
+                &reopened,
+                "SELECT COUNT(*) FROM sessions WHERE lifecycle = 'ready_for_review'",
+            ),
+            1
+        );
+        assert_eq!(fs::read(&microphone_path).unwrap(), microphone_bytes);
+        assert_eq!(fs::read(&system_path).unwrap(), system_bytes);
+
+        let repeated = reopened.recover_playable_sessions().unwrap();
+        assert_eq!(repeated.len(), 2);
+        assert_eq!(
+            database_value(
+                &reopened,
+                "SELECT COUNT(*) FROM recovery_runs WHERE disposition = 'playable_media_recovered'",
+            ),
+            1
+        );
+    }
+
+    #[test]
+    fn dual_source_recovery_refuses_partial_projection_when_one_track_is_invalid() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path().join("Open Scribe");
+        let microphone_path;
+        let microphone_bytes;
+        {
+            let mut store = SessionStore::open(&root).unwrap();
+            let (prepared, microphone, _) = prepared_dual_first_samples(&mut store);
+            replace_with_recoverable_pcm_caf(&microphone, 4_800);
+            microphone_path = microphone.absolute_path.clone();
+            microphone_bytes = fs::read(&microphone_path).unwrap();
+            store
+                .confirm_recording(prepared.session_id.clone())
+                .unwrap();
+            store
+                .interrupt_session(InterruptSessionRequest {
+                    session_id: prepared.session_id,
+                    reason: SessionInterruptionReason::CaptureFailed,
+                })
+                .unwrap();
+        }
+
+        let mut reopened = SessionStore::open(&root).unwrap();
+        assert!(reopened.recover_playable_sessions().unwrap().is_empty());
+        assert_eq!(
+            database_value(
+                &reopened,
+                "SELECT COUNT(*) FROM segments WHERE lifecycle = 'capturing'",
+            ),
+            2
+        );
+        assert_eq!(
+            database_value(
+                &reopened,
+                "SELECT COUNT(*) FROM session_events WHERE event_kind = 'playable_media_recovered'",
+            ),
+            0
+        );
+        assert_eq!(
+            database_value(
+                &reopened,
+                "SELECT COUNT(*) FROM sessions WHERE lifecycle = 'interrupted'",
+            ),
+            1
+        );
+        assert_eq!(fs::read(microphone_path).unwrap(), microphone_bytes);
+    }
+
+    #[test]
+    fn recovery_returns_normally_sealed_companion_with_recovered_track() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path().join("Open Scribe");
+        let microphone_path;
+        let system_path;
+        let microphone_bytes;
+        let system_bytes;
+        {
+            let mut store = SessionStore::open(&root).unwrap();
+            let (prepared, microphone, system) = prepared_dual_first_samples(&mut store);
+            replace_with_recoverable_pcm_caf(&microphone, 960);
+            replace_with_recoverable_pcm_caf(&system, 4_800);
+            microphone_path = microphone.absolute_path.clone();
+            system_path = system.absolute_path.clone();
+            microphone_bytes = fs::read(&microphone_path).unwrap();
+            system_bytes = fs::read(&system_path).unwrap();
+            store
+                .confirm_recording(prepared.session_id.clone())
+                .unwrap();
+            store
+                .seal_segment(seal_receipt(&microphone, microphone_bytes.len() as u64))
+                .unwrap();
+            store
+                .interrupt_session(InterruptSessionRequest {
+                    session_id: prepared.session_id,
+                    reason: SessionInterruptionReason::SegmentSealFailed,
+                })
+                .unwrap();
+        }
+
+        let mut reopened = SessionStore::open(&root).unwrap();
+        let recovered = reopened.recover_playable_sessions().unwrap();
+        assert_eq!(recovered.len(), 2);
+        assert_eq!(
+            database_value(
+                &reopened,
+                "SELECT COUNT(*) FROM segments WHERE lifecycle = 'sealed'",
+            ),
+            2
+        );
+        assert_eq!(
+            database_value(
+                &reopened,
+                "SELECT COUNT(*) FROM segments WHERE recovery_state = 'recovered'",
+            ),
+            1
+        );
+        assert_eq!(fs::read(&microphone_path).unwrap(), microphone_bytes);
+        assert_eq!(fs::read(&system_path).unwrap(), system_bytes);
+        assert_eq!(reopened.recover_playable_sessions().unwrap().len(), 2);
+    }
+
+    #[test]
     fn forced_exit_recovery_repairs_a_journal_first_projection_interruption() {
         let temp = TempDir::new().unwrap();
         let root = temp.path().join("Open Scribe");
@@ -5035,5 +5342,96 @@ mod tests {
                 .unwrap(),
             "recording"
         );
+    }
+
+    #[test]
+    fn post_recording_source_failure_is_durably_interrupted_and_replayable() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path().join("Open Scribe");
+        let session_id;
+        let microphone_path;
+        let system_path;
+        {
+            let mut store = SessionStore::open(&root).unwrap();
+            let prepared = store
+                .prepare_session_with_required_sources(
+                    request(),
+                    vec![MediaSourceKind::Microphone, MediaSourceKind::SystemAudio],
+                )
+                .unwrap();
+            session_id = prepared.session_id.clone();
+
+            let microphone = store
+                .authorize_media_open(AuthorizeMediaOpenRequest {
+                    session_id: session_id.clone(),
+                    source_kind: MediaSourceKind::Microphone,
+                    source_display_name: "Mac microphone".to_owned(),
+                })
+                .unwrap();
+            let microphone_initial = write_test_caf(&microphone);
+            store
+                .accept_media_open(media_receipt(&microphone, microphone_initial))
+                .unwrap();
+            microphone_path = microphone.absolute_path.clone();
+
+            let system = store
+                .authorize_media_open(AuthorizeMediaOpenRequest {
+                    session_id: session_id.clone(),
+                    source_kind: MediaSourceKind::SystemAudio,
+                    source_display_name: "Mac system audio".to_owned(),
+                })
+                .unwrap();
+            let system_initial = write_test_caf(&system);
+            store
+                .accept_media_open(media_receipt(&system, system_initial))
+                .unwrap();
+            let microphone_observed = append_first_sample(&microphone);
+            store
+                .accept_first_sample(first_sample_receipt(&microphone, microphone_observed))
+                .unwrap();
+            let system_observed = append_first_sample(&system);
+            store
+                .accept_first_sample(first_sample_receipt(&system, system_observed))
+                .unwrap();
+            system_path = system.absolute_path.clone();
+
+            assert!(
+                store
+                    .confirm_recording(session_id.clone())
+                    .unwrap()
+                    .recording_started
+            );
+            let request = InterruptSessionRequest {
+                session_id: session_id.clone(),
+                reason: SessionInterruptionReason::CaptureFailed,
+            };
+            let accepted = store.interrupt_session(request.clone()).unwrap();
+            let replayed = store.interrupt_session(request).unwrap();
+            assert_eq!(accepted, replayed);
+            assert!(accepted.journal_durable);
+            assert!(accepted.session_interrupted);
+            assert!(!accepted.recording_started);
+            assert_eq!(
+                store
+                    .connection
+                    .query_row(
+                        "SELECT lifecycle FROM sessions WHERE id = ?1",
+                        [&session_id.0],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .unwrap(),
+                "interrupted"
+            );
+        }
+
+        let mut reopened = SessionStore::open(&root).unwrap();
+        let findings = reopened.recover_preparations().unwrap();
+        assert_eq!(findings.len(), 1);
+        assert_eq!(
+            findings[0].disposition,
+            RecoveryDisposition::InterruptedFirstSample
+        );
+        assert!(microphone_path.is_file());
+        assert!(system_path.is_file());
     }
 }

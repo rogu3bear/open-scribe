@@ -977,6 +977,12 @@ mod tests {
         assert!(first_sample.first_sample_durable);
         assert_eq!(first_sample.first_sample_session_nanoseconds, 0);
         assert!(!first_sample.recording_started);
+        let recording = controller
+            .confirm_recording(first_sample.session_id.clone())
+            .unwrap();
+        assert!(recording.journal_durable);
+        assert!(recording.media_files_open);
+        assert!(recording.recording_started);
         let interruption = controller
             .interrupt_session(
                 first_sample.session_id,

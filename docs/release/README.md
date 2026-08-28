@@ -2,6 +2,11 @@
 
 No Open Scribe release exists.
 
+`0.1.0-LAUNCH-CHECKLIST.md` coordinates the working cross-functional path to a
+first public release. Its dates are planning targets, not evidence or release
+authority. The checklist remains on hold until every blocker closes against
+the exact candidate under this release-proof contract.
+
 A source build is not a release receipt. Public-release status requires proof bound to the exact distributed artifact, including:
 
 - Developer ID and nested signatures;

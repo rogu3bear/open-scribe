@@ -28,6 +28,7 @@
 		C363A3F920D148E6A9BCE201 /* LiveMicrophoneRecordingControllerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D363A3F920D148E6A9BCE201 /* LiveMicrophoneRecordingControllerTests.swift */; };
 		C463A3F920D148E6A9BCE201 /* RecoveredSessionController.swift in Sources */ = {isa = PBXBuildFile; fileRef = D463A3F920D148E6A9BCE201 /* RecoveredSessionController.swift */; };
 		C563A3F920D148E6A9BCE201 /* RecoveredSessionControllerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D563A3F920D148E6A9BCE201 /* RecoveredSessionControllerTests.swift */; };
+		C663A3F920D148E6A9BCE201 /* SystemAudioCaptureAdapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = D663A3F920D148E6A9BCE201 /* SystemAudioCaptureAdapter.swift */; };
 		E463A3F920D148E6A9BCE201 /* SingleInstanceGuard.swift in Sources */ = {isa = PBXBuildFile; fileRef = F463A3F920D148E6A9BCE201 /* SingleInstanceGuard.swift */; };
 		E563A3F920D148E6A9BCE201 /* SingleInstanceGuardTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F563A3F920D148E6A9BCE201 /* SingleInstanceGuardTests.swift */; };
 		E3B6D8732CBAD3A7D047B7AE /* FixtureSessionStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 87CA610842D2D723210F765F /* FixtureSessionStore.swift */; };
@@ -66,6 +67,7 @@
 		D363A3F920D148E6A9BCE201 /* LiveMicrophoneRecordingControllerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveMicrophoneRecordingControllerTests.swift; sourceTree = "<group>"; };
 		D463A3F920D148E6A9BCE201 /* RecoveredSessionController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecoveredSessionController.swift; sourceTree = "<group>"; };
 		D563A3F920D148E6A9BCE201 /* RecoveredSessionControllerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecoveredSessionControllerTests.swift; sourceTree = "<group>"; };
+		D663A3F920D148E6A9BCE201 /* SystemAudioCaptureAdapter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SystemAudioCaptureAdapter.swift; sourceTree = "<group>"; };
 		F463A3F920D148E6A9BCE201 /* SingleInstanceGuard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SingleInstanceGuard.swift; sourceTree = "<group>"; };
 		F563A3F920D148E6A9BCE201 /* SingleInstanceGuardTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SingleInstanceGuardTests.swift; sourceTree = "<group>"; };
 		F5696F23409FC2574DF65AD5 /* FixtureSessionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FixtureSessionTests.swift; sourceTree = "<group>"; };
@@ -137,6 +139,7 @@
 			isa = PBXGroup;
 			children = (
 				D263A3F920D148E6A9BCE201 /* LiveMicrophoneRecordingController.swift */,
+				D663A3F920D148E6A9BCE201 /* SystemAudioCaptureAdapter.swift */,
 				D463A3F920D148E6A9BCE201 /* RecoveredSessionController.swift */,
 				5A61A3F920D148E6A9BCE201 /* ManagedCAFWriter.swift */,
 				D061A3F920D148E6A9BCE201 /* MicrophoneCaptureAdapter.swift */,
@@ -304,6 +307,7 @@
 				B7FFA456C63F04859D1B2472 /* CompactLiveView.swift in Sources */,
 				262A2A7F0F8421EC6AD0E79E /* ContentView.swift in Sources */,
 				C263A3F920D148E6A9BCE201 /* LiveMicrophoneRecordingController.swift in Sources */,
+				C663A3F920D148E6A9BCE201 /* SystemAudioCaptureAdapter.swift in Sources */,
 				C463A3F920D148E6A9BCE201 /* RecoveredSessionController.swift in Sources */,
 				4A61A3F920D148E6A9BCE201 /* ManagedCAFWriter.swift in Sources */,
 				4C61A3F920D148E6A9BCE201 /* MicrophonePermissionAuthority.swift in Sources */,

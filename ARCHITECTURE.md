@@ -4,7 +4,7 @@
 
 ## Current repository fact
 
-Open Scribe has M0 and early-M1 microphone recovery plus required-source authority. Rust durably declares the complete source set and alone enters `Recording` after every required source has open managed media and first-sample evidence. Swift's microphone controller consumes that authority. System-audio capture, real multi-source runtime proof, long sessions, ML, signing, deployment, and release remain unimplemented.
+Open Scribe has M0, microphone recovery, required-source authority, and a bounded multi-source source candidate. Rust alone enters `Recording` after every required source has open media and first-sample evidence, admits later interruption, and projects multi-track recovery atomically. Swift connects microphone and ScreenCaptureKit all-system-audio adapters to that authority. Focused tests pass; live system audio, simultaneous playback, long sessions, ML, signing, deployment, and release remain unproved.
 
 ## Intended runtime shape
 
@@ -14,7 +14,7 @@ The SwiftUI app uses narrow Apple adapters. Rust owns durable state; coarse UniF
 
 | Component | Status | Owns | Must not own |
 |---|---|---|---|
-| `apps/macos` | fixture shell + live microphone slice | SwiftUI, Apple adapters, bounded buffers, CAF writer, permission UX | durable policy, capture claims, evidence truth |
+| `apps/macos` | fixture shell + microphone/system-audio source candidate | SwiftUI, Apple adapters, bounded buffers, CAF writer, permission UX | durable policy, capture claims, evidence truth |
 | `crates/open-scribe-types` | implemented, WASM-safe | stable session/source/condition records | I/O or native APIs |
 | `open-scribe-domain` | implemented, WASM-safe | transitions and presentation | persistence or capture |
 | `open-scribe-evidence` | placeholder, WASM-safe | evidence IDs and validation semantics | model execution or native storage |
@@ -34,7 +34,7 @@ The SwiftUI app uses narrow Apple adapters. Rust owns durable state; coarse UniF
 4. Only then may UI report Recording.
 5. Media remains recoverable independently of transcript or ML.
 
-Tests cover preparation, required-source planning, all-source `Recording` authority, CAF creation, first sample, sealing, journal-first interruption, strict recovery parsing, and projection repair. The runtime gate externally kills microphone capture, relaunches, preserves the CAF, opens playback, independently decodes it, and proves idempotence. System audio, real simultaneous multi-source capture, rotation, source loss, and long-session synchronization remain unproved.
+Tests cover required-source planning, all-source `Recording` authority, CAF writing and sealing, interruption, strict multi-track recovery, and atomic projection. The runtime gate kills microphone capture, relaunches, preserves and decodes the CAF, opens playback, and proves idempotence. ScreenCaptureKit and host-clock conversion have focused unsigned native proof only. Live system audio, simultaneous capture/playback, rotation, source loss, and long-session synchronization remain unproved.
 
 ### Derived meeting memory
 

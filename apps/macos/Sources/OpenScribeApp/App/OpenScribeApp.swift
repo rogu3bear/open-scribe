@@ -139,7 +139,7 @@ struct OpenScribeApp: App {
     }
     AppTelemetry.captureProof(stage: "capturing", detail: "first-sample-durable")
     try? await Task.sleep(nanoseconds: 2_000_000_000)
-    controller.stop()
+    await controller.stop()
     let result = controller.phase == .saved ? "saved" : "failed"
     AppTelemetry.captureProof(stage: result, detail: controller.phase.rawValue)
     try? await Task.sleep(nanoseconds: 500_000_000)

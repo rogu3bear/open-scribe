@@ -26,12 +26,15 @@ struct MenuBarContent: View {
       Text(errorMessage)
         .foregroundStyle(.red)
     }
-    if let savedPath = liveRecording.savedPath {
+    if liveRecording.savedPaths.count > 1 {
+      Text("Saved: \(liveRecording.savedPaths.count) local audio tracks")
+        .foregroundStyle(.secondary)
+    } else if let savedPath = liveRecording.savedPath {
       Text("Saved: \(URL(fileURLWithPath: savedPath).lastPathComponent)")
         .foregroundStyle(.secondary)
     }
     if liveRecording.canStart {
-      Button("Record Microphone") {
+      Button("Record Microphone + System Audio") {
         Task {
           await liveRecording.start()
         }
@@ -40,7 +43,9 @@ struct MenuBarContent: View {
     }
     if liveRecording.canStop {
       Button("Stop Capture") {
-        liveRecording.stop()
+        Task {
+          await liveRecording.stop()
+        }
       }
       .keyboardShortcut("s", modifiers: [.command, .shift])
     }
@@ -109,9 +114,13 @@ struct MenuBarLabel: View {
   var body: some View {
     Group {
       if liveRecording.isCapturing {
-        Label("Capturing microphone", systemImage: "record.circle.fill")
+        Label("Recording microphone + system audio", systemImage: "record.circle.fill")
       } else if liveRecording.phase == .starting {
-        Label("Starting microphone", systemImage: "waveform")
+        Label("Starting microphone + system audio", systemImage: "waveform")
+      } else if liveRecording.phase == .failed {
+        Label("Recording needs attention", systemImage: "exclamationmark.circle")
+      } else if liveRecording.phase == .saved {
+        Label("Conversation audio saved", systemImage: "waveform.badge.checkmark")
       } else if let symbol = store.snapshot.resolvedSymbolName {
         Label(store.displayedLabel, systemImage: symbol)
       } else {
@@ -119,7 +128,9 @@ struct MenuBarLabel: View {
       }
     }
     .accessibilityLabel(
-      liveRecording.isCapturing ? "Capturing microphone" : liveRecording.statusText
+      liveRecording.isCapturing
+        ? "Recording microphone and system audio"
+        : liveRecording.statusText
     )
     .onAppear {
       AppTelemetry.sceneAppeared("menu-bar", snapshot: store.snapshot)
