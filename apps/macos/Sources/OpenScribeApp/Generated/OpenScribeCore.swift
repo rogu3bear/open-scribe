@@ -605,6 +605,8 @@ public protocol NativeRecordingPreparationProtocol: AnyObject, Sendable {
 
   func prepareSession(title: String) throws -> NativePreparedSession
 
+  func recoverPlayableSessions() throws -> [NativeRecoveredPlayableSession]
+
   func sealSegment(receipt: NativeSealSegmentReceipt) throws -> NativeSealedSegmentEvidence
 
 }
@@ -729,6 +731,16 @@ open class NativeRecordingPreparation: NativeRecordingPreparationProtocol, @unch
         uniffi_open_scribe_uniffi_fn_method_nativerecordingpreparation_prepare_session(
           self.uniffiCloneHandle(),
           FfiConverterString.lower(title), uniffiCallStatus
+        )
+      })
+  }
+
+  open func recoverPlayableSessions() throws -> [NativeRecoveredPlayableSession] {
+    return try FfiConverterSequenceTypeNativeRecoveredPlayableSession.lift(
+      try rustCallWithError(FfiConverterTypeNativeStorageError_lift) {
+        uniffiCallStatus in
+        uniffi_open_scribe_uniffi_fn_method_nativerecordingpreparation_recover_playable_sessions(
+          self.uniffiCloneHandle(), uniffiCallStatus
         )
       })
   }
@@ -1341,6 +1353,105 @@ public func FfiConverterTypeNativePreparedSession_lower(_ value: NativePreparedS
   -> RustBuffer
 {
   return FfiConverterTypeNativePreparedSession.lower(value)
+}
+
+public struct NativeRecoveredPlayableSession: Equatable, Hashable {
+  public let sessionId: String
+  public let segmentId: String
+  public let relativePath: String
+  public let absolutePath: String
+  public let sampleCount: UInt64
+  public let durationNanoseconds: UInt64
+  public let byteLength: UInt64
+  public let digestSha256: String
+  public let mediaPreserved: Bool
+  public let readyForReview: Bool
+  public let recordingStarted: Bool
+  public let lastJournalSequence: UInt64
+
+  // Default memberwise initializers are never public by default, so we
+  // declare one manually.
+  public init(
+    sessionId: String, segmentId: String, relativePath: String, absolutePath: String,
+    sampleCount: UInt64, durationNanoseconds: UInt64, byteLength: UInt64, digestSha256: String,
+    mediaPreserved: Bool, readyForReview: Bool, recordingStarted: Bool, lastJournalSequence: UInt64
+  ) {
+    self.sessionId = sessionId
+    self.segmentId = segmentId
+    self.relativePath = relativePath
+    self.absolutePath = absolutePath
+    self.sampleCount = sampleCount
+    self.durationNanoseconds = durationNanoseconds
+    self.byteLength = byteLength
+    self.digestSha256 = digestSha256
+    self.mediaPreserved = mediaPreserved
+    self.readyForReview = readyForReview
+    self.recordingStarted = recordingStarted
+    self.lastJournalSequence = lastJournalSequence
+  }
+
+}
+
+#if compiler(>=6)
+  extension NativeRecoveredPlayableSession: Sendable {}
+#endif
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeNativeRecoveredPlayableSession: FfiConverterRustBuffer {
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws
+    -> NativeRecoveredPlayableSession
+  {
+    return
+      try NativeRecoveredPlayableSession(
+        sessionId: FfiConverterString.read(from: &buf),
+        segmentId: FfiConverterString.read(from: &buf),
+        relativePath: FfiConverterString.read(from: &buf),
+        absolutePath: FfiConverterString.read(from: &buf),
+        sampleCount: FfiConverterUInt64.read(from: &buf),
+        durationNanoseconds: FfiConverterUInt64.read(from: &buf),
+        byteLength: FfiConverterUInt64.read(from: &buf),
+        digestSha256: FfiConverterString.read(from: &buf),
+        mediaPreserved: FfiConverterBool.read(from: &buf),
+        readyForReview: FfiConverterBool.read(from: &buf),
+        recordingStarted: FfiConverterBool.read(from: &buf),
+        lastJournalSequence: FfiConverterUInt64.read(from: &buf)
+      )
+  }
+
+  public static func write(_ value: NativeRecoveredPlayableSession, into buf: inout [UInt8]) {
+    FfiConverterString.write(value.sessionId, into: &buf)
+    FfiConverterString.write(value.segmentId, into: &buf)
+    FfiConverterString.write(value.relativePath, into: &buf)
+    FfiConverterString.write(value.absolutePath, into: &buf)
+    FfiConverterUInt64.write(value.sampleCount, into: &buf)
+    FfiConverterUInt64.write(value.durationNanoseconds, into: &buf)
+    FfiConverterUInt64.write(value.byteLength, into: &buf)
+    FfiConverterString.write(value.digestSha256, into: &buf)
+    FfiConverterBool.write(value.mediaPreserved, into: &buf)
+    FfiConverterBool.write(value.readyForReview, into: &buf)
+    FfiConverterBool.write(value.recordingStarted, into: &buf)
+    FfiConverterUInt64.write(value.lastJournalSequence, into: &buf)
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeRecoveredPlayableSession_lift(_ buf: RustBuffer) throws
+  -> NativeRecoveredPlayableSession
+{
+  return try FfiConverterTypeNativeRecoveredPlayableSession.lift(buf)
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeRecoveredPlayableSession_lower(
+  _ value: NativeRecoveredPlayableSession
+) -> RustBuffer {
+  return FfiConverterTypeNativeRecoveredPlayableSession.lower(value)
 }
 
 public struct NativeSealSegmentReceipt: Equatable, Hashable {
@@ -2399,6 +2510,33 @@ private struct FfiConverterOptionString: FfiConverterRustBuffer {
 #if swift(>=5.8)
   @_documentation(visibility: private)
 #endif
+private struct FfiConverterSequenceTypeNativeRecoveredPlayableSession: FfiConverterRustBuffer {
+  typealias SwiftType = [NativeRecoveredPlayableSession]
+
+  public static func write(_ value: [NativeRecoveredPlayableSession], into buf: inout [UInt8]) {
+    let len = Int32(value.count)
+    writeInt(&buf, len)
+    for item in value {
+      FfiConverterTypeNativeRecoveredPlayableSession.write(item, into: &buf)
+    }
+  }
+
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws
+    -> [NativeRecoveredPlayableSession]
+  {
+    let len: Int32 = try readInt(&buf)
+    var seq = [NativeRecoveredPlayableSession]()
+    seq.reserveCapacity(Int(len))
+    for _ in 0..<len {
+      seq.append(try FfiConverterTypeNativeRecoveredPlayableSession.read(from: &buf))
+    }
+    return seq
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
 private struct FfiConverterSequenceTypeNativeSessionSnapshot: FfiConverterRustBuffer {
   typealias SwiftType = [NativeSessionSnapshot]
 
@@ -2538,6 +2676,11 @@ private let initializationResult: InitializationResult = {
     return InitializationResult.apiChecksumMismatch
   }
   if uniffi_open_scribe_uniffi_checksum_method_nativerecordingpreparation_prepare_session() != 12714
+  {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_open_scribe_uniffi_checksum_method_nativerecordingpreparation_recover_playable_sessions()
+    != 18911
   {
     return InitializationResult.apiChecksumMismatch
   }

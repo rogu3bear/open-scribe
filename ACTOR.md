@@ -82,6 +82,13 @@ Before mutation, inspect checkout identity, dirt, anchors, and rollback.
 - Expected: `M1_LIVE_MICROPHONE_GREEN` after consent, capture, seal, digest, and playability checks; proof media is deleted.
 - Does not prove: multi-source Recording, recovery, signing, or release.
 
+## Validate forced-termination recovery
+
+- Command: `./script/check.sh --m1-forced-termination-recovery`.
+- Expected: `M1_FORCED_TERMINATION_RECOVERY_GATE_GREEN`.
+- Proof: microphone; external kill; strict CAF recovery; persistent playback; independent decode; unchanged SHA-256; idempotence.
+- Stop if: recovery mutates media, promotes invalid media, duplicates a receipt, or asserts `Recording`.
+
 ## Admission rule
 
 Release readiness: `./script/release.sh prepare <semver>`; a hold names exact blockers and performs no publication.

@@ -2,7 +2,7 @@
 
 Open Scribe is a greenfield, open-source macOS conversation instrument intended to record conversations reliably, preserve local evidence, and connect derived meeting memory back to its sources.
 
-> **Repository status: Milestone 0 development proof plus bounded early-M1 live-microphone and interruption-state slices.** A stateless Leptos Worker build produces useful SSR, and a development-only SwiftUI app renders coarse Rust state through UniFFI. Rust durably prepares a session, validates one managed track and first-sample evidence, independently digests a closed CAF segment, and records typed content-free post-preparation interruption. Swift wires a menu-bar control to AVAudioEngine, bounded buffers, a managed writer, permission UX, and interruption reporting. One explicit local gate captured, sealed, and validated a short playable microphone CAF. This does not prove system audio, multi-source `Recording`, forced-termination or playable recovery, transcription, signing, distribution, or public release.
+> **Repository status: Milestone 0 development proof plus bounded early-M1 microphone recovery.** A stateless Leptos Worker build produces useful SSR, and a development-only SwiftUI app renders coarse Rust state through UniFFI. Rust durably prepares one managed microphone track, validates first-sample evidence, seals ordinary stops, and recovers strictly validated unclosed PCM CAF media after process death. Swift wires a menu-bar control to AVAudioEngine, bounded buffers, a managed writer, native recovered-audio playback, permission UX, and interruption reporting. The exact local recovery gate captured real microphone audio, externally killed the app, relaunched, preserved identical media bytes, recovered `ready_for_review`, opened native playback, independently decoded the CAF, and converged without duplicating its receipt. This does not prove system audio, multi-source `Recording`, source-loss handling, two-hour operation, transcription, signing, distribution, or public release.
 
 The founding product contract is `docs/product/FOUNDING_PRD.md`. Start with `NORTH_STAR.md`, `ANCHOR.md`, and `AGENTS.md` for the compact operating view.
 
@@ -43,10 +43,12 @@ and deletes the proof media:
 
 Run `./script/check.sh --m1-interruption-state` separately for the internal
 journal, binding, failure-path, and media-preservation regression chain. That
-deterministic gate supports the recorder; it is not the product proof. Neither
-gate proves system audio, multi-source `Recording`, forced-termination or
-playable recovery, transcription, signed entitlement enforcement, deployment,
-notarization, distribution, or public release.
+repository gate supports the recorder; it is not the runtime proof. Run
+`./script/check.sh --m1-forced-termination-recovery` for the exact real-device
+capture, external-kill, relaunch, recovery, persistent playback, and independent
+decode receipt. None proves system audio, multi-source `Recording`, source-loss
+handling, two-hour operation, transcription, signed entitlement enforcement,
+deployment, notarization, distribution, or public release.
 
 GitHub Actions is intentionally disabled for this repository. Pull requests are admitted through exact-checkout local receipts, an independent review of the candidate tree, and explicit merge readback; no hosted status check is a proof authority.
 

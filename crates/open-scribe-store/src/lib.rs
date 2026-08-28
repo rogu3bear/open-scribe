@@ -219,6 +219,23 @@ pub struct SessionInterruptionEvidence {
     pub last_journal_sequence: u64,
 }
 
+/// Coarse, content-free result for one source segment made playable after restart.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RecoveredPlayableSession {
+    pub session_id: SessionId,
+    pub segment_id: String,
+    pub relative_path: String,
+    pub absolute_path: PathBuf,
+    pub sample_count: u64,
+    pub duration_nanoseconds: u64,
+    pub byte_length: u64,
+    pub digest_sha256: String,
+    pub media_preserved: bool,
+    pub ready_for_review: bool,
+    pub recording_started: bool,
+    pub last_journal_sequence: u64,
+}
+
 /// Coarse evidence produced only after Swift has stopped writing and closed the
 /// segment. Rust independently validates the final file and calculates its digest.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -271,6 +288,7 @@ pub enum RecoveryDisposition {
     InterruptedFirstSample,
     InterruptedSegmentSealed,
     InterruptionProjectionRepaired,
+    PlayableMediaRecovered,
     MissingMediaFile,
     InvalidMediaFile,
     MissingDirectory,
@@ -400,11 +418,22 @@ struct StoredMediaAuthorization {
     file_inode: Option<u64>,
 }
 
+struct PlayableRecoveryCandidate {
+    session_id: String,
+    source_id: String,
+    track_id: String,
+    segment_id: String,
+    relative_path: String,
+    file_device: u64,
+    file_inode: u64,
+}
+
 struct ValidatedMediaFile {
     byte_length: u64,
     device: u64,
     inode: u64,
     digest_sha256: Option<String>,
+    recoverable_sample_count: Option<u64>,
 }
 
 #[derive(Clone, Copy)]
@@ -572,6 +601,204 @@ impl SessionStore {
             recording_started: false,
             last_journal_sequence: journal_record.body.sequence,
         })
+    }
+
+    /// Plans every candidate before mutating one, then durably promotes only
+    /// independently valid, closed-by-process-exit CAF media to reviewable playback.
+    pub fn recover_playable_sessions(
+        &mut self,
+    ) -> Result<Vec<RecoveredPlayableSession>, StoreError> {
+        let candidates = {
+            let mut statement = self.connection.prepare(
+                "SELECT sessions.id, sources.id, tracks.id, segments.id,
+                        segments.relative_path, segments.file_device, segments.file_inode
+                 FROM sessions
+                 JOIN sources ON sources.session_id = sessions.id
+                 JOIN tracks ON tracks.session_id = sessions.id AND tracks.source_id = sources.id
+                 JOIN segments ON segments.session_id = sessions.id
+                              AND segments.track_id = tracks.id
+                 WHERE sessions.lifecycle IN ('preparing', 'interrupted')
+                   AND segments.lifecycle = 'capturing'
+                 ORDER BY sessions.id, segments.sequence",
+            )?;
+            let rows = statement.query_map([], |row| {
+                Ok(PlayableRecoveryCandidate {
+                    session_id: row.get(0)?,
+                    source_id: row.get(1)?,
+                    track_id: row.get(2)?,
+                    segment_id: row.get(3)?,
+                    relative_path: row.get(4)?,
+                    file_device: row.get::<_, i64>(5)? as u64,
+                    file_inode: row.get::<_, i64>(6)? as u64,
+                })
+            })?;
+            rows.collect::<Result<Vec<_>, _>>()?
+        };
+
+        let mut plans = Vec::new();
+        for candidate in candidates {
+            let journal_path = self
+                .session_directory(&candidate.session_id)?
+                .join(JOURNAL_NAME);
+            let records = match validate_journal(&journal_path, &candidate.session_id)? {
+                JournalValidation::Valid(records) => records,
+                _ => continue,
+            };
+            let Some(first_sample) = journal_record_for_segment(
+                &records,
+                "first_sample_captured",
+                &candidate.segment_id,
+            )?
+            else {
+                continue;
+            };
+            let observed_byte_length =
+                payload_u64(&first_sample.body.payload, "observed_byte_length")?;
+            let validated = match self.validate_media_file(
+                &candidate.session_id,
+                &candidate.relative_path,
+                MediaLengthRequirement::AtLeast(observed_byte_length),
+                true,
+            ) {
+                Ok(validated) => validated,
+                Err(_) => continue,
+            };
+            if validated.device != candidate.file_device || validated.inode != candidate.file_inode
+            {
+                continue;
+            }
+            let Some(sample_count) = validated.recoverable_sample_count else {
+                continue;
+            };
+            let digest_sha256 = validated
+                .digest_sha256
+                .ok_or(StoreError::IntegrityMismatch("recovery digest is missing"))?;
+            let payload = json!({
+                "source_id": candidate.source_id,
+                "track_id": candidate.track_id,
+                "segment_id": candidate.segment_id,
+                "relative_path": candidate.relative_path,
+                "sample_count": sample_count,
+                "final_byte_length": validated.byte_length,
+                "digest_sha256": digest_sha256,
+                "file_device": validated.device,
+                "file_inode": validated.inode,
+                "truncated_bytes": 0,
+            });
+            plans.push((candidate, payload));
+        }
+
+        for (candidate, payload) in plans {
+            let journal_path = self
+                .session_directory(&candidate.session_id)?
+                .join(JOURNAL_NAME);
+            let records = match validate_journal(&journal_path, &candidate.session_id)? {
+                JournalValidation::Valid(records) => records,
+                _ => return Err(StoreError::IntegrityMismatch("session journal changed")),
+            };
+            let journal_record = if records
+                .last()
+                .is_some_and(|record| record.body.event_kind == "playable_media_recovered")
+            {
+                let existing = records.last().expect("checked journal tail");
+                if existing.body.payload != payload {
+                    return Err(StoreError::IntegrityMismatch(
+                        "recovery plan changed accepted evidence",
+                    ));
+                }
+                existing.clone()
+            } else {
+                self.append_session_journal(
+                    &candidate.session_id,
+                    "playable_media_recovered",
+                    Some(&candidate.relative_path),
+                    payload.clone(),
+                )?
+            };
+            self.project_playable_recovery(&candidate.session_id, &payload, &journal_record)?;
+        }
+        self.recovered_playable_sessions()
+    }
+
+    fn recovered_playable_sessions(&self) -> Result<Vec<RecoveredPlayableSession>, StoreError> {
+        let rows = {
+            let mut statement = self.connection.prepare(
+                "SELECT sessions.id, segments.id, segments.relative_path,
+                        segments.sample_count, segments.byte_length, segments.digest,
+                        segments.file_device, segments.file_inode,
+                        MAX(session_events.sequence)
+                 FROM sessions
+                 JOIN segments ON segments.session_id = sessions.id
+                 JOIN session_events ON session_events.session_id = sessions.id
+                 WHERE sessions.lifecycle = 'ready_for_review'
+                   AND segments.lifecycle = 'sealed'
+                   AND segments.recovery_state = 'recovered'
+                   AND session_events.event_kind = 'playable_media_recovered'
+                 GROUP BY sessions.id, segments.id
+                 ORDER BY sessions.updated_at_ms DESC, segments.sequence",
+            )?;
+            let mapped = statement.query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, i64>(3)? as u64,
+                    row.get::<_, i64>(4)? as u64,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, i64>(6)? as u64,
+                    row.get::<_, i64>(7)? as u64,
+                    row.get::<_, i64>(8)? as u64,
+                ))
+            })?;
+            mapped.collect::<Result<Vec<_>, _>>()?
+        };
+
+        rows.into_iter()
+            .map(
+                |(
+                    session_id,
+                    segment_id,
+                    relative_path,
+                    sample_count,
+                    byte_length,
+                    digest_sha256,
+                    file_device,
+                    file_inode,
+                    last_journal_sequence,
+                )| {
+                    let validated = self.validate_media_file(
+                        &session_id,
+                        &relative_path,
+                        MediaLengthRequirement::Exact(byte_length),
+                        true,
+                    )?;
+                    if validated.device != file_device
+                        || validated.inode != file_inode
+                        || validated.recoverable_sample_count != Some(sample_count)
+                        || validated.digest_sha256.as_deref() != Some(digest_sha256.as_str())
+                    {
+                        return Err(StoreError::IntegrityMismatch(
+                            "recovered playable media changed after acceptance",
+                        ));
+                    }
+                    Ok(RecoveredPlayableSession {
+                        session_id: SessionId(session_id.clone()),
+                        segment_id,
+                        relative_path: relative_path.clone(),
+                        absolute_path: self.session_directory(&session_id)?.join(relative_path),
+                        sample_count,
+                        duration_nanoseconds: sample_count.saturating_mul(1_000_000_000)
+                            / u64::from(MEDIA_SAMPLE_RATE_HZ),
+                        byte_length,
+                        digest_sha256,
+                        media_preserved: true,
+                        ready_for_review: true,
+                        recording_started: false,
+                        last_journal_sequence,
+                    })
+                },
+            )
+            .collect()
     }
 
     fn authorize_media_open_inner(
@@ -1417,6 +1644,97 @@ impl SessionStore {
         Ok(())
     }
 
+    fn project_playable_recovery(
+        &mut self,
+        session_id: &str,
+        payload: &Value,
+        journal_record: &JournalRecord,
+    ) -> Result<(), StoreError> {
+        let source_id = payload_string(payload, "source_id")?;
+        let track_id = payload_string(payload, "track_id")?;
+        let segment_id = payload_string(payload, "segment_id")?;
+        let sample_count = payload_u64(payload, "sample_count")?;
+        let final_byte_length = payload_u64(payload, "final_byte_length")?;
+        let digest_sha256 = payload_string(payload, "digest_sha256")?;
+        let (event_sequence, prior_digest) = next_database_event(&self.connection, session_id)?;
+        let event_hash = event_digest(
+            session_id,
+            event_sequence,
+            "playable_media_recovered",
+            payload,
+            prior_digest.as_deref(),
+        )?;
+        let transaction = self.connection.transaction()?;
+        let changed = transaction.execute(
+            "UPDATE segments
+             SET lifecycle = 'sealed', sample_count = ?2, byte_length = ?3,
+                 digest = ?4, seal_state = 'sealed', recovery_state = 'recovered'
+             WHERE id = ?1 AND session_id = ?5 AND lifecycle = 'capturing'",
+            params![
+                segment_id,
+                sample_count as i64,
+                final_byte_length as i64,
+                digest_sha256,
+                session_id,
+            ],
+        )?;
+        if changed != 1 {
+            return Err(StoreError::InvalidState(
+                "segment projection is not awaiting playable recovery",
+            ));
+        }
+        let source_changed = transaction.execute(
+            "UPDATE sources SET lifecycle = 'sealed'
+             WHERE id = ?1 AND session_id = ?2 AND lifecycle = 'capturing'",
+            params![source_id, session_id],
+        )?;
+        let track_changed = transaction.execute(
+            "UPDATE tracks SET lifecycle = 'sealed'
+             WHERE id = ?1 AND session_id = ?2 AND lifecycle = 'capturing'",
+            params![track_id, session_id],
+        )?;
+        if source_changed != 1 || track_changed != 1 {
+            return Err(StoreError::InvalidState(
+                "source or track projection is not awaiting playable recovery",
+            ));
+        }
+        let session_changed = transaction.execute(
+            "UPDATE sessions
+             SET lifecycle = 'ready_for_review', media_files_open = 0, updated_at_ms = ?2
+             WHERE id = ?1 AND lifecycle IN ('preparing', 'interrupted')",
+            params![session_id, journal_record.body.wall_time_milliseconds],
+        )?;
+        if session_changed != 1 {
+            return Err(StoreError::InvalidState(
+                "session projection is not awaiting playable recovery",
+            ));
+        }
+        insert_event_with_id(
+            &transaction,
+            &journal_record.body.event_id,
+            session_id,
+            event_sequence,
+            "playable_media_recovered",
+            journal_record.body.wall_time_milliseconds,
+            payload,
+            prior_digest.as_deref(),
+            &event_hash,
+        )?;
+        transaction.execute(
+            "INSERT INTO recovery_runs (
+                id, schema_version, session_id, disposition, created_at_ms
+             ) VALUES (?1, ?2, ?3, 'playable_media_recovered', ?4)",
+            params![
+                Uuid::now_v7().to_string(),
+                SCHEMA_VERSION,
+                session_id,
+                journal_record.body.wall_time_milliseconds,
+            ],
+        )?;
+        transaction.commit()?;
+        Ok(())
+    }
+
     fn media_authorization_row(
         &self,
         segment_id: &str,
@@ -1574,6 +1892,8 @@ impl SessionStore {
         } else {
             None
         };
+        file.rewind()?;
+        let recoverable_sample_count = inspect_recoverable_pcm_caf(&mut file, byte_length)?;
         let post_read_stat = fd_fs::fstat(&file).map_err(|_| {
             StoreError::IntegrityMismatch("sealed media identity could not be revalidated")
         })?;
@@ -1611,6 +1931,7 @@ impl SessionStore {
             device: stat.st_dev as u64,
             inode: stat.st_ino as u64,
             digest_sha256,
+            recoverable_sample_count,
         })
     }
 
@@ -2362,6 +2683,122 @@ fn append_journal_record(file: &mut File, record: &JournalRecord) -> Result<(), 
     Ok(())
 }
 
+fn inspect_recoverable_pcm_caf(
+    file: &mut File,
+    byte_length: u64,
+) -> Result<Option<u64>, StoreError> {
+    if byte_length < CAF_HEADER.len() as u64 + 12 {
+        return Ok(None);
+    }
+    file.rewind()?;
+    let mut header = [0_u8; 8];
+    file.read_exact(&mut header)?;
+    if &header != CAF_HEADER {
+        return Ok(None);
+    }
+
+    let mut offset = CAF_HEADER.len() as u64;
+    let mut descriptor_matches = false;
+    while offset
+        .checked_add(12)
+        .is_some_and(|value| value <= byte_length)
+    {
+        file.seek(std::io::SeekFrom::Start(offset))?;
+        let mut chunk_header = [0_u8; 12];
+        file.read_exact(&mut chunk_header)?;
+        let chunk_type = &chunk_header[..4];
+        let chunk_size = i64::from_be_bytes(
+            chunk_header[4..12]
+                .try_into()
+                .map_err(|_| StoreError::IntegrityMismatch("CAF chunk size is malformed"))?,
+        );
+        let payload_start = offset
+            .checked_add(12)
+            .ok_or(StoreError::IntegrityMismatch("CAF chunk offset overflowed"))?;
+
+        if chunk_type == b"desc" {
+            if chunk_size != 32 {
+                return Ok(None);
+            }
+            let mut descriptor = [0_u8; 32];
+            file.read_exact(&mut descriptor)?;
+            let sample_rate =
+                f64::from_bits(u64::from_be_bytes(descriptor[0..8].try_into().map_err(
+                    |_| StoreError::IntegrityMismatch("CAF sample rate is malformed"),
+                )?));
+            let flags =
+                u32::from_be_bytes(descriptor[12..16].try_into().map_err(|_| {
+                    StoreError::IntegrityMismatch("CAF format flags are malformed")
+                })?);
+            let bytes_per_packet = u32::from_be_bytes(
+                descriptor[16..20]
+                    .try_into()
+                    .map_err(|_| StoreError::IntegrityMismatch("CAF packet width is malformed"))?,
+            );
+            let frames_per_packet =
+                u32::from_be_bytes(descriptor[20..24].try_into().map_err(|_| {
+                    StoreError::IntegrityMismatch("CAF packet frame count is malformed")
+                })?);
+            let channels =
+                u32::from_be_bytes(descriptor[24..28].try_into().map_err(|_| {
+                    StoreError::IntegrityMismatch("CAF channel count is malformed")
+                })?);
+            let bits_per_channel = u32::from_be_bytes(
+                descriptor[28..32]
+                    .try_into()
+                    .map_err(|_| StoreError::IntegrityMismatch("CAF sample width is malformed"))?,
+            );
+            descriptor_matches = sample_rate == f64::from(MEDIA_SAMPLE_RATE_HZ)
+                && &descriptor[8..12] == b"lpcm"
+                && flags == 2
+                && bytes_per_packet == 2
+                && frames_per_packet == 1
+                && channels == 1
+                && bits_per_channel == 16;
+        }
+
+        if chunk_type == b"data" {
+            if !descriptor_matches || chunk_size < -1 {
+                return Ok(None);
+            }
+            let chunk_end = if chunk_size == -1 {
+                byte_length
+            } else {
+                let Some(chunk_end) = payload_start
+                    .checked_add(chunk_size as u64)
+                    .filter(|value| *value <= byte_length)
+                else {
+                    return Ok(None);
+                };
+                chunk_end
+            };
+            let audio_start = payload_start
+                .checked_add(4)
+                .ok_or(StoreError::IntegrityMismatch("CAF audio offset overflowed"))?;
+            if audio_start > chunk_end {
+                return Ok(None);
+            }
+            let audio_bytes = chunk_end - audio_start;
+            if audio_bytes == 0 || audio_bytes % 2 != 0 {
+                return Ok(None);
+            }
+            return Ok(Some(audio_bytes / 2));
+        }
+
+        if chunk_size < 0 {
+            return Ok(None);
+        }
+        let Some(next_offset) = payload_start
+            .checked_add(chunk_size as u64)
+            .filter(|value| *value <= byte_length)
+        else {
+            return Ok(None);
+        };
+        offset = next_offset;
+    }
+    Ok(None)
+}
+
 fn validate_journal(
     path: &Path,
     expected_session_id: &str,
@@ -3089,6 +3526,30 @@ mod tests {
             .accept_first_sample(first_sample_receipt(&authorization, observed_byte_length))
             .unwrap();
         (prepared, authorization, observed_byte_length)
+    }
+
+    fn replace_with_recoverable_pcm_caf(authorization: &MediaOpenAuthorization, sample_count: u64) {
+        let mut file = OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .open(&authorization.absolute_path)
+            .unwrap();
+        file.write_all(CAF_HEADER).unwrap();
+        file.write_all(b"desc").unwrap();
+        file.write_all(&32_i64.to_be_bytes()).unwrap();
+        file.write_all(&48_000_f64.to_bits().to_be_bytes()).unwrap();
+        file.write_all(b"lpcm").unwrap();
+        file.write_all(&2_u32.to_be_bytes()).unwrap();
+        file.write_all(&2_u32.to_be_bytes()).unwrap();
+        file.write_all(&1_u32.to_be_bytes()).unwrap();
+        file.write_all(&1_u32.to_be_bytes()).unwrap();
+        file.write_all(&16_u32.to_be_bytes()).unwrap();
+        file.write_all(b"data").unwrap();
+        file.write_all(&(-1_i64).to_be_bytes()).unwrap();
+        file.write_all(&0_u32.to_be_bytes()).unwrap();
+        file.write_all(&vec![0_u8; sample_count as usize * 2])
+            .unwrap();
+        file.sync_all().unwrap();
     }
 
     fn insert_parallel_database_event(
@@ -3995,5 +4456,147 @@ mod tests {
             })
             .unwrap();
         assert_eq!(repaired, replayed);
+    }
+
+    #[test]
+    fn forced_exit_recovery_preserves_caf_and_converges_to_ready_for_review() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path().join("Open Scribe");
+        let session_id;
+        let media_path;
+        let media_before;
+        {
+            let mut store = SessionStore::open(&root).unwrap();
+            let (prepared, authorization, _) = prepared_first_sample(&mut store);
+            session_id = prepared.session_id;
+            replace_with_recoverable_pcm_caf(&authorization, 4_800);
+            media_path = authorization.absolute_path;
+            media_before = fs::read(&media_path).unwrap();
+        }
+
+        let mut reopened = SessionStore::open(&root).unwrap();
+        let recovered = reopened.recover_playable_sessions().unwrap();
+        assert_eq!(recovered.len(), 1);
+        assert_eq!(recovered[0].session_id, session_id);
+        assert_eq!(recovered[0].sample_count, 4_800);
+        assert_eq!(recovered[0].duration_nanoseconds, 100_000_000);
+        assert!(recovered[0].media_preserved);
+        assert!(recovered[0].ready_for_review);
+        assert!(!recovered[0].recording_started);
+        assert_eq!(fs::read(&media_path).unwrap(), media_before);
+        let repeated = reopened.recover_playable_sessions().unwrap();
+        assert_eq!(repeated.len(), 1);
+        assert_eq!(repeated[0].session_id, session_id);
+        assert_eq!(
+            reopened
+                .connection
+                .query_row(
+                    "SELECT lifecycle FROM sessions WHERE id = ?1",
+                    [&session_id.0],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap(),
+            "ready_for_review"
+        );
+        assert_eq!(
+            reopened
+                .connection
+                .query_row(
+                    "SELECT recovery_state FROM segments WHERE session_id = ?1",
+                    [&session_id.0],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap(),
+            "recovered"
+        );
+        assert_eq!(
+            database_value(
+                &reopened,
+                "SELECT COUNT(*) FROM recovery_runs WHERE disposition = 'playable_media_recovered'",
+            ),
+            1
+        );
+    }
+
+    #[test]
+    fn forced_exit_recovery_repairs_a_journal_first_projection_interruption() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path().join("Open Scribe");
+        let session_id;
+        {
+            let mut store = SessionStore::open(&root).unwrap();
+            let (prepared, authorization, observed_byte_length) = prepared_first_sample(&mut store);
+            session_id = prepared.session_id;
+            replace_with_recoverable_pcm_caf(&authorization, 2_400);
+            let validated = store
+                .validate_media_file(
+                    &session_id.0,
+                    &authorization.relative_path,
+                    MediaLengthRequirement::AtLeast(observed_byte_length),
+                    true,
+                )
+                .unwrap();
+            let payload = json!({
+                "source_id": authorization.source_id,
+                "track_id": authorization.track_id,
+                "segment_id": authorization.segment_id,
+                "relative_path": authorization.relative_path,
+                "sample_count": validated.recoverable_sample_count.unwrap(),
+                "final_byte_length": validated.byte_length,
+                "digest_sha256": validated.digest_sha256.unwrap(),
+                "file_device": validated.device,
+                "file_inode": validated.inode,
+                "truncated_bytes": 0,
+            });
+            store
+                .append_session_journal(
+                    &session_id.0,
+                    "playable_media_recovered",
+                    Some(&authorization.relative_path),
+                    payload,
+                )
+                .unwrap();
+        }
+
+        let mut reopened = SessionStore::open(&root).unwrap();
+        let recovered = reopened.recover_playable_sessions().unwrap();
+        assert_eq!(recovered.len(), 1);
+        assert_eq!(recovered[0].session_id, session_id);
+        assert_eq!(recovered[0].sample_count, 2_400);
+        let repeated = reopened.recover_playable_sessions().unwrap();
+        assert_eq!(repeated.len(), 1);
+        assert_eq!(repeated[0].session_id, session_id);
+        assert_eq!(
+            database_value(
+                &reopened,
+                "SELECT COUNT(*) FROM recovery_runs WHERE disposition = 'playable_media_recovered'",
+            ),
+            1
+        );
+    }
+
+    #[test]
+    fn forced_exit_recovery_refuses_unparseable_media_without_mutation() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path().join("Open Scribe");
+        let media_path;
+        let media_before;
+        {
+            let mut store = SessionStore::open(&root).unwrap();
+            let (_, authorization, _) = prepared_first_sample(&mut store);
+            media_path = authorization.absolute_path;
+            media_before = fs::read(&media_path).unwrap();
+        }
+
+        let mut reopened = SessionStore::open(&root).unwrap();
+        assert!(reopened.recover_playable_sessions().unwrap().is_empty());
+        assert_eq!(fs::read(media_path).unwrap(), media_before);
+        assert_eq!(
+            database_value(
+                &reopened,
+                "SELECT COUNT(*) FROM sessions WHERE lifecycle = 'preparing'",
+            ),
+            1
+        );
     }
 }

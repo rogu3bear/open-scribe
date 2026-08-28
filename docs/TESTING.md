@@ -2,7 +2,7 @@
 
 ## Test Strategy
 
-Open Scribe tests the evidence chain in order: source/configuration, deterministic unit and integration behavior, build, installed/runtime behavior, recovery, signed artifact, and release. A lower plane never proves a higher one. `./script/check.sh --m1-live-microphone` is the only current real-device capture/playability proof. `--m1-interruption-state` is a supporting repository-plane regression and cannot substitute for live audio, forced termination, or playable recovery. Each receipt proves only the inclusions and exclusions it names.
+Open Scribe tests the evidence chain in order: source/configuration, deterministic unit and integration behavior, build, installed/runtime behavior, recovery, signed artifact, and release. A lower plane never proves a higher one. `./script/check.sh --m1-live-microphone` proves ordinary real-device capture/seal/playability; `--m1-forced-termination-recovery` separately proves external-kill relaunch recovery and native playback. `--m1-interruption-state` is a supporting repository-plane regression and cannot substitute for either runtime outcome. Each receipt proves only the inclusions and exclusions it names.
 
 Characterization tests pin observed behavior before correction. Safety-critical invariants—durable media before capture claims, audio survival independent of transcription, required-source truth, and recovery—need tests at the layer that owns the claim plus runtime evidence on an exact artifact.
 
@@ -11,14 +11,14 @@ Characterization tests pin observed behavior before correction. Safety-critical 
 | Surface | Existing Safety Net | Important Gap | Priority | Owner |
 |---|---|---|---:|---|
 | Rust domain/types | Unit tests and fixture compatibility checks | Migration/backward-compatibility corpus remains small | P1 | Durable-state owner |
-| Rust store/journal | Preparation, media-open, first-sample, sealing, digest, typed interruption, restart classification, and projection-repair tests | No forced-termination or playable interrupted-media recovery proof | P0 | Durable-state owner |
+| Rust store/journal | Preparation, media-open, first-sample, sealing, digest, typed interruption, restart classification, strict unclosed-CAF recovery, and projection-repair tests | Required-source completion and long-session recovery remain open | P0 | Durable-state owner |
 | UniFFI boundary | Binding regeneration and coarse evidence-object tests | No live multi-source coordinator contract | P1 | Integration owner |
 | CAF writer and microphone adapter | Deterministic buffer, failure, race, stop barrier, receipt tests, and one short real-device proof | No route-change, disk-pressure, or long-run proof | P0 | Native runtime owner |
-| Live recording controller | Happy path plus typed interruption reporting for start, callback, first-sample, premature-stop, and seal failures | No user-visible discovery or playable recovery flow | P0 | Native runtime owner |
+| Live recording controller | Happy path plus typed interruption reporting and recovered-conversation discovery/native playback | No required-source coordinator, route-loss recovery, or long-run proof | P0 | Native runtime owner |
 | Single-instance guard | Exact lock ownership unit test | AppDelegate conflates an existing instance with lock-file I/O failure | P1 | Native shell owner |
 | Menu-bar UI | Build and scene-launch fixture | No UI automation for source selection, durable state transitions, or error recovery | P1 | UX/QA owner |
 | System/application audio | Founding requirements only | No selected-source implementation or proof | P0 | Platform capture owner |
-| Playback/import/transcription/diarization | Founding requirements only | Not implemented | P1 after recorder | Conversation-loop owner |
+| Playback/import/transcription/diarization | Recovered microphone playback only | Import, transcription, diarization, and general library playback are not implemented | P1 after recorder | Conversation-loop owner |
 | Release | Scaffold/build checks | No signed, notarized, installed, upgrade, rollback, or public-source binding | P1 before release | Release owner |
 
 ## Characterization Backlog
@@ -27,7 +27,7 @@ Characterization tests pin observed behavior before correction. Safety-critical 
 - [x] **P0 — Native runtime owner:** pin current permission-denial, start-failure, capture-failure, and stop-before-first-sample behavior.
 - [x] **P0 — Native runtime owner:** prove cleanup and durable typed interruption after preparation succeeds but capture start, first sample, callback, premature stop, or sealing fails.
 - [x] **P0 — Durable-state owner:** characterize deterministic restart discovery of deliberately interrupted preparation, media, first-sample, and sealed phases without touching media.
-- [ ] **P0 — Durable-state owner:** prove forced-process termination, relaunch discovery, playable recovery, and idempotent completion on an exact artifact.
+- [x] **P0 — Durable-state owner:** prove forced-process termination, relaunch discovery, playable recovery, persistent playback, and idempotent completion on an exact artifact.
 - [ ] **P0 — Platform capture owner:** characterize required-source loss independently for microphone and the selected system-audio mode.
 - [ ] **P1 — Conversation-loop owner:** characterize transcription retry/replacement while the sealed audio remains unchanged.
 - [ ] **P1 — Library owner:** characterize import deduplication, unsupported media, large files, and partial metadata.
@@ -40,6 +40,7 @@ Characterization tests pin observed behavior before correction. Safety-critical 
 | Early-M1 candidate | `./script/check.sh --m1-segment-sealing` | Deterministic early-M1 source/build/test chain named by the receipt | Real capture, playable recovery, transcription, signing, or release |
 | Interruption integrity | `./script/check.sh --m1-interruption-state` | Typed content-free post-preparation failure state, journal-before-projection ordering, restart classification/repair, media preservation, fresh bindings, and focused controller behavior | Live audio, forced termination, playable recovery, system audio, `Recording`, transcription, signing, or release |
 | Short live microphone | `./script/check.sh --m1-live-microphone` | Explicit local microphone permission, capture, sealing, digest, and playable CAF on the built app | System audio, `Recording`, recovery, long sessions, signing, or release |
+| Forced-termination recovery | `./script/check.sh --m1-forced-termination-recovery` | Real microphone first sample, external process kill, strict unclosed-CAF recovery, persistent `ready_for_review`, native playback open, independent decode, unchanged digest, and idempotent relaunch | System audio, `Recording`, source-loss behavior, long sessions, transcription, signing, or release |
 | Release preparation contract | `./script/check.sh --release-prepare` | Semantic input validation, stable unresolved holds, artifact-verifier rejection paths, and read-only exact-source binding | Closed P0s, signed-artifact success, notarization, publication, or release |
 | Diff hygiene | `git diff --check` | Patch whitespace validity | Functional correctness |
 | Working-tree inventory | `git status --short --branch` | Exact local residue | Candidate admission or commit cleanliness |

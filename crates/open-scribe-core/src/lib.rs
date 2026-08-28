@@ -12,8 +12,9 @@ pub use open_scribe_domain::{
 pub use open_scribe_store::{
     AuthorizeMediaOpenRequest, FirstSampleEvidence, FirstSampleReceipt, InterruptSessionRequest,
     MediaOpenAuthorization, MediaOpenEvidence, MediaOpenReceipt, MediaSourceKind,
-    PrepareSessionRequest, PreparedSessionReceipt, SealSegmentReceipt, SealedSegmentEvidence,
-    SessionInterruptionEvidence, SessionInterruptionReason, SessionOrigin, StoreError,
+    PrepareSessionRequest, PreparedSessionReceipt, RecoveredPlayableSession, SealSegmentReceipt,
+    SealedSegmentEvidence, SessionInterruptionEvidence, SessionInterruptionReason, SessionOrigin,
+    StoreError,
 };
 
 pub struct CoarseMediaOpenReceipt {
@@ -135,6 +136,12 @@ impl RecordingPreparationController {
     ) -> Result<SessionInterruptionEvidence, StoreError> {
         self.store
             .interrupt_session(InterruptSessionRequest { session_id, reason })
+    }
+
+    pub fn recover_playable_sessions(
+        &mut self,
+    ) -> Result<Vec<RecoveredPlayableSession>, StoreError> {
+        self.store.recover_playable_sessions()
     }
 }
 

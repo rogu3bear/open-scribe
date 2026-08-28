@@ -13,7 +13,7 @@ mode="run"
 
 for argument in "$@"; do
 	case "$argument" in
-	--verify | --logs | --debug | --telemetry | --m1-live-microphone-proof)
+	--verify | --logs | --debug | --telemetry | --m1-live-microphone-proof | --m1-forced-termination-recovery-proof)
 		if [[ "$mode" != "run" ]]; then
 			printf '%s\n' 'Choose exactly one mode.' >&2
 			exit 64
@@ -21,7 +21,7 @@ for argument in "$@"; do
 		mode="$argument"
 		;;
 	*)
-		printf 'usage: %s [--verify|--logs|--debug|--telemetry|--m1-live-microphone-proof]\n' "$0" >&2
+		printf 'usage: %s [--verify|--logs|--debug|--telemetry|--m1-live-microphone-proof|--m1-forced-termination-recovery-proof]\n' "$0" >&2
 		exit 64
 		;;
 	esac
@@ -219,6 +219,149 @@ run)
 		'M1_LIVE_MICROPHONE_GREEN' \
 		"proof=explicit_command,microphone_tcc,real_avaudioengine_input,durable_first_sample,managed_caf,stop_barrier,close_before_seal,rust_independent_digest,playable_caf,bytes:$caf_bytes,sha256:$caf_digest" \
 		'excludes=recording_transition,system_or_application_audio,multiple_required_sources,active_session_recovery,forced_termination_recovery,rotation,two_hour_capture,transcription,diarization,signing,notarization,distribution,public_release' \
+		'media_retained=false'
+	;;
+--m1-forced-termination-recovery-proof)
+	if pgrep -f "^$app_binary([[:space:]]|$)" >/dev/null 2>&1; then
+		printf '%s\n' 'M1_FORCED_RECOVERY_RED: close the existing Open Scribe development app before running the proof' >&2
+		exit 1
+	fi
+	proof_root="$(mktemp -d "$macos_root/.build/m1-forced-recovery.XXXXXX")"
+	trap 'rm -rf "$proof_root"' EXIT
+	launch_app --m1-forced-termination-capture-root "$proof_root"
+	app_pid="$(<"$pid_file")"
+	verify_app_pid="$app_pid"
+	capture_receipt=""
+	for _ in {1..120}; do
+		capture_receipt="$(/usr/bin/log show \
+			--last 5m \
+			--info \
+			--style compact \
+			--predicate "processIdentifier == $app_pid && subsystem == \"$bundle_id\" && category == \"RecoveryProof\"" \
+			2>/dev/null)"
+		if [[ "$capture_receipt" == *"stage=capture-durable detail=awaiting-external-kill"* ]]; then
+			break
+		fi
+		if [[ "$capture_receipt" == *"stage=capture-failed"* ]]; then
+			printf '%s\n' 'M1_FORCED_RECOVERY_RED: microphone capture failed before forced termination' >&2
+			exit 1
+		fi
+		sleep 0.5
+	done
+	[[ "$capture_receipt" == *"stage=capture-requested detail=explicit-command"* &&
+		"$capture_receipt" == *"stage=capture-durable detail=awaiting-external-kill"* ]] || {
+		printf '%s\n' 'M1_FORCED_RECOVERY_RED: durable first-sample receipt was not observed' >&2
+		exit 1
+	}
+	caf_file="$(find "$proof_root" -type f -name '*.caf' -print -quit)"
+	[[ -n "$caf_file" ]] || {
+		printf '%s\n' 'M1_FORCED_RECOVERY_RED: managed CAF was not created' >&2
+		exit 1
+	}
+	bytes_before="$(stat -f '%z' "$caf_file")"
+	digest_before="$(shasum -a 256 "$caf_file" | awk '{print $1}')"
+	kill -KILL "$app_pid"
+	wait "$app_pid" 2>/dev/null || true
+	for _ in {1..40}; do
+		kill -0 "$app_pid" 2>/dev/null || break
+		sleep 0.25
+	done
+	if kill -0 "$app_pid" 2>/dev/null; then
+		printf '%s\n' 'M1_FORCED_RECOVERY_RED: capture process survived SIGKILL' >&2
+		exit 1
+	fi
+	verify_app_pid=""
+	afinfo "$caf_file" >/dev/null
+	launch_app --m1-forced-termination-recovery-root "$proof_root"
+	recovery_pid="$(<"$pid_file")"
+	verify_app_pid="$recovery_pid"
+	recovery_receipt=""
+	for _ in {1..120}; do
+		recovery_receipt="$(/usr/bin/log show \
+			--last 5m \
+			--info \
+			--style compact \
+			--predicate "processIdentifier == $recovery_pid && subsystem == \"$bundle_id\" && category == \"RecoveryProof\"" \
+			2>/dev/null)"
+		if [[ "$recovery_receipt" == *"stage=playback-opened detail=native-audio-engine"* ]]; then
+			break
+		fi
+		if [[ "$recovery_receipt" == *"stage=recovery-failed"* ]]; then
+			printf '%s\n' 'M1_FORCED_RECOVERY_RED: relaunch could not recover playable media' >&2
+			exit 1
+		fi
+		sleep 0.5
+	done
+	[[ "$recovery_receipt" == *"stage=recovered"* &&
+		"$recovery_receipt" == *"stage=playback-opened detail=native-audio-engine"* ]] || {
+		printf '%s\n' 'M1_FORCED_RECOVERY_RED: recovery and native playback receipts were not both observed' >&2
+		exit 1
+	}
+	for _ in {1..40}; do
+		kill -0 "$recovery_pid" 2>/dev/null || break
+		sleep 0.25
+	done
+	if kill -0 "$recovery_pid" 2>/dev/null; then
+		printf '%s\n' 'M1_FORCED_RECOVERY_RED: recovery proof process did not terminate' >&2
+		exit 1
+	fi
+	verify_app_pid=""
+	bytes_after="$(stat -f '%z' "$caf_file")"
+	digest_after="$(shasum -a 256 "$caf_file" | awk '{print $1}')"
+	[[ "$bytes_before" == "$bytes_after" && "$digest_before" == "$digest_after" ]] || {
+		printf '%s\n' 'M1_FORCED_RECOVERY_RED: recovery changed the captured CAF bytes' >&2
+		exit 1
+	}
+	afinfo "$caf_file" >/dev/null
+	afconvert "$caf_file" "$proof_root/recovered.wav" -f WAVE -d LEI16 >/dev/null
+	[[ -s "$proof_root/recovered.wav" ]] || {
+		printf '%s\n' 'M1_FORCED_RECOVERY_RED: independent decode produced no playable output' >&2
+		exit 1
+	}
+	[[ "$(sqlite3 "$proof_root/Library.sqlite3" "SELECT lifecycle FROM sessions;")" == "ready_for_review" ]] || {
+		printf '%s\n' 'M1_FORCED_RECOVERY_RED: durable session did not reach Ready for Review' >&2
+		exit 1
+	}
+	[[ "$(sqlite3 "$proof_root/Library.sqlite3" "SELECT COUNT(*) FROM recovery_runs WHERE disposition = 'playable_media_recovered';")" == "1" ]] || {
+		printf '%s\n' 'M1_FORCED_RECOVERY_RED: durable recovery receipt is missing or duplicated' >&2
+		exit 1
+	}
+	launch_app --m1-forced-termination-recovery-root "$proof_root"
+	replay_pid="$(<"$pid_file")"
+	verify_app_pid="$replay_pid"
+	replay_receipt=""
+	for _ in {1..80}; do
+		replay_receipt="$(/usr/bin/log show \
+			--last 5m \
+			--info \
+			--style compact \
+			--predicate "processIdentifier == $replay_pid && subsystem == \"$bundle_id\" && category == \"RecoveryProof\"" \
+			2>/dev/null)"
+		[[ "$replay_receipt" == *"stage=playback-opened detail=native-audio-engine"* ]] && break
+		sleep 0.25
+	done
+	[[ "$replay_receipt" == *"stage=recovered"* &&
+		"$replay_receipt" == *"stage=playback-opened detail=native-audio-engine"* ]] || {
+		printf '%s\n' 'M1_FORCED_RECOVERY_RED: repeated relaunch did not retain playable recovery' >&2
+		exit 1
+	}
+	for _ in {1..40}; do
+		kill -0 "$replay_pid" 2>/dev/null || break
+		sleep 0.25
+	done
+	if kill -0 "$replay_pid" 2>/dev/null; then
+		printf '%s\n' 'M1_FORCED_RECOVERY_RED: idempotence proof process did not terminate' >&2
+		exit 1
+	fi
+	verify_app_pid=""
+	[[ "$(sqlite3 "$proof_root/Library.sqlite3" "SELECT COUNT(*) FROM recovery_runs WHERE disposition = 'playable_media_recovered';")" == "1" ]] || {
+		printf '%s\n' 'M1_FORCED_RECOVERY_RED: repeated recovery duplicated its durable receipt' >&2
+		exit 1
+	}
+	printf '%s\n' \
+		'M1_FORCED_TERMINATION_RECOVERY_GREEN' \
+		"proof=explicit_capture_command,real_microphone_first_sample,external_sigkill,process_exit,unclosed_caf_playable,relaunch_scan,journal_first_recovery,ready_for_review,native_playback_open,independent_afinfo,independent_decode,media_bytes_unchanged,idempotent_relaunch,persistent_recovered_conversation,bytes:$bytes_after,sha256:$digest_after" \
+		'excludes=recording_transition,system_or_application_audio,multiple_required_sources,thirty_second_rotation,source_loss,disk_pressure,two_hour_capture,transcription,diarization,signing,notarization,distribution,deployment,public_release' \
 		'media_retained=false'
 	;;
 esac

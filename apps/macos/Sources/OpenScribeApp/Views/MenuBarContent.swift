@@ -5,14 +5,18 @@ struct MenuBarContent: View {
   @Environment(\.openWindow) private var openWindow
   @ObservedObject var store: FixtureSessionStore
   @ObservedObject var liveRecording: LiveMicrophoneRecordingController
+  @ObservedObject var recoveredSessions: RecoveredSessionController
 
   @MainActor
   init(
     store: FixtureSessionStore,
-    liveRecording: LiveMicrophoneRecordingController? = nil
+    liveRecording: LiveMicrophoneRecordingController? = nil,
+    recoveredSessions: RecoveredSessionController? = nil
   ) {
     self.store = store
     self.liveRecording = liveRecording ?? LiveMicrophoneRecordingController()
+    self.recoveredSessions =
+      recoveredSessions ?? RecoveredSessionController(managedRoot: nil)
   }
 
   var body: some View {
@@ -39,6 +43,25 @@ struct MenuBarContent: View {
         liveRecording.stop()
       }
       .keyboardShortcut("s", modifiers: [.command, .shift])
+    }
+    if let recovered = recoveredSessions.sessions.first {
+      Divider()
+      Label("Recovered conversation", systemImage: "waveform.badge.checkmark")
+      Text("Playable local audio")
+        .foregroundStyle(.secondary)
+      if recoveredSessions.playingSessionId == recovered.sessionId {
+        Button("Stop Recovered Audio") {
+          recoveredSessions.stopPlayback()
+        }
+      } else {
+        Button("Play Recovered Audio") {
+          recoveredSessions.play(recovered)
+        }
+      }
+    }
+    if let recoveryError = recoveredSessions.errorMessage {
+      Text(recoveryError)
+        .foregroundStyle(.red)
     }
     Divider()
     Text("Development session fixture")

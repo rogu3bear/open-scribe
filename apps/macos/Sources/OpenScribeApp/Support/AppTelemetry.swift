@@ -6,6 +6,7 @@ enum AppTelemetry {
   private static let scenes = Logger(subsystem: subsystem, category: "Scenes")
   private static let commands = Logger(subsystem: subsystem, category: "Commands")
   private static let capture = Logger(subsystem: subsystem, category: "CaptureProof")
+  private static let recovery = Logger(subsystem: subsystem, category: "RecoveryProof")
   private static let launch = Logger(subsystem: subsystem, category: "Launch")
 
   static func sceneAppeared(_ scene: String, status: AppStatus) {
@@ -26,6 +27,10 @@ enum AppTelemetry {
 
   static func captureProof(stage: String, detail: String) {
     capture.info("stage=\(stage, privacy: .public) detail=\(detail, privacy: .public)")
+  }
+
+  static func recoveryProof(stage: String, detail: String) {
+    recovery.info("stage=\(stage, privacy: .public) detail=\(detail, privacy: .public)")
   }
 
   static func launchFailed(_ failure: String) {

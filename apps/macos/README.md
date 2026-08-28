@@ -1,14 +1,16 @@
 # macOS Application Root
 
-**Status:** Milestone 0 native development shell plus a bounded early-M1
-live-microphone slice. The Xcode-owned unsigned app renders Rust fixture state
+**Status:** Milestone 0 native development shell plus bounded early-M1
+live-microphone and forced-termination recovery slices. The Xcode-owned unsigned app renders Rust fixture state
 and exposes a deliberate menu-bar microphone control. AVAudioEngine uses a
 bounded Swift buffer pool and serial managed CAF writer; the controller obtains
 coarse durable preparation, media-open, first-sample, close-before-seal, and
 typed interruption evidence without asserting `Recording`. One explicit local
-run proved a short real-device capture and playable CAF. System audio,
-multi-source authority, forced-termination/playable recovery, and signed
-entitlement enforcement remain unproved.
+run proved a short ordinary capture, while a separate external-kill run proved
+byte-preserving relaunch recovery, persistent `ready_for_review` discovery,
+native playback open, and independent CAF decode. System audio, multi-source
+authority, source-loss handling, long sessions, and signed entitlement
+enforcement remain unproved.
 
 This root will contain the native SwiftUI application, MenuBarExtra, Settings, accessibility, permission UX, and bounded Apple-framework adapters for AVFoundation/CoreAudio, ScreenCaptureKit, Vision, display/window overlays, Calendar, Contacts, Keychain, and optional Apple-only model integration.
 
@@ -31,7 +33,9 @@ sessions. `./script/check_m1_xcode_fixture.sh` is the pre-capture UI checkpoint;
 `./script/check.sh --m1-live-microphone` is the current experiential proof: it
 requires explicit consent and proves a short real-device capture through a
 playable CAF, then deletes its proof media. `--m1-interruption-state` is the
-supporting deterministic regression for first sample, sealing, typed
-interruption, and restart classification; it does not replace live audio proof.
-Neither proves system audio, multi-source `Recording`, forced-termination or
-playable recovery, long sessions, signing, or release.
+supporting repository regression for first sample, sealing, typed interruption,
+and restart classification; it does not replace live audio proof.
+`--m1-forced-termination-recovery` performs a real microphone capture, external
+kill, relaunch recovery, native playback open, and independent decode. None
+proves system audio, multi-source `Recording`, source-loss behavior, long
+sessions, signing, or release.

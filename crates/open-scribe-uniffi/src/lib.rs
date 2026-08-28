@@ -150,6 +150,22 @@ pub struct NativeSessionInterruptionEvidence {
     pub last_journal_sequence: u64,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct NativeRecoveredPlayableSession {
+    pub session_id: String,
+    pub segment_id: String,
+    pub relative_path: String,
+    pub absolute_path: String,
+    pub sample_count: u64,
+    pub duration_nanoseconds: u64,
+    pub byte_length: u64,
+    pub digest_sha256: String,
+    pub media_preserved: bool,
+    pub ready_for_review: bool,
+    pub recording_started: bool,
+    pub last_journal_sequence: u64,
+}
+
 #[derive(Debug, thiserror::Error, uniffi::Error)]
 pub enum NativeStorageError {
     #[error("The storage root is invalid.")]
@@ -332,6 +348,32 @@ impl NativeRecordingPreparation {
             recording_started: evidence.recording_started,
             last_journal_sequence: evidence.last_journal_sequence,
         })
+    }
+
+    pub fn recover_playable_sessions(
+        &self,
+    ) -> Result<Vec<NativeRecoveredPlayableSession>, NativeStorageError> {
+        let recovered = self
+            .controller()?
+            .recover_playable_sessions()
+            .map_err(map_storage_error)?;
+        Ok(recovered
+            .into_iter()
+            .map(|recovered| NativeRecoveredPlayableSession {
+                session_id: recovered.session_id.0,
+                segment_id: recovered.segment_id,
+                relative_path: recovered.relative_path,
+                absolute_path: recovered.absolute_path.to_string_lossy().into_owned(),
+                sample_count: recovered.sample_count,
+                duration_nanoseconds: recovered.duration_nanoseconds,
+                byte_length: recovered.byte_length,
+                digest_sha256: recovered.digest_sha256,
+                media_preserved: recovered.media_preserved,
+                ready_for_review: recovered.ready_for_review,
+                recording_started: recovered.recording_started,
+                last_journal_sequence: recovered.last_journal_sequence,
+            })
+            .collect())
     }
 }
 
