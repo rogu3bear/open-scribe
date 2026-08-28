@@ -16,34 +16,34 @@
       "id": "short-live-microphone-capture",
       "maturity": "Fixture",
       "platform": "macOS 13 arm64",
-      "permissions": ["microphone"],
+      "permissions": ["microphone", "screen and system audio"],
       "network": "none",
-      "inputs": ["one explicitly selected Mac microphone"],
-      "outputs": ["one managed, sealed, playable CAF segment"],
-      "terminology": "Capturing microphone",
-      "proof_receipt": "M1_LIVE_MICROPHONE_GREEN"
+      "inputs": ["microphone as one required source in a dual-source recording"],
+      "outputs": ["one managed, sealed, playable microphone CAF track"],
+      "terminology": "Microphone source track",
+      "proof_receipt": "M1_DUAL_SOURCE_RUNTIME_GREEN"
     },
     {
       "id": "multi-source-recording",
-      "maturity": "Unavailable",
+      "maturity": "Fixture",
       "platform": "macOS 13 arm64",
       "permissions": ["microphone", "screen and system audio"],
       "network": "none",
-      "inputs": ["microphone", "selected application or system audio"],
-      "outputs": ["durable synchronized source tracks"],
-      "terminology": "Recording",
-      "proof_receipt": "M1_COMPLETE_GREEN"
+      "inputs": ["microphone", "all authorized system audio"],
+      "outputs": ["two durable source tracks"],
+      "terminology": "Recording microphone + system audio",
+      "proof_receipt": "M1_DUAL_SOURCE_RUNTIME_GREEN"
     },
     {
       "id": "forced-termination-recovery-and-playback",
-      "maturity": "Unavailable",
+      "maturity": "Fixture",
       "platform": "macOS 13 arm64",
       "permissions": [],
       "network": "none",
       "inputs": ["interrupted managed session"],
-      "outputs": ["recovered playable media"],
+      "outputs": ["two atomically recovered playable source tracks"],
       "terminology": "Recovered recording",
-      "proof_receipt": "M1_COMPLETE_GREEN"
+      "proof_receipt": "M1_FORCED_TERMINATION_RECOVERY_GREEN"
     },
     {
       "id": "local-transcription",

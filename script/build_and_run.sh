@@ -13,7 +13,7 @@ mode="run"
 
 for argument in "$@"; do
 	case "$argument" in
-	--verify | --logs | --debug | --telemetry | --m1-live-microphone-proof | --m1-forced-termination-recovery-proof)
+	--verify | --logs | --debug | --telemetry | --m1-live-microphone-proof | --m1-dual-source-runtime-proof | --m1-forced-termination-recovery-proof)
 		if [[ "$mode" != "run" ]]; then
 			printf '%s\n' 'Choose exactly one mode.' >&2
 			exit 64
@@ -21,7 +21,7 @@ for argument in "$@"; do
 		mode="$argument"
 		;;
 	*)
-		printf 'usage: %s [--verify|--logs|--debug|--telemetry|--m1-live-microphone-proof|--m1-forced-termination-recovery-proof]\n' "$0" >&2
+		printf 'usage: %s [--verify|--logs|--debug|--telemetry|--m1-live-microphone-proof|--m1-dual-source-runtime-proof|--m1-forced-termination-recovery-proof]\n' "$0" >&2
 		exit 64
 		;;
 	esac
@@ -31,6 +31,8 @@ cd "$repo_root"
 mkdir -p "$macos_root/.build"
 bindings_tmp="$(mktemp -d "$macos_root/.build/uniffi.XXXXXX")"
 verify_app_pid=""
+proof_root=""
+remove_proof_root="false"
 
 cleanup() {
 	if [[ -n "$verify_app_pid" ]]; then
@@ -39,6 +41,11 @@ cleanup() {
 			kill "$verify_app_pid" 2>/dev/null || true
 			wait "$verify_app_pid" 2>/dev/null || true
 		fi
+	fi
+	if [[ "$remove_proof_root" == "true" && -n "$proof_root" && -d "$proof_root" ]]; then
+		rm -rf "$proof_root"
+	elif [[ -n "$proof_root" && -d "$proof_root" ]]; then
+		printf 'proof_root_retained=%s\n' "$proof_root" >&2
 	fi
 	rm -rf "$bindings_tmp"
 }
@@ -168,13 +175,12 @@ run)
 	launch_app
 	exec /usr/bin/log stream --info --style compact --predicate "subsystem == \"$bundle_id\""
 	;;
---m1-live-microphone-proof)
+--m1-live-microphone-proof | --m1-dual-source-runtime-proof)
 	if pgrep -f "^$app_binary([[:space:]]|$)" >/dev/null 2>&1; then
 		printf '%s\n' 'M1_LIVE_MICROPHONE_RED: close the existing Open Scribe development app before running the proof' >&2
 		exit 1
 	fi
 	proof_root="$(mktemp -d "$macos_root/.build/m1-live-microphone.XXXXXX")"
-	trap 'rm -rf "$proof_root"' EXIT
 	launch_app --m1-live-microphone-proof-root "$proof_root"
 	app_pid="$(<"$pid_file")"
 	verify_app_pid="$app_pid"
@@ -203,22 +209,32 @@ run)
 		exit 1
 	}
 	caf_count="$(find "$proof_root" -type f -name '*.caf' | wc -l | tr -d ' ')"
-	[[ "$caf_count" == "1" ]] || {
-		printf 'M1_LIVE_MICROPHONE_RED: expected one managed CAF, found %s\n' "$caf_count" >&2
+	[[ "$caf_count" == "2" ]] || {
+		printf 'M1_DUAL_SOURCE_RUNTIME_RED: expected two managed CAF source tracks, found %s\n' "$caf_count" >&2
 		exit 1
 	}
-	caf_file="$(find "$proof_root" -type f -name '*.caf' -print -quit)"
-	caf_bytes="$(stat -f '%z' "$caf_file")"
-	[[ "$caf_bytes" -gt 4096 ]] || {
-		printf 'M1_LIVE_MICROPHONE_RED: managed CAF is unexpectedly small (%s bytes)\n' "$caf_bytes" >&2
+	while IFS= read -r caf_file; do
+		caf_bytes="$(stat -f '%z' "$caf_file")"
+		[[ "$caf_bytes" -gt 4096 ]] || {
+			printf 'M1_DUAL_SOURCE_RUNTIME_RED: managed CAF is unexpectedly small (%s bytes): %s\n' "$caf_bytes" "$caf_file" >&2
+			exit 1
+		}
+		afinfo "$caf_file" >/dev/null
+	done < <(find "$proof_root" -type f -name '*.caf' -print | sort)
+	[[ "$(sqlite3 "$proof_root/Library.sqlite3" "SELECT COUNT(*) FROM sources WHERE lifecycle = 'sealed';")" == "2" ]] || {
+		printf '%s\n' 'M1_DUAL_SOURCE_RUNTIME_RED: both sources were not durably sealed' >&2
 		exit 1
 	}
-	afinfo "$caf_file" >/dev/null
-	caf_digest="$(shasum -a 256 "$caf_file" | awk '{print $1}')"
+	[[ "$(sqlite3 "$proof_root/Library.sqlite3" "SELECT COUNT(*) FROM session_events WHERE event_kind = 'recording_started' AND payload_json LIKE '%microphone%' AND payload_json LIKE '%system_audio%';")" == "1" ]] || {
+		printf '%s\n' 'M1_DUAL_SOURCE_RUNTIME_RED: Rust did not durably confirm both required sources in Recording' >&2
+		exit 1
+	}
+	caf_receipts="$(find "$proof_root" -type f -name '*.caf' -print | sort | while IFS= read -r caf_file; do printf '%s:%s:%s;' "$(basename "$(dirname "$caf_file")")" "$(stat -f '%z' "$caf_file")" "$(shasum -a 256 "$caf_file" | awk '{print $1}')"; done)"
+	remove_proof_root="true"
 	printf '%s\n' \
-		'M1_LIVE_MICROPHONE_GREEN' \
-		"proof=explicit_command,microphone_tcc,real_avaudioengine_input,durable_first_sample,managed_caf,stop_barrier,close_before_seal,rust_independent_digest,playable_caf,bytes:$caf_bytes,sha256:$caf_digest" \
-		'excludes=recording_transition,system_or_application_audio,multiple_required_sources,active_session_recovery,forced_termination_recovery,rotation,two_hour_capture,transcription,diarization,signing,notarization,distribution,public_release' \
+		'M1_DUAL_SOURCE_RUNTIME_GREEN' \
+		"proof=explicit_command,microphone_tcc,screen_and_system_audio_tcc,real_avaudioengine_input,real_screencapturekit_audio,both_durable_first_samples,rust_owned_multi_source_recording,two_managed_cafs,stop_barrier,close_before_seal,rust_independent_digests,independently_playable_cafs,tracks:$caf_receipts" \
+		'excludes=source_loss,degraded_continuation,permission_revocation,rotation,disk_pressure,two_hour_capture,transcription,diarization,signing,notarization,distribution,public_release' \
 		'media_retained=false'
 	;;
 --m1-forced-termination-recovery-proof)
@@ -227,7 +243,6 @@ run)
 		exit 1
 	fi
 	proof_root="$(mktemp -d "$macos_root/.build/m1-forced-recovery.XXXXXX")"
-	trap 'rm -rf "$proof_root"' EXIT
 	launch_app --m1-forced-termination-capture-root "$proof_root"
 	app_pid="$(<"$pid_file")"
 	verify_app_pid="$app_pid"
@@ -253,13 +268,11 @@ run)
 		printf '%s\n' 'M1_FORCED_RECOVERY_RED: durable first-sample receipt was not observed' >&2
 		exit 1
 	}
-	caf_file="$(find "$proof_root" -type f -name '*.caf' -print -quit)"
-	[[ -n "$caf_file" ]] || {
-		printf '%s\n' 'M1_FORCED_RECOVERY_RED: managed CAF was not created' >&2
+	caf_count="$(find "$proof_root" -type f -name '*.caf' | wc -l | tr -d ' ')"
+	[[ "$caf_count" == "2" ]] || {
+		printf 'M1_FORCED_RECOVERY_RED: expected two managed CAF source tracks, found %s\n' "$caf_count" >&2
 		exit 1
 	}
-	bytes_before="$(stat -f '%z' "$caf_file")"
-	digest_before="$(shasum -a 256 "$caf_file" | awk '{print $1}')"
 	kill -KILL "$app_pid"
 	wait "$app_pid" 2>/dev/null || true
 	for _ in {1..40}; do
@@ -271,7 +284,12 @@ run)
 		exit 1
 	fi
 	verify_app_pid=""
-	afinfo "$caf_file" >/dev/null
+	sleep 1
+	digests_before="$proof_root/caf-digests.before"
+	find "$proof_root" -type f -name '*.caf' -print | sort | while IFS= read -r caf_file; do
+		afinfo "$caf_file" >/dev/null
+		shasum -a 256 "$caf_file"
+	done >"$digests_before"
 	launch_app --m1-forced-termination-recovery-root "$proof_root"
 	recovery_pid="$(<"$pid_file")"
 	verify_app_pid="$recovery_pid"
@@ -306,24 +324,37 @@ run)
 		exit 1
 	fi
 	verify_app_pid=""
-	bytes_after="$(stat -f '%z' "$caf_file")"
-	digest_after="$(shasum -a 256 "$caf_file" | awk '{print $1}')"
-	[[ "$bytes_before" == "$bytes_after" && "$digest_before" == "$digest_after" ]] || {
-		printf '%s\n' 'M1_FORCED_RECOVERY_RED: recovery changed the captured CAF bytes' >&2
+	digests_after="$proof_root/caf-digests.after"
+	find "$proof_root" -type f -name '*.caf' -print | sort | while IFS= read -r caf_file; do
+		shasum -a 256 "$caf_file"
+	done >"$digests_after"
+	cmp "$digests_before" "$digests_after" || {
+		printf '%s\n' 'M1_FORCED_RECOVERY_RED: recovery changed one or more captured CAF files' >&2
 		exit 1
 	}
-	afinfo "$caf_file" >/dev/null
-	afconvert "$caf_file" "$proof_root/recovered.wav" -f WAVE -d LEI16 >/dev/null
-	[[ -s "$proof_root/recovered.wav" ]] || {
-		printf '%s\n' 'M1_FORCED_RECOVERY_RED: independent decode produced no playable output' >&2
-		exit 1
-	}
+	decode_index=0
+	while IFS= read -r caf_file; do
+		afinfo "$caf_file" >/dev/null
+		decoded_file="$proof_root/recovered-$decode_index.wav"
+		afconvert "$caf_file" "$decoded_file" -f WAVE -d LEI16 >/dev/null
+		[[ -s "$decoded_file" ]] || {
+			printf 'M1_FORCED_RECOVERY_RED: independent decode produced no output for %s\n' "$caf_file" >&2
+			exit 1
+		}
+		decode_index=$((decode_index + 1))
+	done < <(find "$proof_root" -type f -name '*.caf' -print | sort)
 	[[ "$(sqlite3 "$proof_root/Library.sqlite3" "SELECT lifecycle FROM sessions;")" == "ready_for_review" ]] || {
 		printf '%s\n' 'M1_FORCED_RECOVERY_RED: durable session did not reach Ready for Review' >&2
 		exit 1
 	}
 	[[ "$(sqlite3 "$proof_root/Library.sqlite3" "SELECT COUNT(*) FROM recovery_runs WHERE disposition = 'playable_media_recovered';")" == "1" ]] || {
 		printf '%s\n' 'M1_FORCED_RECOVERY_RED: durable recovery receipt is missing or duplicated' >&2
+		exit 1
+	}
+	[[ "$(sqlite3 "$proof_root/Library.sqlite3" "SELECT COUNT(*) FROM sources WHERE lifecycle = 'sealed';")" == "2" &&
+	"$(sqlite3 "$proof_root/Library.sqlite3" "SELECT COUNT(*) FROM segments WHERE lifecycle = 'sealed' AND recovery_state = 'recovered';")" == "2" &&
+	"$(sqlite3 "$proof_root/Library.sqlite3" "SELECT COUNT(*) FROM session_events WHERE event_kind = 'playable_media_recovered';")" == "2" ]] || {
+		printf '%s\n' 'M1_FORCED_RECOVERY_RED: recovery did not atomically preserve both required sources' >&2
 		exit 1
 	}
 	launch_app --m1-forced-termination-recovery-root "$proof_root"
@@ -358,10 +389,20 @@ run)
 		printf '%s\n' 'M1_FORCED_RECOVERY_RED: repeated recovery duplicated its durable receipt' >&2
 		exit 1
 	}
+	cmp "$digests_before" <(find "$proof_root" -type f -name '*.caf' -print | sort | while IFS= read -r caf_file; do shasum -a 256 "$caf_file"; done) || {
+		printf '%s\n' 'M1_FORCED_RECOVERY_RED: repeated recovery changed one or more captured CAF files' >&2
+		exit 1
+	}
+	[[ "$(sqlite3 "$proof_root/Library.sqlite3" "SELECT COUNT(*) FROM session_events WHERE event_kind = 'playable_media_recovered';")" == "2" ]] || {
+		printf '%s\n' 'M1_FORCED_RECOVERY_RED: repeated recovery duplicated source recovery events' >&2
+		exit 1
+	}
+	caf_receipts="$(find "$proof_root" -type f -name '*.caf' -print | sort | while IFS= read -r caf_file; do printf '%s:%s:%s;' "$(basename "$(dirname "$caf_file")")" "$(stat -f '%z' "$caf_file")" "$(shasum -a 256 "$caf_file" | awk '{print $1}')"; done)"
+	remove_proof_root="true"
 	printf '%s\n' \
 		'M1_FORCED_TERMINATION_RECOVERY_GREEN' \
-		"proof=explicit_capture_command,real_microphone_first_sample,external_sigkill,process_exit,unclosed_caf_playable,relaunch_scan,journal_first_recovery,ready_for_review,native_playback_open,independent_afinfo,independent_decode,media_bytes_unchanged,idempotent_relaunch,persistent_recovered_conversation,bytes:$bytes_after,sha256:$digest_after" \
-		'excludes=recording_transition,system_or_application_audio,multiple_required_sources,thirty_second_rotation,source_loss,disk_pressure,two_hour_capture,transcription,diarization,signing,notarization,distribution,deployment,public_release' \
+		"proof=explicit_capture_command,real_microphone_first_sample,real_system_audio_first_sample,rust_owned_multi_source_recording,external_sigkill,process_exit,two_unclosed_cafs_playable,relaunch_scan,journal_first_atomic_recovery,ready_for_review,native_playback_open,independent_afinfo,independent_decode,both_media_bytes_unchanged,idempotent_relaunch,persistent_recovered_conversation,tracks:$caf_receipts" \
+		'excludes=source_loss,degraded_continuation,permission_revocation,thirty_second_rotation,disk_pressure,two_hour_capture,transcription,diarization,signing,notarization,distribution,deployment,public_release' \
 		'media_retained=false'
 	;;
 esac
