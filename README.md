@@ -2,7 +2,7 @@
 
 Open Scribe is a greenfield, open-source macOS conversation instrument intended to record conversations reliably, preserve local evidence, and connect derived meeting memory back to its sources.
 
-> **Repository status: Milestone 0 development proof plus bounded M1 dual-source runtime proof.** Rust durably declares required sources, enters `Recording` only after microphone and all-authorized system audio both have open media and first-sample evidence, and recovers the two tracks atomically after forced termination. An exact unsigned arm64 app has captured, sealed, independently decoded, and recovered both real source tracks, then opened the recovered conversation in native playback. This does not prove source-loss continuation, permission revocation during capture, application-scoped selection, two-hour synchronization, transcription, signing, distribution, or public release.
+> **Repository status: Milestone 0 development proof plus bounded M1 dual-source runtime proof.** Rust durably declares required sources, enters `Recording` only after microphone and all-authorized system audio both have open media and first-sample evidence, recovers the two tracks atomically after forced termination, and supplies the main window and menu bar with one coarse live-and-library snapshot. Deterministic fixtures are test-only; product surfaces now derive timers, source state, interruption/recovery, and saved-session visibility from durable Rust state. An exact unsigned arm64 app has captured, sealed, independently decoded, and recovered both real source tracks, then opened the recovered conversation in native playback. This does not prove source-loss continuation, permission revocation during capture, application-scoped selection, two-hour synchronization, transcription, signing, distribution, or public release.
 
 The founding product contract is `docs/product/FOUNDING_PRD.md`. Start with `NORTH_STAR.md`, `ANCHOR.md`, and `AGENTS.md` for the compact operating view.
 
@@ -17,7 +17,7 @@ The founding product contract is `docs/product/FOUNDING_PRD.md`. Start with `NOR
 ## Repository map
 
 `
-apps/macos/                  Xcode-owned shell plus bounded microphone/system-audio source candidate
+apps/macos/                  Native recorder/library shell plus bounded Apple capture adapters
 crates/open-scribe-*/        shared semantics plus native preparation/media integrity evidence
 web/                         stateless Leptos Worker/Assets development foundation
 docs/                        product, architecture, legal, design, model, format, and release truth
@@ -31,6 +31,13 @@ Run the founding structure gate:
 
 ```bash
 ./script/check.sh --scaffold
+```
+
+Verify the Rust-owned live/library snapshot, fresh bindings, complete unsigned
+native test suite, and exact idle app launch without requesting capture access:
+
+```bash
+./script/check.sh --state-fixtures
 ```
 
 Verify current real-device microphone plus all-authorized system-audio behavior

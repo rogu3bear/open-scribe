@@ -40,8 +40,8 @@
 
 - Command: `./script/check.sh --state-fixtures`.
 - Expected: `STATE_FIXTURES_GREEN`.
-- Proof: Rust/UniFFI guards, WASM checks, fresh bindings, Swift state/accessibility tests, unsigned-app launch, and diff hygiene.
-- Stop if: hot-path values cross UniFFI, Starting becomes durable, recording truth diverges, or fixtures are claimed as I/O.
+- Proof: Rust/UniFFI guards, one shared Rust-owned runtime/library snapshot, WASM checks, fresh bindings, Swift state/accessibility tests, unsigned-app launch, and diff hygiene.
+- Stop if: hot-path values cross UniFFI, fixture state reaches product surfaces, Starting becomes durable, or recording truth diverges.
 
 ## Validate durable preparation and media-open
 
