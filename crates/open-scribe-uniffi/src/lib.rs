@@ -57,6 +57,17 @@ pub struct NativePreparedSession {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct NativeRecordingStartedEvidence {
+    pub session_id: String,
+    pub required_sources: Vec<NativeMediaSourceKind>,
+    pub active_sources: Vec<NativeMediaSourceKind>,
+    pub journal_durable: bool,
+    pub media_files_open: bool,
+    pub recording_started: bool,
+    pub last_journal_sequence: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
 pub struct NativeMediaOpenAuthorization {
     pub session_id: String,
     pub source_id: String,
@@ -212,6 +223,59 @@ impl NativeRecordingPreparation {
             journal_durable: receipt.journal_durable,
             media_files_open: receipt.media_files_open,
             recording_started: false,
+        })
+    }
+
+    pub fn prepare_session_with_required_sources(
+        &self,
+        title: String,
+        required_sources: Vec<NativeMediaSourceKind>,
+    ) -> Result<NativePreparedSession, NativeStorageError> {
+        let receipt = self
+            .controller()?
+            .prepare_session_with_required_sources(
+                title,
+                required_sources
+                    .into_iter()
+                    .map(map_media_source_kind)
+                    .collect(),
+            )
+            .map_err(map_storage_error)?;
+        Ok(NativePreparedSession {
+            session_id: receipt.session_id.0,
+            schema_version: receipt.schema_version,
+            journal_version: receipt.journal_version,
+            last_journal_sequence: receipt.last_journal_sequence,
+            journal_durable: receipt.journal_durable,
+            media_files_open: receipt.media_files_open,
+            recording_started: false,
+        })
+    }
+
+    pub fn confirm_recording(
+        &self,
+        session_id: String,
+    ) -> Result<NativeRecordingStartedEvidence, NativeStorageError> {
+        let evidence = self
+            .controller()?
+            .confirm_recording(open_scribe_types::SessionId(session_id))
+            .map_err(map_storage_error)?;
+        Ok(NativeRecordingStartedEvidence {
+            session_id: evidence.session_id.0,
+            required_sources: evidence
+                .required_sources
+                .into_iter()
+                .map(map_native_media_source_kind)
+                .collect(),
+            active_sources: evidence
+                .active_sources
+                .into_iter()
+                .map(map_native_media_source_kind)
+                .collect(),
+            journal_durable: evidence.journal_durable,
+            media_files_open: evidence.media_files_open,
+            recording_started: evidence.recording_started,
+            last_journal_sequence: evidence.last_journal_sequence,
         })
     }
 
@@ -397,6 +461,18 @@ const fn map_media_source_kind(kind: NativeMediaSourceKind) -> open_scribe_core:
             open_scribe_core::MediaSourceKind::ApplicationAudio
         }
         NativeMediaSourceKind::SystemAudio => open_scribe_core::MediaSourceKind::SystemAudio,
+    }
+}
+
+const fn map_native_media_source_kind(
+    kind: open_scribe_core::MediaSourceKind,
+) -> NativeMediaSourceKind {
+    match kind {
+        open_scribe_core::MediaSourceKind::Microphone => NativeMediaSourceKind::Microphone,
+        open_scribe_core::MediaSourceKind::ApplicationAudio => {
+            NativeMediaSourceKind::ApplicationAudio
+        }
+        open_scribe_core::MediaSourceKind::SystemAudio => NativeMediaSourceKind::SystemAudio,
     }
 }
 

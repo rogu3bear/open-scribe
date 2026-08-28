@@ -23,7 +23,7 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 3;
 const JOURNAL_VERSION: u32 = 1;
 const MAX_TITLE_BYTES: usize = 512;
 const MAX_DISPLAY_NAME_BYTES: usize = 512;
@@ -86,6 +86,39 @@ impl MediaSourceKind {
             Self::SystemAudio => "system_audio",
         }
     }
+
+    fn from_str(value: &str) -> Result<Self, StoreError> {
+        match value {
+            "microphone" => Ok(Self::Microphone),
+            "application_audio" => Ok(Self::ApplicationAudio),
+            "system_audio" => Ok(Self::SystemAudio),
+            _ => Err(StoreError::IntegrityMismatch(
+                "required media source kind is unsupported",
+            )),
+        }
+    }
+}
+
+/// Durable declaration of the sources that must become active before Recording.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RequiredSourcePlanEvidence {
+    pub session_id: SessionId,
+    pub required_sources: Vec<MediaSourceKind>,
+    pub journal_durable: bool,
+    pub recording_started: bool,
+    pub last_journal_sequence: u64,
+}
+
+/// Coarse authority returned only when every declared source is durably capturing.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RecordingStartedEvidence {
+    pub session_id: SessionId,
+    pub required_sources: Vec<MediaSourceKind>,
+    pub active_sources: Vec<MediaSourceKind>,
+    pub journal_durable: bool,
+    pub media_files_open: bool,
+    pub recording_started: bool,
+    pub last_journal_sequence: u64,
 }
 
 /// Request for one Rust-authorized initial source segment.
@@ -482,7 +515,197 @@ impl SessionStore {
         &mut self,
         request: PrepareSessionRequest,
     ) -> Result<PreparedSessionReceipt, StoreError> {
-        self.prepare_session_inner(request, None)
+        self.prepare_session_with_required_sources(request, vec![MediaSourceKind::Microphone])
+    }
+
+    pub fn prepare_session_with_required_sources(
+        &mut self,
+        request: PrepareSessionRequest,
+        required_sources: Vec<MediaSourceKind>,
+    ) -> Result<PreparedSessionReceipt, StoreError> {
+        let required_sources = normalized_source_kinds(required_sources)?;
+        let mut receipt = self.prepare_session_inner(request, None)?;
+        let planned = self.plan_required_sources(receipt.session_id.clone(), required_sources)?;
+        receipt.last_journal_sequence = planned.last_journal_sequence;
+        Ok(receipt)
+    }
+
+    /// Persists the complete required-source contract before any media is authorized.
+    pub fn plan_required_sources(
+        &mut self,
+        session_id: SessionId,
+        required_sources: Vec<MediaSourceKind>,
+    ) -> Result<RequiredSourcePlanEvidence, StoreError> {
+        if Uuid::parse_str(&session_id.0).is_err() {
+            return Err(StoreError::InvalidRequest("session ID is not a UUID"));
+        }
+        let required_sources = normalized_source_kinds(required_sources)?;
+        let (lifecycle, journal_durable): (String, bool) = self
+            .connection
+            .query_row(
+                "SELECT lifecycle, journal_durable FROM sessions WHERE id = ?1",
+                [&session_id.0],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .map_err(|error| match error {
+                rusqlite::Error::QueryReturnedNoRows => {
+                    StoreError::InvalidState("session does not exist")
+                }
+                other => StoreError::Sqlite(other),
+            })?;
+        if lifecycle != "preparing" || !journal_durable {
+            return Err(StoreError::InvalidState(
+                "session is not awaiting a required-source plan",
+            ));
+        }
+        let existing: Vec<MediaSourceKind> = self.required_source_kinds(&session_id.0)?;
+        if !existing.is_empty() {
+            if existing != required_sources {
+                return Err(StoreError::IntegrityMismatch(
+                    "repeated required-source plan changed accepted scope",
+                ));
+            }
+            let last_journal_sequence = self.last_journal_sequence(&session_id.0)?;
+            return Ok(RequiredSourcePlanEvidence {
+                session_id,
+                required_sources,
+                journal_durable: true,
+                recording_started: false,
+                last_journal_sequence,
+            });
+        }
+        let payload = json!({
+            "required_sources": required_sources.iter().map(|kind| kind.as_str()).collect::<Vec<_>>()
+        });
+        let journal_record = self.append_session_journal(
+            &session_id.0,
+            "required_sources_planned",
+            None,
+            payload.clone(),
+        )?;
+        let (sequence, prior_digest) = next_database_event(&self.connection, &session_id.0)?;
+        let digest = event_digest(
+            &session_id.0,
+            sequence,
+            "required_sources_planned",
+            &payload,
+            prior_digest.as_deref(),
+        )?;
+        let transaction = self.connection.transaction()?;
+        for kind in &required_sources {
+            transaction.execute(
+                "INSERT INTO required_sources (
+                    session_id, schema_version, kind, lifecycle
+                 ) VALUES (?1, ?2, ?3, 'required')",
+                params![session_id.0, SCHEMA_VERSION, kind.as_str()],
+            )?;
+        }
+        insert_event_with_id(
+            &transaction,
+            &journal_record.body.event_id,
+            &session_id.0,
+            sequence,
+            "required_sources_planned",
+            journal_record.body.wall_time_milliseconds,
+            &payload,
+            prior_digest.as_deref(),
+            &digest,
+        )?;
+        transaction.commit()?;
+        Ok(RequiredSourcePlanEvidence {
+            session_id,
+            required_sources,
+            journal_durable: true,
+            recording_started: false,
+            last_journal_sequence: journal_record.body.sequence,
+        })
+    }
+
+    /// Enters Recording only after every required source has durable first-sample evidence.
+    pub fn confirm_recording(
+        &mut self,
+        session_id: SessionId,
+    ) -> Result<RecordingStartedEvidence, StoreError> {
+        let required_sources = self.required_source_kinds(&session_id.0)?;
+        if required_sources.is_empty() {
+            return Err(StoreError::InvalidState("required-source plan is missing"));
+        }
+        let active_sources = self.active_source_kinds(&session_id.0)?;
+        if active_sources != required_sources {
+            return Err(StoreError::InvalidState(
+                "not every required source has durable first-sample evidence",
+            ));
+        }
+        let (lifecycle, journal_durable, media_files_open): (String, bool, bool) =
+            self.connection.query_row(
+                "SELECT lifecycle, journal_durable, media_files_open FROM sessions WHERE id = ?1",
+                [&session_id.0],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )?;
+        if lifecycle == "recording" {
+            let last_journal_sequence = self.last_journal_sequence(&session_id.0)?;
+            return Ok(RecordingStartedEvidence {
+                session_id,
+                required_sources,
+                active_sources,
+                journal_durable,
+                media_files_open,
+                recording_started: true,
+                last_journal_sequence,
+            });
+        }
+        if lifecycle != "preparing" || !journal_durable || !media_files_open {
+            return Err(StoreError::InvalidState(
+                "session durability is insufficient for Recording",
+            ));
+        }
+        let payload = json!({
+            "required_sources": required_sources.iter().map(|kind| kind.as_str()).collect::<Vec<_>>(),
+            "active_sources": active_sources.iter().map(|kind| kind.as_str()).collect::<Vec<_>>()
+        });
+        let journal_record =
+            self.append_session_journal(&session_id.0, "recording_started", None, payload.clone())?;
+        let (sequence, prior_digest) = next_database_event(&self.connection, &session_id.0)?;
+        let digest = event_digest(
+            &session_id.0,
+            sequence,
+            "recording_started",
+            &payload,
+            prior_digest.as_deref(),
+        )?;
+        let transaction = self.connection.transaction()?;
+        let changed = transaction.execute(
+            "UPDATE sessions SET lifecycle = 'recording', updated_at_ms = ?2
+             WHERE id = ?1 AND lifecycle = 'preparing'
+               AND journal_durable = 1 AND media_files_open = 1",
+            params![session_id.0, journal_record.body.wall_time_milliseconds],
+        )?;
+        if changed != 1 {
+            return Err(StoreError::InvalidState(
+                "session is not awaiting Recording authority",
+            ));
+        }
+        insert_event_with_id(
+            &transaction,
+            &journal_record.body.event_id,
+            &session_id.0,
+            sequence,
+            "recording_started",
+            journal_record.body.wall_time_milliseconds,
+            &payload,
+            prior_digest.as_deref(),
+            &digest,
+        )?;
+        transaction.commit()?;
+        Ok(RecordingStartedEvidence {
+            session_id,
+            required_sources,
+            active_sources,
+            journal_durable: true,
+            media_files_open: true,
+            recording_started: true,
+            last_journal_sequence: journal_record.body.sequence,
+        })
     }
 
     /// Allocates one deterministic managed path before Swift opens media.
@@ -617,7 +840,7 @@ impl SessionStore {
                  JOIN tracks ON tracks.session_id = sessions.id AND tracks.source_id = sources.id
                  JOIN segments ON segments.session_id = sessions.id
                               AND segments.track_id = tracks.id
-                 WHERE sessions.lifecycle IN ('preparing', 'interrupted')
+                 WHERE sessions.lifecycle IN ('preparing', 'recording', 'interrupted')
                    AND segments.lifecycle = 'capturing'
                  ORDER BY sessions.id, segments.sequence",
             )?;
@@ -807,12 +1030,12 @@ impl SessionStore {
         failure: Option<MediaFailurePoint>,
     ) -> Result<MediaOpenAuthorization, StoreError> {
         validate_media_request(&request)?;
-        let (lifecycle, journal_durable, media_files_open): (String, bool, bool) = self
+        let (lifecycle, journal_durable): (String, bool) = self
             .connection
             .query_row(
-                "SELECT lifecycle, journal_durable, media_files_open FROM sessions WHERE id = ?1",
+                "SELECT lifecycle, journal_durable FROM sessions WHERE id = ?1",
                 [&request.session_id.0],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .map_err(|error| match error {
                 rusqlite::Error::QueryReturnedNoRows => {
@@ -820,19 +1043,35 @@ impl SessionStore {
                 }
                 other => StoreError::Sqlite(other),
             })?;
-        if lifecycle != "preparing" || !journal_durable || media_files_open {
+        if lifecycle != "preparing" || !journal_durable {
             return Err(StoreError::InvalidState(
-                "session is not awaiting its initial media file",
+                "session is not awaiting required media files",
             ));
         }
-        let existing_tracks: i64 = self.connection.query_row(
-            "SELECT COUNT(*) FROM tracks WHERE session_id = ?1",
-            [&request.session_id.0],
+        let required: bool = self.connection.query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM required_sources
+                WHERE session_id = ?1 AND kind = ?2
+             )",
+            params![request.session_id.0, request.source_kind.as_str()],
             |row| row.get(0),
         )?;
-        if existing_tracks != 0 {
+        if !required {
             return Err(StoreError::InvalidState(
-                "initial media authorization already exists",
+                "media source is not part of the required-source plan",
+            ));
+        }
+        let existing_kind: bool = self.connection.query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM sources
+                WHERE session_id = ?1 AND kind = ?2
+             )",
+            params![request.session_id.0, request.source_kind.as_str()],
+            |row| row.get(0),
+        )?;
+        if existing_kind {
+            return Err(StoreError::InvalidState(
+                "media authorization already exists for this required source",
             ));
         }
 
@@ -965,7 +1204,7 @@ impl SessionStore {
                 session_id: receipt.session_id,
                 segment_id: receipt.segment_id,
                 journal_durable: true,
-                media_files_open: true,
+                media_files_open: self.session_media_files_open(&stored.session_id)?,
                 recording_started: false,
                 last_journal_sequence: self.last_journal_sequence(&stored.session_id)?,
             });
@@ -1009,7 +1248,7 @@ impl SessionStore {
             session_id: receipt.session_id,
             segment_id: receipt.segment_id,
             journal_durable: true,
-            media_files_open: true,
+            media_files_open: self.session_media_files_open(&stored.session_id)?,
             recording_started: false,
             last_journal_sequence: journal_record.body.sequence,
         })
@@ -1275,6 +1514,39 @@ impl SessionStore {
         Ok(directory)
     }
 
+    fn required_source_kinds(&self, session_id: &str) -> Result<Vec<MediaSourceKind>, StoreError> {
+        let mut statement = self.connection.prepare(
+            "SELECT kind FROM required_sources
+             WHERE session_id = ?1 ORDER BY kind",
+        )?;
+        statement
+            .query_map([session_id], |row| row.get::<_, String>(0))?
+            .map(|value| MediaSourceKind::from_str(&value?))
+            .collect()
+    }
+
+    fn active_source_kinds(&self, session_id: &str) -> Result<Vec<MediaSourceKind>, StoreError> {
+        let mut statement = self.connection.prepare(
+            "SELECT DISTINCT kind FROM sources
+             WHERE session_id = ?1 AND lifecycle = 'capturing'
+             ORDER BY kind",
+        )?;
+        statement
+            .query_map([session_id], |row| row.get::<_, String>(0))?
+            .map(|value| MediaSourceKind::from_str(&value?))
+            .collect()
+    }
+
+    fn session_media_files_open(&self, session_id: &str) -> Result<bool, StoreError> {
+        self.connection
+            .query_row(
+                "SELECT media_files_open FROM sessions WHERE id = ?1",
+                [session_id],
+                |row| row.get(0),
+            )
+            .map_err(StoreError::Sqlite)
+    }
+
     fn append_session_journal(
         &self,
         session_id: &str,
@@ -1352,6 +1624,11 @@ impl SessionStore {
                 source_kind,
                 source_display_name
             ],
+        )?;
+        transaction.execute(
+            "UPDATE required_sources SET lifecycle = 'opening'
+             WHERE session_id = ?1 AND kind = ?2 AND lifecycle = 'required'",
+            params![session_id, source_kind],
         )?;
         transaction.execute(
             "INSERT OR IGNORE INTO tracks (
@@ -1440,10 +1717,35 @@ impl SessionStore {
             [session_id],
         )?;
         transaction.execute(
+            "UPDATE required_sources SET lifecycle = 'open'
+             WHERE session_id = ?1
+               AND kind = (
+                 SELECT sources.kind FROM sources
+                 JOIN tracks ON tracks.source_id = sources.id
+                 JOIN segments ON segments.track_id = tracks.id
+                 WHERE segments.id = ?2
+               )",
+            params![session_id, segment_id],
+        )?;
+        let all_required_open: bool = transaction.query_row(
+            "SELECT NOT EXISTS(
+                SELECT 1 FROM required_sources required
+                WHERE required.session_id = ?1
+                  AND NOT EXISTS(
+                    SELECT 1 FROM sources source
+                    WHERE source.session_id = required.session_id
+                      AND source.kind = required.kind
+                      AND source.lifecycle IN ('open', 'capturing')
+                  )
+             )",
+            [session_id],
+            |row| row.get(0),
+        )?;
+        transaction.execute(
             "UPDATE sessions
-             SET media_files_open = 1, updated_at_ms = ?2
+             SET media_files_open = ?2, updated_at_ms = ?3
              WHERE id = ?1 AND lifecycle = 'preparing' AND journal_durable = 1",
-            params![session_id, now],
+            params![session_id, all_required_open, now],
         )?;
         insert_event_with_id(
             &transaction,
@@ -1493,13 +1795,29 @@ impl SessionStore {
         }
         transaction.execute(
             "UPDATE sources SET lifecycle = 'capturing'
-             WHERE session_id = ?1 AND lifecycle = 'open'",
-            [session_id],
+             WHERE id = (
+               SELECT tracks.source_id FROM tracks
+               JOIN segments ON segments.track_id = tracks.id
+               WHERE segments.id = ?2
+             ) AND session_id = ?1 AND lifecycle = 'open'",
+            params![session_id, segment_id],
         )?;
         transaction.execute(
             "UPDATE tracks SET lifecycle = 'capturing'
-             WHERE session_id = ?1 AND lifecycle = 'open'",
-            [session_id],
+             WHERE id = (SELECT track_id FROM segments WHERE id = ?2)
+               AND session_id = ?1 AND lifecycle = 'open'",
+            params![session_id, segment_id],
+        )?;
+        transaction.execute(
+            "UPDATE required_sources SET lifecycle = 'capturing'
+             WHERE session_id = ?1
+               AND kind = (
+                 SELECT sources.kind FROM sources
+                 JOIN tracks ON tracks.source_id = sources.id
+                 JOIN segments ON segments.track_id = tracks.id
+                 WHERE segments.id = ?2
+               )",
+            params![session_id, segment_id],
         )?;
         transaction.execute(
             "UPDATE sessions SET updated_at_ms = ?2
@@ -1583,8 +1901,15 @@ impl SessionStore {
                     SELECT 1 FROM segments
                     WHERE session_id = ?1 AND lifecycle IN ('opening', 'open', 'capturing')
                  ),
+                 lifecycle = CASE
+                    WHEN lifecycle = 'recording' AND NOT EXISTS(
+                        SELECT 1 FROM segments
+                        WHERE session_id = ?1 AND lifecycle IN ('opening', 'open', 'capturing')
+                    ) THEN 'ready_for_review'
+                    ELSE lifecycle
+                 END,
                  updated_at_ms = ?2
-             WHERE id = ?1 AND lifecycle = 'preparing'",
+             WHERE id = ?1 AND lifecycle IN ('preparing', 'recording')",
             params![session_id, now],
         )?;
         insert_event_with_id(
@@ -1701,7 +2026,7 @@ impl SessionStore {
         let session_changed = transaction.execute(
             "UPDATE sessions
              SET lifecycle = 'ready_for_review', media_files_open = 0, updated_at_ms = ?2
-             WHERE id = ?1 AND lifecycle IN ('preparing', 'interrupted')",
+             WHERE id = ?1 AND lifecycle IN ('preparing', 'recording', 'interrupted')",
             params![session_id, journal_record.body.wall_time_milliseconds],
         )?;
         if session_changed != 1 {
@@ -2493,6 +2818,17 @@ fn apply_schema(connection: &mut Connection) -> Result<(), StoreError> {
             lifecycle TEXT NOT NULL,
             UNIQUE(session_id, id)
         );
+        CREATE TABLE IF NOT EXISTS required_sources (
+            session_id TEXT NOT NULL REFERENCES sessions(id),
+            schema_version INTEGER NOT NULL,
+            kind TEXT NOT NULL CHECK (
+                kind IN ('microphone', 'application_audio', 'system_audio')
+            ),
+            lifecycle TEXT NOT NULL CHECK (
+                lifecycle IN ('required', 'opening', 'open', 'capturing', 'failed', 'sealed')
+            ),
+            PRIMARY KEY(session_id, kind)
+        );
         CREATE TABLE IF NOT EXISTS tracks (
             id TEXT PRIMARY KEY,
             schema_version INTEGER NOT NULL,
@@ -2591,6 +2927,10 @@ fn apply_schema(connection: &mut Connection) -> Result<(), StoreError> {
     )?;
     transaction.execute(
         "INSERT OR IGNORE INTO schema_migrations (version, applied_at_ms) VALUES (2, ?1)",
+        [applied_at],
+    )?;
+    transaction.execute(
+        "INSERT OR IGNORE INTO schema_migrations (version, applied_at_ms) VALUES (3, ?1)",
         [applied_at],
     )?;
     transaction.commit()?;
@@ -2945,6 +3285,26 @@ fn validate_media_request(request: &AuthorizeMediaOpenRequest) -> Result<(), Sto
     Ok(())
 }
 
+fn normalized_source_kinds(
+    required_sources: Vec<MediaSourceKind>,
+) -> Result<Vec<MediaSourceKind>, StoreError> {
+    if required_sources.is_empty() || required_sources.len() > 3 {
+        return Err(StoreError::InvalidRequest(
+            "required-source plan must contain one to three sources",
+        ));
+    }
+    let mut names = required_sources
+        .into_iter()
+        .map(|kind| kind.as_str())
+        .collect::<Vec<_>>();
+    names.sort_unstable();
+    names.dedup();
+    if names.is_empty() {
+        return Err(StoreError::InvalidRequest("required-source plan is empty"));
+    }
+    names.into_iter().map(MediaSourceKind::from_str).collect()
+}
+
 fn validate_media_receipt_shape(receipt: &MediaOpenReceipt) -> Result<(), StoreError> {
     if Uuid::parse_str(&receipt.session_id.0).is_err()
         || Uuid::parse_str(&receipt.track_id).is_err()
@@ -3190,7 +3550,7 @@ mod tests {
     }
 
     #[test]
-    fn schema_v2_applies_required_durability_settings_tables_and_media_columns() {
+    fn schema_v3_applies_required_durability_settings_tables_and_media_columns() {
         let temp = TempDir::new().unwrap();
         let store = open_store(&temp);
 
@@ -3213,6 +3573,7 @@ mod tests {
         for required in [
             "schema_migrations",
             "sessions",
+            "required_sources",
             "sources",
             "tracks",
             "segments",
@@ -3226,7 +3587,7 @@ mod tests {
         }
         assert_eq!(
             database_value(&store, "SELECT MAX(version) FROM schema_migrations"),
-            2
+            3
         );
         let segment_columns: BTreeSet<String> = store
             .connection
@@ -3256,7 +3617,7 @@ mod tests {
         let receipt = store.prepare_session(request()).unwrap();
 
         assert!(Uuid::parse_str(&receipt.session_id.0).is_ok());
-        assert_eq!(receipt.schema_version, 2);
+        assert_eq!(receipt.schema_version, 3);
         assert_eq!(receipt.journal_version, 1);
         assert!(receipt.journal_durable);
         assert!(receipt.database_projected);
@@ -3847,7 +4208,7 @@ mod tests {
         assert!(evidence.first_sample_durable);
         assert!(!evidence.recording_started);
         assert_eq!(evidence.first_sample_session_nanoseconds, 0);
-        assert_eq!(evidence.last_journal_sequence, 4);
+        assert_eq!(evidence.last_journal_sequence, 5);
         assert_eq!(
             store
                 .connection
@@ -3977,7 +4338,7 @@ mod tests {
         assert!(evidence.journal_durable);
         assert!(evidence.media_files_open);
         assert!(!evidence.recording_started);
-        assert_eq!(evidence.last_journal_sequence, 3);
+        assert_eq!(evidence.last_journal_sequence, 4);
         let lifecycle: String = store
             .connection
             .query_row(
@@ -3991,7 +4352,7 @@ mod tests {
         let repeated = store
             .accept_media_open(media_receipt(&authorization, byte_length))
             .unwrap();
-        assert_eq!(repeated.last_journal_sequence, 3);
+        assert_eq!(repeated.last_journal_sequence, 4);
     }
 
     #[test]
@@ -4014,7 +4375,7 @@ mod tests {
         retained_writer.sync_all().unwrap();
         let grown = store.accept_media_open(receipt.clone()).unwrap();
         assert!(grown.media_files_open);
-        assert_eq!(grown.last_journal_sequence, 3);
+        assert_eq!(grown.last_journal_sequence, 4);
 
         let replacement_path = authorization.absolute_path.with_extension("replacement");
         let mut replacement = OpenOptions::new()
@@ -4315,7 +4676,7 @@ mod tests {
             assert!(evidence.journal_durable);
             assert!(evidence.session_interrupted);
             assert!(!evidence.recording_started);
-            assert_eq!(evidence.last_journal_sequence, 5);
+            assert_eq!(evidence.last_journal_sequence, 6);
             assert_eq!(fs::read(&media_path).unwrap(), media_before);
         }
 
@@ -4436,7 +4797,7 @@ mod tests {
         assert!(repaired.journal_durable);
         assert!(repaired.session_interrupted);
         assert!(!repaired.recording_started);
-        assert_eq!(repaired.last_journal_sequence, 5);
+        assert_eq!(repaired.last_journal_sequence, 6);
         assert_eq!(
             store
                 .connection
@@ -4597,6 +4958,82 @@ mod tests {
                 "SELECT COUNT(*) FROM sessions WHERE lifecycle = 'preparing'",
             ),
             1
+        );
+    }
+
+    #[test]
+    fn recording_requires_every_durably_planned_source() {
+        let temp = TempDir::new().unwrap();
+        let mut store = open_store(&temp);
+        let prepared = store
+            .prepare_session_with_required_sources(
+                request(),
+                vec![MediaSourceKind::SystemAudio, MediaSourceKind::Microphone],
+            )
+            .unwrap();
+
+        let microphone = store
+            .authorize_media_open(AuthorizeMediaOpenRequest {
+                session_id: prepared.session_id.clone(),
+                source_kind: MediaSourceKind::Microphone,
+                source_display_name: "Mac microphone".to_owned(),
+            })
+            .unwrap();
+        let microphone_initial = write_test_caf(&microphone);
+        let microphone_open = store
+            .accept_media_open(media_receipt(&microphone, microphone_initial))
+            .unwrap();
+        assert!(!microphone_open.media_files_open);
+
+        let system = store
+            .authorize_media_open(AuthorizeMediaOpenRequest {
+                session_id: prepared.session_id.clone(),
+                source_kind: MediaSourceKind::SystemAudio,
+                source_display_name: "Selected system audio".to_owned(),
+            })
+            .unwrap();
+        let system_initial = write_test_caf(&system);
+        let system_open = store
+            .accept_media_open(media_receipt(&system, system_initial))
+            .unwrap();
+        assert!(system_open.media_files_open);
+
+        let microphone_observed = append_first_sample(&microphone);
+        store
+            .accept_first_sample(first_sample_receipt(&microphone, microphone_observed))
+            .unwrap();
+        assert!(matches!(
+            store.confirm_recording(prepared.session_id.clone()),
+            Err(StoreError::InvalidState(
+                "not every required source has durable first-sample evidence"
+            ))
+        ));
+
+        let system_observed = append_first_sample(&system);
+        store
+            .accept_first_sample(first_sample_receipt(&system, system_observed))
+            .unwrap();
+        let recording = store
+            .confirm_recording(prepared.session_id.clone())
+            .unwrap();
+        assert_eq!(
+            recording.required_sources,
+            vec![MediaSourceKind::Microphone, MediaSourceKind::SystemAudio]
+        );
+        assert_eq!(recording.active_sources, recording.required_sources);
+        assert!(recording.journal_durable);
+        assert!(recording.media_files_open);
+        assert!(recording.recording_started);
+        assert_eq!(
+            store
+                .connection
+                .query_row(
+                    "SELECT lifecycle FROM sessions WHERE id = ?1",
+                    [&prepared.session_id.0],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap(),
+            "recording"
         );
     }
 }

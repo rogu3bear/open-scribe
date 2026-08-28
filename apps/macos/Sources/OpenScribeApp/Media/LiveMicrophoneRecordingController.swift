@@ -113,7 +113,7 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
     case .requestingPermission: "Requesting microphone access…"
     case .preparing: "Preparing durable recording…"
     case .starting: "Starting microphone…"
-    case .capturing: "Capturing microphone"
+    case .capturing: "Recording microphone"
     case .stopping: "Securing recording…"
     case .saved: "Audio segment saved"
     case .failed: "Microphone capture failed"
@@ -140,7 +140,10 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
     phase = .preparing
     do {
       let preparation = try preparationFactory()
-      let prepared = try preparation.prepareSession(title: Self.sessionTitle())
+      let prepared = try preparation.prepareSessionWithRequiredSources(
+        title: Self.sessionTitle(),
+        requiredSources: [.microphone]
+      )
       guard prepared.journalDurable, !prepared.recordingStarted else {
         throw LiveMicrophoneRecordingError.invalidPreparation
       }
@@ -164,8 +167,9 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
         onFirstSample: { [weak self, preparation] receipt in
           do {
             let evidence = try preparation.acceptFirstSample(receipt: receipt)
+            let recording = try preparation.confirmRecording(sessionId: receipt.sessionId)
             Task { @MainActor [weak self] in
-              self?.acceptFirstSampleEvidence(evidence)
+              self?.acceptFirstSampleEvidence(evidence, recording: recording)
             }
           } catch {
             Task { @MainActor [weak self] in
@@ -229,9 +233,16 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
     }
   }
 
-  private func acceptFirstSampleEvidence(_ evidence: NativeFirstSampleEvidence) {
+  private func acceptFirstSampleEvidence(
+    _ evidence: NativeFirstSampleEvidence,
+    recording: NativeRecordingStartedEvidence
+  ) {
     guard phase == .starting else { return }
-    guard evidence.journalDurable, evidence.mediaFilesOpen, evidence.firstSampleDurable else {
+    guard
+      evidence.journalDurable, evidence.mediaFilesOpen, evidence.firstSampleDurable,
+      recording.journalDurable, recording.mediaFilesOpen, recording.recordingStarted,
+      recording.requiredSources == [.microphone], recording.activeSources == [.microphone]
+    else {
       handleCaptureFailure(
         LiveMicrophoneRecordingError.invalidFirstSample.localizedDescription,
         code: "first-sample-evidence",

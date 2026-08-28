@@ -600,10 +600,15 @@ public protocol NativeRecordingPreparationProtocol: AnyObject, Sendable {
     sessionId: String, sourceKind: NativeMediaSourceKind, sourceDisplayName: String
   ) throws -> NativeMediaOpenAuthorization
 
+  func confirmRecording(sessionId: String) throws -> NativeRecordingStartedEvidence
+
   func interruptSession(sessionId: String, reason: NativeSessionInterruptionReason) throws
     -> NativeSessionInterruptionEvidence
 
   func prepareSession(title: String) throws -> NativePreparedSession
+
+  func prepareSessionWithRequiredSources(title: String, requiredSources: [NativeMediaSourceKind])
+    throws -> NativePreparedSession
 
   func recoverPlayableSessions() throws -> [NativeRecoveredPlayableSession]
 
@@ -710,6 +715,17 @@ open class NativeRecordingPreparation: NativeRecordingPreparationProtocol, @unch
       })
   }
 
+  open func confirmRecording(sessionId: String) throws -> NativeRecordingStartedEvidence {
+    return try FfiConverterTypeNativeRecordingStartedEvidence_lift(
+      try rustCallWithError(FfiConverterTypeNativeStorageError_lift) {
+        uniffiCallStatus in
+        uniffi_open_scribe_uniffi_fn_method_nativerecordingpreparation_confirm_recording(
+          self.uniffiCloneHandle(),
+          FfiConverterString.lower(sessionId), uniffiCallStatus
+        )
+      })
+  }
+
   open func interruptSession(sessionId: String, reason: NativeSessionInterruptionReason) throws
     -> NativeSessionInterruptionEvidence
   {
@@ -731,6 +747,20 @@ open class NativeRecordingPreparation: NativeRecordingPreparationProtocol, @unch
         uniffi_open_scribe_uniffi_fn_method_nativerecordingpreparation_prepare_session(
           self.uniffiCloneHandle(),
           FfiConverterString.lower(title), uniffiCallStatus
+        )
+      })
+  }
+
+  open func prepareSessionWithRequiredSources(
+    title: String, requiredSources: [NativeMediaSourceKind]
+  ) throws -> NativePreparedSession {
+    return try FfiConverterTypeNativePreparedSession_lift(
+      try rustCallWithError(FfiConverterTypeNativeStorageError_lift) {
+        uniffiCallStatus in
+        uniffi_open_scribe_uniffi_fn_method_nativerecordingpreparation_prepare_session_with_required_sources(
+          self.uniffiCloneHandle(),
+          FfiConverterString.lower(title),
+          FfiConverterSequenceTypeNativeMediaSourceKind.lower(requiredSources), uniffiCallStatus
         )
       })
   }
@@ -1353,6 +1383,85 @@ public func FfiConverterTypeNativePreparedSession_lower(_ value: NativePreparedS
   -> RustBuffer
 {
   return FfiConverterTypeNativePreparedSession.lower(value)
+}
+
+public struct NativeRecordingStartedEvidence: Equatable, Hashable {
+  public let sessionId: String
+  public let requiredSources: [NativeMediaSourceKind]
+  public let activeSources: [NativeMediaSourceKind]
+  public let journalDurable: Bool
+  public let mediaFilesOpen: Bool
+  public let recordingStarted: Bool
+  public let lastJournalSequence: UInt64
+
+  // Default memberwise initializers are never public by default, so we
+  // declare one manually.
+  public init(
+    sessionId: String, requiredSources: [NativeMediaSourceKind],
+    activeSources: [NativeMediaSourceKind], journalDurable: Bool, mediaFilesOpen: Bool,
+    recordingStarted: Bool, lastJournalSequence: UInt64
+  ) {
+    self.sessionId = sessionId
+    self.requiredSources = requiredSources
+    self.activeSources = activeSources
+    self.journalDurable = journalDurable
+    self.mediaFilesOpen = mediaFilesOpen
+    self.recordingStarted = recordingStarted
+    self.lastJournalSequence = lastJournalSequence
+  }
+
+}
+
+#if compiler(>=6)
+  extension NativeRecordingStartedEvidence: Sendable {}
+#endif
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeNativeRecordingStartedEvidence: FfiConverterRustBuffer {
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws
+    -> NativeRecordingStartedEvidence
+  {
+    return
+      try NativeRecordingStartedEvidence(
+        sessionId: FfiConverterString.read(from: &buf),
+        requiredSources: FfiConverterSequenceTypeNativeMediaSourceKind.read(from: &buf),
+        activeSources: FfiConverterSequenceTypeNativeMediaSourceKind.read(from: &buf),
+        journalDurable: FfiConverterBool.read(from: &buf),
+        mediaFilesOpen: FfiConverterBool.read(from: &buf),
+        recordingStarted: FfiConverterBool.read(from: &buf),
+        lastJournalSequence: FfiConverterUInt64.read(from: &buf)
+      )
+  }
+
+  public static func write(_ value: NativeRecordingStartedEvidence, into buf: inout [UInt8]) {
+    FfiConverterString.write(value.sessionId, into: &buf)
+    FfiConverterSequenceTypeNativeMediaSourceKind.write(value.requiredSources, into: &buf)
+    FfiConverterSequenceTypeNativeMediaSourceKind.write(value.activeSources, into: &buf)
+    FfiConverterBool.write(value.journalDurable, into: &buf)
+    FfiConverterBool.write(value.mediaFilesOpen, into: &buf)
+    FfiConverterBool.write(value.recordingStarted, into: &buf)
+    FfiConverterUInt64.write(value.lastJournalSequence, into: &buf)
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeRecordingStartedEvidence_lift(_ buf: RustBuffer) throws
+  -> NativeRecordingStartedEvidence
+{
+  return try FfiConverterTypeNativeRecordingStartedEvidence.lift(buf)
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeRecordingStartedEvidence_lower(
+  _ value: NativeRecordingStartedEvidence
+) -> RustBuffer {
+  return FfiConverterTypeNativeRecordingStartedEvidence.lower(value)
 }
 
 public struct NativeRecoveredPlayableSession: Equatable, Hashable {
@@ -2587,6 +2696,33 @@ private struct FfiConverterSequenceTypeNativeSourceSnapshot: FfiConverterRustBuf
     return seq
   }
 }
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+private struct FfiConverterSequenceTypeNativeMediaSourceKind: FfiConverterRustBuffer {
+  typealias SwiftType = [NativeMediaSourceKind]
+
+  public static func write(_ value: [NativeMediaSourceKind], into buf: inout [UInt8]) {
+    let len = Int32(value.count)
+    writeInt(&buf, len)
+    for item in value {
+      FfiConverterTypeNativeMediaSourceKind.write(item, into: &buf)
+    }
+  }
+
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws
+    -> [NativeMediaSourceKind]
+  {
+    let len: Int32 = try readInt(&buf)
+    var seq = [NativeMediaSourceKind]()
+    seq.reserveCapacity(Int(len))
+    for _ in 0..<len {
+      seq.append(try FfiConverterTypeNativeMediaSourceKind.read(from: &buf))
+    }
+    return seq
+  }
+}
 public func nativeApplyFixtureCommand(fixture: NativeFixture, command: NativeCommand) throws
   -> NativeSessionSnapshot
 {
@@ -2670,12 +2806,22 @@ private let initializationResult: InitializationResult = {
   {
     return InitializationResult.apiChecksumMismatch
   }
+  if uniffi_open_scribe_uniffi_checksum_method_nativerecordingpreparation_confirm_recording()
+    != 15718
+  {
+    return InitializationResult.apiChecksumMismatch
+  }
   if uniffi_open_scribe_uniffi_checksum_method_nativerecordingpreparation_interrupt_session()
     != 56310
   {
     return InitializationResult.apiChecksumMismatch
   }
   if uniffi_open_scribe_uniffi_checksum_method_nativerecordingpreparation_prepare_session() != 12714
+  {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_open_scribe_uniffi_checksum_method_nativerecordingpreparation_prepare_session_with_required_sources()
+    != 33857
   {
     return InitializationResult.apiChecksumMismatch
   }

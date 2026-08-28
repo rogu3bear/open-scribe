@@ -12,7 +12,8 @@ pub use open_scribe_domain::{
 pub use open_scribe_store::{
     AuthorizeMediaOpenRequest, FirstSampleEvidence, FirstSampleReceipt, InterruptSessionRequest,
     MediaOpenAuthorization, MediaOpenEvidence, MediaOpenReceipt, MediaSourceKind,
-    PrepareSessionRequest, PreparedSessionReceipt, RecoveredPlayableSession, SealSegmentReceipt,
+    PrepareSessionRequest, PreparedSessionReceipt, RecordingStartedEvidence,
+    RecoveredPlayableSession, RequiredSourcePlanEvidence, SealSegmentReceipt,
     SealedSegmentEvidence, SessionInterruptionEvidence, SessionInterruptionReason, SessionOrigin,
     StoreError,
 };
@@ -68,6 +69,36 @@ impl RecordingPreparationController {
             title,
             origin: SessionOrigin::Capture,
         })
+    }
+
+    pub fn prepare_session_with_required_sources(
+        &mut self,
+        title: String,
+        required_sources: Vec<MediaSourceKind>,
+    ) -> Result<PreparedSessionReceipt, StoreError> {
+        self.store.prepare_session_with_required_sources(
+            PrepareSessionRequest {
+                title,
+                origin: SessionOrigin::Capture,
+            },
+            required_sources,
+        )
+    }
+
+    pub fn plan_required_sources(
+        &mut self,
+        session_id: open_scribe_types::SessionId,
+        required_sources: Vec<MediaSourceKind>,
+    ) -> Result<RequiredSourcePlanEvidence, StoreError> {
+        self.store
+            .plan_required_sources(session_id, required_sources)
+    }
+
+    pub fn confirm_recording(
+        &mut self,
+        session_id: open_scribe_types::SessionId,
+    ) -> Result<RecordingStartedEvidence, StoreError> {
+        self.store.confirm_recording(session_id)
     }
 
     pub fn authorize_initial_media(

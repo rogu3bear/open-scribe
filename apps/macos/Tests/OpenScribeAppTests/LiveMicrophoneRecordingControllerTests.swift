@@ -46,6 +46,26 @@ private final class RecordingPreparationFake: NativeRecordingPreparation, @unche
     )
   }
 
+  override func prepareSessionWithRequiredSources(
+    title _: String,
+    requiredSources: [NativeMediaSourceKind]
+  ) throws -> NativePreparedSession {
+    XCTAssertEqual(requiredSources, [.microphone])
+    return try prepareSession(title: "")
+  }
+
+  override func confirmRecording(sessionId: String) throws -> NativeRecordingStartedEvidence {
+    NativeRecordingStartedEvidence(
+      sessionId: sessionId,
+      requiredSources: [.microphone],
+      activeSources: [.microphone],
+      journalDurable: true,
+      mediaFilesOpen: true,
+      recordingStarted: true,
+      lastJournalSequence: 5
+    )
+  }
+
   override func authorizeInitialMedia(
     sessionId: String,
     sourceKind _: NativeMediaSourceKind,

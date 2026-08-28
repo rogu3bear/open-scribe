@@ -34,7 +34,7 @@ final class MediaOpenProtocolTests: XCTestCase {
     XCTAssertTrue(evidence.journalDurable)
     XCTAssertTrue(evidence.mediaFilesOpen)
     XCTAssertFalse(evidence.recordingStarted)
-    XCTAssertEqual(evidence.lastJournalSequence, 3)
+    XCTAssertEqual(evidence.lastJournalSequence, 4)
 
     try writer.writeDeterministicFrames(480)
     let firstSampleReceipt = try writer.firstSampleReceipt(hostTime: 42_000, frameCount: 480)
@@ -44,7 +44,7 @@ final class MediaOpenProtocolTests: XCTestCase {
     XCTAssertTrue(firstSample.firstSampleDurable)
     XCTAssertEqual(firstSample.firstSampleSessionNanoseconds, 0)
     XCTAssertFalse(firstSample.recordingStarted)
-    XCTAssertEqual(firstSample.lastJournalSequence, 4)
+    XCTAssertEqual(firstSample.lastJournalSequence, 5)
 
     let sealReceipt = try writer.sealSegmentReceipt(finalSampleHostTime: 52_000)
     let sealed = try controller.sealSegment(receipt: sealReceipt)
@@ -53,7 +53,7 @@ final class MediaOpenProtocolTests: XCTestCase {
     XCTAssertEqual(sealed.finalSampleCount, 5_280)
     XCTAssertEqual(sealed.finalByteLength, firstSampleReceipt.observedByteLength)
     XCTAssertEqual(sealed.digestSha256.count, 64)
-    XCTAssertEqual(sealed.lastJournalSequence, 5)
+    XCTAssertEqual(sealed.lastJournalSequence, 6)
     let replayedReceipt = try writer.sealSegmentReceipt(finalSampleHostTime: 52_000)
     XCTAssertEqual(replayedReceipt.finalByteLength, sealReceipt.finalByteLength)
     XCTAssertEqual(try controller.sealSegment(receipt: replayedReceipt), sealed)

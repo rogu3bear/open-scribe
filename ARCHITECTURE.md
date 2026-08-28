@@ -4,7 +4,7 @@
 
 ## Current repository fact
 
-Open Scribe has M0 and early-M1 microphone recovery proof. Rust owns one-track evidence, interruption, CAF validation, journal-first recovery, and persistent `ready_for_review`; UniFFI stays coarse. Swift owns capture, permissions, recovered-session UI, and playback. A local gate externally killed capture and proved byte-preserving relaunch recovery plus independent decode. System audio, `Recording`, long sessions, ML, signing, deployment, and release remain unimplemented.
+Open Scribe has M0 and early-M1 microphone recovery plus required-source authority. Rust durably declares the complete source set and alone enters `Recording` after every required source has open managed media and first-sample evidence. Swift's microphone controller consumes that authority. System-audio capture, real multi-source runtime proof, long sessions, ML, signing, deployment, and release remain unimplemented.
 
 ## Intended runtime shape
 
@@ -34,7 +34,7 @@ The SwiftUI app uses narrow Apple adapters. Rust owns durable state; coarse UniF
 4. Only then may UI report Recording.
 5. Media remains recoverable independently of transcript or ML.
 
-Tests cover preparation, CAF creation, first sample, sealing, journal-first interruption, strict recovery parsing, and projection repair. The runtime gate externally kills the app after durable microphone media, relaunches it, preserves the unclosed CAF, projects `ready_for_review`, opens native playback, independently decodes it, and proves idempotent discovery. Required-source planning, system audio, `Recording`, rotation, source loss, and long-session synchronization remain unproved.
+Tests cover preparation, required-source planning, all-source `Recording` authority, CAF creation, first sample, sealing, journal-first interruption, strict recovery parsing, and projection repair. The runtime gate externally kills microphone capture, relaunches, preserves the CAF, opens playback, independently decodes it, and proves idempotence. System audio, real simultaneous multi-source capture, rotation, source loss, and long-session synchronization remain unproved.
 
 ### Derived meeting memory
 
