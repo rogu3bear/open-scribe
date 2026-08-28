@@ -2,19 +2,15 @@
 
 > **Budget:** 600 words. Record only commands successfully executed in this repository.
 
-Before mutation, inspect checkout identity, dirt, anchors, and rollback.
-
 ## Inspect repository identity
 
 - Command: `git status --short --branch` and `git worktree list --porcelain`.
-- Expected: exact branch, worktree, dirt.
-- Stop if: the checkout, owner, or dirty state conflicts with the assigned lane.
+- Stop if: checkout identity or dirty ownership conflicts with the lane.
 
 ## Inspect workspace packages
 
 - Command: `cargo metadata --locked --no-deps --format-version 1`.
-- Expected: each intended crate appears once here.
-- Stop if: a shared crate gains a native dependency or metadata resolves outside this root.
+- Stop if: a crate duplicates, resolves outside this root, or leaks native dependencies into shared code.
 
 ## Validate the founding scaffold
 
@@ -25,8 +21,7 @@ Before mutation, inspect checkout identity, dirt, anchors, and rollback.
 ## Inspect final local changes
 
 - Command: `git diff --check`, `git diff --stat`, and `git status --short --branch`.
-- Expected: clean whitespace and bounded paths.
-- Stop if: unexpected files, another writer's changes, or generated artifacts appear.
+- Stop if: whitespace, scope, ownership, or generated-artifact residue is wrong.
 
 ## Validate the Milestone 0 native proof
 
@@ -78,15 +73,15 @@ Before mutation, inspect checkout identity, dirt, anchors, and rollback.
 
 ## Validate explicit live microphone capture
 
-- Command: `./script/check.sh --m1-live-microphone`.
-- Expected: `M1_LIVE_MICROPHONE_GREEN` after consent, capture, seal, digest, and playability checks; proof media is deleted.
-- Does not prove: multi-source Recording, recovery, signing, or release.
+- Command: `./script/check.sh --m1-dual-source-runtime` (`--m1-live-microphone` remains a compatibility alias to the same stronger gate).
+- Expected: `M1_DUAL_SOURCE_RUNTIME_GREEN` after consent, two real sources, Rust-owned `Recording`, sealing, digests, and playability; proof media is deleted.
+- Does not prove: source loss, degraded continuation, permission revocation, application-scoped selection, long-session synchronization, signing, or release.
 
 ## Validate forced-termination recovery
 
 - Command: `./script/check.sh --m1-forced-termination-recovery`.
 - Expected: `M1_FORCED_TERMINATION_RECOVERY_GATE_GREEN`.
-- Proof: microphone; external kill; strict CAF recovery; persistent playback; independent decode; unchanged SHA-256; idempotence.
+- Proof: microphone plus all-authorized system audio; Rust-owned multi-source `Recording`; external kill; strict atomic two-CAF recovery; persistent playback; independent decode; unchanged SHA-256 for both tracks; idempotence.
 - Stop if: recovery mutates media, promotes invalid media, duplicates a receipt, or asserts `Recording`.
 
 ## Admission rule

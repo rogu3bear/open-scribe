@@ -4,7 +4,7 @@
 
 ## Current repository fact
 
-Open Scribe has M0, microphone recovery, required-source authority, and a bounded multi-source source candidate. Rust alone enters `Recording` after every required source has open media and first-sample evidence, admits later interruption, and projects multi-track recovery atomically. Swift connects microphone and ScreenCaptureKit all-system-audio adapters to that authority. Focused tests pass; live system audio, simultaneous playback, long sessions, ML, signing, deployment, and release remain unproved.
+Open Scribe has M0, required-source authority, and bounded dual-source runtime proof. Rust alone admits `Recording`, interruption, and atomic multi-track recovery. Swift connects microphone and ScreenCaptureKit all-system-audio adapters. Short exact unsigned runs prove simultaneous capture, independent decode, forced termination, unchanged two-track recovery, and idempotent relaunch. Source loss, application selection, long sessions, ML, signing, deployment, and release remain unproved.
 
 ## Intended runtime shape
 
@@ -34,7 +34,7 @@ The SwiftUI app uses narrow Apple adapters. Rust owns durable state; coarse UniF
 4. Only then may UI report Recording.
 5. Media remains recoverable independently of transcript or ML.
 
-Tests cover required-source planning, all-source `Recording` authority, CAF writing and sealing, interruption, strict multi-track recovery, and atomic projection. The runtime gate kills microphone capture, relaunches, preserves and decodes the CAF, opens playback, and proves idempotence. ScreenCaptureKit and host-clock conversion have focused unsigned native proof only. Live system audio, simultaneous capture/playback, rotation, source loss, and long-session synchronization remain unproved.
+Tests cover required-source planning, all-source `Recording`, CAF writing/sealing, interruption, and atomic recovery. Runtime gates capture and decode both tracks, kill and relaunch the process, preserve both byte-for-byte, open playback, and prove idempotence. Rotation, source loss, permission revocation, application selection, and long-session synchronization remain unproved.
 
 ### Derived meeting memory
 
@@ -68,4 +68,4 @@ ADRs 0001–0004 settle M0. ADRs 0005–0007 admit M1 implementation; preparatio
 
 ## Current validation
 
-`--scaffold` checks structure/WASM; `--m0-native` checks the app; `build_web.sh` checks web artifacts. M1 gates cover preparation through sealing; `--m1-interruption-state` adds durable interruption classification, `--m1-live-microphone` proves ordinary real-device capture/seal, and `--m1-forced-termination-recovery` proves external-kill recovery and native playback. None proves `Recording`, system audio, source-loss handling, two-hour operation, signing, distribution, deployment, or public release.
+`--scaffold` checks structure/WASM; `--m0-native` checks the app; `build_web.sh` checks web artifacts. M1 gates cover preparation through sealing; `--m1-interruption-state` adds durable interruption classification, `--m1-dual-source-runtime` proves real microphone plus system-audio `Recording` and sealing, and the inner `--m1-forced-termination-recovery-proof` proves exact two-source external-kill recovery and native playback without opening a new target tree. None proves source-loss handling, permission revocation during capture, two-hour operation, signing, distribution, deployment, or public release.

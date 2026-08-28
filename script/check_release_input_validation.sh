@@ -75,6 +75,8 @@ rg -q '^RELEASE_INPUT_INVALID: capability:' <<<"$ungrounded_capability_output" |
 
 "$script_dir/validate_release_input.sh" capability "$fixture_root/capability_valid.json" >/dev/null ||
 	fail "valid capability manifest was rejected"
+"$script_dir/validate_release_input.sh" capability "$repo_root/docs/capabilities/manifest.v1.json" >/dev/null ||
+	fail "canonical capability manifest was rejected"
 "$script_dir/validate_release_input.sh" model "$fixture_root/model_empty.json" >/dev/null ||
 	fail "empty default model manifest was rejected"
 

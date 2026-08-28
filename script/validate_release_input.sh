@@ -101,7 +101,7 @@ capability)
            and (.inputs | type == "array")
            and (.outputs | type == "array")
            and (.terminology | type == "string" and length > 0)
-           and (.proof_receipt | test("^(M0_COMPLETE_GREEN|M1_LIVE_MICROPHONE_GREEN|M[1-4]_COMPLETE_GREEN)$"))
+           and (.proof_receipt | test("^(M0_COMPLETE_GREEN|M1_LIVE_MICROPHONE_GREEN|M1_DUAL_SOURCE_RUNTIME_GREEN|M1_FORCED_TERMINATION_RECOVERY_GREEN|M[1-4]_COMPLETE_GREEN)$"))
          ))
          and (([.capabilities[] | .id] | length) == ([.capabilities[] | .id] | unique | length))' "$input_path" >/dev/null 2>&1 ||
 		invalid "schema, capability fields, maturity, or unique IDs are invalid"
