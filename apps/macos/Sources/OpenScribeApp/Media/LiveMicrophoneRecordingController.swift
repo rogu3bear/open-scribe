@@ -53,6 +53,7 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
   private var preparation: NativeRecordingPreparationProtocol?
   private var writer: ManagedSegmentWriting?
   private var capture: MicrophoneCapturing?
+  private var activeSessionId: String?
 
   init(
     permission: MicrophonePermissionProviding,
@@ -99,7 +100,7 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
   }
 
   var canStart: Bool {
-    phase == .idle || phase == .saved || phase == .failed
+    (phase == .idle || phase == .saved || phase == .failed) && activeSessionId == nil
   }
 
   var canStop: Bool {
@@ -124,6 +125,7 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
     errorMessage = nil
     failureCode = nil
     savedPath = nil
+    activeSessionId = nil
     phase = .requestingPermission
 
     let permissionState = await permission.request()
@@ -142,6 +144,8 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
       guard prepared.journalDurable, !prepared.recordingStarted else {
         throw LiveMicrophoneRecordingError.invalidPreparation
       }
+      self.preparation = preparation
+      activeSessionId = prepared.sessionId
       let authorization = try preparation.authorizeInitialMedia(
         sessionId: prepared.sessionId,
         sourceKind: .microphone,
@@ -153,7 +157,6 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
         throw LiveMicrophoneRecordingError.invalidMediaOpen
       }
       let capture = captureFactory(writer)
-      self.preparation = preparation
       self.writer = writer
       self.capture = capture
       phase = .starting
@@ -168,7 +171,8 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
             Task { @MainActor [weak self] in
               self?.handleCaptureFailure(
                 error.localizedDescription,
-                code: "first-sample-evidence"
+                code: "first-sample-evidence",
+                interruptionReason: .firstSampleRejected
               )
             }
           }
@@ -177,13 +181,18 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
           Task { @MainActor [weak self] in
             self?.handleCaptureFailure(
               String(describing: error),
-              code: "capture-\(String(describing: error))"
+              code: "capture-\(String(describing: error))",
+              interruptionReason: .captureFailed
             )
           }
         }
       )
     } catch {
-      fail(error.localizedDescription, code: Self.failureCode(for: error))
+      fail(
+        error.localizedDescription,
+        code: Self.failureCode(for: error),
+        interruptionReason: .captureStartFailed
+      )
     }
   }
 
@@ -194,7 +203,8 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
       fail(
         "No microphone sample was durably written. Recovery state was preserved.",
         code: "no-durable-sample",
-        stopCapture: false
+        stopCapture: false,
+        interruptionReason: .stopWithoutDurableSample
       )
       return
     }
@@ -208,9 +218,14 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
       self.preparation = nil
       self.writer = nil
       self.capture = nil
+      activeSessionId = nil
       phase = .saved
     } catch {
-      fail(error.localizedDescription, code: "segment-seal")
+      fail(
+        error.localizedDescription,
+        code: "segment-seal",
+        interruptionReason: .segmentSealFailed
+      )
     }
   }
 
@@ -219,25 +234,55 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
     guard evidence.journalDurable, evidence.mediaFilesOpen, evidence.firstSampleDurable else {
       handleCaptureFailure(
         LiveMicrophoneRecordingError.invalidFirstSample.localizedDescription,
-        code: "first-sample-evidence"
+        code: "first-sample-evidence",
+        interruptionReason: .firstSampleRejected
       )
       return
     }
     phase = .capturing
   }
 
-  private func handleCaptureFailure(_ message: String, code: String) {
-    fail(message, code: code)
+  private func handleCaptureFailure(
+    _ message: String,
+    code: String,
+    interruptionReason: NativeSessionInterruptionReason
+  ) {
+    fail(message, code: code, interruptionReason: interruptionReason)
   }
 
-  private func fail(_ message: String, code: String, stopCapture: Bool = true) {
+  private func fail(
+    _ message: String,
+    code: String,
+    stopCapture: Bool = true,
+    interruptionReason: NativeSessionInterruptionReason? = nil
+  ) {
     if stopCapture {
       _ = capture?.stop()
     }
-    preparation = nil
-    writer = nil
-    capture = nil
-    errorMessage = message
+    var operatorMessage = message
+    var interruptionConfirmed = interruptionReason == nil || activeSessionId == nil
+    if let interruptionReason, let preparation, let activeSessionId {
+      do {
+        let evidence = try preparation.interruptSession(
+          sessionId: activeSessionId,
+          reason: interruptionReason
+        )
+        interruptionConfirmed =
+          evidence.journalDurable && evidence.sessionInterrupted && !evidence.recordingStarted
+        if !interruptionConfirmed {
+          operatorMessage += " Recovery state could not be confirmed."
+        }
+      } catch {
+        operatorMessage += " Recovery state could not be confirmed."
+      }
+    }
+    if interruptionConfirmed {
+      preparation = nil
+      writer = nil
+      capture = nil
+      activeSessionId = nil
+    }
+    errorMessage = operatorMessage
     failureCode = code
     phase = .failed
   }

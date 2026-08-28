@@ -168,6 +168,57 @@ pub struct FirstSampleEvidence {
     pub last_journal_sequence: u64,
 }
 
+/// Bounded, content-free reason for preserving a partial capture as interrupted.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SessionInterruptionReason {
+    CaptureStartFailed,
+    CaptureFailed,
+    FirstSampleRejected,
+    StopWithoutDurableSample,
+    SegmentSealFailed,
+}
+
+impl SessionInterruptionReason {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::CaptureStartFailed => "capture_start_failed",
+            Self::CaptureFailed => "capture_failed",
+            Self::FirstSampleRejected => "first_sample_rejected",
+            Self::StopWithoutDurableSample => "stop_without_durable_sample",
+            Self::SegmentSealFailed => "segment_seal_failed",
+        }
+    }
+
+    fn from_str(value: &str) -> Result<Self, StoreError> {
+        match value {
+            "capture_start_failed" => Ok(Self::CaptureStartFailed),
+            "capture_failed" => Ok(Self::CaptureFailed),
+            "first_sample_rejected" => Ok(Self::FirstSampleRejected),
+            "stop_without_durable_sample" => Ok(Self::StopWithoutDurableSample),
+            "segment_seal_failed" => Ok(Self::SegmentSealFailed),
+            _ => Err(StoreError::IntegrityMismatch(
+                "session interruption reason is unsupported",
+            )),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InterruptSessionRequest {
+    pub session_id: SessionId,
+    pub reason: SessionInterruptionReason,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SessionInterruptionEvidence {
+    pub session_id: SessionId,
+    pub reason: SessionInterruptionReason,
+    pub journal_durable: bool,
+    pub session_interrupted: bool,
+    pub recording_started: bool,
+    pub last_journal_sequence: u64,
+}
+
 /// Coarse evidence produced only after Swift has stopped writing and closed the
 /// segment. Rust independently validates the final file and calculates its digest.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -215,6 +266,11 @@ pub enum RecoveryDisposition {
     FirstSampleProjectionRepaired,
     SegmentSealedPrepared,
     SegmentSealProjectionRepaired,
+    InterruptedPrepared,
+    InterruptedMediaOpen,
+    InterruptedFirstSample,
+    InterruptedSegmentSealed,
+    InterruptionProjectionRepaired,
     MissingMediaFile,
     InvalidMediaFile,
     MissingDirectory,
@@ -431,6 +487,91 @@ impl SessionStore {
         receipt: SealSegmentReceipt,
     ) -> Result<SealedSegmentEvidence, StoreError> {
         self.seal_segment_inner(receipt, None)
+    }
+
+    /// Durably marks a partial capture as interrupted without altering media.
+    pub fn interrupt_session(
+        &mut self,
+        request: InterruptSessionRequest,
+    ) -> Result<SessionInterruptionEvidence, StoreError> {
+        if Uuid::parse_str(&request.session_id.0).is_err() {
+            return Err(StoreError::InvalidRequest("session ID is not a UUID"));
+        }
+        let lifecycle: String = self
+            .connection
+            .query_row(
+                "SELECT lifecycle FROM sessions WHERE id = ?1",
+                [&request.session_id.0],
+                |row| row.get(0),
+            )
+            .map_err(|error| match error {
+                rusqlite::Error::QueryReturnedNoRows => {
+                    StoreError::InvalidState("session does not exist")
+                }
+                other => StoreError::Sqlite(other),
+            })?;
+        let journal_path = self
+            .session_directory(&request.session_id.0)?
+            .join(JOURNAL_NAME);
+        let records = match validate_journal(&journal_path, &request.session_id.0)? {
+            JournalValidation::Valid(records) => records,
+            _ => return Err(StoreError::IntegrityMismatch("session journal is invalid")),
+        };
+        let last = records
+            .last()
+            .ok_or(StoreError::IntegrityMismatch("session journal is empty"))?;
+        if last.body.event_kind == "session_interrupted" {
+            if SessionInterruptionReason::from_str(payload_string(&last.body.payload, "reason")?)?
+                != request.reason
+            {
+                return Err(StoreError::IntegrityMismatch(
+                    "repeated interruption changed accepted evidence",
+                ));
+            }
+            if lifecycle == "preparing" {
+                self.project_session_interruption(&request.session_id.0, &last.body.payload, last)?;
+            } else if lifecycle != "interrupted" {
+                return Err(StoreError::InvalidState(
+                    "session is not awaiting interruption evidence",
+                ));
+            }
+            return Ok(SessionInterruptionEvidence {
+                session_id: request.session_id,
+                reason: request.reason,
+                journal_durable: true,
+                session_interrupted: true,
+                recording_started: false,
+                last_journal_sequence: last.body.sequence,
+            });
+        }
+        if lifecycle == "interrupted" {
+            return Err(StoreError::IntegrityMismatch(
+                "session projection has no interruption evidence",
+            ));
+        }
+        if lifecycle != "preparing" {
+            return Err(StoreError::InvalidState(
+                "session is not awaiting interruption evidence",
+            ));
+        }
+
+        let payload = json!({ "reason": request.reason.as_str() });
+        let journal_record = self.append_session_journal(
+            &request.session_id.0,
+            "session_interrupted",
+            None,
+            payload.clone(),
+        )?;
+        self.project_session_interruption(&request.session_id.0, &payload, &journal_record)?;
+
+        Ok(SessionInterruptionEvidence {
+            session_id: request.session_id,
+            reason: request.reason,
+            journal_durable: true,
+            session_interrupted: true,
+            recording_started: false,
+            last_journal_sequence: journal_record.body.sequence,
+        })
     }
 
     fn authorize_media_open_inner(
@@ -1234,6 +1375,48 @@ impl SessionStore {
         Ok(())
     }
 
+    fn project_session_interruption(
+        &mut self,
+        session_id: &str,
+        payload: &Value,
+        journal_record: &JournalRecord,
+    ) -> Result<(), StoreError> {
+        let reason = payload_string(payload, "reason")?;
+        SessionInterruptionReason::from_str(reason)?;
+        let (event_sequence, prior_digest) = next_database_event(&self.connection, session_id)?;
+        let digest = event_digest(
+            session_id,
+            event_sequence,
+            "session_interrupted",
+            payload,
+            prior_digest.as_deref(),
+        )?;
+        let transaction = self.connection.transaction()?;
+        let changed = transaction.execute(
+            "UPDATE sessions SET lifecycle = 'interrupted', updated_at_ms = ?2
+             WHERE id = ?1 AND lifecycle = 'preparing'",
+            params![session_id, journal_record.body.wall_time_milliseconds],
+        )?;
+        if changed != 1 {
+            return Err(StoreError::InvalidState(
+                "session projection is not awaiting interruption evidence",
+            ));
+        }
+        insert_event_with_id(
+            &transaction,
+            &journal_record.body.event_id,
+            session_id,
+            event_sequence,
+            "session_interrupted",
+            journal_record.body.wall_time_milliseconds,
+            payload,
+            prior_digest.as_deref(),
+            &digest,
+        )?;
+        transaction.commit()?;
+        Ok(())
+    }
+
     fn media_authorization_row(
         &self,
         segment_id: &str,
@@ -1454,7 +1637,8 @@ impl SessionStore {
         let mut database_sessions = BTreeMap::new();
         {
             let mut statement = self.connection.prepare(
-                "SELECT id, journal_durable FROM sessions WHERE lifecycle = 'preparing' ORDER BY id",
+                "SELECT id, journal_durable FROM sessions
+                 WHERE lifecycle IN ('preparing', 'interrupted') ORDER BY id",
             )?;
             let rows = statement.query_map([], |row| {
                 Ok((row.get::<_, String>(0)?, row.get::<_, bool>(1)?))
@@ -1502,8 +1686,9 @@ impl SessionStore {
 
             match validate_journal(&journal_path, &session_id)? {
                 JournalValidation::Valid(records) if journal_has_directory_ready(&records) => {
-                    let disposition =
+                    let base =
                         self.recover_valid_journal(&session_id, journal_durable, &records)?;
+                    let disposition = self.reconcile_interruption(&session_id, &records, base)?;
                     findings.push(finding(&session_id, disposition));
                 }
                 JournalValidation::Valid(_) => {
@@ -1708,6 +1893,61 @@ impl SessionStore {
         } else {
             Ok(RecoveryDisposition::InvalidMediaFile)
         }
+    }
+
+    fn reconcile_interruption(
+        &mut self,
+        session_id: &str,
+        records: &[JournalRecord],
+        base: RecoveryDisposition,
+    ) -> Result<RecoveryDisposition, StoreError> {
+        let interruptions: Vec<_> = records
+            .iter()
+            .filter(|record| record.body.event_kind == "session_interrupted")
+            .collect();
+        if interruptions.is_empty() {
+            return Ok(base);
+        }
+        if interruptions.len() != 1 || interruptions[0].body.sequence != records.len() as u64 {
+            return Ok(RecoveryDisposition::IntegrityMismatch);
+        }
+        let interruption = interruptions[0];
+        SessionInterruptionReason::from_str(payload_string(&interruption.body.payload, "reason")?)?;
+        let lifecycle: String = self.connection.query_row(
+            "SELECT lifecycle FROM sessions WHERE id = ?1",
+            [session_id],
+            |row| row.get(0),
+        )?;
+        if lifecycle == "preparing" {
+            self.project_session_interruption(
+                session_id,
+                &interruption.body.payload,
+                interruption,
+            )?;
+            return Ok(RecoveryDisposition::InterruptionProjectionRepaired);
+        }
+        if lifecycle != "interrupted" {
+            return Ok(RecoveryDisposition::IntegrityMismatch);
+        }
+        Ok(match base {
+            RecoveryDisposition::Prepared | RecoveryDisposition::ProjectionRepaired => {
+                RecoveryDisposition::InterruptedPrepared
+            }
+            RecoveryDisposition::MediaOpenPrepared
+            | RecoveryDisposition::MediaOpenProjectionRepaired
+            | RecoveryDisposition::MediaOpenAwaitingReceipt => {
+                RecoveryDisposition::InterruptedMediaOpen
+            }
+            RecoveryDisposition::FirstSamplePrepared
+            | RecoveryDisposition::FirstSampleProjectionRepaired => {
+                RecoveryDisposition::InterruptedFirstSample
+            }
+            RecoveryDisposition::SegmentSealedPrepared
+            | RecoveryDisposition::SegmentSealProjectionRepaired => {
+                RecoveryDisposition::InterruptedSegmentSealed
+            }
+            other => other,
+        })
     }
 
     fn prepare_session_inner(
@@ -3588,5 +3828,172 @@ mod tests {
             database_value(&reopened, "SELECT media_files_open FROM sessions"),
             1
         );
+    }
+
+    #[test]
+    fn interrupted_first_sample_is_durable_discoverable_and_media_preserving() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path().join("Open Scribe");
+        let session_id;
+        let media_path;
+        let media_before;
+        {
+            let mut store = SessionStore::open(&root).unwrap();
+            let (prepared, authorization, _) = prepared_first_sample(&mut store);
+            session_id = prepared.session_id;
+            media_path = authorization.absolute_path;
+            media_before = fs::read(&media_path).unwrap();
+
+            let evidence = store
+                .interrupt_session(InterruptSessionRequest {
+                    session_id: session_id.clone(),
+                    reason: SessionInterruptionReason::CaptureFailed,
+                })
+                .unwrap();
+
+            assert!(evidence.journal_durable);
+            assert!(evidence.session_interrupted);
+            assert!(!evidence.recording_started);
+            assert_eq!(evidence.last_journal_sequence, 5);
+            assert_eq!(fs::read(&media_path).unwrap(), media_before);
+        }
+
+        let mut reopened = SessionStore::open(&root).unwrap();
+        let finding = reopened.recover_preparations().unwrap().remove(0);
+        assert_eq!(
+            finding.disposition,
+            RecoveryDisposition::InterruptedFirstSample
+        );
+        assert_eq!(
+            reopened
+                .connection
+                .query_row(
+                    "SELECT lifecycle FROM sessions WHERE id = ?1",
+                    [&session_id.0],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap(),
+            "interrupted"
+        );
+        assert_eq!(fs::read(media_path).unwrap(), media_before);
+    }
+
+    #[test]
+    fn interruption_replay_is_idempotent_and_rejects_a_changed_reason() {
+        let temp = TempDir::new().unwrap();
+        let mut store = open_store(&temp);
+        let (prepared, _, _) = prepared_first_sample(&mut store);
+        let request = InterruptSessionRequest {
+            session_id: prepared.session_id,
+            reason: SessionInterruptionReason::CaptureFailed,
+        };
+
+        let accepted = store.interrupt_session(request.clone()).unwrap();
+        let repeated = store.interrupt_session(request.clone()).unwrap();
+        assert_eq!(accepted, repeated);
+
+        let changed = InterruptSessionRequest {
+            session_id: request.session_id,
+            reason: SessionInterruptionReason::FirstSampleRejected,
+        };
+        assert!(matches!(
+            store.interrupt_session(changed),
+            Err(StoreError::IntegrityMismatch(
+                "repeated interruption changed accepted evidence"
+            ))
+        ));
+    }
+
+    #[test]
+    fn restart_repairs_journaled_interruption_projection_without_touching_media() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path().join("Open Scribe");
+        let session_id;
+        let media_path;
+        let media_before;
+        {
+            let mut store = SessionStore::open(&root).unwrap();
+            let (prepared, authorization, _) = prepared_first_sample(&mut store);
+            session_id = prepared.session_id;
+            media_path = authorization.absolute_path;
+            media_before = fs::read(&media_path).unwrap();
+            store
+                .append_session_journal(
+                    &session_id.0,
+                    "session_interrupted",
+                    None,
+                    json!({ "reason": "capture_failed" }),
+                )
+                .unwrap();
+        }
+
+        let mut reopened = SessionStore::open(&root).unwrap();
+        let first = reopened.recover_preparations().unwrap().remove(0);
+        assert_eq!(
+            first.disposition,
+            RecoveryDisposition::InterruptionProjectionRepaired
+        );
+        let second = reopened.recover_preparations().unwrap().remove(0);
+        assert_eq!(
+            second.disposition,
+            RecoveryDisposition::InterruptedFirstSample
+        );
+        assert_eq!(fs::read(media_path).unwrap(), media_before);
+    }
+
+    #[test]
+    fn direct_retry_repairs_journaled_interruption_and_rejects_changed_reason() {
+        let temp = TempDir::new().unwrap();
+        let mut store = open_store(&temp);
+        let (prepared, _, _) = prepared_first_sample(&mut store);
+        store
+            .append_session_journal(
+                &prepared.session_id.0,
+                "session_interrupted",
+                None,
+                json!({ "reason": "capture_failed" }),
+            )
+            .unwrap();
+
+        let changed = store.interrupt_session(InterruptSessionRequest {
+            session_id: prepared.session_id.clone(),
+            reason: SessionInterruptionReason::FirstSampleRejected,
+        });
+        assert!(matches!(
+            changed,
+            Err(StoreError::IntegrityMismatch(
+                "repeated interruption changed accepted evidence"
+            ))
+        ));
+
+        let repaired = store
+            .interrupt_session(InterruptSessionRequest {
+                session_id: prepared.session_id.clone(),
+                reason: SessionInterruptionReason::CaptureFailed,
+            })
+            .unwrap();
+        assert!(repaired.journal_durable);
+        assert!(repaired.session_interrupted);
+        assert!(!repaired.recording_started);
+        assert_eq!(repaired.last_journal_sequence, 5);
+        assert_eq!(
+            store
+                .connection
+                .query_row(
+                    "SELECT lifecycle FROM sessions WHERE id = ?1",
+                    [&prepared.session_id.0],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap(),
+            "interrupted"
+        );
+
+        let replayed = store
+            .interrupt_session(InterruptSessionRequest {
+                session_id: prepared.session_id,
+                reason: SessionInterruptionReason::CaptureFailed,
+            })
+            .unwrap();
+        assert_eq!(repaired, replayed);
     }
 }

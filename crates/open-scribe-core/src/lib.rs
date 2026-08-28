@@ -10,9 +10,10 @@ pub use open_scribe_domain::{
     Command, Fixture, Presentation, SessionSnapshot, TimerBehavior, TransitionError, announcement,
 };
 pub use open_scribe_store::{
-    AuthorizeMediaOpenRequest, FirstSampleEvidence, FirstSampleReceipt, MediaOpenAuthorization,
-    MediaOpenEvidence, MediaOpenReceipt, MediaSourceKind, PrepareSessionRequest,
-    PreparedSessionReceipt, SealSegmentReceipt, SealedSegmentEvidence, SessionOrigin, StoreError,
+    AuthorizeMediaOpenRequest, FirstSampleEvidence, FirstSampleReceipt, InterruptSessionRequest,
+    MediaOpenAuthorization, MediaOpenEvidence, MediaOpenReceipt, MediaSourceKind,
+    PrepareSessionRequest, PreparedSessionReceipt, SealSegmentReceipt, SealedSegmentEvidence,
+    SessionInterruptionEvidence, SessionInterruptionReason, SessionOrigin, StoreError,
 };
 
 pub struct CoarseMediaOpenReceipt {
@@ -125,6 +126,15 @@ impl RecordingPreparationController {
             sample_count: receipt.final_sample_count,
             final_byte_length: receipt.final_byte_length,
         })
+    }
+
+    pub fn interrupt_session(
+        &mut self,
+        session_id: open_scribe_types::SessionId,
+        reason: SessionInterruptionReason,
+    ) -> Result<SessionInterruptionEvidence, StoreError> {
+        self.store
+            .interrupt_session(InterruptSessionRequest { session_id, reason })
     }
 }
 

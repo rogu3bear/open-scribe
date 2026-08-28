@@ -276,6 +276,13 @@ uniffi_open_scribe_uniffi_fn_method_nativerecordingpreparation_authorize_initial
     uint64_t ptr, RustBuffer session_id, RustBuffer source_kind,
     RustBuffer source_display_name, RustCallStatus *_Nonnull out_status);
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_FN_METHOD_NATIVERECORDINGPREPARATION_INTERRUPT_SESSION
+#define UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_FN_METHOD_NATIVERECORDINGPREPARATION_INTERRUPT_SESSION
+RustBuffer
+uniffi_open_scribe_uniffi_fn_method_nativerecordingpreparation_interrupt_session(
+    uint64_t ptr, RustBuffer session_id, RustBuffer reason,
+    RustCallStatus *_Nonnull out_status);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_FN_METHOD_NATIVERECORDINGPREPARATION_PREPARE_SESSION
 #define UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_FN_METHOD_NATIVERECORDINGPREPARATION_PREPARE_SESSION
 RustBuffer
@@ -608,6 +615,14 @@ uniffi_open_scribe_uniffi_checksum_method_nativerecordingpreparation_accept_medi
 #define UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_CHECKSUM_METHOD_NATIVERECORDINGPREPARATION_AUTHORIZE_INITIAL_MEDIA
 uint16_t
 uniffi_open_scribe_uniffi_checksum_method_nativerecordingpreparation_authorize_initial_media(
+    void
+
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_CHECKSUM_METHOD_NATIVERECORDINGPREPARATION_INTERRUPT_SESSION
+#define UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_CHECKSUM_METHOD_NATIVERECORDINGPREPARATION_INTERRUPT_SESSION
+uint16_t
+uniffi_open_scribe_uniffi_checksum_method_nativerecordingpreparation_interrupt_session(
     void
 
 );

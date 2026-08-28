@@ -19,6 +19,12 @@ private final class AuthorizedMicrophonePermission: MicrophonePermissionProvidin
 private final class RecordingPreparationFake: NativeRecordingPreparation, @unchecked Sendable {
   private(set) var acceptedFirstSample = false
   private(set) var sealed = false
+  private(set) var interruptionReasons: [NativeSessionInterruptionReason] = []
+  var authorizeError: Error?
+  var firstSampleDurable = true
+  var interruptionError: Error?
+  var interruptionEvidenceIsDurable = true
+  var sealError: Error?
 
   init() {
     super.init(noHandle: NoHandle())
@@ -45,7 +51,10 @@ private final class RecordingPreparationFake: NativeRecordingPreparation, @unche
     sourceKind _: NativeMediaSourceKind,
     sourceDisplayName _: String
   ) throws -> NativeMediaOpenAuthorization {
-    NativeMediaOpenAuthorization(
+    if let authorizeError {
+      throw authorizeError
+    }
+    return NativeMediaOpenAuthorization(
       sessionId: sessionId,
       sourceId: "source-live",
       trackId: "track-live",
@@ -81,7 +90,7 @@ private final class RecordingPreparationFake: NativeRecordingPreparation, @unche
       firstSampleSessionNanoseconds: 0,
       journalDurable: true,
       mediaFilesOpen: true,
-      firstSampleDurable: true,
+      firstSampleDurable: firstSampleDurable,
       recordingStarted: false,
       lastJournalSequence: 4
     )
@@ -90,6 +99,9 @@ private final class RecordingPreparationFake: NativeRecordingPreparation, @unche
   override func sealSegment(receipt: NativeSealSegmentReceipt) throws
     -> NativeSealedSegmentEvidence
   {
+    if let sealError {
+      throw sealError
+    }
     sealed = true
     return NativeSealedSegmentEvidence(
       sessionId: receipt.sessionId,
@@ -98,6 +110,24 @@ private final class RecordingPreparationFake: NativeRecordingPreparation, @unche
       finalByteLength: receipt.finalByteLength,
       digestSha256: String(repeating: "a", count: 64),
       segmentSealed: true,
+      recordingStarted: false,
+      lastJournalSequence: 5
+    )
+  }
+
+  override func interruptSession(
+    sessionId: String,
+    reason: NativeSessionInterruptionReason
+  ) throws -> NativeSessionInterruptionEvidence {
+    if let interruptionError {
+      throw interruptionError
+    }
+    interruptionReasons.append(reason)
+    return NativeSessionInterruptionEvidence(
+      sessionId: sessionId,
+      reason: reason,
+      journalDurable: interruptionEvidenceIsDurable,
+      sessionInterrupted: interruptionEvidenceIsDurable,
       recordingStarted: false,
       lastJournalSequence: 5
     )
@@ -191,7 +221,10 @@ private final class MicrophoneCaptureFake: MicrophoneCapturing, @unchecked Senda
 }
 
 private enum CaptureFakeError: Error {
+  case authorizationFailed
+  case interruptionFailed
   case startFailed
+  case sealFailed
 }
 
 private final class InvocationCounter: @unchecked Sendable {
@@ -291,19 +324,70 @@ final class LiveMicrophoneRecordingControllerTests: XCTestCase {
   }
 
   func testCaptureStartFailureDoesNotClaimCapture() async {
+    let preparation = RecordingPreparationFake()
     let capture = MicrophoneCaptureFake()
     capture.startError = CaptureFakeError.startFailed
-    let controller = makeController(capture: capture)
+    let controller = makeController(preparation: preparation, capture: capture)
 
     await controller.start()
 
     XCTAssertEqual(controller.phase, .failed)
     XCTAssertFalse(controller.isCapturing)
+    XCTAssertEqual(preparation.interruptionReasons, [.captureStartFailed])
+  }
+
+  func testPostPreparationSetupFailureRecordsInterruptedState() async {
+    let preparation = RecordingPreparationFake()
+    preparation.authorizeError = CaptureFakeError.authorizationFailed
+    let controller = makeController(
+      preparation: preparation,
+      capture: MicrophoneCaptureFake()
+    )
+
+    await controller.start()
+
+    XCTAssertEqual(controller.phase, .failed)
+    XCTAssertEqual(preparation.interruptionReasons, [.captureStartFailed])
+  }
+
+  func testInterruptionWriteFailureRetainsPreparedSessionAndBlocksRestart() async {
+    let preparation = RecordingPreparationFake()
+    preparation.authorizeError = CaptureFakeError.authorizationFailed
+    preparation.interruptionError = CaptureFakeError.interruptionFailed
+    let controller = makeController(
+      preparation: preparation,
+      capture: MicrophoneCaptureFake()
+    )
+
+    await controller.start()
+
+    XCTAssertEqual(controller.phase, .failed)
+    XCTAssertFalse(controller.canStart)
+    XCTAssertTrue(
+      controller.errorMessage?.contains("Recovery state could not be confirmed") == true)
+  }
+
+  func testInvalidInterruptionEvidenceRetainsPreparedSessionAndBlocksRestart() async {
+    let preparation = RecordingPreparationFake()
+    preparation.authorizeError = CaptureFakeError.authorizationFailed
+    preparation.interruptionEvidenceIsDurable = false
+    let controller = makeController(
+      preparation: preparation,
+      capture: MicrophoneCaptureFake()
+    )
+
+    await controller.start()
+
+    XCTAssertEqual(controller.phase, .failed)
+    XCTAssertFalse(controller.canStart)
+    XCTAssertTrue(
+      controller.errorMessage?.contains("Recovery state could not be confirmed") == true)
   }
 
   func testCaptureFailureStopsCaptureAndLeavesControllerFailed() async {
+    let preparation = RecordingPreparationFake()
     let capture = MicrophoneCaptureFake()
-    let controller = makeController(capture: capture)
+    let controller = makeController(preparation: preparation, capture: capture)
     await controller.start()
     XCTAssertEqual(controller.phase, .starting)
 
@@ -317,6 +401,7 @@ final class LiveMicrophoneRecordingControllerTests: XCTestCase {
     XCTAssertTrue(controller.canStart)
     XCTAssertFalse(controller.isCapturing)
     XCTAssertEqual(capture.stopCount, 1)
+    XCTAssertEqual(preparation.interruptionReasons, [.captureFailed])
   }
 
   func testStopBeforeFirstSampleFailsWithoutSealing() async {
@@ -332,6 +417,62 @@ final class LiveMicrophoneRecordingControllerTests: XCTestCase {
     XCTAssertEqual(controller.phase, .failed)
     XCTAssertFalse(preparation.sealed)
     XCTAssertTrue(controller.errorMessage?.contains("No microphone sample") == true)
+    XCTAssertEqual(preparation.interruptionReasons, [.stopWithoutDurableSample])
+  }
+
+  func testRejectedFirstSampleRecordsInterruptedState() async throws {
+    let preparation = RecordingPreparationFake()
+    preparation.firstSampleDurable = false
+    let writerHolder = SegmentWriterHolder()
+    let capture = MicrophoneCaptureFake()
+    let controller = LiveMicrophoneRecordingController(
+      permission: AuthorizedMicrophonePermission(),
+      preparationFactory: { preparation },
+      writerFactory: { authorization in
+        let writer = SegmentWriterFake(authorization: authorization)
+        writerHolder.store(writer)
+        return writer
+      },
+      captureFactory: { _ in capture }
+    )
+    await controller.start()
+
+    let writer = try XCTUnwrap(writerHolder.writer)
+    capture.emitFirstSample(try writer.firstSampleReceipt(hostTime: 42_000, frameCount: 480))
+    for _ in 0..<10 where controller.phase != .failed {
+      await Task.yield()
+    }
+
+    XCTAssertEqual(controller.phase, .failed)
+    XCTAssertEqual(preparation.interruptionReasons, [.firstSampleRejected])
+  }
+
+  func testSealFailureRecordsInterruptedState() async throws {
+    let preparation = RecordingPreparationFake()
+    preparation.sealError = CaptureFakeError.sealFailed
+    let writerHolder = SegmentWriterHolder()
+    let capture = MicrophoneCaptureFake()
+    let controller = LiveMicrophoneRecordingController(
+      permission: AuthorizedMicrophonePermission(),
+      preparationFactory: { preparation },
+      writerFactory: { authorization in
+        let writer = SegmentWriterFake(authorization: authorization)
+        writerHolder.store(writer)
+        return writer
+      },
+      captureFactory: { _ in capture }
+    )
+    await controller.start()
+    let writer = try XCTUnwrap(writerHolder.writer)
+    capture.emitFirstSample(try writer.firstSampleReceipt(hostTime: 42_000, frameCount: 480))
+    for _ in 0..<10 where controller.phase != .capturing {
+      await Task.yield()
+    }
+
+    controller.stop()
+
+    XCTAssertEqual(controller.phase, .failed)
+    XCTAssertEqual(preparation.interruptionReasons, [.segmentSealFailed])
   }
 
   private func makeController(

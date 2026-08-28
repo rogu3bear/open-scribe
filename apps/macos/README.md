@@ -4,10 +4,11 @@
 live-microphone slice. The Xcode-owned unsigned app renders Rust fixture state
 and exposes a deliberate menu-bar microphone control. AVAudioEngine uses a
 bounded Swift buffer pool and serial managed CAF writer; the controller obtains
-coarse durable preparation, media-open, first-sample, and close-before-seal
-evidence without asserting `Recording`. One explicit local run proved a short
-real-device capture and playable CAF. System audio, multi-source authority,
-forced-termination recovery, and signed entitlement enforcement remain unproved.
+coarse durable preparation, media-open, first-sample, close-before-seal, and
+typed interruption evidence without asserting `Recording`. One explicit local
+run proved a short real-device capture and playable CAF. System audio,
+multi-source authority, forced-termination/playable recovery, and signed
+entitlement enforcement remain unproved.
 
 This root will contain the native SwiftUI application, MenuBarExtra, Settings, accessibility, permission UX, and bounded Apple-framework adapters for AVFoundation/CoreAudio, ScreenCaptureKit, Vision, display/window overlays, Calendar, Contacts, Keychain, and optional Apple-only model integration.
 
@@ -27,8 +28,10 @@ Data root. Its default mode launches the app; `--verify` runs the Xcode test
 host, binds the exact process, and observes primary/menu-bar/Settings scene logs;
 `--debug`, `--logs`, and `--telemetry` provide LLDB or filtered unified-log
 sessions. `./script/check_m1_xcode_fixture.sh` is the pre-capture UI checkpoint;
-`./script/check.sh --m1-segment-sealing` covers the deterministic first-sample
-and sealing chain. `./script/check.sh --m1-live-microphone` separately requires
-explicit consent and proves a short real-device capture through playable CAF.
-It deletes its proof media and does not prove system audio, multi-source
-`Recording`, forced-termination recovery, long sessions, signing, or release.
+`./script/check.sh --m1-live-microphone` is the current experiential proof: it
+requires explicit consent and proves a short real-device capture through a
+playable CAF, then deletes its proof media. `--m1-interruption-state` is the
+supporting deterministic regression for first sample, sealing, typed
+interruption, and restart classification; it does not replace live audio proof.
+Neither proves system audio, multi-source `Recording`, forced-termination or
+playable recovery, long sessions, signing, or release.

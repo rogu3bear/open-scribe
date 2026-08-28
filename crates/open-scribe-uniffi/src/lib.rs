@@ -36,6 +36,15 @@ pub enum NativeMediaSourceKind {
     SystemAudio,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, uniffi::Enum)]
+pub enum NativeSessionInterruptionReason {
+    CaptureStartFailed,
+    CaptureFailed,
+    FirstSampleRejected,
+    StopWithoutDurableSample,
+    SegmentSealFailed,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
 pub struct NativePreparedSession {
     pub session_id: String,
@@ -127,6 +136,16 @@ pub struct NativeSealedSegmentEvidence {
     pub final_byte_length: u64,
     pub digest_sha256: String,
     pub segment_sealed: bool,
+    pub recording_started: bool,
+    pub last_journal_sequence: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct NativeSessionInterruptionEvidence {
+    pub session_id: String,
+    pub reason: NativeSessionInterruptionReason,
+    pub journal_durable: bool,
+    pub session_interrupted: bool,
     pub recording_started: bool,
     pub last_journal_sequence: u64,
 }
@@ -292,6 +311,28 @@ impl NativeRecordingPreparation {
             last_journal_sequence: evidence.last_journal_sequence,
         })
     }
+
+    pub fn interrupt_session(
+        &self,
+        session_id: String,
+        reason: NativeSessionInterruptionReason,
+    ) -> Result<NativeSessionInterruptionEvidence, NativeStorageError> {
+        let evidence = self
+            .controller()?
+            .interrupt_session(
+                open_scribe_types::SessionId(session_id),
+                map_session_interruption_reason(reason),
+            )
+            .map_err(map_storage_error)?;
+        Ok(NativeSessionInterruptionEvidence {
+            session_id: evidence.session_id.0,
+            reason,
+            journal_durable: evidence.journal_durable,
+            session_interrupted: evidence.session_interrupted,
+            recording_started: evidence.recording_started,
+            last_journal_sequence: evidence.last_journal_sequence,
+        })
+    }
 }
 
 impl NativeRecordingPreparation {
@@ -314,6 +355,28 @@ const fn map_media_source_kind(kind: NativeMediaSourceKind) -> open_scribe_core:
             open_scribe_core::MediaSourceKind::ApplicationAudio
         }
         NativeMediaSourceKind::SystemAudio => open_scribe_core::MediaSourceKind::SystemAudio,
+    }
+}
+
+const fn map_session_interruption_reason(
+    reason: NativeSessionInterruptionReason,
+) -> open_scribe_core::SessionInterruptionReason {
+    match reason {
+        NativeSessionInterruptionReason::CaptureStartFailed => {
+            open_scribe_core::SessionInterruptionReason::CaptureStartFailed
+        }
+        NativeSessionInterruptionReason::CaptureFailed => {
+            open_scribe_core::SessionInterruptionReason::CaptureFailed
+        }
+        NativeSessionInterruptionReason::FirstSampleRejected => {
+            open_scribe_core::SessionInterruptionReason::FirstSampleRejected
+        }
+        NativeSessionInterruptionReason::StopWithoutDurableSample => {
+            open_scribe_core::SessionInterruptionReason::StopWithoutDurableSample
+        }
+        NativeSessionInterruptionReason::SegmentSealFailed => {
+            open_scribe_core::SessionInterruptionReason::SegmentSealFailed
+        }
     }
 }
 
@@ -796,6 +859,15 @@ mod tests {
         assert!(first_sample.first_sample_durable);
         assert_eq!(first_sample.first_sample_session_nanoseconds, 0);
         assert!(!first_sample.recording_started);
+        let interruption = controller
+            .interrupt_session(
+                first_sample.session_id,
+                NativeSessionInterruptionReason::CaptureFailed,
+            )
+            .unwrap();
+        assert!(interruption.journal_durable);
+        assert!(interruption.session_interrupted);
+        assert!(!interruption.recording_started);
         fs::remove_dir_all(root).unwrap();
     }
 }

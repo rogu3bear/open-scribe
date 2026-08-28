@@ -600,6 +600,9 @@ public protocol NativeRecordingPreparationProtocol: AnyObject, Sendable {
     sessionId: String, sourceKind: NativeMediaSourceKind, sourceDisplayName: String
   ) throws -> NativeMediaOpenAuthorization
 
+  func interruptSession(sessionId: String, reason: NativeSessionInterruptionReason) throws
+    -> NativeSessionInterruptionEvidence
+
   func prepareSession(title: String) throws -> NativePreparedSession
 
   func sealSegment(receipt: NativeSealSegmentReceipt) throws -> NativeSealedSegmentEvidence
@@ -701,6 +704,20 @@ open class NativeRecordingPreparation: NativeRecordingPreparationProtocol, @unch
           FfiConverterString.lower(sessionId),
           FfiConverterTypeNativeMediaSourceKind_lower(sourceKind),
           FfiConverterString.lower(sourceDisplayName), uniffiCallStatus
+        )
+      })
+  }
+
+  open func interruptSession(sessionId: String, reason: NativeSessionInterruptionReason) throws
+    -> NativeSessionInterruptionEvidence
+  {
+    return try FfiConverterTypeNativeSessionInterruptionEvidence_lift(
+      try rustCallWithError(FfiConverterTypeNativeStorageError_lift) {
+        uniffiCallStatus in
+        uniffi_open_scribe_uniffi_fn_method_nativerecordingpreparation_interrupt_session(
+          self.uniffiCloneHandle(),
+          FfiConverterString.lower(sessionId),
+          FfiConverterTypeNativeSessionInterruptionReason_lower(reason), uniffiCallStatus
         )
       })
   }
@@ -1495,6 +1512,80 @@ public func FfiConverterTypeNativeSealedSegmentEvidence_lower(_ value: NativeSea
   return FfiConverterTypeNativeSealedSegmentEvidence.lower(value)
 }
 
+public struct NativeSessionInterruptionEvidence: Equatable, Hashable {
+  public let sessionId: String
+  public let reason: NativeSessionInterruptionReason
+  public let journalDurable: Bool
+  public let sessionInterrupted: Bool
+  public let recordingStarted: Bool
+  public let lastJournalSequence: UInt64
+
+  // Default memberwise initializers are never public by default, so we
+  // declare one manually.
+  public init(
+    sessionId: String, reason: NativeSessionInterruptionReason, journalDurable: Bool,
+    sessionInterrupted: Bool, recordingStarted: Bool, lastJournalSequence: UInt64
+  ) {
+    self.sessionId = sessionId
+    self.reason = reason
+    self.journalDurable = journalDurable
+    self.sessionInterrupted = sessionInterrupted
+    self.recordingStarted = recordingStarted
+    self.lastJournalSequence = lastJournalSequence
+  }
+
+}
+
+#if compiler(>=6)
+  extension NativeSessionInterruptionEvidence: Sendable {}
+#endif
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeNativeSessionInterruptionEvidence: FfiConverterRustBuffer {
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws
+    -> NativeSessionInterruptionEvidence
+  {
+    return
+      try NativeSessionInterruptionEvidence(
+        sessionId: FfiConverterString.read(from: &buf),
+        reason: FfiConverterTypeNativeSessionInterruptionReason.read(from: &buf),
+        journalDurable: FfiConverterBool.read(from: &buf),
+        sessionInterrupted: FfiConverterBool.read(from: &buf),
+        recordingStarted: FfiConverterBool.read(from: &buf),
+        lastJournalSequence: FfiConverterUInt64.read(from: &buf)
+      )
+  }
+
+  public static func write(_ value: NativeSessionInterruptionEvidence, into buf: inout [UInt8]) {
+    FfiConverterString.write(value.sessionId, into: &buf)
+    FfiConverterTypeNativeSessionInterruptionReason.write(value.reason, into: &buf)
+    FfiConverterBool.write(value.journalDurable, into: &buf)
+    FfiConverterBool.write(value.sessionInterrupted, into: &buf)
+    FfiConverterBool.write(value.recordingStarted, into: &buf)
+    FfiConverterUInt64.write(value.lastJournalSequence, into: &buf)
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeSessionInterruptionEvidence_lift(_ buf: RustBuffer) throws
+  -> NativeSessionInterruptionEvidence
+{
+  return try FfiConverterTypeNativeSessionInterruptionEvidence.lift(buf)
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeSessionInterruptionEvidence_lower(
+  _ value: NativeSessionInterruptionEvidence
+) -> RustBuffer {
+  return FfiConverterTypeNativeSessionInterruptionEvidence.lower(value)
+}
+
 public struct NativeSessionSnapshot: Equatable, Hashable {
   public let fixture: String
   public let sessionId: String
@@ -2122,6 +2213,86 @@ public func FfiConverterTypeNativeSessionError_lower(_ value: NativeSessionError
   return FfiConverterTypeNativeSessionError.lower(value)
 }
 
+public enum NativeSessionInterruptionReason: Equatable, Hashable {
+
+  case captureStartFailed
+  case captureFailed
+  case firstSampleRejected
+  case stopWithoutDurableSample
+  case segmentSealFailed
+
+}
+
+#if compiler(>=6)
+  extension NativeSessionInterruptionReason: Sendable {}
+#endif
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeNativeSessionInterruptionReason: FfiConverterRustBuffer {
+  typealias SwiftType = NativeSessionInterruptionReason
+
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws
+    -> NativeSessionInterruptionReason
+  {
+    let variant: Int32 = try readInt(&buf)
+    switch variant {
+
+    case 1: return .captureStartFailed
+
+    case 2: return .captureFailed
+
+    case 3: return .firstSampleRejected
+
+    case 4: return .stopWithoutDurableSample
+
+    case 5: return .segmentSealFailed
+
+    default: throw UniffiInternalError.unexpectedEnumCase
+    }
+  }
+
+  public static func write(_ value: NativeSessionInterruptionReason, into buf: inout [UInt8]) {
+    switch value {
+
+    case .captureStartFailed:
+      writeInt(&buf, Int32(1))
+
+    case .captureFailed:
+      writeInt(&buf, Int32(2))
+
+    case .firstSampleRejected:
+      writeInt(&buf, Int32(3))
+
+    case .stopWithoutDurableSample:
+      writeInt(&buf, Int32(4))
+
+    case .segmentSealFailed:
+      writeInt(&buf, Int32(5))
+
+    }
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeSessionInterruptionReason_lift(_ buf: RustBuffer) throws
+  -> NativeSessionInterruptionReason
+{
+  return try FfiConverterTypeNativeSessionInterruptionReason.lift(buf)
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeSessionInterruptionReason_lower(
+  _ value: NativeSessionInterruptionReason
+) -> RustBuffer {
+  return FfiConverterTypeNativeSessionInterruptionReason.lower(value)
+}
+
 public
   enum NativeStorageError: Swift.Error, Equatable, Hashable, Foundation.LocalizedError
 {
@@ -2358,6 +2529,11 @@ private let initializationResult: InitializationResult = {
   }
   if uniffi_open_scribe_uniffi_checksum_method_nativerecordingpreparation_authorize_initial_media()
     != 62642
+  {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_open_scribe_uniffi_checksum_method_nativerecordingpreparation_interrupt_session()
+    != 56310
   {
     return InitializationResult.apiChecksumMismatch
   }
