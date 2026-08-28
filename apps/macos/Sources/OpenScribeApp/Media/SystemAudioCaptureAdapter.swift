@@ -81,6 +81,14 @@ final class SystemAudioCaptureAdapter: NSObject, SCStreamOutput, SCStreamDelegat
     return CMClockConvertHostTimeToSystemUnits(hostTime)
   }
 
+  nonisolated static func sampleFailure(
+    for sampleBuffer: CMSampleBuffer,
+    type: SCStreamOutputType
+  ) -> SystemAudioCaptureAdapterError? {
+    guard type == .audio else { return nil }
+    return sampleBuffer.isValid ? nil : .invalidSampleBuffer
+  }
+
   func start(
     onFirstSample: @escaping FirstSampleHandler,
     onFailure: @escaping FailureHandler
@@ -158,7 +166,12 @@ final class SystemAudioCaptureAdapter: NSObject, SCStreamOutput, SCStreamDelegat
     didOutputSampleBuffer sampleBuffer: CMSampleBuffer,
     of type: SCStreamOutputType
   ) {
-    guard type == .audio, sampleBuffer.isValid, sampleBuffer.numSamples > 0 else { return }
+    guard type == .audio else { return }
+    if let failure = Self.sampleFailure(for: sampleBuffer, type: type) {
+      reportFailure(failure)
+      return
+    }
+    guard sampleBuffer.numSamples > 0 else { return }
     guard let description = sampleBuffer.formatDescription else {
       reportFailure(.invalidSampleBuffer)
       return
