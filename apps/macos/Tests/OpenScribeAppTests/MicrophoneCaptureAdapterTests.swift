@@ -1,5 +1,6 @@
 import AVFoundation
 import CoreMedia
+import ScreenCaptureKit
 import XCTest
 
 @testable import OpenScribeApp
@@ -549,6 +550,41 @@ final class MicrophoneCaptureAdapterTests: XCTestCase {
         from: .invalid,
         synchronizationClock: timebase
       )
+    )
+  }
+
+  func testInvalidSystemAudioSampleIsReportedAsCaptureFailure() throws {
+    var sampleBuffer: CMSampleBuffer?
+    XCTAssertEqual(
+      CMSampleBufferCreate(
+        allocator: kCFAllocatorDefault,
+        dataBuffer: nil,
+        dataReady: true,
+        makeDataReadyCallback: nil,
+        refcon: nil,
+        formatDescription: nil,
+        sampleCount: 0,
+        sampleTimingEntryCount: 0,
+        sampleTimingArray: nil,
+        sampleSizeEntryCount: 0,
+        sampleSizeArray: nil,
+        sampleBufferOut: &sampleBuffer
+      ),
+      noErr
+    )
+    let zeroSample = try XCTUnwrap(sampleBuffer)
+    XCTAssertTrue(zeroSample.isValid)
+    XCTAssertNil(
+      SystemAudioCaptureAdapter.sampleFailure(for: zeroSample, type: .audio)
+    )
+    CMSampleBufferInvalidate(zeroSample)
+
+    XCTAssertEqual(
+      SystemAudioCaptureAdapter.sampleFailure(for: zeroSample, type: .audio),
+      .invalidSampleBuffer
+    )
+    XCTAssertNil(
+      SystemAudioCaptureAdapter.sampleFailure(for: zeroSample, type: .screen)
     )
   }
 }
