@@ -5532,4 +5532,40 @@ mod tests {
         );
         assert!(!saved.recovered);
     }
+
+    #[test]
+    fn runtime_library_snapshot_reads_session_and_sources_from_one_database_moment() {
+        let temp = TempDir::new().unwrap();
+        let mut writer = open_store(&temp);
+        let (prepared, microphone, system) = prepared_dual_first_samples(&mut writer);
+        writer
+            .confirm_recording(prepared.session_id.clone())
+            .unwrap();
+        for authorization in [&microphone, &system] {
+            replace_with_recoverable_pcm_caf(authorization, 960);
+        }
+        let reader = open_store(&temp);
+
+        let snapshot = reader
+            .runtime_library_snapshot_at_after_sessions(wall_time_milliseconds(), || {
+                for authorization in [&microphone, &system] {
+                    let byte_length = fs::metadata(&authorization.absolute_path).unwrap().len();
+                    writer
+                        .seal_segment(seal_receipt(authorization, byte_length))
+                        .unwrap();
+                }
+            })
+            .unwrap();
+
+        if let Some(current) = snapshot.current_session {
+            assert!(
+                current.lifecycle != "recording"
+                    || current
+                        .sources
+                        .iter()
+                        .all(|source| source.lifecycle == "capturing"),
+                "one snapshot combined a pre-seal Recording session with post-seal source state"
+            );
+        }
+    }
 }

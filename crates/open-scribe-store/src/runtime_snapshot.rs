@@ -46,8 +46,32 @@ impl SessionStore {
         &self,
         now_milliseconds: i64,
     ) -> Result<RuntimeLibrarySnapshot, StoreError> {
+        self.runtime_library_snapshot_at_with_observer(now_milliseconds, || {})
+    }
+
+    #[cfg(test)]
+    pub(super) fn runtime_library_snapshot_at_after_sessions<F>(
+        &self,
+        now_milliseconds: i64,
+        after_sessions: F,
+    ) -> Result<RuntimeLibrarySnapshot, StoreError>
+    where
+        F: FnOnce(),
+    {
+        self.runtime_library_snapshot_at_with_observer(now_milliseconds, after_sessions)
+    }
+
+    fn runtime_library_snapshot_at_with_observer<F>(
+        &self,
+        now_milliseconds: i64,
+        after_sessions: F,
+    ) -> Result<RuntimeLibrarySnapshot, StoreError>
+    where
+        F: FnOnce(),
+    {
+        let transaction = self.connection.unchecked_transaction()?;
         let sessions = {
-            let mut statement = self.connection.prepare(
+            let mut statement = transaction.prepare(
                 "SELECT sessions.id, sessions.title, sessions.lifecycle, sessions.health,
                         sessions.journal_durable, sessions.media_files_open,
                         sessions.updated_at_ms,
@@ -85,6 +109,7 @@ impl SessionStore {
             })?;
             rows.collect::<Result<Vec<_>, _>>()?
         };
+        after_sessions();
 
         let mut current_session = None;
         let mut saved_sessions = Vec::new();
@@ -101,7 +126,7 @@ impl SessionStore {
             recovered,
         ) in sessions
         {
-            let sources = self.runtime_source_snapshots(&session_id, &lifecycle)?;
+            let sources = Self::runtime_source_snapshots(&transaction, &session_id, &lifecycle)?;
             let interruption_reason = interruption_payload
                 .as_deref()
                 .map(serde_json::from_str::<Value>)
@@ -143,6 +168,7 @@ impl SessionStore {
             }
         }
 
+        transaction.commit()?;
         Ok(RuntimeLibrarySnapshot {
             current_session,
             saved_sessions,
@@ -150,11 +176,11 @@ impl SessionStore {
     }
 
     fn runtime_source_snapshots(
-        &self,
+        connection: &rusqlite::Connection,
         session_id: &str,
         session_lifecycle: &str,
     ) -> Result<Vec<RuntimeSourceSnapshot>, StoreError> {
-        let mut statement = self.connection.prepare(
+        let mut statement = connection.prepare(
             "SELECT required.kind,
                     COALESCE(
                       (SELECT sources.display_name FROM sources
