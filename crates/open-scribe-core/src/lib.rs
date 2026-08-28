@@ -13,9 +13,9 @@ pub use open_scribe_store::{
     AuthorizeMediaOpenRequest, FirstSampleEvidence, FirstSampleReceipt, InterruptSessionRequest,
     MediaOpenAuthorization, MediaOpenEvidence, MediaOpenReceipt, MediaSourceKind,
     PrepareSessionRequest, PreparedSessionReceipt, RecordingStartedEvidence,
-    RecoveredPlayableSession, RequiredSourcePlanEvidence, SealSegmentReceipt,
-    SealedSegmentEvidence, SessionInterruptionEvidence, SessionInterruptionReason, SessionOrigin,
-    StoreError,
+    RecoveredPlayableSession, RequiredSourcePlanEvidence, RuntimeLibrarySnapshot,
+    RuntimeSessionSnapshot, RuntimeSourceSnapshot, SealSegmentReceipt, SealedSegmentEvidence,
+    SessionInterruptionEvidence, SessionInterruptionReason, SessionOrigin, StoreError,
 };
 
 pub struct CoarseMediaOpenReceipt {
@@ -174,6 +174,10 @@ impl RecordingPreparationController {
     ) -> Result<Vec<RecoveredPlayableSession>, StoreError> {
         self.store.recover_playable_sessions()
     }
+
+    pub fn runtime_library_snapshot(&self) -> Result<RuntimeLibrarySnapshot, StoreError> {
+        self.store.runtime_library_snapshot()
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -220,8 +224,8 @@ pub const fn status_snapshot() -> CoreStatus {
     CoreStatus {
         product_name: "Open Scribe",
         core_version: env!("CARGO_PKG_VERSION"),
-        persistence: "Durable preparation only",
-        capture: "Not implemented",
+        persistence: "Durable local audio and recovery",
+        capture: "Development microphone + system audio",
         intelligence: "Not implemented",
     }
 }
@@ -251,13 +255,13 @@ mod tests {
     }
 
     #[test]
-    fn status_snapshot_reports_preparation_without_capture() {
+    fn status_snapshot_reports_bounded_dual_source_capture_without_intelligence() {
         let status = status_snapshot();
 
         assert_eq!(status.product_name, "Open Scribe");
         assert_eq!(status.core_version, env!("CARGO_PKG_VERSION"));
-        assert_eq!(status.persistence, "Durable preparation only");
-        assert_eq!(status.capture, "Not implemented");
+        assert_eq!(status.persistence, "Durable local audio and recovery");
+        assert_eq!(status.capture, "Development microphone + system audio");
         assert_eq!(status.intelligence, "Not implemented");
     }
 }

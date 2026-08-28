@@ -177,6 +177,33 @@ pub struct NativeRecoveredPlayableSession {
     pub last_journal_sequence: u64,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct NativeRuntimeSourceSnapshot {
+    pub kind: NativeMediaSourceKind,
+    pub display_name: String,
+    pub lifecycle: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct NativeRuntimeSessionSnapshot {
+    pub session_id: String,
+    pub title: String,
+    pub lifecycle: String,
+    pub health: String,
+    pub elapsed_seconds: u64,
+    pub journal_durable: bool,
+    pub media_files_open: bool,
+    pub interruption_reason: Option<String>,
+    pub recovered: bool,
+    pub sources: Vec<NativeRuntimeSourceSnapshot>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct NativeRuntimeLibrarySnapshot {
+    pub current_session: Option<NativeRuntimeSessionSnapshot>,
+    pub saved_sessions: Vec<NativeRuntimeSessionSnapshot>,
+}
+
 #[derive(Debug, thiserror::Error, uniffi::Error)]
 pub enum NativeStorageError {
     #[error("The storage root is invalid.")]
@@ -439,6 +466,23 @@ impl NativeRecordingPreparation {
             })
             .collect())
     }
+
+    pub fn runtime_library_snapshot(
+        &self,
+    ) -> Result<NativeRuntimeLibrarySnapshot, NativeStorageError> {
+        let snapshot = self
+            .controller()?
+            .runtime_library_snapshot()
+            .map_err(map_storage_error)?;
+        Ok(NativeRuntimeLibrarySnapshot {
+            current_session: snapshot.current_session.map(map_runtime_session_snapshot),
+            saved_sessions: snapshot
+                .saved_sessions
+                .into_iter()
+                .map(map_runtime_session_snapshot)
+                .collect(),
+        })
+    }
 }
 
 impl NativeRecordingPreparation {
@@ -495,6 +539,48 @@ const fn map_session_interruption_reason(
         NativeSessionInterruptionReason::SegmentSealFailed => {
             open_scribe_core::SessionInterruptionReason::SegmentSealFailed
         }
+    }
+}
+
+fn map_runtime_session_snapshot(
+    snapshot: open_scribe_core::RuntimeSessionSnapshot,
+) -> NativeRuntimeSessionSnapshot {
+    NativeRuntimeSessionSnapshot {
+        session_id: snapshot.session_id.0,
+        title: snapshot.title,
+        lifecycle: snapshot.lifecycle,
+        health: snapshot.health,
+        elapsed_seconds: snapshot.elapsed_seconds,
+        journal_durable: snapshot.journal_durable,
+        media_files_open: snapshot.media_files_open,
+        interruption_reason: snapshot.interruption_reason.map(|reason| {
+            match reason {
+                open_scribe_core::SessionInterruptionReason::CaptureStartFailed => {
+                    "capture_start_failed"
+                }
+                open_scribe_core::SessionInterruptionReason::CaptureFailed => "capture_failed",
+                open_scribe_core::SessionInterruptionReason::FirstSampleRejected => {
+                    "first_sample_rejected"
+                }
+                open_scribe_core::SessionInterruptionReason::StopWithoutDurableSample => {
+                    "stop_without_durable_sample"
+                }
+                open_scribe_core::SessionInterruptionReason::SegmentSealFailed => {
+                    "segment_seal_failed"
+                }
+            }
+            .to_owned()
+        }),
+        recovered: snapshot.recovered,
+        sources: snapshot
+            .sources
+            .into_iter()
+            .map(|source| NativeRuntimeSourceSnapshot {
+                kind: map_native_media_source_kind(source.kind),
+                display_name: source.display_name,
+                lifecycle: source.lifecycle,
+            })
+            .collect(),
     }
 }
 
@@ -900,8 +986,8 @@ mod tests {
             status.core_version,
             open_scribe_core::status_snapshot().core_version
         );
-        assert_eq!(status.persistence, "Durable preparation only");
-        assert_eq!(status.capture, "Not implemented");
+        assert_eq!(status.persistence, "Durable local audio and recovery");
+        assert_eq!(status.capture, "Development microphone + system audio");
         assert_eq!(status.intelligence, "Not implemented");
     }
 
@@ -983,6 +1069,14 @@ mod tests {
         assert!(recording.journal_durable);
         assert!(recording.media_files_open);
         assert!(recording.recording_started);
+        let runtime = controller.runtime_library_snapshot().unwrap();
+        let current = runtime.current_session.unwrap();
+        assert_eq!(current.session_id, first_sample.session_id);
+        assert_eq!(current.lifecycle, "recording");
+        assert_eq!(current.sources.len(), 1);
+        assert_eq!(current.sources[0].kind, NativeMediaSourceKind::Microphone);
+        assert_eq!(current.sources[0].lifecycle, "capturing");
+        assert!(runtime.saved_sessions.is_empty());
         let interruption = controller
             .interrupt_session(
                 first_sample.session_id,

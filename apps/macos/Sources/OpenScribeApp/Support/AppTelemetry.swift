@@ -21,6 +21,12 @@ enum AppTelemetry {
     )
   }
 
+  static func runtimeSceneAppeared(_ scene: String, session: RuntimeSessionPresentation?) {
+    scenes.info(
+      "scene=\(scene, privacy: .public) runtime_session=\(session?.sessionId ?? "none", privacy: .public) lifecycle=\(session?.lifecycle ?? "idle", privacy: .public) journal_durable=\(session?.journalDurable ?? false) media_files_open=\(session?.mediaFilesOpen ?? false)"
+    )
+  }
+
   static func commandInvoked(_ command: String) {
     commands.info("command=\(command, privacy: .public)")
   }

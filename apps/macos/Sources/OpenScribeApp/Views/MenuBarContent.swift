@@ -3,13 +3,13 @@ import SwiftUI
 
 struct MenuBarContent: View {
   @Environment(\.openWindow) private var openWindow
-  @ObservedObject var store: FixtureSessionStore
+  @ObservedObject var store: RuntimeLibraryStore
   @ObservedObject var liveRecording: LiveMicrophoneRecordingController
   @ObservedObject var recoveredSessions: RecoveredSessionController
 
   @MainActor
   init(
-    store: FixtureSessionStore,
+    store: RuntimeLibraryStore,
     liveRecording: LiveMicrophoneRecordingController? = nil,
     recoveredSessions: RecoveredSessionController? = nil
   ) {
@@ -20,23 +20,42 @@ struct MenuBarContent: View {
   }
 
   var body: some View {
-    Text(liveRecording.statusText)
-      .accessibilityLabel(liveRecording.statusText)
+    if let current = store.currentSession {
+      Label(
+        current.statusText,
+        systemImage: current.isRecording ? "record.circle.fill" : "exclamationmark.circle")
+      Text(current.timerText)
+        .font(.system(.body, design: .monospaced))
+      ForEach(current.sources, id: \.kind) { source in
+        Label("\(source.name): \(source.stateText)", systemImage: source.symbolName)
+      }
+      if let interruption = current.interruptionText {
+        Text(interruption)
+          .foregroundStyle(.orange)
+      }
+    } else {
+      Text(pendingStatusText)
+        .accessibilityLabel(pendingStatusText)
+    }
     if let errorMessage = liveRecording.errorMessage {
       Text(errorMessage)
         .foregroundStyle(.red)
     }
-    if liveRecording.savedPaths.count > 1 {
-      Text("Saved: \(liveRecording.savedPaths.count) local audio tracks")
-        .foregroundStyle(.secondary)
-    } else if let savedPath = liveRecording.savedPath {
-      Text("Saved: \(URL(fileURLWithPath: savedPath).lastPathComponent)")
-        .foregroundStyle(.secondary)
+    if let libraryError = store.errorMessage {
+      Text(libraryError)
+        .foregroundStyle(.red)
+    }
+    if !store.savedSessions.isEmpty {
+      Text(
+        "\(store.isSnapshotStale ? "Last known: " : "")\(store.savedSessions.count) saved conversation\(store.savedSessions.count == 1 ? "" : "s")"
+      )
+      .foregroundStyle(.secondary)
     }
     if liveRecording.canStart {
       Button("Record Microphone + System Audio") {
         Task {
           await liveRecording.start()
+          store.refresh()
         }
       }
       .keyboardShortcut("r", modifiers: [.command, .shift])
@@ -45,6 +64,7 @@ struct MenuBarContent: View {
       Button("Stop Capture") {
         Task {
           await liveRecording.stop()
+          store.refresh()
         }
       }
       .keyboardShortcut("s", modifiers: [.command, .shift])
@@ -69,26 +89,15 @@ struct MenuBarContent: View {
         .foregroundStyle(.red)
     }
     Divider()
-    Text("Development session fixture")
-      .foregroundStyle(.secondary)
-    Text(store.displayedLabel)
-      .accessibilityLabel(store.displayedAccessibilityValue)
-    ForEach(store.snapshot.sources, id: \.id) { source in
-      Text("\(source.name): \(source.activity)")
-    }
-    Divider()
-    SessionCommands(store: store)
-    Divider()
     Button("Open Open Scribe") {
       AppTelemetry.commandInvoked("open-primary")
       NSApp.activate(ignoringOtherApps: true)
       openWindow(id: "main")
     }
-    Button("Inspect state") {
-      store.inspect()
+    Button("Refresh Library") {
+      store.refresh()
     }
     .keyboardShortcut("i", modifiers: [.command, .shift])
-    .accessibilityValue(store.displayedAccessibilityValue)
     if #available(macOS 14.0, *) {
       SettingsLink {
         Text("Settings…")
@@ -105,35 +114,87 @@ struct MenuBarContent: View {
     }
     .keyboardShortcut("q")
   }
+
+  private var pendingStatusText: String {
+    switch liveRecording.phase {
+    case .requestingPermission, .preparing, .starting: liveRecording.statusText
+    case .capturing: "Confirming durable recording…"
+    case .stopping: "Securing recording…"
+    case .failed: "Recording needs attention"
+    default: "Ready to record microphone + system audio"
+    }
+  }
 }
 
 struct MenuBarLabel: View {
-  @ObservedObject var store: FixtureSessionStore
+  @ObservedObject var store: RuntimeLibraryStore
   @ObservedObject var liveRecording: LiveMicrophoneRecordingController
 
   var body: some View {
-    Group {
-      if liveRecording.isCapturing {
-        Label("Recording microphone + system audio", systemImage: "record.circle.fill")
-      } else if liveRecording.phase == .starting {
-        Label("Starting microphone + system audio", systemImage: "waveform")
-      } else if liveRecording.phase == .failed {
-        Label("Recording needs attention", systemImage: "exclamationmark.circle")
-      } else if liveRecording.phase == .saved {
-        Label("Conversation audio saved", systemImage: "waveform.badge.checkmark")
-      } else if let symbol = store.snapshot.resolvedSymbolName {
-        Label(store.displayedLabel, systemImage: symbol)
-      } else {
-        Text(store.displayedLabel)
-      }
-    }
-    .accessibilityLabel(
-      liveRecording.isCapturing
-        ? "Recording microphone and system audio"
-        : liveRecording.statusText
+    let presentation = Self.presentation(
+      session: store.currentSession,
+      snapshotStale: store.isSnapshotStale,
+      livePhase: liveRecording.phase,
+      liveStatus: liveRecording.statusText
     )
+    Label(presentation.text, systemImage: presentation.symbolName)
+      .accessibilityLabel(presentation.accessibilityText)
     .onAppear {
-      AppTelemetry.sceneAppeared("menu-bar", snapshot: store.snapshot)
+      store.refresh()
+      AppTelemetry.runtimeSceneAppeared("menu-bar", session: store.currentSession)
+    }
+  }
+
+  static func accessibilityStatus(
+    session: RuntimeSessionPresentation?,
+    snapshotStale: Bool,
+    livePhase: LiveMicrophoneRecordingPhase,
+    liveStatus: String
+  ) -> String {
+    presentation(
+      session: session,
+      snapshotStale: snapshotStale,
+      livePhase: livePhase,
+      liveStatus: liveStatus
+    ).accessibilityText
+  }
+
+  private static func presentation(
+    session: RuntimeSessionPresentation?,
+    snapshotStale: Bool,
+    livePhase: LiveMicrophoneRecordingPhase,
+    liveStatus: String
+  ) -> (text: String, symbolName: String, accessibilityText: String) {
+    if snapshotStale {
+      return ("State unavailable", "exclamationmark.circle", "Live recording state unavailable")
+    }
+    if let session {
+      if session.isRecording {
+        return (
+          "Recording · \(session.timerText)",
+          "record.circle.fill",
+          "Recording microphone and system audio, \(session.timerText)"
+        )
+      }
+      return (
+        session.statusText,
+        session.needsAttention ? "exclamationmark.circle" : "waveform",
+        session.statusText
+      )
+    }
+    return switch livePhase {
+    case .capturing:
+      ("Confirming recording", "waveform", "Confirming durable recording")
+    case .starting:
+      ("Starting microphone + system audio", "waveform", liveStatus)
+    case .failed:
+      ("Recording needs attention", "exclamationmark.circle", liveStatus)
+    case .saved:
+      ("Conversation audio saved", "waveform.badge.checkmark", liveStatus)
+    case .requestingPermission, .preparing, .stopping:
+      (liveStatus, "waveform", liveStatus)
+    case .idle:
+      ("Open Scribe", "record.circle", liveStatus)
     }
   }
 }
