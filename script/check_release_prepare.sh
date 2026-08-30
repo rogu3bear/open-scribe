@@ -12,9 +12,11 @@ fail() {
 
 for helper in \
 	"$script_dir/check_release_input_validation.sh" \
+	"$script_dir/check_release_evidence.sh" \
 	"$script_dir/check_verify_bundle.sh" \
 	"$script_dir/release.sh" \
-	"$script_dir/validate_release_input.sh"; do
+	"$script_dir/validate_release_input.sh" \
+	"$script_dir/verify_release_evidence.sh"; do
 	[[ -f "$helper" && ! -L "$helper" && -x "$helper" ]] ||
 		fail "release helper is unavailable or not a regular executable: $helper"
 done
@@ -32,6 +34,7 @@ if rg -n '^[[:space:]]*git([[:space:]]+--[^[:space:]]+)*[[:space:]]+(add|am|appl
 fi
 
 "$script_dir/check_release_input_validation.sh"
+"$script_dir/check_release_evidence.sh"
 "$script_dir/check_verify_bundle.sh"
 
 invalid_output="$("$script_dir/release.sh" prepare invalid 2>&1 || true)"
@@ -145,5 +148,5 @@ after_index="$(stat -f '%m:%z' .git/index 2>/dev/null || printf 'absent')"
 printf '%s\n' \
 	'RELEASE_PREPARE_CHECK_GREEN' \
 	"fixture_residue=$receipt_fixture" \
-	'proof=release_input_schemas,open_input_semantics,bundle_verifier_rejection_contract,stable_semver_rejection,exact_source_binding,forged_milestone_receipt_rejection,stale_p0_candidate_rejection,fail_closed_milestone_gate_availability,capability_registry_linkage_and_source_equality,legal_security_p0_holds,complete_source_qualified_locked_component_set,candidate_release_notes,current_source_direct_mutator_vocabulary_absent,observed_worktree_and_index_unchanged' \
+	'proof=release_input_schemas,open_input_semantics,authenticated_evidence_contract,bundle_verifier_rejection_contract,stable_semver_rejection,exact_source_binding,forged_milestone_receipt_rejection,stale_p0_candidate_rejection,fail_closed_milestone_gate_availability,capability_registry_linkage_and_source_equality,legal_security_p0_holds,complete_source_qualified_locked_component_set,candidate_release_notes,current_source_direct_mutator_vocabulary_absent,observed_worktree_and_index_unchanged' \
 	'excludes=milestone_completion,version_allocation,signed_artifact_success,notarization,packaging,publication,deployment,public_release'

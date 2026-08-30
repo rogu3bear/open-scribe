@@ -38,6 +38,20 @@ until an approved provenance/authentication policy and canonical verifier exist.
 This explicit hold avoids both self-invalidating tracked receipts and invented
 local trust authority.
 
+`docs/release/evidence-policy.v1.json` is the sole tracked trust-policy source.
+It intentionally contains no active authority and sets `admission_complete` to
+false. `script/verify_release_evidence.sh` verifies detached Ed25519 SSH
+signatures over a verifier-owned immutable snapshot of the exact receipt bytes.
+An admission-complete policy grant must bind the authority, receipt kind,
+producer identity and executable SHA-256, proof plane, artifact kind and
+identity, runtime identity, and denominator identity. The caller must separately
+bind canonical source SHA/tree and the exact artifact, runtime executable, and
+denominator SHA-256 values. Hash encodings, timestamp range, and receipt age are
+validated before signature admission. `./script/check.sh --release-evidence`
+exercises those bindings with an ephemeral test key; it neither authorizes a
+production signer nor signs a release artifact. Historical or unsigned receipts
+remain inspectable but can never remove the preparation hold.
+
 Preparation remains unconditionally held at the ADR 0017 transaction boundary
 until semantic validators exist for a non-Cargo component inventory, SPDX SBOM,
 deterministic third-party notices, an unsigned content-addressed plan, and the

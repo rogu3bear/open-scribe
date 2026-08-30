@@ -1,0 +1,7 @@
+{
+  "schema": "open-scribe.release-evidence-policy/v1",
+  "namespace": "open-scribe-release-evidence",
+  "max_age_seconds": 604800,
+  "admission_complete": false,
+  "authorities": []
+}

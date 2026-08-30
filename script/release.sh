@@ -25,6 +25,12 @@ validator="$script_dir/validate_release_input.sh"
 	printf 'RELEASE_PREPARE_ERROR: release-input validator is unavailable or not a regular executable\n' >&2
 	exit 2
 }
+evidence_verifier="$script_dir/verify_release_evidence.sh"
+evidence_policy="docs/release/evidence-policy.v1.json"
+[[ -f "$evidence_verifier" && ! -L "$evidence_verifier" && -x "$evidence_verifier" ]] || {
+	printf 'RELEASE_PREPARE_ERROR: release-evidence verifier is unavailable or not a regular executable\n' >&2
+	exit 2
+}
 
 source_sha="$(git rev-parse HEAD)"
 source_tree="$(git rev-parse 'HEAD^{tree}')"
@@ -118,8 +124,17 @@ for milestone in 0 1 2 3 4; do
 	hold "milestone_${milestone}_evidence_admission" \
 		"no authenticated canonical verifier currently admits M${milestone} completion for release preparation"
 done
-hold evidence_authentication_policy \
-	"external release receipts are advisory until an approved provenance and authentication policy is implemented"
+if [[ ! -f "$evidence_policy" || -L "$evidence_policy" ]] ||
+	! jq -e '
+      .schema == "open-scribe.release-evidence-policy/v1"
+      and .namespace == "open-scribe-release-evidence"
+      and (.max_age_seconds | type == "number" and . > 0)
+      and .admission_complete == true
+      and (.authorities | type == "array" and length > 0)
+      and (.authorities | any(.active == true))' "$evidence_policy" >/dev/null 2>&1; then
+	hold evidence_authentication_policy \
+		"authenticated evidence admission is intentionally inactive; historical and unsigned receipts remain advisory"
+fi
 
 if [[ ! -f docs/legal/privacy.md || -L docs/legal/privacy.md ||
 	! -f docs/legal/terms.md || -L docs/legal/terms.md ]]; then
