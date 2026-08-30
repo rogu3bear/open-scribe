@@ -15,6 +15,7 @@ private final class FakeMicrophoneBackend: MicrophoneCaptureBackend, @unchecked 
   let allowStart: DispatchSemaphore?
   let shouldFailStart: Bool
   private var handler: ((AVAudioPCMBuffer, AVAudioTime) -> Void)?
+  private var routeEventHandler: MicrophoneRouteEventHandler?
   private(set) var started = false
 
   init(
@@ -50,8 +51,38 @@ private final class FakeMicrophoneBackend: MicrophoneCaptureBackend, @unchecked 
     handler = nil
   }
 
+  func setRouteEventHandler(_ handler: MicrophoneRouteEventHandler?) {
+    routeEventHandler = handler
+  }
+
   func emit(_ buffer: AVAudioPCMBuffer, hostTime: UInt64) {
     handler?(buffer, AVAudioTime(hostTime: hostTime))
+  }
+
+  func emitRouteEvent(_ event: MicrophoneRouteEvent) {
+    routeEventHandler?(event)
+  }
+}
+
+private final class ProgressCapturedWriter: CapturedAudioWriting, @unchecked Sendable {
+  func writeCapturedBuffer(_ input: AVAudioPCMBuffer) throws -> AVAudioFrameCount {
+    input.frameLength
+  }
+
+  func firstSampleReceipt(hostTime: UInt64, frameCount: UInt64) throws
+    -> NativeFirstSampleReceipt
+  {
+    NativeFirstSampleReceipt(
+      sessionId: "session-observation",
+      trackId: "track-microphone",
+      segmentId: "segment-microphone",
+      openToken: "token-microphone",
+      writerGeneration: 7,
+      relativePath: "audio/microphone/segment.caf",
+      firstSampleHostTime: hostTime,
+      firstSampleFrameCount: frameCount,
+      observedByteLength: 512
+    )
   }
 }
 
@@ -106,6 +137,29 @@ private final class ReceiptBox: @unchecked Sendable {
     lock.lock()
     defer { lock.unlock() }
     return receipts
+  }
+}
+
+private final class ObservationBox: @unchecked Sendable {
+  private let lock = NSLock()
+  private var observations: [MicrophoneSourceHealthObservation] = []
+
+  func append(_ observation: MicrophoneSourceHealthObservation) {
+    lock.withLock {
+      observations.append(observation)
+    }
+  }
+
+  func snapshot() -> [MicrophoneSourceHealthObservation] {
+    lock.withLock { observations }
+  }
+}
+
+private final class PCMBufferBox: @unchecked Sendable {
+  let value: AVAudioPCMBuffer
+
+  init(_ value: AVAudioPCMBuffer) {
+    self.value = value
   }
 }
 
@@ -509,6 +563,276 @@ final class MicrophoneCaptureAdapterTests: XCTestCase {
     writer.allowWrite.signal()
 
     XCTAssertEqual(adapter.stop(), 42_000)
+  }
+
+  func testCallbackProgressIsObservableBeforeABlockedWriteWithoutBlockingTheCallback() throws {
+    let format = try XCTUnwrap(
+      AVAudioFormat(
+        commonFormat: .pcmFormatFloat32,
+        sampleRate: 48_000,
+        channels: 1,
+        interleaved: false
+      )
+    )
+    let backend = FakeMicrophoneBackend(inputFormat: format)
+    let writer = BlockingCapturedWriter()
+    let observations = ObservationBox()
+    let callbackObserved = expectation(description: "callback observation")
+    let adapter = MicrophoneCaptureAdapter(
+      backend: backend,
+      writer: writer,
+      identity: .testFixture(generation: 7),
+      observationCadenceNanoseconds: 0
+    )
+    try adapter.start(
+      onFirstSample: { _ in },
+      onObservation: { observation in
+        observations.append(observation)
+        if observation.callbackCount == 1, observation.successfullyWrittenFrameCount == 0 {
+          callbackObserved.fulfill()
+        }
+      },
+      onFailure: { _ in }
+    )
+    let buffer = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 64))
+    buffer.frameLength = 64
+
+    backend.emit(buffer, hostTime: 42_000)
+
+    XCTAssertEqual(writer.writeEntered.wait(timeout: .now() + 1), .success)
+    wait(for: [callbackObserved], timeout: 1)
+    writer.allowWrite.signal()
+    _ = adapter.stop()
+  }
+
+  func testSuccessfulWriteProgressIsObservedWithoutPretendingRustProjectionOccurred() throws {
+    let format = try XCTUnwrap(
+      AVAudioFormat(
+        commonFormat: .pcmFormatFloat32,
+        sampleRate: 48_000,
+        channels: 1,
+        interleaved: false
+      )
+    )
+    let backend = FakeMicrophoneBackend(inputFormat: format)
+    let observations = ObservationBox()
+    let writeObserved = expectation(description: "write observation")
+    let adapter = MicrophoneCaptureAdapter(
+      backend: backend,
+      writer: ProgressCapturedWriter(),
+      identity: .testFixture(generation: 7),
+      observationCadenceNanoseconds: 0
+    )
+    try adapter.start(
+      onFirstSample: { _ in },
+      onObservation: { observation in
+        observations.append(observation)
+        if observation.successfullyWrittenFrameCount == 64 {
+          writeObserved.fulfill()
+        }
+      },
+      onFailure: { _ in }
+    )
+    let buffer = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 64))
+    buffer.frameLength = 64
+
+    backend.emit(buffer, hostTime: 42_000)
+
+    wait(for: [writeObserved], timeout: 1)
+    let latest = try XCTUnwrap(observations.snapshot().last)
+    XCTAssertEqual(latest.identity.writerGeneration, 7)
+    XCTAssertEqual(latest.callbackCount, 1)
+    XCTAssertEqual(latest.successfullyWrittenFrameCount, 64)
+    XCTAssertGreaterThan(latest.lastProgressMonotonicNanoseconds, 0)
+    _ = adapter.stop()
+  }
+
+  func testAuthoritativeRouteInterruptionAndRecoveryRemainDistinctFromWriterFailure() throws {
+    let format = try XCTUnwrap(
+      AVAudioFormat(
+        commonFormat: .pcmFormatFloat32,
+        sampleRate: 48_000,
+        channels: 1,
+        interleaved: false
+      )
+    )
+    let backend = FakeMicrophoneBackend(inputFormat: format)
+    let observations = ObservationBox()
+    let eventsObserved = expectation(description: "route events")
+    eventsObserved.expectedFulfillmentCount = 2
+    let adapter = MicrophoneCaptureAdapter(
+      backend: backend,
+      writer: ProgressCapturedWriter(),
+      identity: .testFixture(generation: 7),
+      observationCadenceNanoseconds: 0
+    )
+    try adapter.start(
+      onFirstSample: { _ in },
+      onObservation: { observation in
+        observations.append(observation)
+        if observation.event == .routeInterrupted || observation.event == .routeRecovered {
+          eventsObserved.fulfill()
+        }
+      },
+      onFailure: { _ in }
+    )
+
+    backend.emitRouteEvent(.interrupted)
+    backend.emitRouteEvent(.recovered)
+
+    wait(for: [eventsObserved], timeout: 1)
+    XCTAssertEqual(
+      observations.snapshot().map(\.event).filter { $0 != .progress },
+      [.routeInterrupted, .routeRecovered]
+    )
+    _ = adapter.stop()
+  }
+
+  func testWriterThrowEmitsWriterFailedObservationBeforeTheExistingFailurePath() throws {
+    let format = try XCTUnwrap(
+      AVAudioFormat(
+        commonFormat: .pcmFormatFloat32,
+        sampleRate: 48_000,
+        channels: 1,
+        interleaved: false
+      )
+    )
+    let backend = FakeMicrophoneBackend(inputFormat: format)
+    let observations = ObservationBox()
+    let writerFailureObserved = expectation(description: "writer failure observation")
+    let failureReported = expectation(description: "existing failure path")
+    let adapter = MicrophoneCaptureAdapter(
+      backend: backend,
+      writer: FailingCapturedWriter(),
+      identity: .testFixture(generation: 7),
+      observationCadenceNanoseconds: 0
+    )
+    try adapter.start(
+      onFirstSample: { _ in },
+      onObservation: { observation in
+        observations.append(observation)
+        if observation.event == .writerFailed {
+          writerFailureObserved.fulfill()
+        }
+      },
+      onFailure: { failure in
+        XCTAssertEqual(failure, .writerFailed)
+        failureReported.fulfill()
+      }
+    )
+    let buffer = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 64))
+    buffer.frameLength = 64
+
+    backend.emit(buffer, hostTime: 42_000)
+
+    wait(for: [writerFailureObserved, failureReported], timeout: 1)
+    let failureObservation = try XCTUnwrap(
+      observations.snapshot().first { $0.event == .writerFailed }
+    )
+    XCTAssertEqual(failureObservation.identity.writerGeneration, 7)
+    XCTAssertEqual(failureObservation.callbackCount, 1)
+    XCTAssertEqual(failureObservation.successfullyWrittenFrameCount, 0)
+    _ = adapter.stop()
+  }
+
+  func testStopDetachesRouteAndProgressObservationForTheOldGeneration() throws {
+    let format = try XCTUnwrap(
+      AVAudioFormat(
+        commonFormat: .pcmFormatFloat32,
+        sampleRate: 48_000,
+        channels: 1,
+        interleaved: false
+      )
+    )
+    let backend = FakeMicrophoneBackend(inputFormat: format)
+    let observations = ObservationBox()
+    let adapter = MicrophoneCaptureAdapter(
+      backend: backend,
+      writer: ProgressCapturedWriter(),
+      identity: .testFixture(generation: 7),
+      observationCadenceNanoseconds: 0
+    )
+    try adapter.start(
+      onFirstSample: { _ in },
+      onObservation: { observations.append($0) },
+      onFailure: { _ in }
+    )
+    _ = adapter.stop()
+    let countAfterStop = observations.snapshot().count
+    let buffer = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 64))
+    buffer.frameLength = 64
+
+    backend.emit(buffer, hostTime: 50_000)
+    backend.emitRouteEvent(.interrupted)
+    Thread.sleep(forTimeInterval: 0.05)
+
+    XCTAssertEqual(observations.snapshot().count, countAfterStop)
+  }
+
+  func testBlockingObservationConsumerNeverBlocksTheCaptureCallback() throws {
+    let format = try XCTUnwrap(
+      AVAudioFormat(
+        commonFormat: .pcmFormatFloat32,
+        sampleRate: 48_000,
+        channels: 1,
+        interleaved: false
+      )
+    )
+    let backend = FakeMicrophoneBackend(inputFormat: format)
+    let consumerEntered = DispatchSemaphore(value: 0)
+    let releaseConsumer = DispatchSemaphore(value: 0)
+    let callbackReturned = DispatchSemaphore(value: 0)
+    let adapter = MicrophoneCaptureAdapter(
+      backend: backend,
+      writer: ProgressCapturedWriter(),
+      identity: .testFixture(generation: 7),
+      observationCadenceNanoseconds: 0
+    )
+    try adapter.start(
+      onFirstSample: { _ in },
+      onObservation: { _ in
+        consumerEntered.signal()
+        releaseConsumer.wait()
+      },
+      onFailure: { _ in }
+    )
+    let buffer = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 64))
+    buffer.frameLength = 64
+    let bufferBox = PCMBufferBox(buffer)
+
+    DispatchQueue.global().async {
+      backend.emit(bufferBox.value, hostTime: 42_000)
+      callbackReturned.signal()
+    }
+
+    XCTAssertEqual(consumerEntered.wait(timeout: .now() + 1), .success)
+    XCTAssertEqual(callbackReturned.wait(timeout: .now() + 0.1), .success)
+    releaseConsumer.signal()
+    _ = adapter.stop()
+  }
+
+  func testTelemetryRecordContainsOnlyContentFreeBoundedFields() {
+    let observation = MicrophoneSourceHealthObservation(
+      identity: .testFixture(generation: 7),
+      sequence: 3,
+      event: .routeInterrupted,
+      callbackCount: 11,
+      successfullyWrittenFrameCount: 512,
+      lastProgressMonotonicNanoseconds: 42_000
+    )
+
+    let record = CaptureSourceHealthTelemetryRecord(
+      observation: observation,
+      rustSourceState: "active",
+      visibleState: "capturing"
+    )
+
+    XCTAssertEqual(
+      record.privacySafeMessage,
+      "source=microphone generation=7 sequence=3 event=route_interrupted callbacks=11 written_frames=512 last_progress_uptime_ns=42000 rust_state=active visible_state=capturing"
+    )
+    XCTAssertFalse(record.privacySafeMessage.contains("/"))
+    XCTAssertFalse(record.privacySafeMessage.localizedCaseInsensitiveContains("transcript"))
   }
 
   func testSystemAudioPresentationTimeMapsToNativeHostClockUnits() throws {

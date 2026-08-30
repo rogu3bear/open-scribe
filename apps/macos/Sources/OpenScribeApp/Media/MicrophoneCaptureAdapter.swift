@@ -12,6 +12,65 @@ enum MicrophoneCaptureAdapterError: Error, Equatable {
   case writerFailed
 }
 
+enum MicrophoneRouteEvent: String, Equatable, Sendable {
+  case interrupted
+  case recovered
+}
+
+typealias MicrophoneRouteEventHandler = @Sendable (MicrophoneRouteEvent) -> Void
+
+struct MicrophoneCaptureIdentity: Equatable, Sendable {
+  let sessionId: String
+  let trackId: String
+  let writerGeneration: UInt64
+
+  init(sessionId: String, trackId: String, writerGeneration: UInt64) {
+    self.sessionId = sessionId
+    self.trackId = trackId
+    self.writerGeneration = writerGeneration
+  }
+
+  init(authorization: NativeMediaOpenAuthorization) {
+    self.init(
+      sessionId: authorization.sessionId,
+      trackId: authorization.trackId,
+      writerGeneration: authorization.writerGeneration
+    )
+  }
+
+  static func testFixture(generation: UInt64) -> Self {
+    Self(
+      sessionId: "session-observation",
+      trackId: "track-microphone",
+      writerGeneration: generation
+    )
+  }
+
+  fileprivate static let unbound = Self(
+    sessionId: "unbound",
+    trackId: "unbound",
+    writerGeneration: 0
+  )
+}
+
+enum MicrophoneSourceHealthEvent: String, Equatable, Sendable {
+  case progress
+  case routeInterrupted = "route_interrupted"
+  case routeRecovered = "route_recovered"
+  case writerFailed = "writer_failed"
+}
+
+struct MicrophoneSourceHealthObservation: Equatable, Sendable {
+  let identity: MicrophoneCaptureIdentity
+  let sequence: UInt64
+  let event: MicrophoneSourceHealthEvent
+  let callbackCount: UInt64
+  let successfullyWrittenFrameCount: UInt64
+  let lastProgressMonotonicNanoseconds: UInt64
+}
+
+typealias MicrophoneObservationHandler = @Sendable (MicrophoneSourceHealthObservation) -> Void
+
 protocol MicrophoneCaptureBackend: AnyObject, Sendable {
   var inputFormat: AVAudioFormat { get }
   func installTap(
@@ -20,10 +79,14 @@ protocol MicrophoneCaptureBackend: AnyObject, Sendable {
   )
   func start() throws
   func stop()
+  func setRouteEventHandler(_ handler: MicrophoneRouteEventHandler?)
 }
 
 final class AVAudioEngineMicrophoneBackend: MicrophoneCaptureBackend, @unchecked Sendable {
   private let engine: AVAudioEngine
+  private let routeEventLock = NSLock()
+  private var routeEventHandler: MicrophoneRouteEventHandler?
+  private var configurationObserver: NSObjectProtocol?
 
   init(engine: AVAudioEngine = AVAudioEngine()) {
     self.engine = engine
@@ -53,6 +116,36 @@ final class AVAudioEngineMicrophoneBackend: MicrophoneCaptureBackend, @unchecked
   func stop() {
     engine.inputNode.removeTap(onBus: 0)
     engine.stop()
+  }
+
+  func setRouteEventHandler(_ handler: MicrophoneRouteEventHandler?) {
+    let priorObserver = routeEventLock.withLock { () -> NSObjectProtocol? in
+      let priorObserver = configurationObserver
+      configurationObserver = nil
+      routeEventHandler = handler
+      return priorObserver
+    }
+    if let priorObserver {
+      NotificationCenter.default.removeObserver(priorObserver)
+    }
+    guard handler != nil else { return }
+    let observer = NotificationCenter.default.addObserver(
+      forName: .AVAudioEngineConfigurationChange,
+      object: engine,
+      queue: nil
+    ) { [weak self] _ in
+      guard let self else { return }
+      let event: MicrophoneRouteEvent = self.engine.isRunning ? .recovered : .interrupted
+      let currentHandler = self.routeEventLock.withLock { self.routeEventHandler }
+      currentHandler?(event)
+    }
+    routeEventLock.withLock {
+      configurationObserver = observer
+    }
+  }
+
+  deinit {
+    setRouteEventHandler(nil)
   }
 }
 
@@ -148,6 +241,9 @@ final class MicrophoneCaptureAdapter: @unchecked Sendable {
 
   private let backend: MicrophoneCaptureBackend
   private let writer: CapturedAudioWriting
+  private let identity: MicrophoneCaptureIdentity
+  private let observationCadenceNanoseconds: UInt64
+  private let monotonicClock: @Sendable () -> UInt64
   private let lifecycleQueue = DispatchQueue(label: "app.open-scribe.microphone-lifecycle")
   private let writerQueue = DispatchQueue(
     label: "app.open-scribe.microphone-writer",
@@ -158,33 +254,62 @@ final class MicrophoneCaptureAdapter: @unchecked Sendable {
     qos: .userInitiated
   )
   private let stateLock = NSLock()
+  private let observationLock = NSLock()
   private var started = false
   private var hasStarted = false
   private var failureReported = false
   private var firstSampleReported = false
   private var backendActive = false
   private var lastWrittenSampleHostTime: UInt64?
+  private var observationHandler: MicrophoneObservationHandler?
+  private var observationActive = false
+  private var progressObservationPending = false
+  private var observationSequence: UInt64 = 0
+  private var callbackCount: UInt64 = 0
+  private var successfullyWrittenFrameCount: UInt64 = 0
+  private var lastProgressMonotonicNanoseconds: UInt64 = 0
 
-  init(backend: MicrophoneCaptureBackend, writer: CapturedAudioWriting) {
+  init(
+    backend: MicrophoneCaptureBackend,
+    writer: CapturedAudioWriting,
+    identity: MicrophoneCaptureIdentity = .unbound,
+    observationCadenceNanoseconds: UInt64 = 1_000_000_000,
+    monotonicClock: @escaping @Sendable () -> UInt64 = {
+      DispatchTime.now().uptimeNanoseconds
+    }
+  ) {
     self.backend = backend
     self.writer = writer
+    self.identity = identity
+    self.observationCadenceNanoseconds = observationCadenceNanoseconds
+    self.monotonicClock = monotonicClock
   }
 
   convenience init(writer: ManagedCAFWriter) {
-    self.init(backend: AVAudioEngineMicrophoneBackend(), writer: writer)
+    self.init(
+      backend: AVAudioEngineMicrophoneBackend(),
+      writer: writer,
+      identity: MicrophoneCaptureIdentity(authorization: writer.authorization)
+    )
   }
 
   func start(
     onFirstSample: @escaping FirstSampleHandler,
+    onObservation: @escaping MicrophoneObservationHandler = { _ in },
     onFailure: @escaping FailureHandler
   ) throws {
     try lifecycleQueue.sync {
-      try startIsolated(onFirstSample: onFirstSample, onFailure: onFailure)
+      try startIsolated(
+        onFirstSample: onFirstSample,
+        onObservation: onObservation,
+        onFailure: onFailure
+      )
     }
   }
 
   private func startIsolated(
     onFirstSample: @escaping FirstSampleHandler,
+    onObservation: @escaping MicrophoneObservationHandler,
     onFailure: @escaping FailureHandler
   ) throws {
     stateLock.lock()
@@ -213,8 +338,22 @@ final class MicrophoneCaptureAdapter: @unchecked Sendable {
     firstSampleReported = false
     stateLock.unlock()
 
+    observationLock.withLock {
+      observationHandler = onObservation
+      observationActive = true
+      progressObservationPending = false
+      observationSequence = 0
+      callbackCount = 0
+      successfullyWrittenFrameCount = 0
+      lastProgressMonotonicNanoseconds = 0
+    }
+    backend.setRouteEventHandler { [weak self] event in
+      self?.recordRouteEvent(event)
+    }
+
     backend.installTap(bufferSize: Self.bufferSize) { [weak self] buffer, time in
       guard let self else { return }
+      self.recordCallbackProgress()
       let copy: AVAudioPCMBuffer
       switch pool.copyWithoutWaiting(buffer) {
       case .copied(let captured):
@@ -250,6 +389,7 @@ final class MicrophoneCaptureAdapter: @unchecked Sendable {
         do {
           let writtenFrames = try self.writer.writeCapturedBuffer(copy)
           guard writtenFrames > 0 else { return }
+          self.recordWrittenProgress(UInt64(writtenFrames))
           self.stateLock.lock()
           self.lastWrittenSampleHostTime = hostTime
           let shouldReport = self.started && !self.firstSampleReported
@@ -265,6 +405,7 @@ final class MicrophoneCaptureAdapter: @unchecked Sendable {
             self.eventQueue.async { onFirstSample(receipt) }
           }
         } catch {
+          self.recordImmediateObservation(.writerFailed)
           self.reportFailure(.writerFailed, handler: onFailure)
         }
       }
@@ -293,6 +434,7 @@ final class MicrophoneCaptureAdapter: @unchecked Sendable {
       backend.stop()
       backendActive = false
     }
+    backend.setRouteEventHandler(nil)
     // A writer that passed its last state check before stop is allowed to
     // finish, but stop does not return until every previously queued write has
     // completed. No capture callback waits on this barrier.
@@ -300,7 +442,95 @@ final class MicrophoneCaptureAdapter: @unchecked Sendable {
     stateLock.lock()
     let lastHostTime = lastWrittenSampleHostTime
     stateLock.unlock()
+    observationLock.withLock {
+      observationActive = false
+      progressObservationPending = false
+      observationHandler = nil
+    }
     return lastHostTime
+  }
+
+  private func recordCallbackProgress() {
+    guard observationLock.try() else { return }
+    guard observationActive else {
+      observationLock.unlock()
+      return
+    }
+    callbackCount &+= 1
+    lastProgressMonotonicNanoseconds = monotonicClock()
+    let shouldSchedule = !progressObservationPending
+    if shouldSchedule {
+      progressObservationPending = true
+    }
+    observationLock.unlock()
+    if shouldSchedule {
+      scheduleProgressObservation()
+    }
+  }
+
+  private func recordWrittenProgress(_ frameCount: UInt64) {
+    let shouldSchedule = observationLock.withLock { () -> Bool in
+      guard observationActive else { return false }
+      successfullyWrittenFrameCount &+= frameCount
+      lastProgressMonotonicNanoseconds = monotonicClock()
+      guard !progressObservationPending else { return false }
+      progressObservationPending = true
+      return true
+    }
+    if shouldSchedule {
+      scheduleProgressObservation()
+    }
+  }
+
+  private func scheduleProgressObservation() {
+    if observationCadenceNanoseconds == 0 {
+      eventQueue.async { [weak self] in
+        self?.emitObservation(.progress)
+      }
+      return
+    }
+    eventQueue.asyncAfter(
+      deadline: .now() + .nanoseconds(Int(observationCadenceNanoseconds))
+    ) { [weak self] in
+      self?.emitObservation(.progress)
+    }
+  }
+
+  private func recordRouteEvent(_ event: MicrophoneRouteEvent) {
+    let observationEvent: MicrophoneSourceHealthEvent =
+      event == .interrupted ? .routeInterrupted : .routeRecovered
+    recordImmediateObservation(observationEvent)
+  }
+
+  private func recordImmediateObservation(_ event: MicrophoneSourceHealthEvent) {
+    eventQueue.async { [weak self] in
+      self?.emitObservation(event)
+    }
+  }
+
+  private func emitObservation(_ event: MicrophoneSourceHealthEvent) {
+    let delivery = observationLock.withLock {
+      () -> (MicrophoneObservationHandler, MicrophoneSourceHealthObservation)? in
+      guard observationActive, let observationHandler else { return nil }
+      if event == .progress {
+        progressObservationPending = false
+      }
+      observationSequence &+= 1
+      return (
+        observationHandler,
+        MicrophoneSourceHealthObservation(
+          identity: identity,
+          sequence: observationSequence,
+          event: event,
+          callbackCount: callbackCount,
+          successfullyWrittenFrameCount: successfullyWrittenFrameCount,
+          lastProgressMonotonicNanoseconds: lastProgressMonotonicNanoseconds
+        )
+      )
+    }
+    if let (handler, observation) = delivery {
+      handler(observation)
+    }
   }
 
   private func reportFailureFromCallback(
