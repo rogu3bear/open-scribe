@@ -4,18 +4,21 @@
 //! durable session/media-open preparation. It performs no capture, playback,
 //! model, provider, or network work and never starts Recording.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 pub use open_scribe_domain::{
     Command, Fixture, Presentation, SessionSnapshot, TimerBehavior, TransitionError, announcement,
 };
 pub use open_scribe_store::{
-    AuthorizeMediaOpenRequest, FirstSampleEvidence, FirstSampleReceipt, InterruptSessionRequest,
-    MediaOpenAuthorization, MediaOpenEvidence, MediaOpenReceipt, MediaSourceKind,
-    PrepareSessionRequest, PreparedSessionReceipt, RecordingStartedEvidence,
-    RecoveredPlayableSession, RequiredSourcePlanEvidence, RuntimeLibrarySnapshot,
-    RuntimeSessionSnapshot, RuntimeSourceSnapshot, SealSegmentReceipt, SealedSegmentEvidence,
-    SessionInterruptionEvidence, SessionInterruptionReason, SessionOrigin, StoreError,
+    AuthorizeMediaOpenRequest, FirstSampleEvidence, FirstSampleReceipt, ImportMediaRequest,
+    ImportedMediaEvidence, ImportedPlaybackLease, InterruptSessionRequest, MediaOpenAuthorization,
+    MediaOpenEvidence, MediaOpenReceipt, MediaSourceKind, PrepareSessionRequest,
+    PreparedSessionReceipt, RecordingStartedEvidence, RecoveredPlayableSession,
+    RequiredSourcePlanEvidence, RuntimeLibrarySnapshot, RuntimePlayableMediaAvailability,
+    RuntimePlayableMediaSnapshot, RuntimeSessionSnapshot, RuntimeSourceSnapshot,
+    SealSegmentReceipt, SealedSegmentEvidence, SessionInterruptionEvidence,
+    SessionInterruptionReason, SessionOrigin, SourceFailureEvidence, SourceFailureReason,
+    SourceFailureRequest, StoreError,
 };
 
 pub struct CoarseMediaOpenReceipt {
@@ -169,10 +172,39 @@ impl RecordingPreparationController {
             .interrupt_session(InterruptSessionRequest { session_id, reason })
     }
 
+    pub fn record_source_failure(
+        &mut self,
+        session_id: open_scribe_types::SessionId,
+        source_kind: MediaSourceKind,
+        reason: SourceFailureReason,
+    ) -> Result<SourceFailureEvidence, StoreError> {
+        self.store.record_source_failure(SourceFailureRequest {
+            session_id,
+            source_kind,
+            reason,
+        })
+    }
+
     pub fn recover_playable_sessions(
         &mut self,
     ) -> Result<Vec<RecoveredPlayableSession>, StoreError> {
         self.store.recover_playable_sessions()
+    }
+
+    pub fn import_recoverable_caf(
+        &mut self,
+        title: String,
+        source_path: PathBuf,
+    ) -> Result<ImportedMediaEvidence, StoreError> {
+        self.store
+            .import_recoverable_caf(ImportMediaRequest { title, source_path })
+    }
+
+    pub fn lease_imported_playback(
+        &self,
+        session_id: open_scribe_types::SessionId,
+    ) -> Result<ImportedPlaybackLease, StoreError> {
+        self.store.lease_imported_playback(&session_id)
     }
 
     pub fn runtime_library_snapshot(&self) -> Result<RuntimeLibrarySnapshot, StoreError> {
