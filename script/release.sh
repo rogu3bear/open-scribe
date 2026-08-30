@@ -20,18 +20,37 @@ git rev-parse --is-inside-work-tree >/dev/null 2>&1 || {
 	printf 'RELEASE_PREPARE_ERROR: repository identity is unavailable\n' >&2
 	exit 2
 }
+validator="$script_dir/validate_release_input.sh"
+[[ -f "$validator" && ! -L "$validator" && -x "$validator" ]] || {
+	printf 'RELEASE_PREPARE_ERROR: release-input validator is unavailable or not a regular executable\n' >&2
+	exit 2
+}
 
 source_sha="$(git rev-parse HEAD)"
 source_tree="$(git rev-parse 'HEAD^{tree}')"
 blockers=()
-temporary_runtime_manifest=""
+receipt_root="${OPEN_SCRIBE_RELEASE_RECEIPTS_DIR:-$repo_root/var/release-receipts/$source_sha}"
 
-cleanup() {
-	if [[ -n "$temporary_runtime_manifest" ]]; then
-		rm -f "$temporary_runtime_manifest"
+if [[ "$receipt_root" != /* ]]; then
+	printf 'RELEASE_PREPARE_ERROR: receipt root must be absolute\n' >&2
+	exit 2
+fi
+case "$receipt_root" in
+"$repo_root"/*)
+	receipt_relative="${receipt_root#"$repo_root"/}"
+	if ! git --no-optional-locks check-ignore -q -- "$receipt_relative"; then
+		printf 'RELEASE_PREPARE_ERROR: in-repository receipt root must be ignored\n' >&2
+		exit 2
 	fi
-}
-trap cleanup EXIT
+	;;
+esac
+if [[ -e "$receipt_root" ]]; then
+	if [[ ! -d "$receipt_root" || -L "$receipt_root" ]]; then
+		printf 'RELEASE_PREPARE_ERROR: receipt root is not a real directory\n' >&2
+		exit 2
+	fi
+	receipt_root="$(CDPATH='' cd -- "$receipt_root" && pwd -P)"
+fi
 
 hold() {
 	blockers+=("$1|$2")
@@ -50,7 +69,7 @@ validate_release_input() {
 		return
 	fi
 	set +e
-	validation_output="$("$script_dir/validate_release_input.sh" "$kind" "$path" 2>&1)"
+	validation_output="$("$validator" "$kind" "$path" 2>&1)"
 	validation_status=$?
 	set -e
 	case "$validation_status" in
@@ -60,74 +79,170 @@ validate_release_input() {
 	esac
 }
 
-if [[ -n "$(git status --porcelain=v1 --untracked-files=all)" ]]; then
+validate_adoption_receipt() {
+	local kind="$1"
+	local receipt_path="$receipt_root/${kind}-adoption.v1.json"
+	shift
+	if [[ ! -f "$receipt_path" || -L "$receipt_path" ]]; then
+		hold "${kind}_adoption" "$receipt_path is absent or not a regular file"
+		return
+	fi
+	if ! jq -e "$@" "$receipt_path" >/dev/null; then
+		hold "${kind}_adoption_invalid" \
+			"$receipt_path does not bind the current checked sources"
+	fi
+}
+
+if [[ -n "$(git --no-optional-locks status --porcelain=v1 --untracked-files=all)" ]]; then
 	hold source_tree_clean "tracked or untracked working-tree changes are present"
 fi
 
-workspace_version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n 1)"
-if [[ "$workspace_version" != "$candidate_version" ]]; then
-	hold version_allocation "workspace version $workspace_version does not equal candidate $candidate_version"
+if [[ ! -f Cargo.toml || -L Cargo.toml ]]; then
+	hold workspace_manifest "Cargo.toml is absent or not a regular file"
+else
+	workspace_version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n 1)"
+	if [[ "$workspace_version" != "$candidate_version" ]]; then
+		hold version_allocation "workspace version $workspace_version does not equal candidate $candidate_version"
+	fi
 fi
 
-[[ -x script/check_m0.sh ]] || hold milestone_0_complete_receipt "Milestone 0 gate is unavailable"
-for milestone in 1 2 3 4; do
-	gate="script/check_m${milestone}_complete.sh"
-	[[ -x "$gate" ]] || hold "milestone_${milestone}_complete_receipt" "$gate is absent"
+[[ -f script/check_m0.sh && ! -L script/check_m0.sh && -x script/check_m0.sh ]] ||
+	hold milestone_0_gate_unavailable "Milestone 0 gate is unavailable or not a regular executable"
+for milestone in 0 1 2 3 4; do
+	if [[ "$milestone" -gt 0 ]]; then
+		gate="script/check_m${milestone}_complete.sh"
+		[[ -f "$gate" && ! -L "$gate" && -x "$gate" ]] ||
+			hold "milestone_${milestone}_gate_unavailable" \
+				"$gate is unavailable or not a regular executable"
+	fi
+	hold "milestone_${milestone}_evidence_admission" \
+		"no authenticated canonical verifier currently admits M${milestone} completion for release preparation"
 done
+hold evidence_authentication_policy \
+	"external release receipts are advisory until an approved provenance and authentication policy is implemented"
 
-if rg -qi 'draft|before release|intended' docs/legal/privacy.md docs/legal/terms.md; then
-	hold legal_adoption "privacy and terms sources remain explicitly unadopted drafts"
+if [[ ! -f docs/legal/privacy.md || -L docs/legal/privacy.md ||
+	! -f docs/legal/terms.md || -L docs/legal/terms.md ]]; then
+	hold legal_sources "privacy and terms sources are absent or not regular files"
+else
+	privacy_sha="$(shasum -a 256 docs/legal/privacy.md | awk '{print $1}')"
+	terms_sha="$(shasum -a 256 docs/legal/terms.md | awk '{print $1}')"
+	if rg -qi 'draft|before release|intended' docs/legal/privacy.md docs/legal/terms.md; then
+		hold legal_sources_unadopted "privacy and terms sources remain explicit drafts"
+	fi
+	# shellcheck disable=SC2016 # jq variables are intentionally resolved by jq, not the shell.
+	validate_adoption_receipt legal \
+		--arg privacy_sha "$privacy_sha" \
+		--arg terms_sha "$terms_sha" \
+		'.schema == "open-scribe.legal-adoption/v1"
+         and .privacy_sha256 == $privacy_sha
+         and .terms_sha256 == $terms_sha
+         and (.approver | type == "string" and length > 0)
+         and (.adopted_at | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T"))'
 fi
-if rg -qi 'unresolved|does not yet have a verified private disclosure' SECURITY.md; then
-	hold private_security_channel "SECURITY.md records no verified private disclosure channel"
+if [[ ! -f SECURITY.md || -L SECURITY.md ]]; then
+	hold security_source "SECURITY.md is absent or not a regular file"
+else
+	security_sha="$(shasum -a 256 SECURITY.md | awk '{print $1}')"
+	# shellcheck disable=SC2016 # jq variables are intentionally resolved by jq, not the shell.
+	validate_adoption_receipt security \
+		--arg security_sha "$security_sha" \
+		'.schema == "open-scribe.security-adoption/v1"
+         and .security_policy_sha256 == $security_sha
+         and (.private_channel | type == "string" and length > 0)
+         and (.approver | type == "string" and length > 0)
+         and (.verified_at | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T"))'
 fi
 
-validate_release_input p0 docs/release/p0-ledger.v1.json \
+p0_input="$receipt_root/p0-ledger.v1.json"
+if [[ ! -f "$p0_input" || -L "$p0_input" ]]; then
+	p0_input="docs/release/p0-ledger.v1.json"
+fi
+validate_release_input p0 "$p0_input" \
 	p0_ledger p0_ledger_invalid p0_ledger_open
+if jq -e '.status == "closed"' "$p0_input" >/dev/null 2>&1 &&
+	! jq -e \
+		--arg version "$candidate_version" \
+		--arg source_sha "$source_sha" \
+		--arg source_tree "$source_tree" \
+		'.candidate.version == $version
+         and .candidate.source_sha == $source_sha
+         and .candidate.source_tree == $source_tree' "$p0_input" >/dev/null; then
+	hold p0_candidate_mismatch "closed P0 ledger does not bind the current candidate"
+fi
 validate_release_input capability docs/capabilities/manifest.v1.json \
 	capability_claim_manifest capability_claim_manifest_invalid capability_claim_manifest_open
-if [[ ! -x script/emit_runtime_capabilities.sh ]]; then
+if [[ ! -f script/emit_runtime_capabilities.sh || -L script/emit_runtime_capabilities.sh ||
+	! -x script/emit_runtime_capabilities.sh ]]; then
 	hold capability_runtime_registry \
 		"the Rust compile-time registry and emitted runtime-manifest equality gate are absent"
 else
-	temporary_runtime_manifest="$(mktemp "${TMPDIR:-/tmp}/open-scribe-runtime-capabilities.XXXXXX")"
-	if ! script/emit_runtime_capabilities.sh "$temporary_runtime_manifest"; then
-		hold capability_runtime_emission "runtime capability emission failed"
-	elif ! "$script_dir/validate_release_input.sh" capability "$temporary_runtime_manifest" >/dev/null 2>&1; then
-		hold capability_runtime_manifest_invalid "emitted runtime capability manifest is invalid"
+	runtime_registry="crates/open-scribe-core/runtime-capabilities.v1.json"
+	if ! rg -q 'include_str!.*runtime-capabilities\.v1\.json' \
+		crates/open-scribe-core/src/lib.rs; then
+		hold capability_runtime_linkage \
+			"Rust core no longer embeds the checked capability registry"
+	elif ! rg -q 'RUNTIME_CAPABILITY_MANIFEST_JSON' \
+		crates/open-scribe-core/src/bin/emit_runtime_capabilities.rs; then
+		hold capability_runtime_emitter_linkage \
+			"artifact emitter no longer writes the embedded capability registry"
+	elif ! "$validator" capability "$runtime_registry" >/dev/null 2>&1; then
+		hold capability_runtime_manifest_invalid "Rust compile-time capability registry is invalid"
 	elif ! diff -u \
 		<(jq -S . docs/capabilities/manifest.v1.json) \
-		<(jq -S . "$temporary_runtime_manifest") >/dev/null; then
+		<(jq -S . "$runtime_registry") >/dev/null; then
 		hold capability_runtime_mismatch \
 			"checked claims differ from the Rust-emitted runtime capability manifest"
 	fi
 fi
 validate_release_input supply-chain docs/supply-chain/components.v1.json \
 	supply_chain_manifest supply_chain_manifest_invalid supply_chain_manifest_open
-if [[ -f docs/supply-chain/components.v1.json ]]; then
+if [[ -f docs/supply-chain/components.v1.json && ! -L docs/supply-chain/components.v1.json &&
+	-f Cargo.lock && ! -L Cargo.lock ]]; then
 	actual_lock_sha="$(shasum -a 256 Cargo.lock | awk '{print $1}')"
 	manifest_lock_sha="$(jq -r '.cargo_lock_sha256 // ""' docs/supply-chain/components.v1.json)"
 	if [[ "$manifest_lock_sha" != "$actual_lock_sha" ]]; then
 		hold supply_chain_lock_mismatch "component inventory does not bind the current Cargo.lock"
 	fi
 	if ! diff -u \
-		<(cargo metadata --locked --format-version 1 | jq -r '.packages[] | "cargo:\(.name)@\(.version)"' | sort) \
+		<(awk '
+		  function emit() {
+		    if (name != "" && version != "") {
+		      source_identity = source
+		      if (source_identity == "") source_identity = "workspace:" name
+		      print "cargo:" name "@" version "|" source_identity
+		    }
+		  }
+		  /^\[\[package\]\]$/ { emit(); name = ""; version = ""; source = ""; next }
+		  /^name = "/ { name = $0; sub(/^name = "/, "", name); sub(/"$/, "", name); next }
+		  /^version = "/ {
+		    version = $0
+		    sub(/^version = "/, "", version)
+		    sub(/"$/, "", version)
+		    next
+		  }
+		  /^source = "/ { source = $0; sub(/^source = "/, "", source); sub(/"$/, "", source); next }
+		  END { emit() }
+		' Cargo.lock | sort) \
 		<(jq -r '.components[] | select(.id | startswith("cargo:")) | .id' docs/supply-chain/components.v1.json | sort) >/dev/null; then
 		hold supply_chain_graph_mismatch \
 			"component inventory does not equal the current locked Cargo package graph"
 	fi
+elif [[ ! -f Cargo.lock || -L Cargo.lock ]]; then
+	hold cargo_lock "Cargo.lock is absent or not a regular file"
 fi
 validate_release_input model docs/models/manifest.v1.json \
 	model_manifest model_manifest_invalid model_manifest_open
-[[ -f "docs/release/$candidate_version.md" ]] ||
-	hold release_notes "docs/release/$candidate_version.md is absent"
+if [[ ! -f "docs/release/$candidate_version.md" || -L "docs/release/$candidate_version.md" ]]; then
+	hold release_notes "docs/release/$candidate_version.md is absent or not a regular file"
+fi
 
-if [[ ! -x script/verify_bundle.sh ]]; then
+if [[ ! -f script/verify_bundle.sh || -L script/verify_bundle.sh || ! -x script/verify_bundle.sh ]]; then
 	hold artifact_verification "script/verify_bundle.sh is missing or non-executable"
 elif rg -q 'not_implemented\.sh' script/verify_bundle.sh; then
 	hold artifact_verification "script/verify_bundle.sh remains a not-implemented stub"
 fi
-if [[ ! -f docs/release/signing-policy.v1.json ]]; then
+if [[ ! -f docs/release/signing-policy.v1.json || -L docs/release/signing-policy.v1.json ]]; then
 	hold signing_policy \
 		"approved Developer ID team, certificate hash, and Sparkle public key are not configured"
 elif ! jq -e \
@@ -139,9 +254,26 @@ elif ! jq -e \
 	docs/release/signing-policy.v1.json >/dev/null; then
 	hold signing_policy_invalid "signing policy is malformed"
 fi
-if [[ -f THIRD_PARTY_NOTICES.md ]] && rg -qi 'not a release inventory|placeholder|future' THIRD_PARTY_NOTICES.md; then
-	hold third_party_notices "THIRD_PARTY_NOTICES.md is not an admitted release inventory"
+if [[ ! -f THIRD_PARTY_NOTICES.md || -L THIRD_PARTY_NOTICES.md ]]; then
+	hold third_party_notices "THIRD_PARTY_NOTICES.md is absent or not a regular file"
+else
+	notices_sha="$(shasum -a 256 THIRD_PARTY_NOTICES.md | awk '{print $1}')"
+	supply_chain_sha="$(shasum -a 256 docs/supply-chain/components.v1.json | awk '{print $1}')"
+	# shellcheck disable=SC2016 # jq variables are intentionally resolved by jq, not the shell.
+	validate_adoption_receipt third_party \
+		--arg notices_sha "$notices_sha" \
+		--arg supply_chain_sha "$supply_chain_sha" \
+		'.schema == "open-scribe.third-party-adoption/v1"
+         and .notices_sha256 == $notices_sha
+         and .supply_chain_sha256 == $supply_chain_sha
+         and (.reviewer | type == "string" and length > 0)
+         and (.reviewed_at | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T"))'
 fi
+
+hold release_transaction_plan \
+	"the semantic non-Cargo inventory, SPDX, deterministic notices, and unsigned content-addressed plan verifier is not implemented"
+hold non_secret_qualification \
+	"the canonical exact-candidate non-secret qualification verifier is not implemented"
 
 if ((${#blockers[@]} > 0)); then
 	printf '%s\n' \
@@ -149,6 +281,7 @@ if ((${#blockers[@]} > 0)); then
 		"candidate_version=$candidate_version" \
 		"source_sha=$source_sha" \
 		"source_tree=$source_tree" \
+		"receipt_root=$receipt_root" \
 		'stage=local_read_only_preparation'
 	for blocker in "${blockers[@]}"; do
 		printf 'blocker=%s\n' "$blocker"
@@ -165,6 +298,7 @@ printf '%s\n' \
 	"candidate_version=$candidate_version" \
 	"source_sha=$source_sha" \
 	"source_tree=$source_tree" \
+	"receipt_root=$receipt_root" \
 	'proof=all_local_non_secret_release_inputs_present' \
 	'excludes=signing,notarization,packaging,publication,deployment,canonical_readback,public_release' \
 	'next=run every exact-tree non-secret milestone and release-input verifier'

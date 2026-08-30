@@ -16,6 +16,11 @@ open-scribe-memory = { path = "../open-scribe-memory" }
 open-scribe-models = { path = "../open-scribe-models" }
 open-scribe-store = { path = "../open-scribe-store" }
 open-scribe-types = { path = "../open-scribe-types" }
+serde_json = "1"
 
 [lib]
 path = "src/lib.rs"
+
+[[bin]]
+name = "emit-runtime-capabilities"
+path = "src/bin/emit_runtime_capabilities.rs"

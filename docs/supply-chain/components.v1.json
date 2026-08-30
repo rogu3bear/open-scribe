@@ -1,9 +1,9 @@
 {
-  "cargo_lock_sha256": "03066ed176fb2a47c2aef016d667d2f2bda575daa61a1d6123589ca121714b92",
+  "cargo_lock_sha256": "797db3943da7a57ad9dac302d9a1bfb3a53ef69ed0287b48489f82b6e9caeb09",
   "components": [
     {
       "binary_path": null,
-      "id": "cargo:aho-corasick@1.1.5",
+      "id": "cargo:aho-corasick@1.1.5|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "Unlicense OR MIT",
@@ -14,7 +14,18 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:any_spawner@0.3.0",
+      "id": "cargo:anstyle@1.0.14|registry+https://github.com/rust-lang/crates.io-index",
+      "included_targets": [],
+      "kind": "rust",
+      "license": "UNKNOWN",
+      "obligation": "Pending review",
+      "review_state": "Pending",
+      "sha256": null,
+      "source": "registry+https://github.com/rust-lang/crates.io-index"
+    },
+    {
+      "binary_path": null,
+      "id": "cargo:any_spawner@0.3.0|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT",
@@ -25,7 +36,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:anyhow@1.0.104",
+      "id": "cargo:anyhow@1.0.104|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT OR Apache-2.0",
@@ -36,7 +47,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:askama@0.16.0",
+      "id": "cargo:askama@0.16.0|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT OR Apache-2.0",
@@ -47,7 +58,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:askama_derive@0.16.0",
+      "id": "cargo:askama_derive@0.16.0|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT OR Apache-2.0",
@@ -58,7 +69,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:askama_macros@0.16.0",
+      "id": "cargo:askama_macros@0.16.0|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT OR Apache-2.0",
@@ -69,7 +80,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:askama_parser@0.16.0",
+      "id": "cargo:askama_parser@0.16.0|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT OR Apache-2.0",
@@ -80,7 +91,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:async-lock@3.4.2",
+      "id": "cargo:async-lock@3.4.2|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "Apache-2.0 OR MIT",
@@ -91,7 +102,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:async-once-cell@0.5.4",
+      "id": "cargo:async-once-cell@0.5.4|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT OR Apache-2.0",
@@ -102,7 +113,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:async-trait@0.1.92",
+      "id": "cargo:async-trait@0.1.92|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT OR Apache-2.0",
@@ -113,7 +124,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:attribute-derive-macro@0.10.5",
+      "id": "cargo:attribute-derive-macro@0.10.5|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT",
@@ -124,7 +135,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:attribute-derive@0.10.5",
+      "id": "cargo:attribute-derive@0.10.5|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT OR Apache-2.0",
@@ -135,7 +146,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:autocfg@1.5.1",
+      "id": "cargo:autocfg@1.5.1|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "Apache-2.0 OR MIT",
@@ -146,7 +157,29 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:base16@0.2.1",
+      "id": "cargo:axum-core@0.5.6|registry+https://github.com/rust-lang/crates.io-index",
+      "included_targets": [],
+      "kind": "rust",
+      "license": "UNKNOWN",
+      "obligation": "Pending review",
+      "review_state": "Pending",
+      "sha256": null,
+      "source": "registry+https://github.com/rust-lang/crates.io-index"
+    },
+    {
+      "binary_path": null,
+      "id": "cargo:axum@0.8.9|registry+https://github.com/rust-lang/crates.io-index",
+      "included_targets": [],
+      "kind": "rust",
+      "license": "UNKNOWN",
+      "obligation": "Pending review",
+      "review_state": "Pending",
+      "sha256": null,
+      "source": "registry+https://github.com/rust-lang/crates.io-index"
+    },
+    {
+      "binary_path": null,
+      "id": "cargo:base16@0.2.1|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "CC0-1.0",
@@ -157,7 +190,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:base64@0.22.1",
+      "id": "cargo:base64@0.22.1|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT OR Apache-2.0",
@@ -168,7 +201,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:basic-toml@0.1.10",
+      "id": "cargo:basic-toml@0.1.10|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT OR Apache-2.0",
@@ -179,7 +212,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:bitflags@2.13.1",
+      "id": "cargo:bitflags@2.13.1|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT OR Apache-2.0",
@@ -190,7 +223,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:block-buffer@0.10.4",
+      "id": "cargo:block-buffer@0.10.4|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT OR Apache-2.0",
@@ -201,7 +234,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:bumpalo@3.20.3",
+      "id": "cargo:bumpalo@3.20.3|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT OR Apache-2.0",
@@ -212,7 +245,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:bytes@1.12.1",
+      "id": "cargo:bytes@1.12.1|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT",
@@ -223,7 +256,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:camino@1.2.5",
+      "id": "cargo:camino@1.2.5|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT OR Apache-2.0",
@@ -234,7 +267,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:cargo-platform@0.3.3",
+      "id": "cargo:cargo-platform@0.3.3|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT OR Apache-2.0",
@@ -245,7 +278,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:cargo_metadata@0.23.1",
+      "id": "cargo:cargo_metadata@0.23.1|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT",
@@ -256,7 +289,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:cc@1.4.3",
+      "id": "cargo:cc@1.4.3|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT OR Apache-2.0",
@@ -267,7 +300,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:cfg-if@1.0.4",
+      "id": "cargo:cfg-if@1.0.4|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT OR Apache-2.0",
@@ -278,7 +311,62 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:codee@0.3.5",
+      "id": "cargo:chrono@0.4.45|registry+https://github.com/rust-lang/crates.io-index",
+      "included_targets": [],
+      "kind": "rust",
+      "license": "UNKNOWN",
+      "obligation": "Pending review",
+      "review_state": "Pending",
+      "sha256": null,
+      "source": "registry+https://github.com/rust-lang/crates.io-index"
+    },
+    {
+      "binary_path": null,
+      "id": "cargo:clap@4.6.6|registry+https://github.com/rust-lang/crates.io-index",
+      "included_targets": [],
+      "kind": "rust",
+      "license": "UNKNOWN",
+      "obligation": "Pending review",
+      "review_state": "Pending",
+      "sha256": null,
+      "source": "registry+https://github.com/rust-lang/crates.io-index"
+    },
+    {
+      "binary_path": null,
+      "id": "cargo:clap_builder@4.6.6|registry+https://github.com/rust-lang/crates.io-index",
+      "included_targets": [],
+      "kind": "rust",
+      "license": "UNKNOWN",
+      "obligation": "Pending review",
+      "review_state": "Pending",
+      "sha256": null,
+      "source": "registry+https://github.com/rust-lang/crates.io-index"
+    },
+    {
+      "binary_path": null,
+      "id": "cargo:clap_derive@4.6.4|registry+https://github.com/rust-lang/crates.io-index",
+      "included_targets": [],
+      "kind": "rust",
+      "license": "UNKNOWN",
+      "obligation": "Pending review",
+      "review_state": "Pending",
+      "sha256": null,
+      "source": "registry+https://github.com/rust-lang/crates.io-index"
+    },
+    {
+      "binary_path": null,
+      "id": "cargo:clap_lex@1.1.0|registry+https://github.com/rust-lang/crates.io-index",
+      "included_targets": [],
+      "kind": "rust",
+      "license": "UNKNOWN",
+      "obligation": "Pending review",
+      "review_state": "Pending",
+      "sha256": null,
+      "source": "registry+https://github.com/rust-lang/crates.io-index"
+    },
+    {
+      "binary_path": null,
+      "id": "cargo:codee@0.3.5|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT OR Apache-2.0",
@@ -289,7 +377,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:collection_literals@1.0.3",
+      "id": "cargo:collection_literals@1.0.3|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT",
@@ -300,7 +388,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:config@0.15.25",
+      "id": "cargo:config@0.15.25|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT OR Apache-2.0",
@@ -311,7 +399,18 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:const-str@1.1.0",
+      "id": "cargo:console_error_panic_hook@0.1.7|registry+https://github.com/rust-lang/crates.io-index",
+      "included_targets": [],
+      "kind": "rust",
+      "license": "UNKNOWN",
+      "obligation": "Pending review",
+      "review_state": "Pending",
+      "sha256": null,
+      "source": "registry+https://github.com/rust-lang/crates.io-index"
+    },
+    {
+      "binary_path": null,
+      "id": "cargo:const-str@1.1.0|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT",
@@ -322,7 +421,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:const_format@0.2.36",
+      "id": "cargo:const_format@0.2.36|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "Zlib",
@@ -333,7 +432,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:const_format_proc_macros@0.2.34",
+      "id": "cargo:const_format_proc_macros@0.2.34|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "Zlib",
@@ -344,7 +443,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:const_str_slice_concat@0.1.0",
+      "id": "cargo:const_str_slice_concat@0.1.0|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT",
@@ -355,7 +454,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:convert_case@0.11.0",
+      "id": "cargo:convert_case@0.11.0|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT",
@@ -366,7 +465,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:convert_case@0.6.0",
+      "id": "cargo:convert_case@0.6.0|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT",
@@ -377,7 +476,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:convert_case_extras@0.2.0",
+      "id": "cargo:convert_case_extras@0.2.0|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT",
@@ -388,7 +487,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:cpufeatures@0.2.17",
+      "id": "cargo:cpufeatures@0.2.17|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT OR Apache-2.0",
@@ -399,7 +498,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:crypto-common@0.1.7",
+      "id": "cargo:crypto-common@0.1.7|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT OR Apache-2.0",
@@ -410,7 +509,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:derive-where@1.6.1",
+      "id": "cargo:derive-where@1.6.1|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT OR Apache-2.0",
@@ -421,7 +520,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:digest@0.10.7",
+      "id": "cargo:digest@0.10.7|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT OR Apache-2.0",
@@ -432,7 +531,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:displaydoc@0.2.7",
+      "id": "cargo:displaydoc@0.2.7|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT OR Apache-2.0",
@@ -443,7 +542,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:drain_filter_polyfill@0.1.3",
+      "id": "cargo:drain_filter_polyfill@0.1.3|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT OR Apache-2.0",
@@ -454,7 +553,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:either@1.18.0",
+      "id": "cargo:either@1.18.0|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT OR Apache-2.0",
@@ -465,7 +564,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:either_of@0.1.9",
+      "id": "cargo:either_of@0.1.9|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT",
@@ -476,7 +575,18 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:equivalent@1.0.2",
+      "id": "cargo:encoding_rs@0.8.35|registry+https://github.com/rust-lang/crates.io-index",
+      "included_targets": [],
+      "kind": "rust",
+      "license": "UNKNOWN",
+      "obligation": "Pending review",
+      "review_state": "Pending",
+      "sha256": null,
+      "source": "registry+https://github.com/rust-lang/crates.io-index"
+    },
+    {
+      "binary_path": null,
+      "id": "cargo:equivalent@1.0.2|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "Apache-2.0 OR MIT",
@@ -487,7 +597,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:erased@0.1.2",
+      "id": "cargo:erased@0.1.2|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT",
@@ -498,7 +608,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:errno@0.3.14",
+      "id": "cargo:errno@0.3.14|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT OR Apache-2.0",
@@ -509,7 +619,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:event-listener-strategy@0.5.4",
+      "id": "cargo:event-listener-strategy@0.5.4|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "Apache-2.0 OR MIT",
@@ -520,7 +630,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:event-listener@5.4.2",
+      "id": "cargo:event-listener@5.4.2|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "Apache-2.0 OR MIT",
@@ -531,7 +641,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:fallible-iterator@0.3.0",
+      "id": "cargo:fallible-iterator@0.3.0|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT/Apache-2.0",
@@ -542,7 +652,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:fallible-streaming-iterator@0.1.9",
+      "id": "cargo:fallible-streaming-iterator@0.1.9|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT/Apache-2.0",
@@ -553,7 +663,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:fastrand@2.5.0",
+      "id": "cargo:fastrand@2.5.0|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "Apache-2.0 OR MIT",
@@ -564,7 +674,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:find-msvc-tools@0.1.11",
+      "id": "cargo:find-msvc-tools@0.1.11|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT OR Apache-2.0",
@@ -575,7 +685,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:foldhash@0.2.0",
+      "id": "cargo:foldhash@0.2.0|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "Zlib",
@@ -586,7 +696,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:form_urlencoded@1.2.2",
+      "id": "cargo:form_urlencoded@1.2.2|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT OR Apache-2.0",
@@ -597,7 +707,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:fs-err@3.3.1",
+      "id": "cargo:fs-err@3.3.1|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT OR Apache-2.0",
@@ -608,7 +718,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:futures-channel@0.3.34",
+      "id": "cargo:futures-channel@0.3.34|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT OR Apache-2.0",
@@ -619,7 +729,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:futures-core@0.3.34",
+      "id": "cargo:futures-core@0.3.34|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT OR Apache-2.0",
@@ -630,7 +740,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:futures-executor@0.3.34",
+      "id": "cargo:futures-executor@0.3.34|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT OR Apache-2.0",
@@ -641,7 +751,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:futures-io@0.3.34",
+      "id": "cargo:futures-io@0.3.34|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT OR Apache-2.0",
@@ -652,7 +762,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:futures-macro@0.3.34",
+      "id": "cargo:futures-macro@0.3.34|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT OR Apache-2.0",
@@ -663,7 +773,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:futures-sink@0.3.34",
+      "id": "cargo:futures-sink@0.3.34|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT OR Apache-2.0",
@@ -674,7 +784,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:futures-task@0.3.34",
+      "id": "cargo:futures-task@0.3.34|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT OR Apache-2.0",
@@ -685,7 +795,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:futures-util@0.3.34",
+      "id": "cargo:futures-util@0.3.34|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT OR Apache-2.0",
@@ -696,7 +806,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:futures@0.3.34",
+      "id": "cargo:futures@0.3.34|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT OR Apache-2.0",
@@ -707,7 +817,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:generic-array@0.14.7",
+      "id": "cargo:generic-array@0.14.7|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT",
@@ -718,7 +828,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:getrandom@0.3.4",
+      "id": "cargo:getrandom@0.3.4|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT OR Apache-2.0",
@@ -729,7 +839,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:getrandom@0.4.3",
+      "id": "cargo:getrandom@0.4.3|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT OR Apache-2.0",
@@ -740,7 +850,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:glob@0.3.4",
+      "id": "cargo:glob@0.3.4|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT OR Apache-2.0",
@@ -751,7 +861,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:gloo-net@0.6.0",
+      "id": "cargo:gloo-net@0.6.0|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT OR Apache-2.0",
@@ -762,7 +872,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:gloo-utils@0.2.0",
+      "id": "cargo:gloo-utils@0.2.0|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT OR Apache-2.0",
@@ -773,7 +883,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:goblin@0.8.2",
+      "id": "cargo:goblin@0.8.2|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT",
@@ -784,7 +894,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:guardian@1.3.0",
+      "id": "cargo:guardian@1.3.0|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT OR Apache-2.0",
@@ -795,7 +905,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:hashbrown@0.16.1",
+      "id": "cargo:hashbrown@0.16.1|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT OR Apache-2.0",
@@ -806,7 +916,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:hashbrown@0.17.1",
+      "id": "cargo:hashbrown@0.17.1|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT OR Apache-2.0",
@@ -817,7 +927,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:hashlink@0.12.1",
+      "id": "cargo:hashlink@0.12.1|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT OR Apache-2.0",
@@ -828,7 +938,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:heck@0.5.0",
+      "id": "cargo:heck@0.5.0|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT OR Apache-2.0",
@@ -839,7 +949,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:html-escape@0.2.15",
+      "id": "cargo:html-escape@0.2.15|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT",
@@ -850,7 +960,29 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:http@1.5.0",
+      "id": "cargo:http-body-util@0.1.5|registry+https://github.com/rust-lang/crates.io-index",
+      "included_targets": [],
+      "kind": "rust",
+      "license": "UNKNOWN",
+      "obligation": "Pending review",
+      "review_state": "Pending",
+      "sha256": null,
+      "source": "registry+https://github.com/rust-lang/crates.io-index"
+    },
+    {
+      "binary_path": null,
+      "id": "cargo:http-body@1.1.0|registry+https://github.com/rust-lang/crates.io-index",
+      "included_targets": [],
+      "kind": "rust",
+      "license": "UNKNOWN",
+      "obligation": "Pending review",
+      "review_state": "Pending",
+      "sha256": null,
+      "source": "registry+https://github.com/rust-lang/crates.io-index"
+    },
+    {
+      "binary_path": null,
+      "id": "cargo:http@1.5.0|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT OR Apache-2.0",
@@ -861,7 +993,18 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:hydration_context@0.3.1",
+      "id": "cargo:httparse@1.10.1|registry+https://github.com/rust-lang/crates.io-index",
+      "included_targets": [],
+      "kind": "rust",
+      "license": "UNKNOWN",
+      "obligation": "Pending review",
+      "review_state": "Pending",
+      "sha256": null,
+      "source": "registry+https://github.com/rust-lang/crates.io-index"
+    },
+    {
+      "binary_path": null,
+      "id": "cargo:hydration_context@0.3.1|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT",
@@ -872,7 +1015,18 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:icu_collections@2.3.0",
+      "id": "cargo:hyper@1.11.0|registry+https://github.com/rust-lang/crates.io-index",
+      "included_targets": [],
+      "kind": "rust",
+      "license": "UNKNOWN",
+      "obligation": "Pending review",
+      "review_state": "Pending",
+      "sha256": null,
+      "source": "registry+https://github.com/rust-lang/crates.io-index"
+    },
+    {
+      "binary_path": null,
+      "id": "cargo:icu_collections@2.3.0|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "Unicode-3.0",
@@ -883,7 +1037,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:icu_locale_core@2.3.0",
+      "id": "cargo:icu_locale_core@2.3.0|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "Unicode-3.0",
@@ -894,7 +1048,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:icu_normalizer@2.3.0",
+      "id": "cargo:icu_normalizer@2.3.0|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "Unicode-3.0",
@@ -905,7 +1059,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:icu_normalizer_data@2.3.0",
+      "id": "cargo:icu_normalizer_data@2.3.0|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "Unicode-3.0",
@@ -916,7 +1070,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:icu_properties@2.3.0",
+      "id": "cargo:icu_properties@2.3.0|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "Unicode-3.0",
@@ -927,7 +1081,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:icu_properties_data@2.3.0",
+      "id": "cargo:icu_properties_data@2.3.0|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "Unicode-3.0",
@@ -938,7 +1092,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:icu_provider@2.3.0",
+      "id": "cargo:icu_provider@2.3.0|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "Unicode-3.0",
@@ -949,7 +1103,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:idna@1.1.0",
+      "id": "cargo:idna@1.1.0|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT OR Apache-2.0",
@@ -960,7 +1114,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:idna_adapter@1.2.2",
+      "id": "cargo:idna_adapter@1.2.2|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "Apache-2.0 OR MIT",
@@ -971,7 +1125,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:indexmap@2.14.0",
+      "id": "cargo:indexmap@2.14.0|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "Apache-2.0 OR MIT",
@@ -982,7 +1136,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:interpolator@0.5.0",
+      "id": "cargo:interpolator@0.5.0|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT OR Apache-2.0",
@@ -993,7 +1147,18 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:itertools@0.14.0",
+      "id": "cargo:inventory@0.3.24|registry+https://github.com/rust-lang/crates.io-index",
+      "included_targets": [],
+      "kind": "rust",
+      "license": "UNKNOWN",
+      "obligation": "Pending review",
+      "review_state": "Pending",
+      "sha256": null,
+      "source": "registry+https://github.com/rust-lang/crates.io-index"
+    },
+    {
+      "binary_path": null,
+      "id": "cargo:itertools@0.14.0|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT OR Apache-2.0",
@@ -1004,7 +1169,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:itoa@1.0.18",
+      "id": "cargo:itoa@1.0.18|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT OR Apache-2.0",
@@ -1015,7 +1180,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:js-sys@0.3.98",
+      "id": "cargo:js-sys@0.3.98|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT OR Apache-2.0",
@@ -1026,7 +1191,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:konst@0.2.20",
+      "id": "cargo:konst@0.2.20|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "Zlib",
@@ -1037,7 +1202,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:konst_macro_rules@0.2.19",
+      "id": "cargo:konst_macro_rules@0.2.19|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "Zlib",
@@ -1048,7 +1213,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:leptos@0.8.20",
+      "id": "cargo:leptos@0.8.20|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT",
@@ -1059,7 +1224,18 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:leptos_config@0.8.10",
+      "id": "cargo:leptos_axum@0.8.10|registry+https://github.com/rust-lang/crates.io-index",
+      "included_targets": [],
+      "kind": "rust",
+      "license": "UNKNOWN",
+      "obligation": "Pending review",
+      "review_state": "Pending",
+      "sha256": null,
+      "source": "registry+https://github.com/rust-lang/crates.io-index"
+    },
+    {
+      "binary_path": null,
+      "id": "cargo:leptos_config@0.8.10|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT",
@@ -1070,7 +1246,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:leptos_dom@0.8.8",
+      "id": "cargo:leptos_dom@0.8.8|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT",
@@ -1081,7 +1257,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:leptos_hot_reload@0.8.6",
+      "id": "cargo:leptos_hot_reload@0.8.6|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT",
@@ -1092,7 +1268,18 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:leptos_macro@0.8.17",
+      "id": "cargo:leptos_integration_utils@0.8.8|registry+https://github.com/rust-lang/crates.io-index",
+      "included_targets": [],
+      "kind": "rust",
+      "license": "UNKNOWN",
+      "obligation": "Pending review",
+      "review_state": "Pending",
+      "sha256": null,
+      "source": "registry+https://github.com/rust-lang/crates.io-index"
+    },
+    {
+      "binary_path": null,
+      "id": "cargo:leptos_macro@0.8.17|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT",
@@ -1103,7 +1290,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:leptos_meta@0.8.6",
+      "id": "cargo:leptos_meta@0.8.6|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT",
@@ -1114,7 +1301,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:leptos_router@0.8.15",
+      "id": "cargo:leptos_router@0.8.15|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT",
@@ -1125,7 +1312,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:leptos_router_macro@0.8.6",
+      "id": "cargo:leptos_router_macro@0.8.6|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT",
@@ -1136,7 +1323,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:leptos_server@0.8.7",
+      "id": "cargo:leptos_server@0.8.7|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT",
@@ -1147,7 +1334,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:libc@0.2.189",
+      "id": "cargo:libc@0.2.189|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT OR Apache-2.0",
@@ -1158,7 +1345,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:libsqlite3-sys@0.38.2",
+      "id": "cargo:libsqlite3-sys@0.38.2|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT",
@@ -1169,7 +1356,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:linux-raw-sys@0.12.1",
+      "id": "cargo:linux-raw-sys@0.12.1|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT",
@@ -1180,7 +1367,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:litemap@0.8.3",
+      "id": "cargo:litemap@0.8.3|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "Unicode-3.0",
@@ -1191,7 +1378,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:log@0.4.33",
+      "id": "cargo:log@0.4.33|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT OR Apache-2.0",
@@ -1202,7 +1389,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:manyhow-macros@0.11.4",
+      "id": "cargo:manyhow-macros@0.11.4|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT OR Apache-2.0",
@@ -1213,7 +1400,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:manyhow@0.11.4",
+      "id": "cargo:manyhow@0.11.4|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT OR Apache-2.0",
@@ -1224,7 +1411,29 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:memchr@2.8.3",
+      "id": "cargo:matchit@0.7.3|registry+https://github.com/rust-lang/crates.io-index",
+      "included_targets": [],
+      "kind": "rust",
+      "license": "UNKNOWN",
+      "obligation": "Pending review",
+      "review_state": "Pending",
+      "sha256": null,
+      "source": "registry+https://github.com/rust-lang/crates.io-index"
+    },
+    {
+      "binary_path": null,
+      "id": "cargo:matchit@0.8.4|registry+https://github.com/rust-lang/crates.io-index",
+      "included_targets": [],
+      "kind": "rust",
+      "license": "UNKNOWN",
+      "obligation": "Pending review",
+      "review_state": "Pending",
+      "sha256": null,
+      "source": "registry+https://github.com/rust-lang/crates.io-index"
+    },
+    {
+      "binary_path": null,
+      "id": "cargo:memchr@2.8.3|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "Unlicense OR MIT",
@@ -1235,7 +1444,18 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:minimal-lexical@0.2.1",
+      "id": "cargo:mime@0.3.17|registry+https://github.com/rust-lang/crates.io-index",
+      "included_targets": [],
+      "kind": "rust",
+      "license": "UNKNOWN",
+      "obligation": "Pending review",
+      "review_state": "Pending",
+      "sha256": null,
+      "source": "registry+https://github.com/rust-lang/crates.io-index"
+    },
+    {
+      "binary_path": null,
+      "id": "cargo:minimal-lexical@0.2.1|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT/Apache-2.0",
@@ -1246,7 +1466,18 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:next_tuple@0.1.0",
+      "id": "cargo:multer@3.1.0|registry+https://github.com/rust-lang/crates.io-index",
+      "included_targets": [],
+      "kind": "rust",
+      "license": "UNKNOWN",
+      "obligation": "Pending review",
+      "review_state": "Pending",
+      "sha256": null,
+      "source": "registry+https://github.com/rust-lang/crates.io-index"
+    },
+    {
+      "binary_path": null,
+      "id": "cargo:next_tuple@0.1.0|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT",
@@ -1257,7 +1488,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:nom@7.1.3",
+      "id": "cargo:nom@7.1.3|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT",
@@ -1268,7 +1499,18 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:oco_ref@0.2.1",
+      "id": "cargo:num-traits@0.2.19|registry+https://github.com/rust-lang/crates.io-index",
+      "included_targets": [],
+      "kind": "rust",
+      "license": "UNKNOWN",
+      "obligation": "Pending review",
+      "review_state": "Pending",
+      "sha256": null,
+      "source": "registry+https://github.com/rust-lang/crates.io-index"
+    },
+    {
+      "binary_path": null,
+      "id": "cargo:oco_ref@0.2.1|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT",
@@ -1279,7 +1521,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:once_cell@1.21.4",
+      "id": "cargo:once_cell@1.21.4|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT OR Apache-2.0",
@@ -1290,7 +1532,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:open-scribe-asr@0.0.0",
+      "id": "cargo:open-scribe-asr@0.0.0|workspace:open-scribe-asr",
       "included_targets": [],
       "kind": "workspace-rust",
       "license": "MIT",
@@ -1301,7 +1543,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:open-scribe-core@0.0.0",
+      "id": "cargo:open-scribe-core@0.0.0|workspace:open-scribe-core",
       "included_targets": [],
       "kind": "workspace-rust",
       "license": "MIT",
@@ -1312,7 +1554,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:open-scribe-diarize@0.0.0",
+      "id": "cargo:open-scribe-diarize@0.0.0|workspace:open-scribe-diarize",
       "included_targets": [],
       "kind": "workspace-rust",
       "license": "MIT",
@@ -1323,7 +1565,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:open-scribe-domain@0.0.0",
+      "id": "cargo:open-scribe-domain@0.0.0|workspace:open-scribe-domain",
       "included_targets": [],
       "kind": "workspace-rust",
       "license": "MIT",
@@ -1334,7 +1576,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:open-scribe-evidence@0.0.0",
+      "id": "cargo:open-scribe-evidence@0.0.0|workspace:open-scribe-evidence",
       "included_targets": [],
       "kind": "workspace-rust",
       "license": "MIT",
@@ -1345,7 +1587,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:open-scribe-memory@0.0.0",
+      "id": "cargo:open-scribe-memory@0.0.0|workspace:open-scribe-memory",
       "included_targets": [],
       "kind": "workspace-rust",
       "license": "MIT",
@@ -1356,7 +1598,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:open-scribe-models@0.0.0",
+      "id": "cargo:open-scribe-models@0.0.0|workspace:open-scribe-models",
       "included_targets": [],
       "kind": "workspace-rust",
       "license": "MIT",
@@ -1367,7 +1609,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:open-scribe-store@0.0.0",
+      "id": "cargo:open-scribe-store@0.0.0|workspace:open-scribe-store",
       "included_targets": [],
       "kind": "workspace-rust",
       "license": "MIT",
@@ -1378,7 +1620,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:open-scribe-types@0.0.0",
+      "id": "cargo:open-scribe-types@0.0.0|workspace:open-scribe-types",
       "included_targets": [],
       "kind": "workspace-rust",
       "license": "MIT",
@@ -1389,7 +1631,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:open-scribe-uniffi@0.0.0",
+      "id": "cargo:open-scribe-uniffi@0.0.0|workspace:open-scribe-uniffi",
       "included_targets": [],
       "kind": "workspace-rust",
       "license": "MIT",
@@ -1400,7 +1642,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:open-scribe-web@0.0.0",
+      "id": "cargo:open-scribe-web@0.0.0|workspace:open-scribe-web",
       "included_targets": [],
       "kind": "workspace-rust",
       "license": "MIT",
@@ -1411,7 +1653,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:or_poisoned@0.1.0",
+      "id": "cargo:or_poisoned@0.1.0|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT",
@@ -1422,7 +1664,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:parking@2.2.1",
+      "id": "cargo:parking@2.2.1|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "Apache-2.0 OR MIT",
@@ -1433,7 +1675,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:paste@1.0.15",
+      "id": "cargo:paste@1.0.15|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT OR Apache-2.0",
@@ -1444,7 +1686,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:pathdiff@0.2.3",
+      "id": "cargo:pathdiff@0.2.3|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT/Apache-2.0",
@@ -1455,7 +1697,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:percent-encoding@2.3.2",
+      "id": "cargo:percent-encoding@2.3.2|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT OR Apache-2.0",
@@ -1466,7 +1708,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:pin-project-internal@1.1.13",
+      "id": "cargo:pin-project-internal@1.1.13|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "Apache-2.0 OR MIT",
@@ -1477,7 +1719,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:pin-project-lite@0.2.17",
+      "id": "cargo:pin-project-lite@0.2.17|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "Apache-2.0 OR MIT",
@@ -1488,7 +1730,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:pin-project@1.1.13",
+      "id": "cargo:pin-project@1.1.13|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "Apache-2.0 OR MIT",
@@ -1499,7 +1741,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:pkg-config@0.3.34",
+      "id": "cargo:pkg-config@0.3.34|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT OR Apache-2.0",
@@ -1510,7 +1752,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:plain@0.2.3",
+      "id": "cargo:plain@0.2.3|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT/Apache-2.0",
@@ -1521,7 +1763,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:potential_utf@0.1.6",
+      "id": "cargo:potential_utf@0.1.6|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "Unicode-3.0",
@@ -1532,7 +1774,18 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:prettyplease@0.2.37",
+      "id": "cargo:ppv-lite86@0.2.21|registry+https://github.com/rust-lang/crates.io-index",
+      "included_targets": [],
+      "kind": "rust",
+      "license": "UNKNOWN",
+      "obligation": "Pending review",
+      "review_state": "Pending",
+      "sha256": null,
+      "source": "registry+https://github.com/rust-lang/crates.io-index"
+    },
+    {
+      "binary_path": null,
+      "id": "cargo:prettyplease@0.2.37|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT OR Apache-2.0",
@@ -1543,7 +1796,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:proc-macro-error-attr2@2.0.0",
+      "id": "cargo:proc-macro-error-attr2@2.0.0|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT OR Apache-2.0",
@@ -1554,7 +1807,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:proc-macro-error2@2.0.1",
+      "id": "cargo:proc-macro-error2@2.0.1|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT OR Apache-2.0",
@@ -1565,7 +1818,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:proc-macro-utils@0.10.0",
+      "id": "cargo:proc-macro-utils@0.10.0|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT OR Apache-2.0",
@@ -1576,7 +1829,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:proc-macro2-diagnostics@0.10.1",
+      "id": "cargo:proc-macro2-diagnostics@0.10.1|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT/Apache-2.0",
@@ -1587,7 +1840,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:proc-macro2@1.0.107",
+      "id": "cargo:proc-macro2@1.0.107|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT OR Apache-2.0",
@@ -1598,7 +1851,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:quote-use-macros@0.8.4",
+      "id": "cargo:quote-use-macros@0.8.4|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT",
@@ -1609,7 +1862,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:quote-use@0.8.4",
+      "id": "cargo:quote-use@0.8.4|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT",
@@ -1620,7 +1873,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:quote@1.0.47",
+      "id": "cargo:quote@1.0.47|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT OR Apache-2.0",
@@ -1631,7 +1884,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:r-efi@5.3.0",
+      "id": "cargo:r-efi@5.3.0|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT OR Apache-2.0 OR LGPL-2.1-or-later",
@@ -1642,7 +1895,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:r-efi@6.0.0",
+      "id": "cargo:r-efi@6.0.0|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT OR Apache-2.0 OR LGPL-2.1-or-later",
@@ -1653,7 +1906,40 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:reactive_graph@0.2.14",
+      "id": "cargo:rand@0.9.5|registry+https://github.com/rust-lang/crates.io-index",
+      "included_targets": [],
+      "kind": "rust",
+      "license": "UNKNOWN",
+      "obligation": "Pending review",
+      "review_state": "Pending",
+      "sha256": null,
+      "source": "registry+https://github.com/rust-lang/crates.io-index"
+    },
+    {
+      "binary_path": null,
+      "id": "cargo:rand_chacha@0.9.0|registry+https://github.com/rust-lang/crates.io-index",
+      "included_targets": [],
+      "kind": "rust",
+      "license": "UNKNOWN",
+      "obligation": "Pending review",
+      "review_state": "Pending",
+      "sha256": null,
+      "source": "registry+https://github.com/rust-lang/crates.io-index"
+    },
+    {
+      "binary_path": null,
+      "id": "cargo:rand_core@0.9.5|registry+https://github.com/rust-lang/crates.io-index",
+      "included_targets": [],
+      "kind": "rust",
+      "license": "UNKNOWN",
+      "obligation": "Pending review",
+      "review_state": "Pending",
+      "sha256": null,
+      "source": "registry+https://github.com/rust-lang/crates.io-index"
+    },
+    {
+      "binary_path": null,
+      "id": "cargo:reactive_graph@0.2.14|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT",
@@ -1664,7 +1950,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:reactive_stores@0.4.3",
+      "id": "cargo:reactive_stores@0.4.3|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT",
@@ -1675,7 +1961,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:reactive_stores_macro@0.4.3",
+      "id": "cargo:reactive_stores_macro@0.4.3|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT",
@@ -1686,7 +1972,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:regex-automata@0.4.18",
+      "id": "cargo:regex-automata@0.4.18|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT OR Apache-2.0",
@@ -1697,7 +1983,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:regex-syntax@0.8.11",
+      "id": "cargo:regex-syntax@0.8.11|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT OR Apache-2.0",
@@ -1708,7 +1994,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:regex@1.13.1",
+      "id": "cargo:regex@1.13.1|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT OR Apache-2.0",
@@ -1719,7 +2005,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:rsqlite-vfs@0.1.1",
+      "id": "cargo:rsqlite-vfs@0.1.1|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT",
@@ -1730,7 +2016,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:rstml@0.12.1",
+      "id": "cargo:rstml@0.12.1|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT",
@@ -1741,7 +2027,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:rusqlite@0.40.2",
+      "id": "cargo:rusqlite@0.40.2|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT",
@@ -1752,7 +2038,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:rustc-hash@2.1.3",
+      "id": "cargo:rustc-hash@2.1.3|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "Apache-2.0 OR MIT",
@@ -1763,7 +2049,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:rustc_version@0.4.1",
+      "id": "cargo:rustc_version@0.4.1|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT OR Apache-2.0",
@@ -1774,7 +2060,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:rustix@1.1.4",
+      "id": "cargo:rustix@1.1.4|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT",
@@ -1785,7 +2071,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:rustversion@1.0.23",
+      "id": "cargo:rustversion@1.0.23|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT OR Apache-2.0",
@@ -1796,7 +2082,18 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:same-file@1.0.6",
+      "id": "cargo:ryu@1.0.23|registry+https://github.com/rust-lang/crates.io-index",
+      "included_targets": [],
+      "kind": "rust",
+      "license": "UNKNOWN",
+      "obligation": "Pending review",
+      "review_state": "Pending",
+      "sha256": null,
+      "source": "registry+https://github.com/rust-lang/crates.io-index"
+    },
+    {
+      "binary_path": null,
+      "id": "cargo:same-file@1.0.6|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "Unlicense/MIT",
@@ -1807,7 +2104,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:scroll@0.12.0",
+      "id": "cargo:scroll@0.12.0|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT",
@@ -1818,7 +2115,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:scroll_derive@0.12.1",
+      "id": "cargo:scroll_derive@0.12.1|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT",
@@ -1829,7 +2126,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:semver@1.0.28",
+      "id": "cargo:semver@1.0.28|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT OR Apache-2.0",
@@ -1840,7 +2137,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:send_wrapper@0.6.0",
+      "id": "cargo:send_wrapper@0.6.0|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT/Apache-2.0",
@@ -1851,7 +2148,18 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:serde@1.0.229",
+      "id": "cargo:serde-wasm-bindgen@0.6.5|registry+https://github.com/rust-lang/crates.io-index",
+      "included_targets": [],
+      "kind": "rust",
+      "license": "UNKNOWN",
+      "obligation": "Pending review",
+      "review_state": "Pending",
+      "sha256": null,
+      "source": "registry+https://github.com/rust-lang/crates.io-index"
+    },
+    {
+      "binary_path": null,
+      "id": "cargo:serde@1.0.229|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT OR Apache-2.0",
@@ -1862,7 +2170,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:serde_core@1.0.229",
+      "id": "cargo:serde_core@1.0.229|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT OR Apache-2.0",
@@ -1873,7 +2181,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:serde_derive@1.0.229",
+      "id": "cargo:serde_derive@1.0.229|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT OR Apache-2.0",
@@ -1884,7 +2192,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:serde_json@1.0.151",
+      "id": "cargo:serde_json@1.0.151|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT OR Apache-2.0",
@@ -1895,7 +2203,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:serde_qs@0.15.0",
+      "id": "cargo:serde_qs@0.15.0|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT/Apache-2.0",
@@ -1906,7 +2214,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:serde_spanned@1.1.1",
+      "id": "cargo:serde_spanned@1.1.1|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT OR Apache-2.0",
@@ -1917,7 +2225,18 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:server_fn@0.8.13",
+      "id": "cargo:serde_urlencoded@0.7.1|registry+https://github.com/rust-lang/crates.io-index",
+      "included_targets": [],
+      "kind": "rust",
+      "license": "UNKNOWN",
+      "obligation": "Pending review",
+      "review_state": "Pending",
+      "sha256": null,
+      "source": "registry+https://github.com/rust-lang/crates.io-index"
+    },
+    {
+      "binary_path": null,
+      "id": "cargo:server_fn@0.8.13|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT",
@@ -1928,7 +2247,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:server_fn_macro@0.8.10",
+      "id": "cargo:server_fn_macro@0.8.10|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT",
@@ -1939,7 +2258,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:server_fn_macro_default@0.8.5",
+      "id": "cargo:server_fn_macro_default@0.8.5|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT",
@@ -1950,7 +2269,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:sha2@0.10.9",
+      "id": "cargo:sha2@0.10.9|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT OR Apache-2.0",
@@ -1961,7 +2280,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:shlex@2.0.1",
+      "id": "cargo:shlex@2.0.1|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT OR Apache-2.0",
@@ -1972,7 +2291,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:siphasher@1.0.3",
+      "id": "cargo:siphasher@1.0.3|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT/Apache-2.0",
@@ -1983,7 +2302,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:slab@0.4.12",
+      "id": "cargo:slab@0.4.12|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT",
@@ -1994,7 +2313,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:slotmap@1.1.1",
+      "id": "cargo:slotmap@1.1.1|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "Zlib",
@@ -2005,7 +2324,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:smallvec@1.15.2",
+      "id": "cargo:smallvec@1.15.2|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT OR Apache-2.0",
@@ -2016,7 +2335,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:smawk@0.3.3",
+      "id": "cargo:smawk@0.3.3|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT",
@@ -2027,7 +2346,18 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:sqlite-wasm-rs@0.5.5",
+      "id": "cargo:spin@0.9.9|registry+https://github.com/rust-lang/crates.io-index",
+      "included_targets": [],
+      "kind": "rust",
+      "license": "UNKNOWN",
+      "obligation": "Pending review",
+      "review_state": "Pending",
+      "sha256": null,
+      "source": "registry+https://github.com/rust-lang/crates.io-index"
+    },
+    {
+      "binary_path": null,
+      "id": "cargo:sqlite-wasm-rs@0.5.5|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT",
@@ -2038,7 +2368,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:stable_deref_trait@1.2.1",
+      "id": "cargo:stable_deref_trait@1.2.1|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT OR Apache-2.0",
@@ -2049,7 +2379,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:static_assertions@1.1.0",
+      "id": "cargo:static_assertions@1.1.0|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT OR Apache-2.0",
@@ -2060,7 +2390,18 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:syn@2.0.119",
+      "id": "cargo:strsim@0.11.1|registry+https://github.com/rust-lang/crates.io-index",
+      "included_targets": [],
+      "kind": "rust",
+      "license": "UNKNOWN",
+      "obligation": "Pending review",
+      "review_state": "Pending",
+      "sha256": null,
+      "source": "registry+https://github.com/rust-lang/crates.io-index"
+    },
+    {
+      "binary_path": null,
+      "id": "cargo:syn@2.0.119|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT OR Apache-2.0",
@@ -2071,7 +2412,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:syn@3.0.3",
+      "id": "cargo:syn@3.0.3|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT OR Apache-2.0",
@@ -2082,7 +2423,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:syn_derive@0.2.0",
+      "id": "cargo:syn_derive@0.2.0|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT OR Apache-2.0",
@@ -2093,7 +2434,18 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:synstructure@0.13.2",
+      "id": "cargo:sync_wrapper@1.0.2|registry+https://github.com/rust-lang/crates.io-index",
+      "included_targets": [],
+      "kind": "rust",
+      "license": "UNKNOWN",
+      "obligation": "Pending review",
+      "review_state": "Pending",
+      "sha256": null,
+      "source": "registry+https://github.com/rust-lang/crates.io-index"
+    },
+    {
+      "binary_path": null,
+      "id": "cargo:synstructure@0.13.2|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT",
@@ -2104,7 +2456,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:tachys@0.2.18",
+      "id": "cargo:tachys@0.2.18|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT",
@@ -2115,7 +2467,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:tempfile@3.27.0",
+      "id": "cargo:tempfile@3.27.0|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT OR Apache-2.0",
@@ -2126,7 +2478,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:textwrap@0.16.2",
+      "id": "cargo:textwrap@0.16.2|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT",
@@ -2137,7 +2489,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:thiserror-impl@1.0.69",
+      "id": "cargo:thiserror-impl@1.0.69|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT OR Apache-2.0",
@@ -2148,7 +2500,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:thiserror-impl@2.0.20",
+      "id": "cargo:thiserror-impl@2.0.20|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT OR Apache-2.0",
@@ -2159,7 +2511,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:thiserror@1.0.69",
+      "id": "cargo:thiserror@1.0.69|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT OR Apache-2.0",
@@ -2170,7 +2522,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:thiserror@2.0.20",
+      "id": "cargo:thiserror@2.0.20|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT OR Apache-2.0",
@@ -2181,7 +2533,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:throw_error@0.3.1",
+      "id": "cargo:throw_error@0.3.1|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT",
@@ -2192,7 +2544,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:tinystr@0.8.4",
+      "id": "cargo:tinystr@0.8.4|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "Unicode-3.0",
@@ -2203,7 +2555,18 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:toml@1.1.4+spec-1.1.0",
+      "id": "cargo:tokio@1.53.1|registry+https://github.com/rust-lang/crates.io-index",
+      "included_targets": [],
+      "kind": "rust",
+      "license": "UNKNOWN",
+      "obligation": "Pending review",
+      "review_state": "Pending",
+      "sha256": null,
+      "source": "registry+https://github.com/rust-lang/crates.io-index"
+    },
+    {
+      "binary_path": null,
+      "id": "cargo:toml@1.1.4+spec-1.1.0|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT OR Apache-2.0",
@@ -2214,7 +2577,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:toml_datetime@1.1.1+spec-1.1.0",
+      "id": "cargo:toml_datetime@1.1.1+spec-1.1.0|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT OR Apache-2.0",
@@ -2225,7 +2588,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:toml_parser@1.1.3+spec-1.1.0",
+      "id": "cargo:toml_parser@1.1.3+spec-1.1.0|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT OR Apache-2.0",
@@ -2236,7 +2599,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:toml_writer@1.1.2+spec-1.1.0",
+      "id": "cargo:toml_writer@1.1.2+spec-1.1.0|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT OR Apache-2.0",
@@ -2247,7 +2610,51 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:typed-builder-macro@0.23.2",
+      "id": "cargo:tower-http@0.6.11|registry+https://github.com/rust-lang/crates.io-index",
+      "included_targets": [],
+      "kind": "rust",
+      "license": "UNKNOWN",
+      "obligation": "Pending review",
+      "review_state": "Pending",
+      "sha256": null,
+      "source": "registry+https://github.com/rust-lang/crates.io-index"
+    },
+    {
+      "binary_path": null,
+      "id": "cargo:tower-layer@0.3.3|registry+https://github.com/rust-lang/crates.io-index",
+      "included_targets": [],
+      "kind": "rust",
+      "license": "UNKNOWN",
+      "obligation": "Pending review",
+      "review_state": "Pending",
+      "sha256": null,
+      "source": "registry+https://github.com/rust-lang/crates.io-index"
+    },
+    {
+      "binary_path": null,
+      "id": "cargo:tower-service@0.3.3|registry+https://github.com/rust-lang/crates.io-index",
+      "included_targets": [],
+      "kind": "rust",
+      "license": "UNKNOWN",
+      "obligation": "Pending review",
+      "review_state": "Pending",
+      "sha256": null,
+      "source": "registry+https://github.com/rust-lang/crates.io-index"
+    },
+    {
+      "binary_path": null,
+      "id": "cargo:tower@0.5.3|registry+https://github.com/rust-lang/crates.io-index",
+      "included_targets": [],
+      "kind": "rust",
+      "license": "UNKNOWN",
+      "obligation": "Pending review",
+      "review_state": "Pending",
+      "sha256": null,
+      "source": "registry+https://github.com/rust-lang/crates.io-index"
+    },
+    {
+      "binary_path": null,
+      "id": "cargo:typed-builder-macro@0.23.2|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT OR Apache-2.0",
@@ -2258,7 +2665,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:typed-builder@0.23.2",
+      "id": "cargo:typed-builder@0.23.2|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT OR Apache-2.0",
@@ -2269,7 +2676,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:typenum@1.20.1",
+      "id": "cargo:typenum@1.20.1|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT OR Apache-2.0",
@@ -2280,7 +2687,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:unicode-ident@1.0.24",
+      "id": "cargo:unicode-ident@1.0.24|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "(MIT OR Apache-2.0) AND Unicode-3.0",
@@ -2291,7 +2698,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:unicode-segmentation@1.13.3",
+      "id": "cargo:unicode-segmentation@1.13.3|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT OR Apache-2.0",
@@ -2302,7 +2709,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:unicode-xid@0.2.6",
+      "id": "cargo:unicode-xid@0.2.6|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT OR Apache-2.0",
@@ -2313,7 +2720,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:uniffi@0.32.0",
+      "id": "cargo:uniffi@0.32.0|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MPL-2.0",
@@ -2324,7 +2731,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:uniffi_bindgen@0.32.0",
+      "id": "cargo:uniffi_bindgen@0.32.0|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MPL-2.0",
@@ -2335,7 +2742,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:uniffi_core@0.32.0",
+      "id": "cargo:uniffi_core@0.32.0|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MPL-2.0",
@@ -2346,7 +2753,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:uniffi_internal_macros@0.32.0",
+      "id": "cargo:uniffi_internal_macros@0.32.0|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MPL-2.0",
@@ -2357,7 +2764,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:uniffi_macros@0.32.0",
+      "id": "cargo:uniffi_macros@0.32.0|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MPL-2.0",
@@ -2368,7 +2775,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:uniffi_meta@0.32.0",
+      "id": "cargo:uniffi_meta@0.32.0|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MPL-2.0",
@@ -2379,7 +2786,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:uniffi_pipeline@0.32.0",
+      "id": "cargo:uniffi_pipeline@0.32.0|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MPL-2.0",
@@ -2390,7 +2797,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:uniffi_udl@0.32.0",
+      "id": "cargo:uniffi_udl@0.32.0|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MPL-2.0",
@@ -2401,7 +2808,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:url@2.5.8",
+      "id": "cargo:url@2.5.8|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT OR Apache-2.0",
@@ -2412,7 +2819,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:utf8_iter@1.0.4",
+      "id": "cargo:utf8_iter@1.0.4|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "Apache-2.0 OR MIT",
@@ -2423,7 +2830,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:uuid@1.24.1",
+      "id": "cargo:uuid@1.24.1|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "Apache-2.0 OR MIT",
@@ -2434,7 +2841,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:vcpkg@0.2.15",
+      "id": "cargo:vcpkg@0.2.15|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT/Apache-2.0",
@@ -2445,7 +2852,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:version_check@0.9.5",
+      "id": "cargo:version_check@0.9.5|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT/Apache-2.0",
@@ -2456,7 +2863,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:walkdir@2.5.0",
+      "id": "cargo:walkdir@2.5.0|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "Unlicense/MIT",
@@ -2467,7 +2874,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:wasip2@1.0.4+wasi-0.2.12",
+      "id": "cargo:wasip2@1.0.4+wasi-0.2.12|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT",
@@ -2478,7 +2885,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:wasm-bindgen-futures@0.4.71",
+      "id": "cargo:wasm-bindgen-futures@0.4.71|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT OR Apache-2.0",
@@ -2489,7 +2896,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:wasm-bindgen-macro-support@0.2.121",
+      "id": "cargo:wasm-bindgen-macro-support@0.2.121|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT OR Apache-2.0",
@@ -2500,7 +2907,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:wasm-bindgen-macro@0.2.121",
+      "id": "cargo:wasm-bindgen-macro@0.2.121|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT OR Apache-2.0",
@@ -2511,7 +2918,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:wasm-bindgen-shared@0.2.121",
+      "id": "cargo:wasm-bindgen-shared@0.2.121|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT OR Apache-2.0",
@@ -2522,7 +2929,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:wasm-bindgen@0.2.121",
+      "id": "cargo:wasm-bindgen@0.2.121|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT OR Apache-2.0",
@@ -2533,7 +2940,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:wasm-streams@0.5.0",
+      "id": "cargo:wasm-streams@0.5.0|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT OR Apache-2.0",
@@ -2544,7 +2951,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:wasm_split_helpers@0.2.3",
+      "id": "cargo:wasm_split_helpers@0.2.3|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT OR Apache-2.0",
@@ -2555,7 +2962,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:wasm_split_macros@0.2.2",
+      "id": "cargo:wasm_split_macros@0.2.2|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT OR Apache-2.0",
@@ -2566,7 +2973,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:web-sys@0.3.98",
+      "id": "cargo:web-sys@0.3.98|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT OR Apache-2.0",
@@ -2577,7 +2984,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:weedle2@5.0.0",
+      "id": "cargo:weedle2@5.0.0|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT",
@@ -2588,7 +2995,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:winapi-util@0.1.11",
+      "id": "cargo:winapi-util@0.1.11|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "Unlicense OR MIT",
@@ -2599,7 +3006,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:windows-link@0.2.1",
+      "id": "cargo:windows-link@0.2.1|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT OR Apache-2.0",
@@ -2610,7 +3017,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:windows-sys@0.61.2",
+      "id": "cargo:windows-sys@0.61.2|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT OR Apache-2.0",
@@ -2621,7 +3028,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:winnow@1.0.4",
+      "id": "cargo:winnow@1.0.4|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT",
@@ -2632,7 +3039,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:wit-bindgen@0.57.1",
+      "id": "cargo:wit-bindgen@0.57.1|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT",
@@ -2643,7 +3050,40 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:writeable@0.6.4",
+      "id": "cargo:worker-macros@0.7.5|registry+https://github.com/rust-lang/crates.io-index",
+      "included_targets": [],
+      "kind": "rust",
+      "license": "UNKNOWN",
+      "obligation": "Pending review",
+      "review_state": "Pending",
+      "sha256": null,
+      "source": "registry+https://github.com/rust-lang/crates.io-index"
+    },
+    {
+      "binary_path": null,
+      "id": "cargo:worker-sys@0.7.5|registry+https://github.com/rust-lang/crates.io-index",
+      "included_targets": [],
+      "kind": "rust",
+      "license": "UNKNOWN",
+      "obligation": "Pending review",
+      "review_state": "Pending",
+      "sha256": null,
+      "source": "registry+https://github.com/rust-lang/crates.io-index"
+    },
+    {
+      "binary_path": null,
+      "id": "cargo:worker@0.7.5|registry+https://github.com/rust-lang/crates.io-index",
+      "included_targets": [],
+      "kind": "rust",
+      "license": "UNKNOWN",
+      "obligation": "Pending review",
+      "review_state": "Pending",
+      "sha256": null,
+      "source": "registry+https://github.com/rust-lang/crates.io-index"
+    },
+    {
+      "binary_path": null,
+      "id": "cargo:writeable@0.6.4|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "Unicode-3.0",
@@ -2654,7 +3094,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:xxhash-rust@0.8.18",
+      "id": "cargo:xxhash-rust@0.8.18|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "BSL-1.0",
@@ -2665,7 +3105,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:yansi@1.0.1",
+      "id": "cargo:yansi@1.0.1|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT OR Apache-2.0",
@@ -2676,7 +3116,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:yoke-derive@0.8.2",
+      "id": "cargo:yoke-derive@0.8.2|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "Unicode-3.0",
@@ -2687,7 +3127,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:yoke@0.8.3",
+      "id": "cargo:yoke@0.8.3|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "Unicode-3.0",
@@ -2698,7 +3138,29 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:zerofrom-derive@0.1.7",
+      "id": "cargo:zerocopy-derive@0.8.56|registry+https://github.com/rust-lang/crates.io-index",
+      "included_targets": [],
+      "kind": "rust",
+      "license": "UNKNOWN",
+      "obligation": "Pending review",
+      "review_state": "Pending",
+      "sha256": null,
+      "source": "registry+https://github.com/rust-lang/crates.io-index"
+    },
+    {
+      "binary_path": null,
+      "id": "cargo:zerocopy@0.8.56|registry+https://github.com/rust-lang/crates.io-index",
+      "included_targets": [],
+      "kind": "rust",
+      "license": "UNKNOWN",
+      "obligation": "Pending review",
+      "review_state": "Pending",
+      "sha256": null,
+      "source": "registry+https://github.com/rust-lang/crates.io-index"
+    },
+    {
+      "binary_path": null,
+      "id": "cargo:zerofrom-derive@0.1.7|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "Unicode-3.0",
@@ -2709,7 +3171,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:zerofrom@0.1.8",
+      "id": "cargo:zerofrom@0.1.8|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "Unicode-3.0",
@@ -2720,7 +3182,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:zerotrie@0.2.5",
+      "id": "cargo:zerotrie@0.2.5|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "Unicode-3.0",
@@ -2731,7 +3193,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:zerovec-derive@0.11.5",
+      "id": "cargo:zerovec-derive@0.11.5|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "Unicode-3.0",
@@ -2742,7 +3204,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:zerovec@0.11.8",
+      "id": "cargo:zerovec@0.11.8|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "Unicode-3.0",
@@ -2753,7 +3215,7 @@
     },
     {
       "binary_path": null,
-      "id": "cargo:zmij@1.0.23",
+      "id": "cargo:zmij@1.0.23|registry+https://github.com/rust-lang/crates.io-index",
       "included_targets": [],
       "kind": "rust",
       "license": "MIT",
@@ -2764,6 +3226,6 @@
     }
   ],
   "schema": "open-scribe.components/v1",
-  "scope": "complete Cargo dependency graph; shipped-target and license-obligation review remains pending",
+  "scope": "complete Cargo.lock package set; shipped-target and license-obligation review remains pending",
   "status": "open"
 }

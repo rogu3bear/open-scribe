@@ -262,6 +262,11 @@ pub const fn status_snapshot() -> CoreStatus {
     }
 }
 
+/// Rust-owned compile-time capability registry embedded into native release
+/// artifacts. Preparation compares these checked bytes with the public claim
+/// manifest without compiling or executing code.
+pub const RUNTIME_CAPABILITY_MANIFEST_JSON: &str = include_str!("../runtime-capabilities.v1.json");
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -295,5 +300,27 @@ mod tests {
         assert_eq!(status.persistence, "Durable local audio and recovery");
         assert_eq!(status.capture, "Development microphone + system audio");
         assert_eq!(status.intelligence, "Not implemented");
+    }
+
+    #[test]
+    fn runtime_capability_registry_is_unique_and_fail_closed() {
+        let manifest: serde_json::Value =
+            serde_json::from_str(RUNTIME_CAPABILITY_MANIFEST_JSON).unwrap();
+        let capabilities = manifest["capabilities"].as_array().unwrap();
+        let mut ids = capabilities
+            .iter()
+            .map(|capability| capability["id"].as_str().unwrap())
+            .collect::<Vec<_>>();
+        ids.sort_unstable();
+        ids.dedup();
+
+        assert_eq!(ids.len(), capabilities.len());
+        assert_eq!(manifest["schema"], "open-scribe.capabilities/v1");
+        assert!(capabilities.iter().any(|capability| {
+            capability["id"] == "local-transcription" && capability["maturity"] == "Unavailable"
+        }));
+        assert!(capabilities.iter().any(|capability| {
+            capability["id"] == "optional-intelligence" && capability["maturity"] == "Unavailable"
+        }));
     }
 }

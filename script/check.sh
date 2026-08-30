@@ -55,12 +55,33 @@ if [[ "$#" -eq 1 && "$1" == "--m1-forced-termination-recovery" ]]; then
 	exec "$script_dir/check_m1_forced_termination_recovery.sh"
 fi
 
+if [[ "$#" -eq 1 && "$1" == "--m1-complete" ]]; then
+	[[ -f "$script_dir/check_m1_complete.sh" && ! -L "$script_dir/check_m1_complete.sh" ]] || exit 2
+	exec "$script_dir/check_m1_complete.sh"
+fi
+
+if [[ "$#" -eq 1 && "$1" == "--m2-complete" ]]; then
+	[[ -f "$script_dir/check_m2_complete.sh" && ! -L "$script_dir/check_m2_complete.sh" ]] || exit 2
+	exec "$script_dir/check_m2_complete.sh"
+fi
+
+if [[ "$#" -eq 1 && "$1" == "--m3-complete" ]]; then
+	[[ -f "$script_dir/check_m3_complete.sh" && ! -L "$script_dir/check_m3_complete.sh" ]] || exit 2
+	exec "$script_dir/check_m3_complete.sh"
+fi
+
+if [[ "$#" -eq 1 && "$1" == "--m4-complete" ]]; then
+	[[ -f "$script_dir/check_m4_complete.sh" && ! -L "$script_dir/check_m4_complete.sh" ]] || exit 2
+	exec "$script_dir/check_m4_complete.sh"
+fi
+
 if [[ "$#" -eq 1 && "$1" == "--release-prepare" ]]; then
+	[[ -f "$script_dir/check_release_prepare.sh" && ! -L "$script_dir/check_release_prepare.sh" ]] || exit 2
 	exec "$script_dir/check_release_prepare.sh"
 fi
 
 printf '%s\n' \
 	"NOT_IMPLEMENTED: full repository check" \
-	"Use './script/check.sh --scaffold' for founding structure, './script/check.sh --m0-native' for the bounded native proof, './script/check.sh --m0' for complete Milestone 0, './script/check.sh --state-fixtures' for deterministic post-M0 state truth, './script/check.sh --m1-xcode-fixture' for the pre-capture Xcode checkpoint, './script/check.sh --m1-storage' for durable session preparation, './script/check.sh --m1-media-open' for the pre-capture media-writer protocol and native macOS 13 build metadata, './script/check.sh --m1-microphone-foundation' for the deterministic first-sample and production-shaped microphone-adapter boundary, './script/check.sh --m1-segment-sealing' for closed synthetic CAF integrity evidence, './script/check.sh --m1-interruption-state' for durable post-preparation failure state and restart discovery, './script/check.sh --m1-dual-source-runtime' for explicit real-device microphone plus system-audio capture and independent playable-CAF proof, './script/check.sh --m1-forced-termination-recovery' for real dual-source external-kill recovery and native playback proof, or './script/check.sh --release-prepare' for the read-only release-preparation contract." \
+	"Use './script/check.sh --scaffold' for founding structure, './script/check.sh --m0-native' for the bounded native proof, './script/check.sh --m0' for complete Milestone 0, './script/check.sh --state-fixtures' for deterministic post-M0 state truth, './script/check.sh --m1-xcode-fixture' for the pre-capture Xcode checkpoint, './script/check.sh --m1-storage' for durable session preparation, './script/check.sh --m1-media-open' for the pre-capture media-writer protocol and native macOS 13 build metadata, './script/check.sh --m1-microphone-foundation' for the deterministic first-sample and production-shaped microphone-adapter boundary, './script/check.sh --m1-segment-sealing' for closed synthetic CAF integrity evidence, './script/check.sh --m1-interruption-state' for durable post-preparation failure state and restart discovery, './script/check.sh --m1-dual-source-runtime' for explicit real-device microphone plus system-audio capture and independent playable-CAF proof, './script/check.sh --m1-forced-termination-recovery' for real dual-source external-kill recovery and native playback proof, './script/check.sh --m1-complete' through '--m4-complete' for the fail-closed milestone completion owners, or './script/check.sh --release-prepare' for the read-only release-preparation contract." \
 	"Neither receipt proves source-loss handling, degraded continuation, permission revocation, long-session synchronization, transcription, website deployment, signing, distribution, or release." >&2
 exit 64
