@@ -13,10 +13,12 @@ fail() {
 for helper in \
 	"$script_dir/check_release_input_validation.sh" \
 	"$script_dir/check_release_evidence.sh" \
+	"$script_dir/check_release_claim_structure.sh" \
 	"$script_dir/check_verify_bundle.sh" \
 	"$script_dir/release.sh" \
 	"$script_dir/validate_release_input.sh" \
-	"$script_dir/verify_release_evidence.sh"; do
+	"$script_dir/verify_release_evidence.sh" \
+	"$script_dir/verify_release_claim_structure.sh"; do
 	[[ -f "$helper" && ! -L "$helper" && -x "$helper" ]] ||
 		fail "release helper is unavailable or not a regular executable: $helper"
 done
@@ -35,6 +37,7 @@ fi
 
 "$script_dir/check_release_input_validation.sh"
 "$script_dir/check_release_evidence.sh"
+"$script_dir/check_release_claim_structure.sh"
 "$script_dir/check_verify_bundle.sh"
 
 invalid_output="$("$script_dir/release.sh" prepare invalid 2>&1 || true)"
@@ -63,8 +66,8 @@ for required in \
 	'^blocker=p0_ledger_open\|' \
 	'^blocker=supply_chain_manifest_open\|' \
 	'^blocker=signing_policy\|' \
-	'^blocker=release_transaction_plan\|' \
-	'^blocker=non_secret_qualification\|' \
+	'^blocker=release_plan_claim_structure\|' \
+	'^blocker=non_secret_execution_required\|' \
 	'^next=resolve every blocker'; do
 	rg -q "$required" <<<"$prepare_output" ||
 		fail "readiness output is missing: $required"
@@ -88,6 +91,10 @@ for milestone in 0 1 2 3 4; do
           observed_at: "2026-08-30T00:00:00Z"
         }' >"$receipt_fixture/m${milestone}-complete.v1.json"
 done
+jq -n '{schema:"untrusted-release-plan-claim"}' >"$receipt_fixture/release-plan-claim.v1.json"
+mkdir -p "$receipt_fixture/claim-inputs"
+jq -n '{schema:"untrusted-command-claim"}' \
+	>"$receipt_fixture/non-secret-command-claim.v1.json"
 jq \
 	--arg source_sha "0000000000000000000000000000000000000000" \
 	--arg source_tree "1111111111111111111111111111111111111111" \
@@ -116,6 +123,10 @@ for milestone in 0 1 2 3 4; do
 done
 rg -q '^blocker=evidence_authentication_policy\|' <<<"$receipt_output" ||
 	fail "hand-authored receipts bypassed the provenance/authentication hold"
+rg -q '^blocker=release_plan_claim_structure\|' <<<"$receipt_output" ||
+	fail "malformed hand-authored plan claim was not identified"
+rg -q '^blocker=non_secret_execution_required\|' <<<"$receipt_output" ||
+	fail "structural claim handling removed the execution-required hold"
 rg -q '^blocker=p0_candidate_mismatch\|' <<<"$receipt_output" ||
 	fail "stale closed P0 ledger was not rejected against the current candidate"
 
@@ -148,5 +159,5 @@ after_index="$(stat -f '%m:%z' .git/index 2>/dev/null || printf 'absent')"
 printf '%s\n' \
 	'RELEASE_PREPARE_CHECK_GREEN' \
 	"fixture_residue=$receipt_fixture" \
-	'proof=release_input_schemas,open_input_semantics,authenticated_evidence_contract,bundle_verifier_rejection_contract,stable_semver_rejection,exact_source_binding,forged_milestone_receipt_rejection,stale_p0_candidate_rejection,fail_closed_milestone_gate_availability,capability_registry_linkage_and_source_equality,legal_security_p0_holds,complete_source_qualified_locked_component_set,candidate_release_notes,current_source_direct_mutator_vocabulary_absent,observed_worktree_and_index_unchanged' \
-	'excludes=milestone_completion,version_allocation,signed_artifact_success,notarization,packaging,publication,deployment,public_release'
+	'proof=release_input_schemas,open_input_semantics,authenticated_evidence_contract,non_admitting_claim_structure_contract,bundle_verifier_rejection_contract,stable_semver_rejection,exact_source_binding,forged_milestone_receipt_rejection,malformed_claim_rejection,execution_required_hold,stale_p0_candidate_rejection,fail_closed_milestone_gate_availability,capability_registry_linkage_and_source_equality,legal_security_p0_holds,observed_locked_cargo_package_set_equality,candidate_release_notes,current_source_direct_mutator_vocabulary_absent,observed_worktree_and_index_unchanged' \
+	'excludes=milestone_completion,version_allocation,shipped_component_resource_completeness,qualification,signed_artifact_success,notarization,packaging,publication,deployment,public_release'

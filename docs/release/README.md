@@ -52,16 +52,33 @@ exercises those bindings with an ephemeral test key; it neither authorizes a
 production signer nor signs a release artifact. Historical or unsigned receipts
 remain inspectable but can never remove the preparation hold.
 
-Preparation remains unconditionally held at the ADR 0017 transaction boundary
-until semantic validators exist for a non-Cargo component inventory, SPDX SBOM,
-deterministic third-party notices, an unsigned content-addressed plan, and the
-canonical exact-candidate non-secret command set. Mere file presence or an
-external Passed string cannot close these gates.
+`script/verify_release_claim_structure.sh` recognizes only an unauthenticated
+claim shape. It observes declared candidate strings, the expected list of source
+paths, current hashes for those paths and three referenced files, the declared
+command list, and one explicitly partial file reference per command. Its output
+uses `STRUCTURE_OBSERVED` and has `admission_effect=none`. It does not say that a
+command ran or succeeded, that a receipt or producer is authentic, that an
+inventory or package graph is exhaustive, that generation is reproducible, that
+a toolchain identity is established, that notices are canonical, or that an
+input is contained beneath the repository through every path component.
+
+The tracked `docs/release/non-secret-claim-policy.v1.json` records the following
+requirements for a future execution-derived design without claiming them here:
+immutable command-receipt bytes and independently bound execution authority;
+repository-derived shipped-component and resource enumeration; one-snapshot
+plan/command-claim continuity; complete candidate, command, and toolchain
+denominators; independently established generator runs and canonical notice
+semantics; and repository-root containment across every path component. That
+future design requires separate architecture and authority. M0-M4 receipts
+remain separate predecessor gates.
 
 `script/verify_bundle.sh` remains intentionally fail-closed until the signed
 artifact lane is implemented and authorized. `RELEASE_PREPARE_READY` is
-currently unreachable by design; implementing authenticated evidence admission
-and the semantic ADR 0017 transaction verifier is a separately reviewed change.
+currently unreachable by design because M0-M4 authenticated admission, legal,
+security, P0, supply-chain, signing-policy, and other candidate gates remain
+open. Structural claim consistency is not command execution, qualification,
+admission, signing, notarization, packaging, publication, deployment, or release
+proof.
 
 Release inputs are semantic, not presence flags:
 

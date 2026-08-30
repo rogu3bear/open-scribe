@@ -31,6 +31,16 @@ evidence_policy="docs/release/evidence-policy.v1.json"
 	printf 'RELEASE_PREPARE_ERROR: release-evidence verifier is unavailable or not a regular executable\n' >&2
 	exit 2
 }
+claim_structure_verifier="$script_dir/verify_release_claim_structure.sh"
+claim_policy="docs/release/non-secret-claim-policy.v1.json"
+[[ -f "$claim_structure_verifier" && ! -L "$claim_structure_verifier" && -x "$claim_structure_verifier" ]] || {
+	printf 'RELEASE_PREPARE_ERROR: release-claim structure checker is unavailable or not a regular executable\n' >&2
+	exit 2
+}
+[[ -f "$claim_policy" && ! -L "$claim_policy" ]] || {
+	printf 'RELEASE_PREPARE_ERROR: non-secret claim policy is unavailable or not a regular file\n' >&2
+	exit 2
+}
 
 source_sha="$(git rev-parse HEAD)"
 source_tree="$(git rev-parse 'HEAD^{tree}')"
@@ -285,10 +295,22 @@ else
          and (.reviewed_at | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T"))'
 fi
 
-hold release_transaction_plan \
-	"the semantic non-Cargo inventory, SPDX, deterministic notices, and unsigned content-addressed plan verifier is not implemented"
-hold non_secret_qualification \
-	"the canonical exact-candidate non-secret qualification verifier is not implemented"
+plan_claim="$receipt_root/release-plan-claim.v1.json"
+claim_inputs="$receipt_root/claim-inputs"
+command_claim="$receipt_root/non-secret-command-claim.v1.json"
+if plan_claim_output="$("$claim_structure_verifier" plan "$repo_root" "$claim_inputs" \
+	"$plan_claim" "$candidate_version" "$source_sha" "$source_tree" 2>&1)"; then
+	plan_claim_sha="$(shasum -a 256 "$plan_claim" | awk '{print $1}')"
+	if ! command_claim_output="$("$claim_structure_verifier" commands "$repo_root" \
+		"$claim_policy" "$plan_claim" "$command_claim" \
+		"$candidate_version" "$source_sha" "$source_tree" "$plan_claim_sha" 2>&1)"; then
+		hold non_secret_command_claim_structure "$command_claim_output"
+	fi
+else
+	hold release_plan_claim_structure "$plan_claim_output"
+fi
+hold non_secret_execution_required \
+	"structural claims are permanently non-admitting and establish no command execution, inventory completeness, generation reproducibility, toolchain identity, or release qualification"
 
 if ((${#blockers[@]} > 0)); then
 	printf '%s\n' \
