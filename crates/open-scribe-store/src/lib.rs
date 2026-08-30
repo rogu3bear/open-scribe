@@ -314,7 +314,6 @@ pub struct RecoveredPlayableSession {
     pub source_display_name: String,
     pub segment_id: String,
     pub relative_path: String,
-    pub absolute_path: PathBuf,
     pub sample_count: u64,
     pub duration_nanoseconds: u64,
     pub byte_length: u64,
@@ -374,6 +373,7 @@ pub enum RecoveryDisposition {
     SegmentSealProjectionRepaired,
     ImportedMediaReady,
     ImportProjectionRepaired,
+    ImportFailed,
     SourceFailedRecording,
     SourceFailureProjectionRepaired,
     InterruptedPrepared,
@@ -1013,6 +1013,7 @@ impl SessionStore {
     pub fn recover_playable_sessions(
         &mut self,
     ) -> Result<Vec<RecoveredPlayableSession>, StoreError> {
+        self.recover_preparations()?;
         let candidates = {
             let mut statement = self.connection.prepare(
                 "SELECT sessions.id, sources.id, tracks.id, segments.id,
@@ -1403,7 +1404,6 @@ impl SessionStore {
                         source_display_name,
                         segment_id,
                         relative_path: relative_path.clone(),
-                        absolute_path: self.session_directory(&session_id)?.join(relative_path),
                         sample_count,
                         duration_nanoseconds: sample_count.saturating_mul(1_000_000_000)
                             / u64::from(MEDIA_SAMPLE_RATE_HZ),

@@ -29,21 +29,32 @@ private final class RecoveryPreparationFake: NativeRecordingPreparation, @unchec
 
 @MainActor
 private final class RecoveredAudioPlayerFake: RecoveredAudioPlaying {
-  private(set) var playedURL: URL?
+  private(set) var recoveredReceipt: String?
   private(set) var importedReceipt: String?
   private(set) var retainedLease: AnyObject?
   private(set) var importedGeneration: UUID?
   private(set) var stopCount = 0
   var playError: Error?
+  var holdRecoveredPlayback = false
   var holdImportedPlayback = false
+  private var recoveredContinuation: CheckedContinuation<Void, Never>?
   private var importedContinuation: CheckedContinuation<Void, Never>?
   private var terminationHandler: (@Sendable (PlaybackTermination) -> Void)?
 
-  func play(url: URL, retaining lease: AnyObject?, generation: UUID) throws {
+  func playRecovered(
+    receipt: String,
+    retaining lease: AnyObject,
+    generation: UUID
+  ) async throws {
     if let playError { throw playError }
-    playedURL = url
+    recoveredReceipt = receipt
     retainedLease = lease
     importedGeneration = generation
+    if holdRecoveredPlayback {
+      await withCheckedContinuation { continuation in
+        recoveredContinuation = continuation
+      }
+    }
   }
 
   func playImported(
@@ -65,6 +76,11 @@ private final class RecoveredAudioPlayerFake: RecoveredAudioPlaying {
   func releaseImportedPlayback() {
     importedContinuation?.resume()
     importedContinuation = nil
+  }
+
+  func releaseRecoveredPlayback() {
+    recoveredContinuation?.resume()
+    recoveredContinuation = nil
   }
 
   func setPlaybackTerminationHandler(
@@ -92,11 +108,19 @@ private final class RecoveredAudioPlayerFake: RecoveredAudioPlaying {
 
   func stop() {
     stopCount += 1
-    playedURL = nil
+    recoveredReceipt = nil
     importedReceipt = nil
     importedGeneration = nil
     retainedLease = nil
   }
+}
+
+private func recoveredDescriptorReceipt(
+  fileDescriptor: Int32 = 44,
+  byteLength: UInt64 = 100_000,
+  digest: String = String(repeating: "a", count: 64)
+) -> String {
+  "v2;fd=\(fileDescriptor);byte_length=\(byteLength);sha256=\(digest);chunk_byte_length=65536"
 }
 
 private final class ImportedPlaybackLeaseFake: ImportedPlaybackLeaseHolding, @unchecked Sendable {
@@ -107,6 +131,51 @@ private final class ImportedPlaybackLeaseFake: ImportedPlaybackLeaseHolding, @un
   }
 
   func playbackPath() -> String { path }
+}
+
+private final class ReleasingPlaybackLeaseProbe: ImportedPlaybackLeaseHolding, @unchecked Sendable {
+  private let path: String
+  private let released: SendableFlag
+
+  init(path: String, released: SendableFlag) {
+    self.path = path
+    self.released = released
+  }
+
+  func playbackPath() -> String { path }
+
+  deinit {
+    released.set()
+  }
+}
+
+private final class BlockingRecoveredPlaybackLeaseProvider: @unchecked Sendable {
+  private let blockedSessionId: String
+  private let entered = SendableFlag()
+  private let semaphore = DispatchSemaphore(value: 0)
+  private let makeLease: @Sendable (RecoveredPlaybackMediaIdentity) -> ImportedPlaybackLeaseHolding
+
+  init(
+    blockedSessionId: String,
+    makeLease: @escaping @Sendable (RecoveredPlaybackMediaIdentity) -> ImportedPlaybackLeaseHolding
+  ) {
+    self.blockedSessionId = blockedSessionId
+    self.makeLease = makeLease
+  }
+
+  var hasEntered: Bool { entered.value }
+
+  func lease(identity: RecoveredPlaybackMediaIdentity) throws -> ImportedPlaybackLeaseHolding {
+    if identity.sessionId == blockedSessionId {
+      entered.set()
+      semaphore.wait()
+    }
+    return makeLease(identity)
+  }
+
+  func release() {
+    semaphore.signal()
+  }
 }
 
 private final class SendableFlag: @unchecked Sendable {
@@ -122,6 +191,53 @@ private final class SendableFlag: @unchecked Sendable {
   }
 }
 
+private final class DescriptorBytesFake: @unchecked Sendable {
+  private let lock = NSLock()
+  private var bytes: Data
+  private var identity: PlaybackDescriptorIdentity
+
+  init(bytes: Data, device: UInt64 = 7, inode: UInt64 = 11) {
+    self.bytes = bytes
+    identity = PlaybackDescriptorIdentity(
+      device: device,
+      inode: inode,
+      byteLength: UInt64(bytes.count)
+    )
+  }
+
+  func inspect(_: Int32) throws -> PlaybackDescriptorIdentity {
+    lock.withLock { identity }
+  }
+
+  func read(
+    _: Int32,
+    offset: UInt64,
+    buffer: UnsafeMutableRawBufferPointer
+  ) throws -> Int {
+    lock.withLock {
+      let start = Int(offset)
+      guard start < bytes.count else { return 0 }
+      let count = min(buffer.count, bytes.count - start)
+      bytes.copyBytes(to: buffer.bindMemory(to: UInt8.self), from: start..<(start + count))
+      return count
+    }
+  }
+
+  func mutateByte(at offset: Int) {
+    lock.withLock { bytes[offset] ^= 0xff }
+  }
+
+  func replaceIdentity(device: UInt64, inode: UInt64, byteLength: UInt64) {
+    lock.withLock {
+      identity = PlaybackDescriptorIdentity(
+        device: device,
+        inode: inode,
+        byteLength: byteLength
+      )
+    }
+  }
+}
+
 private final class DescriptorPlaybackLeaseProbe: ImportedPlaybackLeaseHolding,
   @unchecked Sendable
 {
@@ -130,8 +246,9 @@ private final class DescriptorPlaybackLeaseProbe: ImportedPlaybackLeaseHolding,
   private let byteLength: Int
   private let digestSha256: String
   private let released: SendableFlag
+  private let recovered: Bool
 
-  init(url: URL, released: SendableFlag) throws {
+  init(url: URL, released: SendableFlag, recovered: Bool = false) throws {
     let bytes = try Data(contentsOf: url)
     let descriptor = open(url.path, O_RDONLY | O_CLOEXEC)
     guard descriptor >= 0 else {
@@ -141,10 +258,13 @@ private final class DescriptorPlaybackLeaseProbe: ImportedPlaybackLeaseHolding,
     byteLength = bytes.count
     digestSha256 = SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
     self.released = released
+    self.recovered = recovered
   }
 
   func playbackPath() -> String {
-    "v1;fd=\(fileDescriptor);byte_length=\(byteLength);sha256=\(digestSha256);max_byte_length=268435456"
+    recovered
+      ? "v2;fd=\(fileDescriptor);byte_length=\(byteLength);sha256=\(digestSha256);chunk_byte_length=65536"
+      : "v1;fd=\(fileDescriptor);byte_length=\(byteLength);sha256=\(digestSha256);max_byte_length=268435456"
   }
 
   deinit {
@@ -301,13 +421,16 @@ private final class ImportedPlaybackLeaseSelection: @unchecked Sendable {
 
 @MainActor
 final class RecoveredSessionControllerTests: XCTestCase {
-  func testRecoveredSessionBecomesAvailableAndOpensNativePlayback() {
+  func testRecoveredSessionBecomesAvailableAndOpensNativePlayback() async throws {
     let preparation = RecoveryPreparationFake()
     let recovered = recoveredSession()
     preparation.recovered = [recovered]
     let player = RecoveredAudioPlayerFake()
     let controller = RecoveredSessionController(
       recoveryFactory: { preparation },
+      recoveredPlaybackLeaseProvider: { _ in
+        ImportedPlaybackLeaseFake(path: recoveredDescriptorReceipt())
+      },
       player: player
     )
 
@@ -315,14 +438,29 @@ final class RecoveredSessionControllerTests: XCTestCase {
 
     XCTAssertEqual(controller.phase, .available)
     XCTAssertEqual(controller.sessions.map(\.sessionId), [recovered.sessionId])
-    controller.play(recovered)
+    let generation = try XCTUnwrap(controller.play(recovered))
+    XCTAssertEqual(
+      controller.playbackStartupState(
+        generation: generation,
+        identity: RecoveredPlaybackMediaIdentity(recovered)
+      ),
+      .pending
+    )
+    await assertEventually { controller.playingSessionId == recovered.sessionId }
+    XCTAssertEqual(
+      controller.playbackStartupState(
+        generation: generation,
+        identity: RecoveredPlaybackMediaIdentity(recovered)
+      ),
+      .playing
+    )
     XCTAssertEqual(controller.activePlaybackSessionId, recovered.sessionId)
     XCTAssertEqual(controller.playingSessionId, recovered.sessionId)
     XCTAssertEqual(
       controller.playingRecoveredMediaIdentity,
       RecoveredPlaybackMediaIdentity(recovered)
     )
-    XCTAssertEqual(player.playedURL?.path, recovered.absolutePath)
+    XCTAssertEqual(player.recoveredReceipt, recoveredDescriptorReceipt())
 
     controller.stopPlayback()
     XCTAssertNil(controller.activePlaybackSessionId)
@@ -331,11 +469,119 @@ final class RecoveredSessionControllerTests: XCTestCase {
     XCTAssertEqual(player.stopCount, 2)
   }
 
+  func testRecoveredStartupSuccessRemainsLatchedAfterNaturalEOF() async throws {
+    let player = RecoveredAudioPlayerFake()
+    let controller = RecoveredSessionController(
+      recoveryFactory: { RecoveryPreparationFake() },
+      recoveredPlaybackLeaseProvider: { _ in
+        ImportedPlaybackLeaseFake(path: recoveredDescriptorReceipt())
+      },
+      player: player
+    )
+    let recovered = recoveredSession(sessionId: "short-recovered")
+
+    let generation = try XCTUnwrap(controller.play(recovered))
+    await assertEventually { controller.playingSessionId == recovered.sessionId }
+    player.terminate(generation: generation, outcome: .finished)
+    await assertEventually { controller.activePlaybackSessionId == nil }
+
+    XCTAssertEqual(
+      controller.playbackStartupState(
+        generation: generation,
+        identity: RecoveredPlaybackMediaIdentity(recovered)
+      ),
+      .playing
+    )
+  }
+
+  func testRecoveredStartupFailureBindsPendingIdentityAndRemainsLatched() async throws {
+    let player = RecoveredAudioPlayerFake()
+    player.holdRecoveredPlayback = true
+    let preparation = RecoveryPreparationFake()
+    let controller = RecoveredSessionController(
+      recoveryFactory: { preparation },
+      recoveredPlaybackLeaseProvider: { _ in
+        ImportedPlaybackLeaseFake(path: recoveredDescriptorReceipt())
+      },
+      player: player
+    )
+    let recovered = recoveredSession(sessionId: "early-failed-recovered")
+    let identity = RecoveredPlaybackMediaIdentity(recovered)
+
+    let generation = try XCTUnwrap(controller.play(recovered))
+    await assertEventually { player.importedGeneration == generation }
+    XCTAssertEqual(
+      controller.playbackStartupState(generation: generation, identity: identity),
+      .pending
+    )
+
+    player.terminate(generation: generation, outcome: .failed)
+    await assertEventually { controller.errorMessage != nil }
+    player.releaseRecoveredPlayback()
+    XCTAssertEqual(
+      controller.errorMessage,
+      "Recovered audio playback stopped because decoding failed."
+    )
+    XCTAssertEqual(controller.errorRecoveredMediaIdentity, identity)
+    XCTAssertEqual(
+      controller.playbackStartupState(generation: generation, identity: identity),
+      .failed
+    )
+
+    controller.recoverOnLaunch()
+    XCTAssertEqual(
+      controller.playbackStartupState(generation: generation, identity: identity),
+      .failed
+    )
+  }
+
+  func testGenerationBoundStopCannotStopReplacementPlayback() async throws {
+    let player = RecoveredAudioPlayerFake()
+    let controller = RecoveredSessionController(
+      recoveryFactory: { RecoveryPreparationFake() },
+      recoveredPlaybackLeaseProvider: { identity in
+        ImportedPlaybackLeaseFake(
+          path: recoveredDescriptorReceipt(
+            fileDescriptor: identity.sessionId == "first-recovered" ? 44 : 45
+          )
+        )
+      },
+      player: player
+    )
+    let first = recoveredSession(sessionId: "first-recovered")
+    let replacement = recoveredSession(sessionId: "replacement-recovered")
+    let replacementIdentity = RecoveredPlaybackMediaIdentity(replacement)
+
+    let firstGeneration = try XCTUnwrap(controller.play(first))
+    await assertEventually { controller.playingSessionId == first.sessionId }
+    let replacementGeneration = try XCTUnwrap(controller.play(replacement))
+    await assertEventually { controller.playingSessionId == replacement.sessionId }
+
+    controller.stopPlayback(generation: firstGeneration)
+
+    XCTAssertEqual(controller.activePlaybackSessionId, replacement.sessionId)
+    XCTAssertEqual(controller.playingSessionId, replacement.sessionId)
+    XCTAssertEqual(controller.playingRecoveredMediaIdentity, replacementIdentity)
+    XCTAssertEqual(player.importedGeneration, replacementGeneration)
+    XCTAssertEqual(
+      controller.playbackStartupState(
+        generation: replacementGeneration,
+        identity: replacementIdentity
+      ),
+      .playing
+    )
+
+    controller.stopPlayback(generation: replacementGeneration)
+  }
+
   func testRecoveredEOFAndStaleCompletionAreGenerationBound() async {
     let player = RecoveredAudioPlayerFake()
     let decisions = PlaybackTerminationDecisionRecorder()
     let controller = RecoveredSessionController(
       recoveryFactory: { RecoveryPreparationFake() },
+      recoveredPlaybackLeaseProvider: { _ in
+        ImportedPlaybackLeaseFake(path: recoveredDescriptorReceipt())
+      },
       player: player,
       playbackTerminationDecisionObserver: decisions.record
     )
@@ -343,8 +589,12 @@ final class RecoveredSessionControllerTests: XCTestCase {
     let second = recoveredSession(sessionId: "recovered-second", path: "/tmp/second.caf")
 
     controller.play(first)
+    await assertEventually { player.importedGeneration != nil }
     let firstGeneration = player.importedGeneration!
     controller.play(second)
+    await assertEventually {
+      player.importedGeneration != nil && player.importedGeneration != firstGeneration
+    }
     let secondGeneration = player.importedGeneration!
 
     player.deliverTermination(generation: firstGeneration, outcome: .finished)
@@ -355,13 +605,102 @@ final class RecoveredSessionControllerTests: XCTestCase {
       RecoveredPlaybackMediaIdentity(second)
     )
     XCTAssertEqual(player.importedGeneration, secondGeneration)
-    XCTAssertEqual(player.playedURL?.path, second.absolutePath)
+    XCTAssertEqual(player.recoveredReceipt, recoveredDescriptorReceipt())
 
     player.terminate(generation: secondGeneration, outcome: .finished)
     await assertEventually { controller.playingSessionId == nil }
     XCTAssertNil(controller.playingSessionId)
     XCTAssertNil(controller.playingRecoveredMediaIdentity)
-    XCTAssertNil(player.playedURL)
+    XCTAssertNil(player.recoveredReceipt)
+  }
+
+  func testRecoveredStopCancelsBlockedLeaseValidationWithoutPublishingPlayback() async throws {
+    let leaseReleased = SendableFlag()
+    let gate = BlockingRecoveredPlaybackLeaseProvider(
+      blockedSessionId: "blocked-recovered"
+    ) { _ in
+      ReleasingPlaybackLeaseProbe(
+        path: recoveredDescriptorReceipt(),
+        released: leaseReleased
+      )
+    }
+    let player = RecoveredAudioPlayerFake()
+    let controller = RecoveredSessionController(
+      recoveryFactory: { RecoveryPreparationFake() },
+      recoveredPlaybackLeaseProvider: gate.lease,
+      player: player
+    )
+    let recovered = recoveredSession(sessionId: "blocked-recovered")
+
+    let generation = try XCTUnwrap(controller.play(recovered))
+    await assertEventually { gate.hasEntered }
+    XCTAssertEqual(controller.activePlaybackSessionId, recovered.sessionId)
+    XCTAssertEqual(
+      controller.playbackStartupState(
+        generation: generation,
+        identity: RecoveredPlaybackMediaIdentity(recovered)
+      ),
+      .pending
+    )
+
+    controller.stopPlayback()
+    XCTAssertNil(controller.activePlaybackSessionId)
+    XCTAssertNil(controller.playingSessionId)
+    XCTAssertEqual(
+      controller.playbackStartupState(
+        generation: generation,
+        identity: RecoveredPlaybackMediaIdentity(recovered)
+      ),
+      .superseded
+    )
+    gate.release()
+
+    await assertEventually { leaseReleased.value }
+    XCTAssertNil(player.recoveredReceipt)
+    XCTAssertNil(player.retainedLease)
+    XCTAssertNil(controller.errorMessage)
+  }
+
+  func testRecoveredReplacementSupersedesBlockedLeaseValidationAndReleasesStaleLease() async {
+    let staleLeaseReleased = SendableFlag()
+    let replacementLease = ImportedPlaybackLeaseFake(
+      path: recoveredDescriptorReceipt(fileDescriptor: 45)
+    )
+    let gate = BlockingRecoveredPlaybackLeaseProvider(
+      blockedSessionId: "blocked-recovered"
+    ) { identity in
+      if identity.sessionId == "blocked-recovered" {
+        return ReleasingPlaybackLeaseProbe(
+          path: recoveredDescriptorReceipt(fileDescriptor: 44),
+          released: staleLeaseReleased
+        )
+      }
+      return replacementLease
+    }
+    let player = RecoveredAudioPlayerFake()
+    let controller = RecoveredSessionController(
+      recoveryFactory: { RecoveryPreparationFake() },
+      recoveredPlaybackLeaseProvider: gate.lease,
+      player: player
+    )
+    let blocked = recoveredSession(sessionId: "blocked-recovered")
+    let replacement = recoveredSession(sessionId: "replacement-recovered")
+
+    controller.play(blocked)
+    await assertEventually { gate.hasEntered }
+    controller.play(replacement)
+    await assertEventually { controller.playingSessionId == replacement.sessionId }
+    gate.release()
+
+    await assertEventually { staleLeaseReleased.value }
+    XCTAssertEqual(controller.activePlaybackSessionId, replacement.sessionId)
+    XCTAssertEqual(controller.playingSessionId, replacement.sessionId)
+    XCTAssertEqual(
+      controller.playingRecoveredMediaIdentity,
+      RecoveredPlaybackMediaIdentity(replacement)
+    )
+    XCTAssertTrue(player.retainedLease === replacementLease)
+    XCTAssertNil(controller.errorMessage)
   }
 
   func testRecoveredRecordsInOneSessionPublishExactIdentityAcrossReplacementAndStop() async {
@@ -369,6 +708,13 @@ final class RecoveredSessionControllerTests: XCTestCase {
     let decisions = PlaybackTerminationDecisionRecorder()
     let controller = RecoveredSessionController(
       recoveryFactory: { RecoveryPreparationFake() },
+      recoveredPlaybackLeaseProvider: { identity in
+        ImportedPlaybackLeaseFake(
+          path: recoveredDescriptorReceipt(
+            fileDescriptor: identity.sourceId == "microphone-source" ? 44 : 45
+          )
+        )
+      },
       player: player,
       playbackTerminationDecisionObserver: decisions.record
     )
@@ -388,6 +734,9 @@ final class RecoveredSessionControllerTests: XCTestCase {
     )
 
     controller.play(microphone)
+    await assertEventually {
+      controller.playingRecoveredMediaIdentity == RecoveredPlaybackMediaIdentity(microphone)
+    }
     let microphoneGeneration = player.importedGeneration!
     XCTAssertEqual(
       controller.playingRecoveredMediaIdentity,
@@ -399,6 +748,9 @@ final class RecoveredSessionControllerTests: XCTestCase {
     )
 
     controller.play(systemAudio)
+    await assertEventually {
+      controller.playingRecoveredMediaIdentity == RecoveredPlaybackMediaIdentity(systemAudio)
+    }
     let systemGeneration = player.importedGeneration!
     XCTAssertEqual(controller.playingSessionId, "shared-session")
     XCTAssertEqual(
@@ -474,7 +826,7 @@ final class RecoveredSessionControllerTests: XCTestCase {
 
     XCTAssertEqual(controller.phase, .failed)
     XCTAssertTrue(controller.sessions.isEmpty)
-    XCTAssertNil(player.playedURL)
+    XCTAssertNil(player.recoveredReceipt)
     XCTAssertTrue(controller.errorMessage?.contains("Original files were not changed") == true)
   }
 
@@ -494,7 +846,7 @@ final class RecoveredSessionControllerTests: XCTestCase {
     XCTAssertEqual(controller.playingSessionId, imported.sessionId)
     XCTAssertEqual(controller.activePlaybackSessionId, imported.sessionId)
     XCTAssertEqual(player.importedReceipt, descriptorReceipt())
-    XCTAssertNil(player.playedURL)
+    XCTAssertNil(player.recoveredReceipt)
     XCTAssertTrue(player.retainedLease === lease)
     XCTAssertNil(controller.errorMessage)
   }
@@ -601,16 +953,20 @@ final class RecoveredSessionControllerTests: XCTestCase {
     }
   }
 
-  func testRecoveredIdentityAndBoundErrorPublishOnlyAfterOpenOutcome() {
+  func testRecoveredIdentityAndBoundErrorPublishOnlyAfterOpenOutcome() async {
     let player = RecoveredAudioPlayerFake()
     player.playError = CocoaError(.fileReadCorruptFile)
     let controller = RecoveredSessionController(
       recoveryFactory: { RecoveryPreparationFake() },
+      recoveredPlaybackLeaseProvider: { _ in
+        ImportedPlaybackLeaseFake(path: recoveredDescriptorReceipt())
+      },
       player: player
     )
     let recovered = recoveredSession(sessionId: "recovered-failure")
 
     controller.play(recovered)
+    await assertEventually { controller.errorMessage != nil }
 
     XCTAssertNil(controller.activePlaybackSessionId)
     XCTAssertNil(controller.playingSessionId)
@@ -641,7 +997,7 @@ final class RecoveredSessionControllerTests: XCTestCase {
 
       XCTAssertNil(controller.playingSessionId)
       XCTAssertNil(controller.activePlaybackSessionId)
-      XCTAssertNil(player.playedURL)
+      XCTAssertNil(player.recoveredReceipt)
       XCTAssertEqual(player.stopCount, 1)
       XCTAssertFalse(leaseRequested.value)
       XCTAssertTrue(controller.errorMessage?.contains(availability) == true)
@@ -660,7 +1016,7 @@ final class RecoveredSessionControllerTests: XCTestCase {
     controller.play(importedSession(availability: "available", absolutePath: "/tmp/imported.caf"))
 
     XCTAssertNil(controller.playingSessionId)
-    XCTAssertNil(player.playedURL)
+    XCTAssertNil(player.recoveredReceipt)
     XCTAssertEqual(player.stopCount, 1)
     XCTAssertEqual(controller.errorMessage, "Imported audio could not be opened for playback.")
     XCTAssertEqual(controller.errorSessionId, "session-imported")
@@ -710,7 +1066,7 @@ final class RecoveredSessionControllerTests: XCTestCase {
     await assertEventually { controller.errorMessage != nil }
 
     XCTAssertNil(controller.playingSessionId)
-    XCTAssertNil(player.playedURL)
+    XCTAssertNil(player.recoveredReceipt)
     XCTAssertNil(player.retainedLease)
     XCTAssertEqual(controller.errorMessage, "Imported audio could not be opened for playback.")
   }
@@ -733,7 +1089,7 @@ final class RecoveredSessionControllerTests: XCTestCase {
       return count
     }
 
-    let context = AnonymousAudioFileContext(region: snapshot.region)
+    let context = CallbackAudioFileContext(source: snapshot.region)
     var copied = [UInt8](repeating: 0, count: accepted.count)
     var copiedCount: UInt32 = 0
     let copyStatus = copied.withUnsafeMutableBytes { buffer in
@@ -858,7 +1214,7 @@ final class RecoveredSessionControllerTests: XCTestCase {
       )
       return count
     }
-    let context = AnonymousAudioFileContext(region: snapshot.region)
+    let context = CallbackAudioFileContext(source: snapshot.region)
     var output = [UInt8](repeating: 0, count: 4)
     var actualCount: UInt32 = 0
     let status = output.withUnsafeMutableBytes { buffer in
@@ -882,6 +1238,141 @@ final class RecoveredSessionControllerTests: XCTestCase {
       )
     }
     XCTAssertEqual(invalidStatus, kAudioFilePositionError)
+  }
+
+  func testRecoveredDescriptorPlaybackRetainsLeasedObjectAcrossPathReplacement() throws {
+    let mediaURL = try nativePlaybackCAF(frameCount: 2_400)
+    defer { try? FileManager.default.removeItem(at: mediaURL.deletingLastPathComponent()) }
+    let original = try Data(contentsOf: mediaURL)
+    let leaseReleased = SendableFlag()
+    var lease: DescriptorPlaybackLeaseProbe? = try DescriptorPlaybackLeaseProbe(
+      url: mediaURL,
+      released: leaseReleased,
+      recovered: true
+    )
+    let receipt = try RecoveredPlaybackDescriptorReceipt(
+      serialized: try XCTUnwrap(lease?.playbackPath())
+    )
+
+    try FileManager.default.removeItem(at: mediaURL)
+    let replacement = Data(repeating: 0xff, count: original.count)
+    try replacement.write(to: mediaURL, options: .withoutOverwriting)
+    let source = try VerifiedDescriptorPlaybackSource.prepare(receipt: receipt)
+    var copied = Data(count: original.count)
+    var actualCount: UInt32 = 0
+    let status = copied.withUnsafeMutableBytes { buffer in
+      source.copyBytes(
+        position: 0,
+        requestedCount: UInt32(buffer.count),
+        buffer: buffer.baseAddress!,
+        actualCount: &actualCount
+      )
+    }
+
+    XCTAssertEqual(status, noErr)
+    XCTAssertEqual(actualCount, UInt32(original.count))
+    XCTAssertEqual(copied, original)
+    XCTAssertNotEqual(try Data(contentsOf: mediaURL), original)
+    withExtendedLifetime(lease) {}
+    lease = nil
+    XCTAssertTrue(leaseReleased.value)
+  }
+
+  func testRecoveredDescriptorPreparationRejectsPartialCopyAndHashMismatch() throws {
+    let accepted = Data((0..<70_000).map { UInt8($0 % 251) })
+    let digest = SHA256.hash(data: accepted).map { String(format: "%02x", $0) }.joined()
+    let receipt = try RecoveredPlaybackDescriptorReceipt(
+      serialized: recoveredDescriptorReceipt(byteLength: UInt64(accepted.count), digest: digest)
+    )
+    let backing = DescriptorBytesFake(bytes: accepted)
+
+    XCTAssertThrowsError(
+      try VerifiedDescriptorPlaybackSource.prepare(
+        receipt: receipt,
+        inspect: backing.inspect,
+        readAt: { descriptor, offset, buffer in
+          let count = try backing.read(descriptor, offset: offset, buffer: buffer)
+          return offset == 0 ? count - 1 : count
+        }
+      )
+    ) { error in
+      XCTAssertEqual(error as? ImportedPlaybackError, .incompleteSnapshot)
+    }
+
+    let mismatchedReceipt = try RecoveredPlaybackDescriptorReceipt(
+      serialized: recoveredDescriptorReceipt(
+        byteLength: UInt64(accepted.count),
+        digest: String(repeating: "0", count: 64)
+      )
+    )
+    XCTAssertThrowsError(
+      try VerifiedDescriptorPlaybackSource.prepare(
+        receipt: mismatchedReceipt,
+        inspect: backing.inspect,
+        readAt: backing.read
+      )
+    ) { error in
+      XCTAssertEqual(error as? ImportedPlaybackError, .changedSnapshot)
+    }
+  }
+
+  func testRecoveredDescriptorPlaybackRejectsSameInodeMutationAndIdentityDrift() throws {
+    let accepted = Data((0..<70_000).map { UInt8($0 % 251) })
+    let digest = SHA256.hash(data: accepted).map { String(format: "%02x", $0) }.joined()
+    let receipt = try RecoveredPlaybackDescriptorReceipt(
+      serialized: recoveredDescriptorReceipt(byteLength: UInt64(accepted.count), digest: digest)
+    )
+    let backing = DescriptorBytesFake(bytes: accepted)
+    let source = try VerifiedDescriptorPlaybackSource.prepare(
+      receipt: receipt,
+      inspect: backing.inspect,
+      readAt: backing.read
+    )
+    var output = [UInt8](repeating: 0, count: 32)
+    var actualCount: UInt32 = 0
+
+    backing.mutateByte(at: 5)
+    let mutationStatus = output.withUnsafeMutableBytes { buffer in
+      source.copyBytes(
+        position: 0,
+        requestedCount: UInt32(buffer.count),
+        buffer: buffer.baseAddress!,
+        actualCount: &actualCount
+      )
+    }
+    XCTAssertNotEqual(mutationStatus, noErr)
+    XCTAssertEqual(actualCount, 0)
+
+    backing.replaceIdentity(device: 7, inode: 12, byteLength: UInt64(accepted.count))
+    let replacementStatus = output.withUnsafeMutableBytes { buffer in
+      source.copyBytes(
+        position: 65_536,
+        requestedCount: UInt32(buffer.count),
+        buffer: buffer.baseAddress!,
+        actualCount: &actualCount
+      )
+    }
+    XCTAssertNotEqual(replacementStatus, noErr)
+    XCTAssertEqual(actualCount, 0)
+  }
+
+  func testRecoveredDescriptorPlaybackHasNoImportedSnapshotCapOrWholeFileBuffer() throws {
+    let byteLength: UInt64 = 268_435_457
+    let receipt = try RecoveredPlaybackDescriptorReceipt(
+      serialized: recoveredDescriptorReceipt(byteLength: byteLength)
+    )
+    let source = VerifiedDescriptorPlaybackSource(
+      receipt: receipt,
+      identity: PlaybackDescriptorIdentity(device: 7, inode: 11, byteLength: byteLength),
+      chunkDigests: [],
+      inspect: { _ in
+        PlaybackDescriptorIdentity(device: 7, inode: 11, byteLength: byteLength)
+      },
+      readAt: { _, _, _ in 0 }
+    )
+
+    XCTAssertEqual(source.callbackByteCount, Int64(byteLength))
+    XCTAssertEqual(VerifiedDescriptorPlaybackSource.maximumBufferedByteCount, 65_536)
   }
 
   func testNativeImportedCallbacksReachNaturalEOFAndReleaseLeaseDescriptor() async throws {
@@ -1040,8 +1531,16 @@ final class RecoveredSessionControllerTests: XCTestCase {
     }
     let firstReleased = SendableFlag()
     let secondReleased = SendableFlag()
-    var firstLease: PlaybackLifetimeProbe? = PlaybackLifetimeProbe(released: firstReleased)
-    var secondLease: PlaybackLifetimeProbe? = PlaybackLifetimeProbe(released: secondReleased)
+    var firstLease: DescriptorPlaybackLeaseProbe? = try DescriptorPlaybackLeaseProbe(
+      url: firstURL,
+      released: firstReleased,
+      recovered: true
+    )
+    var secondLease: DescriptorPlaybackLeaseProbe? = try DescriptorPlaybackLeaseProbe(
+      url: secondURL,
+      released: secondReleased,
+      recovered: true
+    )
     let lifecycle = NativePlaybackLifecycleRecorder()
     let completionGate = NativePlaybackCompletionGate()
     let player = RecoveredAudioPlayer(
@@ -1055,16 +1554,16 @@ final class RecoveredSessionControllerTests: XCTestCase {
     let firstGeneration = UUID()
     let secondGeneration = UUID()
 
-    try player.play(
-      url: firstURL,
+    try await player.playRecovered(
+      receipt: try XCTUnwrap(firstLease?.playbackPath()),
       retaining: try XCTUnwrap(firstLease),
       generation: firstGeneration
     )
     firstLease = nil
     let receivedOldCompletion = await waitUntil { completionGate.isHoldingCompletion }
     XCTAssertTrue(receivedOldCompletion)
-    try player.play(
-      url: secondURL,
+    try await player.playRecovered(
+      receipt: try XCTUnwrap(secondLease?.playbackPath()),
       retaining: try XCTUnwrap(secondLease),
       generation: secondGeneration
     )
@@ -1082,6 +1581,126 @@ final class RecoveredSessionControllerTests: XCTestCase {
     let releasedSecondLease = await waitUntil { secondReleased.value }
     XCTAssertTrue(reachedSecondEOF)
     XCTAssertTrue(releasedSecondLease)
+  }
+
+  func testNativeRecoveredFailedReplacementReleasesPriorAndReplacementLeases() async throws {
+    let firstURL = try nativePlaybackCAF(frameCount: 24_000)
+    let replacementURL = try nativePlaybackCAF(frameCount: 24_000)
+    defer {
+      try? FileManager.default.removeItem(at: firstURL.deletingLastPathComponent())
+      try? FileManager.default.removeItem(at: replacementURL.deletingLastPathComponent())
+    }
+    let firstReleased = SendableFlag()
+    let replacementReleased = SendableFlag()
+    var firstLease: DescriptorPlaybackLeaseProbe? = try DescriptorPlaybackLeaseProbe(
+      url: firstURL,
+      released: firstReleased,
+      recovered: true
+    )
+    var replacementLease: DescriptorPlaybackLeaseProbe? = try DescriptorPlaybackLeaseProbe(
+      url: replacementURL,
+      released: replacementReleased,
+      recovered: true
+    )
+    let firstDescriptor = try XCTUnwrap(firstLease?.fileDescriptor)
+    let replacementDescriptor = try XCTUnwrap(replacementLease?.fileDescriptor)
+    let lifecycle = NativePlaybackLifecycleRecorder()
+    let player = RecoveredAudioPlayer(
+      lifecycle: NativePlaybackLifecycleHooks(observer: lifecycle.record)
+    )
+    let firstGeneration = UUID()
+    let replacementGeneration = UUID()
+
+    try await player.playRecovered(
+      receipt: try XCTUnwrap(firstLease?.playbackPath()),
+      retaining: try XCTUnwrap(firstLease),
+      generation: firstGeneration
+    )
+    firstLease = nil
+
+    let replacementBytes = try Data(contentsOf: replacementURL)
+    let mutationDescriptor = open(replacementURL.path, O_WRONLY | O_CLOEXEC)
+    XCTAssertGreaterThanOrEqual(mutationDescriptor, 0)
+    guard mutationDescriptor >= 0 else { return }
+    var changedByte = (try XCTUnwrap(replacementBytes.last)) ^ 0xff
+    XCTAssertEqual(
+      pwrite(
+        mutationDescriptor,
+        &changedByte,
+        1,
+        off_t(replacementBytes.count - 1)
+      ),
+      1
+    )
+    XCTAssertEqual(fsync(mutationDescriptor), 0)
+    XCTAssertEqual(close(mutationDescriptor), 0)
+
+    do {
+      try await player.playRecovered(
+        receipt: try XCTUnwrap(replacementLease?.playbackPath()),
+        retaining: try XCTUnwrap(replacementLease),
+        generation: replacementGeneration
+      )
+      XCTFail("mutated replacement unexpectedly opened")
+    } catch {
+      XCTAssertEqual(error as? ImportedPlaybackError, .changedSnapshot)
+    }
+
+    let releasedPrior = await waitUntil { firstReleased.value }
+    XCTAssertTrue(releasedPrior)
+    XCTAssertEqual(fcntl(firstDescriptor, F_GETFD), -1)
+    replacementLease = nil
+    let releasedReplacement = await waitUntil { replacementReleased.value }
+    XCTAssertTrue(releasedReplacement)
+    XCTAssertEqual(fcntl(replacementDescriptor, F_GETFD), -1)
+    XCTAssertTrue(
+      lifecycle.occursInOrder([
+        .recoveredSessionDeactivated(firstGeneration),
+        .recoveredDecoderClosed(firstGeneration),
+        .playerStopped(firstGeneration),
+        .engineStopped(firstGeneration),
+      ])
+    )
+  }
+
+  func testNativeRecoveredStopReleasesLeaseDescriptor() async throws {
+    let mediaURL = try nativePlaybackCAF(frameCount: 24_000)
+    defer { try? FileManager.default.removeItem(at: mediaURL.deletingLastPathComponent()) }
+    let leaseReleased = SendableFlag()
+    var lease: DescriptorPlaybackLeaseProbe? = try DescriptorPlaybackLeaseProbe(
+      url: mediaURL,
+      released: leaseReleased,
+      recovered: true
+    )
+    let descriptor = try XCTUnwrap(lease?.fileDescriptor)
+    let lifecycle = NativePlaybackLifecycleRecorder()
+    let player = RecoveredAudioPlayer(
+      lifecycle: NativePlaybackLifecycleHooks(observer: lifecycle.record)
+    )
+    let termination = PlaybackTerminationRecorder()
+    player.setPlaybackTerminationHandler { termination.record($0) }
+    let generation = UUID()
+
+    try await player.playRecovered(
+      receipt: try XCTUnwrap(lease?.playbackPath()),
+      retaining: try XCTUnwrap(lease),
+      generation: generation
+    )
+    lease = nil
+    player.stop()
+
+    let releasedLease = await waitUntil { leaseReleased.value }
+    XCTAssertTrue(releasedLease)
+    XCTAssertEqual(fcntl(descriptor, F_GETFD), -1)
+    XCTAssertTrue(
+      lifecycle.occursInOrder([
+        .recoveredSessionDeactivated(generation),
+        .recoveredDecoderClosed(generation),
+        .playerStopped(generation),
+        .engineStopped(generation),
+      ])
+    )
+    XCTAssertFalse(termination.contains(generation: generation))
   }
 
   func testRecoveryAndAsyncDecodeFailureReleaseImportedPlayingTruth() async {
@@ -1275,7 +1894,6 @@ final class RecoveredSessionControllerTests: XCTestCase {
       sourceDisplayName: "Synthetic microphone",
       segmentId: segmentId,
       relativePath: "audio/track/segment.caf",
-      absolutePath: path,
       sampleCount: 48_000,
       durationNanoseconds: 1_000_000_000,
       byteLength: 100_000,

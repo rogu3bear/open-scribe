@@ -723,6 +723,10 @@ public protocol NativeRecordingPreparationProtocol: AnyObject, Sendable {
 
   func leaseImportedPlayback(sessionId: String) throws -> NativeImportedPlaybackLease
 
+  func leaseRecoveredPlayback(
+    sessionId: String, sourceId: String, trackId: String, segmentId: String
+  ) throws -> NativeImportedPlaybackLease
+
   func prepareSession(title: String) throws -> NativePreparedSession
 
   func prepareSessionWithRequiredSources(title: String, requiredSources: [NativeMediaSourceKind])
@@ -885,6 +889,22 @@ open class NativeRecordingPreparation: NativeRecordingPreparationProtocol, @unch
         uniffi_open_scribe_uniffi_fn_method_nativerecordingpreparation_lease_imported_playback(
           self.uniffiCloneHandle(),
           FfiConverterString.lower(sessionId), uniffiCallStatus
+        )
+      })
+  }
+
+  open func leaseRecoveredPlayback(
+    sessionId: String, sourceId: String, trackId: String, segmentId: String
+  ) throws -> NativeImportedPlaybackLease {
+    return try FfiConverterTypeNativeImportedPlaybackLease_lift(
+      try rustCallWithError(FfiConverterTypeNativeStorageError_lift) {
+        uniffiCallStatus in
+        uniffi_open_scribe_uniffi_fn_method_nativerecordingpreparation_lease_recovered_playback(
+          self.uniffiCloneHandle(),
+          FfiConverterString.lower(sessionId),
+          FfiConverterString.lower(sourceId),
+          FfiConverterString.lower(trackId),
+          FfiConverterString.lower(segmentId), uniffiCallStatus
         )
       })
   }
@@ -1733,7 +1753,6 @@ public struct NativeRecoveredPlayableSession: Equatable, Hashable {
   public let sourceDisplayName: String
   public let segmentId: String
   public let relativePath: String
-  public let absolutePath: String
   public let sampleCount: UInt64
   public let durationNanoseconds: UInt64
   public let byteLength: UInt64
@@ -1747,9 +1766,9 @@ public struct NativeRecoveredPlayableSession: Equatable, Hashable {
   // declare one manually.
   public init(
     sessionId: String, sourceId: String, trackId: String, sourceKind: NativeMediaSourceKind,
-    sourceDisplayName: String, segmentId: String, relativePath: String, absolutePath: String,
-    sampleCount: UInt64, durationNanoseconds: UInt64, byteLength: UInt64, digestSha256: String,
-    mediaPreserved: Bool, readyForReview: Bool, recordingStarted: Bool, lastJournalSequence: UInt64
+    sourceDisplayName: String, segmentId: String, relativePath: String, sampleCount: UInt64,
+    durationNanoseconds: UInt64, byteLength: UInt64, digestSha256: String, mediaPreserved: Bool,
+    readyForReview: Bool, recordingStarted: Bool, lastJournalSequence: UInt64
   ) {
     self.sessionId = sessionId
     self.sourceId = sourceId
@@ -1758,7 +1777,6 @@ public struct NativeRecoveredPlayableSession: Equatable, Hashable {
     self.sourceDisplayName = sourceDisplayName
     self.segmentId = segmentId
     self.relativePath = relativePath
-    self.absolutePath = absolutePath
     self.sampleCount = sampleCount
     self.durationNanoseconds = durationNanoseconds
     self.byteLength = byteLength
@@ -1791,7 +1809,6 @@ public struct FfiConverterTypeNativeRecoveredPlayableSession: FfiConverterRustBu
         sourceDisplayName: FfiConverterString.read(from: &buf),
         segmentId: FfiConverterString.read(from: &buf),
         relativePath: FfiConverterString.read(from: &buf),
-        absolutePath: FfiConverterString.read(from: &buf),
         sampleCount: FfiConverterUInt64.read(from: &buf),
         durationNanoseconds: FfiConverterUInt64.read(from: &buf),
         byteLength: FfiConverterUInt64.read(from: &buf),
@@ -1811,7 +1828,6 @@ public struct FfiConverterTypeNativeRecoveredPlayableSession: FfiConverterRustBu
     FfiConverterString.write(value.sourceDisplayName, into: &buf)
     FfiConverterString.write(value.segmentId, into: &buf)
     FfiConverterString.write(value.relativePath, into: &buf)
-    FfiConverterString.write(value.absolutePath, into: &buf)
     FfiConverterUInt64.write(value.sampleCount, into: &buf)
     FfiConverterUInt64.write(value.durationNanoseconds, into: &buf)
     FfiConverterUInt64.write(value.byteLength, into: &buf)
@@ -3634,6 +3650,11 @@ private let initializationResult: InitializationResult = {
   }
   if uniffi_open_scribe_uniffi_checksum_method_nativerecordingpreparation_lease_imported_playback()
     != 52304
+  {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_open_scribe_uniffi_checksum_method_nativerecordingpreparation_lease_recovered_playback()
+    != 485
   {
     return InitializationResult.apiChecksumMismatch
   }

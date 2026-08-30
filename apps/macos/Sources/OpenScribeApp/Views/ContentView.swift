@@ -359,6 +359,30 @@ enum MainWorkspacePlaybackNotice {
   }
 }
 
+enum PlaybackControlAction: Equatable, Sendable {
+  case play
+  case cancel
+  case stop
+
+  static func resolve(isPending: Bool, isPlaying: Bool) -> Self {
+    if isPlaying { return .stop }
+    if isPending { return .cancel }
+    return .play
+  }
+
+  var title: String {
+    switch self {
+    case .play: "Play"
+    case .cancel: "Cancel"
+    case .stop: "Stop"
+    }
+  }
+
+  func isEnabled(hasActivePlayback: Bool) -> Bool {
+    self != .play || !hasActivePlayback
+  }
+}
+
 enum ImportedPlaybackEligibility {
   static func canPlay(_ media: RuntimePlayableMediaPresentation) -> Bool {
     media.isPlayable && media.byteLength <= ImportedPlaybackMemoryPolicy.maximumSnapshotByteLength
@@ -473,6 +497,13 @@ private struct ConversationWorkspaceView: View {
 
       if let media = session.playableMedia {
         let canPlay = ImportedPlaybackEligibility.canPlay(media)
+        let isPlaying = playbackController.playingSessionId == session.sessionId
+        let isPending =
+          playbackController.activePlaybackSessionId == session.sessionId && !isPlaying
+        let playbackAction = PlaybackControlAction.resolve(
+          isPending: isPending,
+          isPlaying: isPlaying
+        )
         let playbackError =
           playbackController.errorSessionId == session.sessionId
             && playbackController.errorRecoveredMediaIdentity == nil
@@ -480,11 +511,18 @@ private struct ConversationWorkspaceView: View {
         PlayableAudioRow(
           name: media.sourceDisplayName,
           duration: media.durationText,
-          status: playbackError ?? ImportedPlaybackEligibility.status(media),
+          status: isPending
+            ? "Verifying local audio"
+            : playbackError ?? ImportedPlaybackEligibility.status(media),
           statusIsFailure: playbackError != nil || (media.isPlayable && !canPlay),
           isAvailable: canPlay,
-          actionEnabled: canPlay,
-          isPlaying: playbackController.playingSessionId == session.sessionId,
+          actionEnabled:
+            playbackAction != .play
+            || (canPlay
+              && playbackAction.isEnabled(
+                hasActivePlayback: playbackController.activePlaybackSessionId != nil
+              )),
+          playbackAction: playbackAction,
           onTogglePlayback: toggleImportedPlayback
         )
       } else if !recoveredTracks.isEmpty {
@@ -493,6 +531,11 @@ private struct ConversationWorkspaceView: View {
           let isPlaying =
             playbackController.playingRecoveredMediaIdentity
             == identity
+          let isPending = playbackController.pendingRecoveredMediaIdentity == identity
+          let playbackAction = PlaybackControlAction.resolve(
+            isPending: isPending,
+            isPlaying: isPlaying
+          )
           let playbackError =
             playbackController.errorSessionId == session.sessionId
               && playbackController.errorRecoveredMediaIdentity == identity
@@ -500,11 +543,13 @@ private struct ConversationWorkspaceView: View {
           PlayableAudioRow(
             name: track.source.name,
             duration: track.durationText,
-            status: playbackError ?? "Preserved local audio",
+            status: isPending ? "Verifying local audio" : playbackError ?? "Preserved local audio",
             statusIsFailure: playbackError != nil,
             isAvailable: true,
-            actionEnabled: playbackController.playingSessionId == nil || isPlaying,
-            isPlaying: isPlaying,
+            actionEnabled: playbackAction.isEnabled(
+              hasActivePlayback: playbackController.activePlaybackSessionId != nil
+            ),
+            playbackAction: playbackAction,
             onTogglePlayback: {
               toggleRecoveredPlayback(track.playableSession)
             }
@@ -537,7 +582,7 @@ private struct ConversationWorkspaceView: View {
   }
 
   private func toggleImportedPlayback() {
-    if playbackController.playingSessionId == session.sessionId {
+    if playbackController.activePlaybackSessionId == session.sessionId {
       playbackController.stopPlayback()
     } else {
       playbackController.play(session)
@@ -545,8 +590,9 @@ private struct ConversationWorkspaceView: View {
   }
 
   private func toggleRecoveredPlayback(_ playableSession: NativeRecoveredPlayableSession) {
-    if playbackController.playingRecoveredMediaIdentity
-      == RecoveredPlaybackMediaIdentity(playableSession)
+    let identity = RecoveredPlaybackMediaIdentity(playableSession)
+    if playbackController.pendingRecoveredMediaIdentity == identity
+      || playbackController.playingRecoveredMediaIdentity == identity
     {
       playbackController.stopPlayback()
     } else {
@@ -562,7 +608,7 @@ private struct PlayableAudioRow: View {
   let statusIsFailure: Bool
   let isAvailable: Bool
   let actionEnabled: Bool
-  let isPlaying: Bool
+  let playbackAction: PlaybackControlAction
   let onTogglePlayback: () -> Void
 
   var body: some View {
@@ -577,11 +623,11 @@ private struct PlayableAudioRow: View {
           .foregroundStyle(statusIsFailure || !isAvailable ? Color.red : Color.secondary)
       }
       Spacer()
-      Button(isPlaying ? "Stop" : "Play") {
+      Button(playbackAction.title) {
         onTogglePlayback()
       }
-      .disabled(!actionEnabled && !isPlaying)
-      .accessibilityLabel(isPlaying ? "Stop \(name)" : "Play \(name)")
+      .disabled(!actionEnabled)
+      .accessibilityLabel("\(playbackAction.title) \(name)")
     }
     .padding(.vertical, 6)
     .accessibilityElement(children: .contain)

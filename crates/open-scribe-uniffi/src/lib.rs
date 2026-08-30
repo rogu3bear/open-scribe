@@ -188,7 +188,6 @@ pub struct NativeRecoveredPlayableSession {
     pub source_display_name: String,
     pub segment_id: String,
     pub relative_path: String,
-    pub absolute_path: String,
     pub sample_count: u64,
     pub duration_nanoseconds: u64,
     pub byte_length: u64,
@@ -272,18 +271,32 @@ pub struct NativeRecordingPreparation {
 #[derive(uniffi::Object)]
 pub struct NativeImportedPlaybackLease {
     lease: open_scribe_core::ImportedPlaybackLease,
+    strategy: NativePlaybackLeaseStrategy,
+}
+
+enum NativePlaybackLeaseStrategy {
+    ImportedSnapshot,
+    RecoveredVerifiedChunks,
 }
 
 #[uniffi::export]
 impl NativeImportedPlaybackLease {
     pub fn playback_path(&self) -> String {
-        format!(
-            "v1;fd={};byte_length={};sha256={};max_byte_length={}",
-            self.lease.raw_file_descriptor(),
-            self.lease.byte_length(),
-            self.lease.digest_sha256(),
-            open_scribe_core::ImportedPlaybackLease::maximum_snapshot_byte_length(),
-        )
+        match self.strategy {
+            NativePlaybackLeaseStrategy::ImportedSnapshot => format!(
+                "v1;fd={};byte_length={};sha256={};max_byte_length={}",
+                self.lease.raw_file_descriptor(),
+                self.lease.byte_length(),
+                self.lease.digest_sha256(),
+                open_scribe_core::ImportedPlaybackLease::maximum_snapshot_byte_length(),
+            ),
+            NativePlaybackLeaseStrategy::RecoveredVerifiedChunks => format!(
+                "v2;fd={};byte_length={};sha256={};chunk_byte_length=65536",
+                self.lease.raw_file_descriptor(),
+                self.lease.byte_length(),
+                self.lease.digest_sha256(),
+            ),
+        }
     }
 }
 
@@ -549,7 +562,6 @@ impl NativeRecordingPreparation {
                 source_display_name: recovered.source_display_name,
                 segment_id: recovered.segment_id,
                 relative_path: recovered.relative_path,
-                absolute_path: recovered.absolute_path.to_string_lossy().into_owned(),
                 sample_count: recovered.sample_count,
                 duration_nanoseconds: recovered.duration_nanoseconds,
                 byte_length: recovered.byte_length,
@@ -592,7 +604,32 @@ impl NativeRecordingPreparation {
             .controller()?
             .lease_imported_playback(open_scribe_types::SessionId(session_id))
             .map_err(map_storage_error)?;
-        Ok(Arc::new(NativeImportedPlaybackLease { lease }))
+        Ok(Arc::new(NativeImportedPlaybackLease {
+            lease,
+            strategy: NativePlaybackLeaseStrategy::ImportedSnapshot,
+        }))
+    }
+
+    pub fn lease_recovered_playback(
+        &self,
+        session_id: String,
+        source_id: String,
+        track_id: String,
+        segment_id: String,
+    ) -> Result<Arc<NativeImportedPlaybackLease>, NativeStorageError> {
+        let lease = self
+            .controller()?
+            .lease_recovered_playback(
+                open_scribe_types::SessionId(session_id),
+                source_id,
+                track_id,
+                segment_id,
+            )
+            .map_err(map_storage_error)?;
+        Ok(Arc::new(NativeImportedPlaybackLease {
+            lease,
+            strategy: NativePlaybackLeaseStrategy::RecoveredVerifiedChunks,
+        }))
     }
 
     pub fn runtime_library_snapshot(
@@ -1400,6 +1437,18 @@ mod tests {
         assert_eq!(recovered[0].source_kind, NativeMediaSourceKind::Microphone);
         assert_eq!(recovered[0].source_display_name, "Synthetic microphone");
         assert_eq!(recovered[0].sample_count, 960);
+        let lease = controller
+            .lease_recovered_playback(
+                authorization.session_id,
+                authorization.source_id,
+                authorization.track_id,
+                authorization.segment_id,
+            )
+            .unwrap();
+        let receipt = lease.playback_path();
+        assert!(receipt.starts_with("v2;fd="));
+        assert!(receipt.contains(";chunk_byte_length=65536"));
+        drop(lease);
         fs::remove_dir_all(root).unwrap();
     }
 }

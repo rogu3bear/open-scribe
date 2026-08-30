@@ -207,6 +207,17 @@ impl RecordingPreparationController {
         self.store.lease_imported_playback(&session_id)
     }
 
+    pub fn lease_recovered_playback(
+        &self,
+        session_id: open_scribe_types::SessionId,
+        source_id: String,
+        track_id: String,
+        segment_id: String,
+    ) -> Result<ImportedPlaybackLease, StoreError> {
+        self.store
+            .lease_recovered_playback(&session_id, &source_id, &track_id, &segment_id)
+    }
+
     pub fn runtime_library_snapshot(&self) -> Result<RuntimeLibrarySnapshot, StoreError> {
         self.store.runtime_library_snapshot()
     }

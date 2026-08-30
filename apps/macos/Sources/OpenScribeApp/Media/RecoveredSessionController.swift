@@ -18,7 +18,7 @@ extension NativeImportedPlaybackLease: ImportedPlaybackLeaseHolding {}
 
 @MainActor
 protocol RecoveredAudioPlaying: AnyObject {
-  func play(url: URL, retaining lease: AnyObject?, generation: UUID) throws
+  func playRecovered(receipt: String, retaining lease: AnyObject, generation: UUID) async throws
   func playImported(receipt: String, retaining lease: AnyObject, generation: UUID) async throws
   func setPlaybackTerminationHandler(
     _ handler: @escaping @Sendable (PlaybackTermination) -> Void
@@ -42,6 +42,8 @@ enum NativePlaybackLifecycleEvent: Equatable, Sendable {
   case importedSessionDeactivated(UUID)
   case importedDecoderClosed(UUID)
   case anonymousRegionReleased(UUID)
+  case recoveredSessionDeactivated(UUID)
+  case recoveredDecoderClosed(UUID)
   case recoveredCompletionReceived(UUID)
   case recoveredCompletionDelivered(UUID)
   case playerStopped(UUID?)
@@ -262,6 +264,48 @@ struct ImportedPlaybackDescriptorReceipt: Equatable, Sendable {
   }
 }
 
+struct RecoveredPlaybackDescriptorReceipt: Equatable, Sendable {
+  static let chunkByteLength: UInt64 = 64 * 1024
+
+  let fileDescriptor: Int32
+  let byteLength: UInt64
+  let digestSha256: String
+
+  init(serialized: String) throws {
+    let parts = serialized.split(separator: ";", omittingEmptySubsequences: false)
+    guard parts.first == "v2" else {
+      throw ImportedPlaybackError.invalidDescriptorReceipt
+    }
+    var fields: [String: String] = [:]
+    for part in parts.dropFirst() {
+      let pair = part.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
+      guard pair.count == 2, fields[String(pair[0])] == nil else {
+        throw ImportedPlaybackError.invalidDescriptorReceipt
+      }
+      fields[String(pair[0])] = String(pair[1])
+    }
+    guard
+      fields.count == 4,
+      let descriptorText = fields["fd"],
+      let descriptor = Int32(descriptorText),
+      descriptor >= 0,
+      let byteLengthText = fields["byte_length"],
+      let byteLength = UInt64(byteLengthText),
+      byteLength > 0,
+      byteLength <= UInt64(Int64.max),
+      let digest = fields["sha256"],
+      digest.count == 64,
+      digest.allSatisfy({ $0.isHexDigit && !$0.isUppercase }),
+      fields["chunk_byte_length"] == String(Self.chunkByteLength)
+    else {
+      throw ImportedPlaybackError.invalidDescriptorReceipt
+    }
+    fileDescriptor = descriptor
+    self.byteLength = byteLength
+    digestSha256 = digest
+  }
+}
+
 enum ImportedPlaybackMemoryPolicy {
   static let maximumSnapshotByteLength: UInt64 = 256 * 1024 * 1024
 
@@ -276,7 +320,17 @@ enum ImportedPlaybackMemoryPolicy {
   }
 }
 
-final class AnonymousPlaybackRegion: @unchecked Sendable {
+protocol CallbackAudioByteSource: AnyObject, Sendable {
+  var callbackByteCount: Int64 { get }
+  func copyBytes(
+    position: Int64,
+    requestedCount: UInt32,
+    buffer: UnsafeMutableRawPointer,
+    actualCount: UnsafeMutablePointer<UInt32>
+  ) -> OSStatus
+}
+
+final class AnonymousPlaybackRegion: CallbackAudioByteSource, @unchecked Sendable {
   typealias Allocator = (_ byteCount: Int) -> UnsafeMutableRawPointer?
   typealias Deallocator = (_ baseAddress: UnsafeMutableRawPointer, _ byteCount: Int) -> Void
   typealias Protector = (_ baseAddress: UnsafeMutableRawPointer, _ byteCount: Int) -> Bool
@@ -331,6 +385,8 @@ final class AnonymousPlaybackRegion: @unchecked Sendable {
     return noErr
   }
 
+  var callbackByteCount: Int64 { Int64(byteCount) }
+
   deinit {
     deallocator(baseAddress, byteCount)
     onRelease()
@@ -361,6 +417,195 @@ final class AnonymousPlaybackRegion: @unchecked Sendable {
     byteCount: Int
   ) -> Bool {
     mprotect(baseAddress, byteCount, PROT_READ) == 0
+  }
+}
+
+struct PlaybackDescriptorIdentity: Equatable, Sendable {
+  let device: UInt64
+  let inode: UInt64
+  let byteLength: UInt64
+}
+
+final class VerifiedDescriptorPlaybackSource: CallbackAudioByteSource, @unchecked Sendable {
+  typealias Inspector = @Sendable (Int32) throws -> PlaybackDescriptorIdentity
+  typealias PositionalRead =
+    @Sendable (
+      _ descriptor: Int32,
+      _ offset: UInt64,
+      _ buffer: UnsafeMutableRawBufferPointer
+    ) throws -> Int
+
+  static let maximumBufferedByteCount = Int(RecoveredPlaybackDescriptorReceipt.chunkByteLength)
+
+  let callbackByteCount: Int64
+
+  private let descriptor: Int32
+  private let identity: PlaybackDescriptorIdentity
+  private let chunkDigests: [Data]
+  private let inspect: Inspector
+  private let readAt: PositionalRead
+
+  static func prepare(
+    receipt: RecoveredPlaybackDescriptorReceipt,
+    isCancelled: @escaping @Sendable () -> Bool = { false }
+  ) throws -> VerifiedDescriptorPlaybackSource {
+    try prepare(
+      receipt: receipt,
+      inspect: systemInspect,
+      readAt: systemRead,
+      isCancelled: isCancelled
+    )
+  }
+
+  static func prepare(
+    receipt: RecoveredPlaybackDescriptorReceipt,
+    inspect: @escaping Inspector,
+    readAt: @escaping PositionalRead,
+    isCancelled: @escaping @Sendable () -> Bool = { false }
+  ) throws -> VerifiedDescriptorPlaybackSource {
+    let initialIdentity = try inspect(receipt.fileDescriptor)
+    guard initialIdentity.byteLength == receipt.byteLength else {
+      throw ImportedPlaybackError.changedSnapshot
+    }
+    var fullHasher = SHA256()
+    var chunkDigests: [Data] = []
+    var offset: UInt64 = 0
+    while offset < receipt.byteLength {
+      if isCancelled() { throw CancellationError() }
+      let requested = Int(
+        min(RecoveredPlaybackDescriptorReceipt.chunkByteLength, receipt.byteLength - offset)
+      )
+      var chunk = Data(count: requested)
+      let count = try chunk.withUnsafeMutableBytes { buffer in
+        try readAt(receipt.fileDescriptor, offset, buffer)
+      }
+      guard count == requested else { throw ImportedPlaybackError.incompleteSnapshot }
+      fullHasher.update(data: chunk)
+      chunkDigests.append(Data(SHA256.hash(data: chunk)))
+      offset += UInt64(count)
+    }
+    var trailingByte: UInt8 = 0
+    let trailingCount = try withUnsafeMutableBytes(of: &trailingByte) { buffer in
+      try readAt(receipt.fileDescriptor, receipt.byteLength, buffer)
+    }
+    let finalIdentity = try inspect(receipt.fileDescriptor)
+    let digest = fullHasher.finalize().map { String(format: "%02x", $0) }.joined()
+    guard
+      trailingCount == 0,
+      finalIdentity == initialIdentity,
+      digest == receipt.digestSha256
+    else {
+      throw ImportedPlaybackError.changedSnapshot
+    }
+    return VerifiedDescriptorPlaybackSource(
+      receipt: receipt,
+      identity: initialIdentity,
+      chunkDigests: chunkDigests,
+      inspect: inspect,
+      readAt: readAt
+    )
+  }
+
+  init(
+    receipt: RecoveredPlaybackDescriptorReceipt,
+    identity: PlaybackDescriptorIdentity,
+    chunkDigests: [Data],
+    inspect: @escaping Inspector,
+    readAt: @escaping PositionalRead
+  ) {
+    descriptor = receipt.fileDescriptor
+    self.identity = identity
+    self.chunkDigests = chunkDigests
+    self.inspect = inspect
+    self.readAt = readAt
+    callbackByteCount = Int64(receipt.byteLength)
+  }
+
+  func copyBytes(
+    position: Int64,
+    requestedCount: UInt32,
+    buffer: UnsafeMutableRawPointer,
+    actualCount: UnsafeMutablePointer<UInt32>
+  ) -> OSStatus {
+    guard position >= 0 else { return kAudioFilePositionError }
+    let start = UInt64(position)
+    let byteLength = UInt64(callbackByteCount)
+    guard start <= byteLength else { return kAudioFilePositionError }
+    let requested = min(UInt64(requestedCount), byteLength - start)
+    guard requested > 0 else {
+      actualCount.pointee = 0
+      return noErr
+    }
+    do {
+      guard try inspect(descriptor) == identity else {
+        throw ImportedPlaybackError.changedSnapshot
+      }
+      var copied: UInt64 = 0
+      while copied < requested {
+        let absoluteOffset = start + copied
+        let chunkIndex = Int(absoluteOffset / RecoveredPlaybackDescriptorReceipt.chunkByteLength)
+        let chunkStart = UInt64(chunkIndex) * RecoveredPlaybackDescriptorReceipt.chunkByteLength
+        let chunkLength = Int(
+          min(RecoveredPlaybackDescriptorReceipt.chunkByteLength, byteLength - chunkStart)
+        )
+        guard chunkDigests.indices.contains(chunkIndex) else {
+          throw ImportedPlaybackError.changedSnapshot
+        }
+        var chunk = Data(count: chunkLength)
+        let count = try chunk.withUnsafeMutableBytes { bytes in
+          try readAt(descriptor, chunkStart, bytes)
+        }
+        guard count == chunkLength, Data(SHA256.hash(data: chunk)) == chunkDigests[chunkIndex]
+        else {
+          throw ImportedPlaybackError.changedSnapshot
+        }
+        let offsetInChunk = Int(absoluteOffset - chunkStart)
+        let copyCount = min(Int(requested - copied), chunkLength - offsetInChunk)
+        chunk.withUnsafeBytes { bytes in
+          buffer.advanced(by: Int(copied)).copyMemory(
+            from: bytes.baseAddress!.advanced(by: offsetInChunk),
+            byteCount: copyCount
+          )
+        }
+        copied += UInt64(copyCount)
+      }
+      guard try inspect(descriptor) == identity else {
+        throw ImportedPlaybackError.changedSnapshot
+      }
+      actualCount.pointee = UInt32(copied)
+      return noErr
+    } catch {
+      actualCount.pointee = 0
+      return kAudioFilePositionError
+    }
+  }
+
+  private static func systemInspect(_ descriptor: Int32) throws -> PlaybackDescriptorIdentity {
+    var metadata = stat()
+    guard fstat(descriptor, &metadata) == 0, (metadata.st_mode & S_IFMT) == S_IFREG else {
+      throw ImportedPlaybackError.changedSnapshot
+    }
+    guard metadata.st_size >= 0 else { throw ImportedPlaybackError.changedSnapshot }
+    return PlaybackDescriptorIdentity(
+      device: UInt64(metadata.st_dev),
+      inode: UInt64(metadata.st_ino),
+      byteLength: UInt64(metadata.st_size)
+    )
+  }
+
+  private static func systemRead(
+    descriptor: Int32,
+    offset: UInt64,
+    buffer: UnsafeMutableRawBufferPointer
+  ) throws -> Int {
+    guard let baseAddress = buffer.baseAddress else { return 0 }
+    while true {
+      let count = pread(descriptor, baseAddress, buffer.count, off_t(offset))
+      if count >= 0 { return count }
+      if errno != EINTR {
+        throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+      }
+    }
   }
 }
 
@@ -452,11 +697,11 @@ struct AnonymousImportedPlaybackSnapshot: Sendable {
   }
 }
 
-final class AnonymousAudioFileContext: @unchecked Sendable {
-  let region: AnonymousPlaybackRegion
+final class CallbackAudioFileContext: @unchecked Sendable {
+  let source: any CallbackAudioByteSource
 
-  init(region: AnonymousPlaybackRegion) {
-    self.region = region
+  init(source: any CallbackAudioByteSource) {
+    self.source = source
   }
 
   func read(
@@ -465,7 +710,7 @@ final class AnonymousAudioFileContext: @unchecked Sendable {
     buffer: UnsafeMutableRawPointer,
     actualCount: UnsafeMutablePointer<UInt32>
   ) -> OSStatus {
-    region.copyBytes(
+    source.copyBytes(
       position: position,
       requestedCount: requestedCount,
       buffer: buffer,
@@ -474,9 +719,9 @@ final class AnonymousAudioFileContext: @unchecked Sendable {
   }
 }
 
-private let anonymousAudioFileRead: AudioFile_ReadProc = {
+private let callbackAudioFileRead: AudioFile_ReadProc = {
   clientData, position, requestedCount, buffer, actualCount in
-  let context = Unmanaged<AnonymousAudioFileContext>.fromOpaque(clientData)
+  let context = Unmanaged<CallbackAudioFileContext>.fromOpaque(clientData)
     .takeUnretainedValue()
   return context.read(
     position: position,
@@ -486,16 +731,16 @@ private let anonymousAudioFileRead: AudioFile_ReadProc = {
   )
 }
 
-private let anonymousAudioFileSize: AudioFile_GetSizeProc = { clientData in
-  let context = Unmanaged<AnonymousAudioFileContext>.fromOpaque(clientData)
+private let callbackAudioFileSize: AudioFile_GetSizeProc = { clientData in
+  let context = Unmanaged<CallbackAudioFileContext>.fromOpaque(clientData)
     .takeUnretainedValue()
-  return Int64(context.region.byteCount)
+  return context.source.callbackByteCount
 }
 
-private final class AnonymousCAFDecoder: @unchecked Sendable {
+private final class CallbackCAFDecoder: @unchecked Sendable {
   let processingFormat: AVAudioFormat
 
-  private let context: AnonymousAudioFileContext
+  private let context: CallbackAudioFileContext
   private let fileFormatSummary: ImportedPlaybackAudioFormatSummary
   private let clientFormatSummary: ImportedPlaybackAudioFormatSummary
   private let initialFramePositionStatus: OSStatus
@@ -506,16 +751,16 @@ private final class AnonymousCAFDecoder: @unchecked Sendable {
   private var hasProducedFrames = false
 
   init(
-    snapshot: AnonymousImportedPlaybackSnapshot,
+    source: any CallbackAudioByteSource,
     onClose: @escaping @Sendable () -> Void
   ) throws {
-    let context = AnonymousAudioFileContext(region: snapshot.region)
+    let context = CallbackAudioFileContext(source: source)
     var openedAudioFile: AudioFileID?
     var status = AudioFileOpenWithCallbacks(
       Unmanaged.passUnretained(context).toOpaque(),
-      anonymousAudioFileRead,
+      callbackAudioFileRead,
       nil,
-      anonymousAudioFileSize,
+      callbackAudioFileSize,
       nil,
       kAudioFileCAFType,
       &openedAudioFile
@@ -661,13 +906,19 @@ private final class AnonymousCAFDecoder: @unchecked Sendable {
   }
 }
 
-private final class BoundedImportedPlaybackSession: @unchecked Sendable {
+private enum CallbackPlaybackKind: Equatable, Sendable {
+  case imported
+  case recovered
+}
+
+private final class BoundedCallbackPlaybackSession: @unchecked Sendable {
   private static let framesPerBuffer: AVAudioFrameCount = 16_384
   private static let scheduledBufferLimit = 2
 
   let processingFormat: AVAudioFormat
 
-  private let decoder: AnonymousCAFDecoder
+  private let decoder: CallbackCAFDecoder
+  private let kind: CallbackPlaybackKind
   private let generation: UUID
   private let lifecycle: NativePlaybackLifecycleHooks
   private let termination: @Sendable (PlaybackTermination) -> Void
@@ -677,17 +928,25 @@ private final class BoundedImportedPlaybackSession: @unchecked Sendable {
   private var active = true
 
   init(
-    snapshot: AnonymousImportedPlaybackSnapshot,
+    source: any CallbackAudioByteSource,
+    kind: CallbackPlaybackKind,
     generation: UUID,
     lifecycle: NativePlaybackLifecycleHooks,
     termination: @escaping @Sendable (PlaybackTermination) -> Void
   ) throws {
     self.generation = generation
+    self.kind = kind
     self.lifecycle = lifecycle
     self.termination = termination
-    decoder = try AnonymousCAFDecoder(
-      snapshot: snapshot,
-      onClose: { lifecycle.observe(.importedDecoderClosed(generation)) }
+    decoder = try CallbackCAFDecoder(
+      source: source,
+      onClose: {
+        lifecycle.observe(
+          kind == .imported
+            ? .importedDecoderClosed(generation)
+            : .recoveredDecoderClosed(generation)
+        )
+      }
     )
     processingFormat = decoder.processingFormat
   }
@@ -707,7 +966,11 @@ private final class BoundedImportedPlaybackSession: @unchecked Sendable {
   func stop() {
     queue.sync {
       active = false
-      lifecycle.observe(.importedSessionDeactivated(generation))
+      lifecycle.observe(
+        kind == .imported
+          ? .importedSessionDeactivated(generation)
+          : .recoveredSessionDeactivated(generation)
+      )
       scheduledBuffers.removeAll()
       decoder.close()
     }
@@ -723,15 +986,29 @@ private final class BoundedImportedPlaybackSession: @unchecked Sendable {
     scheduledBuffers[identifier] = buffer
     let generation = generation
     let lifecycle = lifecycle
+    let playbackKind = kind
     player.scheduleBuffer(buffer, completionCallbackType: .dataPlayedBack) {
       [weak self, weak player] _ in
-      lifecycle.observe(.importedCompletionReceived(generation))
-      lifecycle.deliverImportedCompletion { [weak self, weak player] in
-        lifecycle.observe(.importedCompletionDelivered(generation))
+      lifecycle.observe(
+        playbackKind == .imported
+          ? .importedCompletionReceived(generation)
+          : .recoveredCompletionReceived(generation)
+      )
+      let delivery: @Sendable () -> Void = { [weak self, weak player] in
+        lifecycle.observe(
+          playbackKind == .imported
+            ? .importedCompletionDelivered(generation)
+            : .recoveredCompletionDelivered(generation)
+        )
         guard let self, let player else { return }
         self.queue.async {
           self.bufferFinished(identifier, player: player)
         }
+      }
+      if playbackKind == .imported {
+        lifecycle.deliverImportedCompletion(delivery)
+      } else {
+        lifecycle.deliverRecoveredCompletion(delivery)
       }
     }
     return true
@@ -795,8 +1072,7 @@ enum StructuredImportedPlaybackCopy {
 final class RecoveredAudioPlayer: RecoveredAudioPlaying {
   private let engine = AVAudioEngine()
   private let player = AVAudioPlayerNode()
-  private var file: AVAudioFile?
-  private var importedPlayback: BoundedImportedPlaybackSession?
+  private var callbackPlayback: BoundedCallbackPlaybackSession?
   private var playbackLease: AnyObject?
   private var activeGeneration: UUID?
   private var terminationHandler: (@Sendable (PlaybackTermination) -> Void)?
@@ -807,33 +1083,30 @@ final class RecoveredAudioPlayer: RecoveredAudioPlaying {
     engine.attach(player)
   }
 
-  func play(url: URL, retaining lease: AnyObject?, generation: UUID) throws {
+  func playRecovered(
+    receipt serializedReceipt: String,
+    retaining lease: AnyObject,
+    generation: UUID
+  ) async throws {
+    try Task.checkCancellation()
     releasePlaybackResources()
     activeGeneration = generation
     do {
-      let file = try AVAudioFile(forReading: url)
-      engine.disconnectNodeOutput(player)
-      engine.connect(player, to: engine.mainMixerNode, format: file.processingFormat)
-      player.scheduleFile(file, at: nil, completionCallbackType: .dataPlayedBack) {
-        [weak self] _ in
-        guard let self else { return }
-        self.lifecycle.observe(.recoveredCompletionReceived(generation))
-        self.lifecycle.deliverRecoveredCompletion { [weak self] in
-          Task { @MainActor [weak self] in
-            guard let self else { return }
-            self.lifecycle.observe(.recoveredCompletionDelivered(generation))
-            guard self.activeGeneration == generation else { return }
-            self.releasePlaybackResources(generation: generation)
-            self.terminationHandler?(
-              PlaybackTermination(generation: generation, outcome: .finished)
-            )
-          }
-        }
+      let receipt = try RecoveredPlaybackDescriptorReceipt(serialized: serializedReceipt)
+      let source = try await StructuredImportedPlaybackCopy.run { isCancelled in
+        try VerifiedDescriptorPlaybackSource.prepare(
+          receipt: receipt,
+          isCancelled: isCancelled
+        )
       }
-      try engine.start()
-      player.play()
-      self.file = file
-      playbackLease = lease
+      try Task.checkCancellation()
+      guard activeGeneration == generation else { throw CancellationError() }
+      try beginCallbackPlayback(
+        source: source,
+        kind: .recovered,
+        retaining: lease,
+        generation: generation
+      )
     } catch {
       releasePlaybackResources(generation: generation)
       throw error
@@ -863,25 +1136,12 @@ final class RecoveredAudioPlayer: RecoveredAudioPlaying {
       }
       try Task.checkCancellation()
       guard activeGeneration == generation else { throw CancellationError() }
-      let playback = try BoundedImportedPlaybackSession(
-        snapshot: snapshot,
-        generation: generation,
-        lifecycle: lifecycle,
-        termination: { [weak self] termination in
-          Task { @MainActor [weak self] in
-            guard let self, self.activeGeneration == termination.generation else { return }
-            self.releasePlaybackResources(generation: termination.generation)
-            self.terminationHandler?(termination)
-          }
-        }
+      try beginCallbackPlayback(
+        source: snapshot.region,
+        kind: .imported,
+        retaining: lease,
+        generation: generation
       )
-      engine.disconnectNodeOutput(player)
-      engine.connect(player, to: engine.mainMixerNode, format: playback.processingFormat)
-      try playback.prime(player: player)
-      try engine.start()
-      player.play()
-      importedPlayback = playback
-      playbackLease = lease
     } catch {
       releasePlaybackResources(generation: generation)
       throw error
@@ -898,12 +1158,40 @@ final class RecoveredAudioPlayer: RecoveredAudioPlaying {
     releasePlaybackResources()
   }
 
+  private func beginCallbackPlayback(
+    source: any CallbackAudioByteSource,
+    kind: CallbackPlaybackKind,
+    retaining lease: AnyObject,
+    generation: UUID
+  ) throws {
+    let playback = try BoundedCallbackPlaybackSession(
+      source: source,
+      kind: kind,
+      generation: generation,
+      lifecycle: lifecycle,
+      termination: { [weak self] termination in
+        Task { @MainActor [weak self] in
+          guard let self, self.activeGeneration == termination.generation else { return }
+          self.releasePlaybackResources(generation: termination.generation)
+          self.terminationHandler?(termination)
+        }
+      }
+    )
+    engine.disconnectNodeOutput(player)
+    engine.connect(player, to: engine.mainMixerNode, format: playback.processingFormat)
+    try playback.prime(player: player)
+    try engine.start()
+    player.play()
+    callbackPlayback = playback
+    playbackLease = lease
+  }
+
   private func releasePlaybackResources(generation: UUID? = nil) {
     if let generation, activeGeneration != generation { return }
     let releasingGeneration = activeGeneration
     activeGeneration = nil
-    let playback = importedPlayback
-    importedPlayback = nil
+    let playback = callbackPlayback
+    callbackPlayback = nil
     PlaybackTeardownOrder.release(
       deactivateAndDrainImportedPlayback: { playback?.stop() },
       stopPlayer: {
@@ -915,7 +1203,6 @@ final class RecoveredAudioPlayer: RecoveredAudioPlaying {
         lifecycle.observe(.engineStopped(releasingGeneration))
       }
     )
-    file = nil
     playbackLease = nil
   }
 }
@@ -925,6 +1212,13 @@ enum RecoveredSessionPhase: Equatable, Sendable {
   case none
   case available
   case failed
+}
+
+enum RecoveredPlaybackStartupState: Equatable, Sendable {
+  case pending
+  case playing
+  case failed
+  case superseded
 }
 
 struct RecoveredPlaybackMediaIdentity: Equatable, Sendable {
@@ -941,6 +1235,11 @@ struct RecoveredPlaybackMediaIdentity: Equatable, Sendable {
   }
 }
 
+private struct RecoveredPlaybackStartupRecord {
+  let identity: RecoveredPlaybackMediaIdentity
+  var state: RecoveredPlaybackStartupState
+}
+
 private enum RecoveredSessionError: Error {
   case managedRootUnavailable
   case invalidEvidence
@@ -948,15 +1247,20 @@ private enum RecoveredSessionError: Error {
 
 @MainActor
 final class RecoveredSessionController: ObservableObject {
+  private static let maximumRecoveredPlaybackStartupRecords = 8
+
   typealias RecoveryFactory = @Sendable () throws -> PlayableSessionRecovering
   typealias ImportedPlaybackLeaseProvider =
     @Sendable (String) throws -> ImportedPlaybackLeaseHolding
+  typealias RecoveredPlaybackLeaseProvider =
+    @Sendable (RecoveredPlaybackMediaIdentity) throws -> ImportedPlaybackLeaseHolding
   typealias PlaybackTerminationDecisionObserver = @Sendable (UUID, Bool) -> Void
 
   @Published private(set) var phase: RecoveredSessionPhase = .scanning
   @Published private(set) var sessions: [NativeRecoveredPlayableSession] = []
   @Published private(set) var activePlaybackSessionId: String?
   @Published private(set) var playingSessionId: String?
+  @Published private(set) var pendingRecoveredMediaIdentity: RecoveredPlaybackMediaIdentity?
   @Published private(set) var playingRecoveredMediaIdentity: RecoveredPlaybackMediaIdentity?
   @Published private(set) var errorMessage: String?
   @Published private(set) var errorSessionId: String?
@@ -964,14 +1268,20 @@ final class RecoveredSessionController: ObservableObject {
 
   private let recoveryFactory: RecoveryFactory
   private let importedPlaybackLeaseProvider: ImportedPlaybackLeaseProvider
+  private let recoveredPlaybackLeaseProvider: RecoveredPlaybackLeaseProvider
   private let player: RecoveredAudioPlaying
   private let playbackTerminationDecisionObserver: PlaybackTerminationDecisionObserver
-  private var importedPlaybackTask: Task<Void, Never>?
+  private var playbackTask: Task<Void, Never>?
   private var activePlaybackGeneration: UUID?
+  private var recoveredPlaybackStartupRecords: [UUID: RecoveredPlaybackStartupRecord] = [:]
+  private var recoveredPlaybackStartupOrder: [UUID] = []
 
   init(
     recoveryFactory: @escaping RecoveryFactory,
     importedPlaybackLeaseProvider: @escaping ImportedPlaybackLeaseProvider = { _ in
+      throw RecoveredSessionError.managedRootUnavailable
+    },
+    recoveredPlaybackLeaseProvider: @escaping RecoveredPlaybackLeaseProvider = { _ in
       throw RecoveredSessionError.managedRootUnavailable
     },
     player: RecoveredAudioPlaying,
@@ -979,6 +1289,7 @@ final class RecoveredSessionController: ObservableObject {
   ) {
     self.recoveryFactory = recoveryFactory
     self.importedPlaybackLeaseProvider = importedPlaybackLeaseProvider
+    self.recoveredPlaybackLeaseProvider = recoveredPlaybackLeaseProvider
     self.player = player
     self.playbackTerminationDecisionObserver = playbackTerminationDecisionObserver
     player.setPlaybackTerminationHandler { [weak self] termination in
@@ -988,11 +1299,22 @@ final class RecoveredSessionController: ObservableObject {
         self.playbackTerminationDecisionObserver(termination.generation, isActive)
         guard isActive else { return }
         let failedSessionId = self.activePlaybackSessionId
-        let failedRecoveredIdentity = self.playingRecoveredMediaIdentity
+        let failedRecoveredIdentity =
+          self.playingRecoveredMediaIdentity ?? self.pendingRecoveredMediaIdentity
+        let startupState: RecoveredPlaybackStartupState =
+          switch termination.outcome {
+          case .finished: .playing
+          case .failed: .failed
+          }
+        self.settleRecoveredPlaybackStartup(
+          generation: termination.generation,
+          state: startupState
+        )
         self.activePlaybackGeneration = nil
-        self.importedPlaybackTask = nil
+        self.playbackTask = nil
         self.activePlaybackSessionId = nil
         self.playingSessionId = nil
+        self.pendingRecoveredMediaIdentity = nil
         self.playingRecoveredMediaIdentity = nil
         if case .failed = termination.outcome {
           self.setPlaybackError(
@@ -1021,6 +1343,18 @@ final class RecoveredSessionController: ObservableObject {
         }
         let preparation = try NativeRecordingPreparation.open(managedRoot: managedRoot.path)
         return try preparation.leaseImportedPlayback(sessionId: sessionId)
+      },
+      recoveredPlaybackLeaseProvider: { identity in
+        guard let managedRoot else {
+          throw RecoveredSessionError.managedRootUnavailable
+        }
+        let preparation = try NativeRecordingPreparation.open(managedRoot: managedRoot.path)
+        return try preparation.leaseRecoveredPlayback(
+          sessionId: identity.sessionId,
+          sourceId: identity.sourceId,
+          trackId: identity.trackId,
+          segmentId: identity.segmentId
+        )
       },
       player: RecoveredAudioPlayer()
     )
@@ -1054,33 +1388,74 @@ final class RecoveredSessionController: ObservableObject {
     }
   }
 
-  func play(_ session: NativeRecoveredPlayableSession) {
-    guard session.readyForReview, session.mediaPreserved, !session.recordingStarted else { return }
+  @discardableResult
+  func play(_ session: NativeRecoveredPlayableSession) -> UUID? {
+    guard session.readyForReview, session.mediaPreserved, !session.recordingStarted else {
+      return nil
+    }
     stopPlayback()
+    let identity = RecoveredPlaybackMediaIdentity(session)
     let generation = UUID()
+    beginRecoveredPlaybackStartup(generation: generation, identity: identity)
     activePlaybackGeneration = generation
     activePlaybackSessionId = session.sessionId
+    pendingRecoveredMediaIdentity = identity
     clearPlaybackError()
-    do {
-      try player.play(
-        url: URL(fileURLWithPath: session.absolutePath, isDirectory: false),
-        retaining: nil,
-        generation: generation
-      )
-      playingSessionId = session.sessionId
-      playingRecoveredMediaIdentity = RecoveredPlaybackMediaIdentity(session)
-    } catch {
-      guard activePlaybackGeneration == generation else { return }
-      activePlaybackGeneration = nil
-      activePlaybackSessionId = nil
-      playingSessionId = nil
-      playingRecoveredMediaIdentity = nil
-      setPlaybackError(
-        "Recovered audio could not be opened for playback.",
-        sessionId: session.sessionId,
-        recoveredMediaIdentity: RecoveredPlaybackMediaIdentity(session)
-      )
+    let leaseProvider = recoveredPlaybackLeaseProvider
+    playbackTask = Task { [weak self] in
+      guard let self else { return }
+      do {
+        let lease = try await StructuredImportedPlaybackCopy.run { isCancelled in
+          if isCancelled() { throw CancellationError() }
+          let lease = try leaseProvider(identity)
+          if isCancelled() { throw CancellationError() }
+          return lease
+        }
+        try Task.checkCancellation()
+        guard self.activePlaybackGeneration == generation else { return }
+        try await self.player.playRecovered(
+          receipt: lease.playbackPath(),
+          retaining: lease,
+          generation: generation
+        )
+        guard self.activePlaybackGeneration == generation else { return }
+        self.settleRecoveredPlaybackStartup(generation: generation, state: .playing)
+        self.playbackTask = nil
+        self.playingSessionId = session.sessionId
+        self.pendingRecoveredMediaIdentity = nil
+        self.playingRecoveredMediaIdentity = identity
+        self.clearPlaybackError()
+      } catch is CancellationError {
+        self.finishCancelledPlayback(generation: generation)
+      } catch {
+        guard self.activePlaybackGeneration == generation else { return }
+        self.settleRecoveredPlaybackStartup(generation: generation, state: .failed)
+        self.player.stop()
+        self.activePlaybackGeneration = nil
+        self.playbackTask = nil
+        self.activePlaybackSessionId = nil
+        self.playingSessionId = nil
+        self.pendingRecoveredMediaIdentity = nil
+        self.playingRecoveredMediaIdentity = nil
+        self.setPlaybackError(
+          "Recovered audio could not be opened for playback.",
+          sessionId: session.sessionId,
+          recoveredMediaIdentity: identity
+        )
+      }
     }
+    return generation
+  }
+
+  func playbackStartupState(
+    generation: UUID,
+    identity: RecoveredPlaybackMediaIdentity
+  ) -> RecoveredPlaybackStartupState? {
+    guard let record = recoveredPlaybackStartupRecords[generation], record.identity == identity
+    else {
+      return nil
+    }
+    return record.state
   }
 
   func play(_ session: RuntimeSessionPresentation) {
@@ -1114,7 +1489,7 @@ final class RecoveredSessionController: ObservableObject {
       let generation = UUID()
       activePlaybackGeneration = generation
       activePlaybackSessionId = session.sessionId
-      importedPlaybackTask = Task { [weak self] in
+      playbackTask = Task { [weak self] in
         guard let self else { return }
         do {
           try await self.player.playImported(
@@ -1123,24 +1498,20 @@ final class RecoveredSessionController: ObservableObject {
             generation: generation
           )
           guard self.activePlaybackGeneration == generation else { return }
-          self.importedPlaybackTask = nil
+          self.playbackTask = nil
           self.playingSessionId = session.sessionId
           self.clearPlaybackError()
         } catch is CancellationError {
           guard self.activePlaybackGeneration == generation else { return }
-          self.player.stop()
-          self.activePlaybackGeneration = nil
-          self.importedPlaybackTask = nil
-          self.activePlaybackSessionId = nil
-          self.playingSessionId = nil
-          self.playingRecoveredMediaIdentity = nil
+          self.finishCancelledPlayback(generation: generation)
         } catch ImportedPlaybackError.unsupportedByteLength {
           guard self.activePlaybackGeneration == generation else { return }
           self.player.stop()
           self.activePlaybackGeneration = nil
-          self.importedPlaybackTask = nil
+          self.playbackTask = nil
           self.activePlaybackSessionId = nil
           self.playingSessionId = nil
+          self.pendingRecoveredMediaIdentity = nil
           self.playingRecoveredMediaIdentity = nil
           self.setPlaybackError(
             "Imported audio is too large for safe playback on this version of Open Scribe.",
@@ -1150,9 +1521,10 @@ final class RecoveredSessionController: ObservableObject {
           guard self.activePlaybackGeneration == generation else { return }
           self.player.stop()
           self.activePlaybackGeneration = nil
-          self.importedPlaybackTask = nil
+          self.playbackTask = nil
           self.activePlaybackSessionId = nil
           self.playingSessionId = nil
+          self.pendingRecoveredMediaIdentity = nil
           self.playingRecoveredMediaIdentity = nil
           self.setPlaybackError(
             "Imported audio could not be opened for playback.",
@@ -1168,14 +1540,34 @@ final class RecoveredSessionController: ObservableObject {
     }
   }
 
-  func stopPlayback() {
-    importedPlaybackTask?.cancel()
-    importedPlaybackTask = nil
+  func stopPlayback(generation: UUID? = nil) {
+    if let generation, activePlaybackGeneration != generation { return }
+    if let activePlaybackGeneration {
+      settleRecoveredPlaybackStartup(
+        generation: activePlaybackGeneration,
+        state: .superseded
+      )
+    }
+    playbackTask?.cancel()
+    playbackTask = nil
     activePlaybackGeneration = nil
     activePlaybackSessionId = nil
+    pendingRecoveredMediaIdentity = nil
     playingRecoveredMediaIdentity = nil
     player.stop()
     playingSessionId = nil
+  }
+
+  private func finishCancelledPlayback(generation: UUID) {
+    guard activePlaybackGeneration == generation else { return }
+    settleRecoveredPlaybackStartup(generation: generation, state: .superseded)
+    player.stop()
+    activePlaybackGeneration = nil
+    playbackTask = nil
+    activePlaybackSessionId = nil
+    playingSessionId = nil
+    pendingRecoveredMediaIdentity = nil
+    playingRecoveredMediaIdentity = nil
   }
 
   private func setPlaybackError(
@@ -1192,5 +1584,31 @@ final class RecoveredSessionController: ObservableObject {
     errorMessage = nil
     errorSessionId = nil
     errorRecoveredMediaIdentity = nil
+  }
+
+  private func beginRecoveredPlaybackStartup(
+    generation: UUID,
+    identity: RecoveredPlaybackMediaIdentity
+  ) {
+    recoveredPlaybackStartupRecords[generation] = RecoveredPlaybackStartupRecord(
+      identity: identity,
+      state: .pending
+    )
+    recoveredPlaybackStartupOrder.append(generation)
+    while recoveredPlaybackStartupOrder.count > Self.maximumRecoveredPlaybackStartupRecords {
+      let evicted = recoveredPlaybackStartupOrder.removeFirst()
+      recoveredPlaybackStartupRecords.removeValue(forKey: evicted)
+    }
+  }
+
+  private func settleRecoveredPlaybackStartup(
+    generation: UUID,
+    state: RecoveredPlaybackStartupState
+  ) {
+    guard var record = recoveredPlaybackStartupRecords[generation], record.state == .pending else {
+      return
+    }
+    record.state = state
+    recoveredPlaybackStartupRecords[generation] = record
   }
 }

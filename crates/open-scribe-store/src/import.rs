@@ -49,12 +49,13 @@ pub struct ImportedMediaEvidence {
     pub ready_for_review: bool,
 }
 
-/// Open descriptor lease for one revalidated managed import.
+/// Open descriptor lease for one revalidated managed media object.
 ///
-/// Native playback must copy exactly `byte_length` bytes from this descriptor into bounded
-/// anonymous memory and match `digest_sha256` before exposing playback. The descriptor keeps
-/// the identity-bound managed object open during that copy; it is never represented to the
-/// native adapter by a pathname.
+/// Native playback must match `digest_sha256` before exposing playback and retain this lease for
+/// the full decoder lifetime. Imported playback copies the bounded object into anonymous memory;
+/// recovered playback verifies bounded chunks again whenever AudioToolbox reads them. The
+/// descriptor keeps the identity-bound managed object open and is never represented to the native
+/// adapter by a pathname.
 pub struct ImportedPlaybackLease {
     file: File,
     byte_length: u64,
@@ -97,6 +98,12 @@ struct ImportPaths {
     relative_path: String,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ImportFailurePoint {
+    AfterPreparation,
+    AfterStagedJournal,
+}
+
 impl SessionStore {
     /// Copies one bounded, independently validated CAF into the existing managed library.
     ///
@@ -105,6 +112,14 @@ impl SessionStore {
     pub fn import_recoverable_caf(
         &mut self,
         request: ImportMediaRequest,
+    ) -> Result<ImportedMediaEvidence, StoreError> {
+        self.import_recoverable_caf_inner(request, None)
+    }
+
+    fn import_recoverable_caf_inner(
+        &mut self,
+        request: ImportMediaRequest,
+        failure: Option<ImportFailurePoint>,
     ) -> Result<ImportedMediaEvidence, StoreError> {
         validate_request(&PrepareSessionRequest {
             title: request.title.clone(),
@@ -119,98 +134,115 @@ impl SessionStore {
             None,
         )?;
 
-        let source_id = Uuid::now_v7().to_string();
-        let track_id = Uuid::now_v7().to_string();
-        let segment_id = Uuid::now_v7().to_string();
-        let staging_relative_path = format!("audio/{track_id}/.importing.caf");
-        let relative_path = format!("audio/{track_id}/000000-import.caf");
-        let audio_directory = self.open_managed_audio_directory(&prepared.session_id.0)?;
-        fd_fs::mkdirat(
-            &audio_directory,
-            &track_id,
-            fd_fs::Mode::from_raw_mode(0o700),
-        )
-        .map_err(|_| StoreError::IntegrityMismatch("managed import track could not be created"))?;
-        let track_directory = open_managed_directory_at(&audio_directory, OsStr::new(&track_id))?;
-        source.file.rewind()?;
-        let staging_fd = fd_fs::openat(
-            &track_directory,
-            OsStr::new(".importing.caf"),
-            fd_fs::OFlags::WRONLY
-                | fd_fs::OFlags::CREATE
-                | fd_fs::OFlags::EXCL
-                | fd_fs::OFlags::CLOEXEC
-                | fd_fs::OFlags::NOFOLLOW,
-            fd_fs::Mode::from_raw_mode(0o600),
-        )
-        .map_err(|_| {
-            StoreError::IntegrityMismatch("managed import staging could not be created")
-        })?;
-        let mut staging = File::from(staging_fd);
-        let copied = std::io::copy(&mut source.file, &mut staging)?;
-        if copied != source.byte_length {
-            return Err(StoreError::IntegrityMismatch(
-                "managed import copy length changed",
-            ));
+        let session_id = prepared.session_id.clone();
+        let import_result = (|| {
+            interrupt_import_if(failure, ImportFailurePoint::AfterPreparation)?;
+
+            let source_id = Uuid::now_v7().to_string();
+            let track_id = Uuid::now_v7().to_string();
+            let segment_id = Uuid::now_v7().to_string();
+            let staging_relative_path = format!("audio/{track_id}/.importing.caf");
+            let relative_path = format!("audio/{track_id}/000000-import.caf");
+            let audio_directory = self.open_managed_audio_directory(&prepared.session_id.0)?;
+            fd_fs::mkdirat(
+                &audio_directory,
+                &track_id,
+                fd_fs::Mode::from_raw_mode(0o700),
+            )
+            .map_err(|_| {
+                StoreError::IntegrityMismatch("managed import track could not be created")
+            })?;
+            let track_directory =
+                open_managed_directory_at(&audio_directory, OsStr::new(&track_id))?;
+            source.file.rewind()?;
+            let staging_fd = fd_fs::openat(
+                &track_directory,
+                OsStr::new(".importing.caf"),
+                fd_fs::OFlags::WRONLY
+                    | fd_fs::OFlags::CREATE
+                    | fd_fs::OFlags::EXCL
+                    | fd_fs::OFlags::CLOEXEC
+                    | fd_fs::OFlags::NOFOLLOW,
+                fd_fs::Mode::from_raw_mode(0o600),
+            )
+            .map_err(|_| {
+                StoreError::IntegrityMismatch("managed import staging could not be created")
+            })?;
+            let mut staging = File::from(staging_fd);
+            let copied = std::io::copy(&mut source.file, &mut staging)?;
+            if copied != source.byte_length {
+                return Err(StoreError::IntegrityMismatch(
+                    "managed import copy length changed",
+                ));
+            }
+            staging.sync_all()?;
+            drop(staging);
+            fd_fs::fsync(&track_directory).map_err(|_| {
+                StoreError::IntegrityMismatch("managed import track was not synchronized")
+            })?;
+
+            let staged = self.validate_media_file(
+                &prepared.session_id.0,
+                &staging_relative_path,
+                MediaLengthRequirement::Exact(source.byte_length),
+                true,
+            )?;
+            if staged.digest_sha256.as_deref() != Some(source.digest_sha256.as_str())
+                || staged.recoverable_sample_count != Some(source.sample_count)
+            {
+                return Err(StoreError::IntegrityMismatch(
+                    "managed import copy does not match the validated source",
+                ));
+            }
+            revalidate_import_source(&source)?;
+
+            let payload = json!({
+                "source_id": source_id,
+                "source_kind": IMPORT_SOURCE_KIND,
+                "source_display_name": request.source_path.file_name().and_then(OsStr::to_str).unwrap_or("Imported audio"),
+                "track_id": track_id,
+                "segment_id": segment_id,
+                "staging_relative_path": staging_relative_path,
+                "relative_path": relative_path,
+                "media_format": IMPORT_MEDIA_FORMAT,
+                "byte_length": source.byte_length,
+                "sample_count": source.sample_count,
+                "digest_sha256": source.digest_sha256,
+            });
+            let journal_record = self.append_session_journal(
+                &prepared.session_id.0,
+                "media_import_staged",
+                Some(&relative_path),
+                payload.clone(),
+            )?;
+            interrupt_import_if(failure, ImportFailurePoint::AfterStagedJournal)?;
+
+            rename_import_entry(&track_directory)?;
+            fd_fs::fsync(&track_directory).map_err(|_| {
+                StoreError::IntegrityMismatch("managed import rename was not synchronized")
+            })?;
+            self.project_import(&prepared.session_id.0, &payload, &journal_record)?;
+
+            Ok(ImportedMediaEvidence {
+                session_id: prepared.session_id,
+                relative_path,
+                byte_length: source.byte_length,
+                sample_count: source.sample_count,
+                digest_sha256: source.digest_sha256,
+                journal_version: JOURNAL_VERSION,
+                last_journal_sequence: journal_record.body.sequence,
+                original_untouched: true,
+                ready_for_review: true,
+            })
+        })();
+
+        match import_result {
+            Ok(evidence) => Ok(evidence),
+            Err(original_error) => match self.reconcile_import_attempt(&session_id.0)? {
+                Some(evidence) => Ok(evidence),
+                None => Err(original_error),
+            },
         }
-        staging.sync_all()?;
-        drop(staging);
-        fd_fs::fsync(&track_directory).map_err(|_| {
-            StoreError::IntegrityMismatch("managed import track was not synchronized")
-        })?;
-
-        let staged = self.validate_media_file(
-            &prepared.session_id.0,
-            &staging_relative_path,
-            MediaLengthRequirement::Exact(source.byte_length),
-            true,
-        )?;
-        if staged.digest_sha256.as_deref() != Some(source.digest_sha256.as_str())
-            || staged.recoverable_sample_count != Some(source.sample_count)
-        {
-            return Err(StoreError::IntegrityMismatch(
-                "managed import copy does not match the validated source",
-            ));
-        }
-        revalidate_import_source(&source)?;
-
-        let payload = json!({
-            "source_id": source_id,
-            "source_kind": IMPORT_SOURCE_KIND,
-            "source_display_name": request.source_path.file_name().and_then(OsStr::to_str).unwrap_or("Imported audio"),
-            "track_id": track_id,
-            "segment_id": segment_id,
-            "staging_relative_path": staging_relative_path,
-            "relative_path": relative_path,
-            "media_format": IMPORT_MEDIA_FORMAT,
-            "byte_length": source.byte_length,
-            "sample_count": source.sample_count,
-            "digest_sha256": source.digest_sha256,
-        });
-        let journal_record = self.append_session_journal(
-            &prepared.session_id.0,
-            "media_import_staged",
-            Some(&relative_path),
-            payload.clone(),
-        )?;
-
-        rename_import_entry(&track_directory)?;
-        fd_fs::fsync(&track_directory).map_err(|_| {
-            StoreError::IntegrityMismatch("managed import rename was not synchronized")
-        })?;
-        self.project_import(&prepared.session_id.0, &payload, &journal_record)?;
-
-        Ok(ImportedMediaEvidence {
-            session_id: prepared.session_id,
-            relative_path,
-            byte_length: source.byte_length,
-            sample_count: source.sample_count,
-            digest_sha256: source.digest_sha256,
-            journal_version: JOURNAL_VERSION,
-            last_journal_sequence: journal_record.body.sequence,
-            original_untouched: true,
-            ready_for_review: true,
-        })
     }
 
     /// Revalidates an import and leases its identity-bound descriptor for native playback.
@@ -298,18 +330,210 @@ impl SessionStore {
         })
     }
 
+    /// Revalidates one exact recovered record and retains its descriptor for native playback.
+    pub fn lease_recovered_playback(
+        &self,
+        session_id: &SessionId,
+        source_id: &str,
+        track_id: &str,
+        segment_id: &str,
+    ) -> Result<ImportedPlaybackLease, StoreError> {
+        let row = self
+            .connection
+            .query_row(
+                "SELECT segments.relative_path, segments.sample_count, segments.byte_length,
+                    segments.digest, segments.file_device, segments.file_inode
+             FROM sessions
+             JOIN sources ON sources.session_id = sessions.id
+             JOIN tracks ON tracks.session_id = sessions.id AND tracks.source_id = sources.id
+             JOIN segments ON segments.session_id = sessions.id AND segments.track_id = tracks.id
+             WHERE sessions.id = ?1
+               AND sources.id = ?2
+               AND tracks.id = ?3
+               AND segments.id = ?4
+               AND sessions.origin = 'capture'
+               AND sessions.lifecycle = 'ready_for_review'
+               AND segments.lifecycle = 'sealed'
+               AND segments.seal_state = 'sealed'
+               AND segments.recovery_state IN ('recovered', 'not_required')
+               AND segments.media_format = 'caf-pcm-s16le'
+               AND EXISTS (
+                   SELECT 1 FROM session_events recovery_events
+                   WHERE recovery_events.session_id = sessions.id
+                     AND recovery_events.event_kind = 'playable_media_recovered'
+               )
+               AND EXISTS (
+                   SELECT 1 FROM recovery_runs
+                   WHERE recovery_runs.session_id = sessions.id
+                     AND recovery_runs.disposition = 'playable_media_recovered'
+               )",
+                params![&session_id.0, source_id, track_id, segment_id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, i64>(4)?,
+                        row.get::<_, i64>(5)?,
+                    ))
+                },
+            )
+            .map_err(|error| match error {
+                rusqlite::Error::QueryReturnedNoRows => {
+                    StoreError::InvalidState("recovered playback evidence is unavailable")
+                }
+                other => StoreError::Sqlite(other),
+            })?;
+        let (relative_path, stored_samples, stored_bytes, digest, stored_device, stored_inode) =
+            row;
+        let sample_count = u64::try_from(stored_samples)
+            .map_err(|_| StoreError::IntegrityMismatch("recovered sample count is invalid"))?;
+        let byte_length = u64::try_from(stored_bytes)
+            .map_err(|_| StoreError::IntegrityMismatch("recovered byte length is invalid"))?;
+        let mut validated = self.validate_media_file(
+            &session_id.0,
+            &relative_path,
+            MediaLengthRequirement::Exact(byte_length),
+            true,
+        )?;
+        if validated.device != u64::try_from(stored_device).unwrap_or(0)
+            || validated.inode != u64::try_from(stored_inode).unwrap_or(0)
+            || validated.recoverable_sample_count != Some(sample_count)
+            || validated.digest_sha256.as_deref() != Some(digest.as_str())
+        {
+            return Err(StoreError::IntegrityMismatch(
+                "recovered playback lease does not match durable evidence",
+            ));
+        }
+        validated.file.rewind()?;
+        Ok(ImportedPlaybackLease {
+            file: validated.file,
+            byte_length,
+            digest_sha256: digest,
+        })
+    }
+
+    fn reconcile_import_attempt(
+        &mut self,
+        session_id: &str,
+    ) -> Result<Option<ImportedMediaEvidence>, StoreError> {
+        let journal_path = self
+            .session_directory(session_id)?
+            .join(super::JOURNAL_NAME);
+        let records = match super::validate_journal(&journal_path, session_id)? {
+            super::JournalValidation::Valid(records) => records,
+            _ => {
+                return Err(StoreError::IntegrityMismatch(
+                    "import journal is not recoverable",
+                ));
+            }
+        };
+        let disposition =
+            self.reconcile_import(session_id, &records, RecoveryDisposition::Prepared)?;
+        match disposition {
+            RecoveryDisposition::ImportedMediaReady
+            | RecoveryDisposition::ImportProjectionRepaired => {
+                self.imported_media_evidence(session_id).map(Some)
+            }
+            RecoveryDisposition::ImportFailed => Ok(None),
+            _ => Err(StoreError::IntegrityMismatch(
+                "failed import did not reach a terminal disposition",
+            )),
+        }
+    }
+
+    fn imported_media_evidence(
+        &self,
+        session_id: &str,
+    ) -> Result<ImportedMediaEvidence, StoreError> {
+        let (relative_path, byte_length, sample_count, digest_sha256) = self.connection.query_row(
+            "SELECT imports.relative_path, segments.byte_length,
+                        segments.sample_count, imports.source_digest
+                 FROM imports
+                 JOIN segments ON segments.session_id = imports.session_id
+                              AND segments.relative_path = imports.relative_path
+                 JOIN sessions ON sessions.id = imports.session_id
+                 WHERE imports.session_id = ?1
+                   AND sessions.lifecycle = 'ready_for_review'
+                   AND segments.lifecycle = 'sealed'",
+            [session_id],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, String>(3)?,
+                ))
+            },
+        )?;
+        let journal_path = self
+            .session_directory(session_id)?
+            .join(super::JOURNAL_NAME);
+        let records = match super::validate_journal(&journal_path, session_id)? {
+            super::JournalValidation::Valid(records) => records,
+            _ => {
+                return Err(StoreError::IntegrityMismatch(
+                    "import journal is not recoverable",
+                ));
+            }
+        };
+        let staged = records
+            .iter()
+            .find(|record| record.body.event_kind == "media_import_staged")
+            .ok_or(StoreError::IntegrityMismatch("import evidence is missing"))?;
+        Ok(ImportedMediaEvidence {
+            session_id: SessionId(session_id.to_owned()),
+            relative_path,
+            byte_length: u64::try_from(byte_length)
+                .map_err(|_| StoreError::IntegrityMismatch("import byte length is invalid"))?,
+            sample_count: u64::try_from(sample_count)
+                .map_err(|_| StoreError::IntegrityMismatch("import sample count is invalid"))?,
+            digest_sha256,
+            journal_version: JOURNAL_VERSION,
+            last_journal_sequence: staged.body.sequence,
+            original_untouched: true,
+            ready_for_review: true,
+        })
+    }
+
     pub(super) fn reconcile_import(
         &mut self,
         session_id: &str,
         records: &[JournalRecord],
         base: RecoveryDisposition,
     ) -> Result<RecoveryDisposition, StoreError> {
+        let (origin, lifecycle): (String, String) = self.connection.query_row(
+            "SELECT origin, lifecycle FROM sessions WHERE id = ?1",
+            [session_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        if origin != "import" {
+            return Ok(base);
+        }
+
+        let failures: Vec<_> = records
+            .iter()
+            .filter(|record| record.body.event_kind == "media_import_failed")
+            .collect();
+        if !failures.is_empty() {
+            if failures.len() != 1 || failures[0].body.sequence != records.len() as u64 {
+                return Ok(RecoveryDisposition::IntegrityMismatch);
+            }
+            if lifecycle == "preparing" {
+                self.project_import_failure(session_id, &failures[0].body.payload, failures[0])?;
+            } else if lifecycle != "deleted" {
+                return Ok(RecoveryDisposition::IntegrityMismatch);
+            }
+            return Ok(RecoveryDisposition::ImportFailed);
+        }
+
         let imports: Vec<_> = records
             .iter()
             .filter(|record| record.body.event_kind == "media_import_staged")
             .collect();
         if imports.is_empty() {
-            return Ok(base);
+            return self.tombstone_import(session_id, "before_durable_stage");
         }
         if imports.len() != 1 || imports[0].body.sequence != records.len() as u64 {
             return Ok(RecoveryDisposition::IntegrityMismatch);
@@ -320,7 +544,7 @@ impl SessionStore {
         let track_directory = self.managed_import_track_directory(session_id, &paths.track_id)?;
         if !managed_import_entry_exists(&track_directory, OsStr::new("000000-import.caf"))? {
             if !managed_import_entry_exists(&track_directory, OsStr::new(".importing.caf"))? {
-                return Ok(RecoveryDisposition::MissingMediaFile);
+                return self.tombstone_import(session_id, "staged_media_missing");
             }
             rename_import_entry(&track_directory)?;
             fd_fs::fsync(&track_directory).map_err(|_| {
@@ -337,6 +561,66 @@ impl SessionStore {
         }
         self.project_import(session_id, payload, record)?;
         Ok(RecoveryDisposition::ImportProjectionRepaired)
+    }
+
+    fn tombstone_import(
+        &mut self,
+        session_id: &str,
+        reason: &str,
+    ) -> Result<RecoveryDisposition, StoreError> {
+        let payload = json!({ "reason": reason });
+        let journal_record =
+            self.append_session_journal(session_id, "media_import_failed", None, payload.clone())?;
+        self.project_import_failure(session_id, &payload, &journal_record)?;
+        Ok(RecoveryDisposition::ImportFailed)
+    }
+
+    fn project_import_failure(
+        &mut self,
+        session_id: &str,
+        payload: &Value,
+        journal_record: &JournalRecord,
+    ) -> Result<(), StoreError> {
+        let reason = payload_string(payload, "reason")?;
+        if !matches!(reason, "before_durable_stage" | "staged_media_missing") {
+            return Err(StoreError::IntegrityMismatch(
+                "import failure reason is unsupported",
+            ));
+        }
+        let (event_sequence, prior_digest) = next_database_event(&self.connection, session_id)?;
+        let digest = event_digest(
+            session_id,
+            event_sequence,
+            "media_import_failed",
+            payload,
+            prior_digest.as_deref(),
+        )?;
+        let transaction = self.connection.transaction()?;
+        let changed = transaction.execute(
+            "UPDATE sessions
+             SET lifecycle = 'deleted', health = 'degraded', media_files_open = 0,
+                 updated_at_ms = ?2
+             WHERE id = ?1 AND origin = 'import' AND lifecycle = 'preparing'",
+            params![session_id, journal_record.body.wall_time_milliseconds],
+        )?;
+        if changed != 1 {
+            return Err(StoreError::InvalidState(
+                "import failure projection is not awaiting evidence",
+            ));
+        }
+        insert_event_with_id(
+            &transaction,
+            &journal_record.body.event_id,
+            session_id,
+            event_sequence,
+            "media_import_failed",
+            journal_record.body.wall_time_milliseconds,
+            payload,
+            prior_digest.as_deref(),
+            &digest,
+        )?;
+        transaction.commit()?;
+        Ok(())
     }
 
     fn project_import(
@@ -467,6 +751,18 @@ impl SessionStore {
         let audio_directory = self.open_managed_audio_directory(session_id)?;
         open_managed_directory_at(&audio_directory, OsStr::new(track_id))
     }
+}
+
+fn interrupt_import_if(
+    selected: Option<ImportFailurePoint>,
+    current: ImportFailurePoint,
+) -> Result<(), StoreError> {
+    if selected == Some(current) {
+        return Err(StoreError::IntegrityMismatch(
+            "simulated managed import interruption",
+        ));
+    }
+    Ok(())
 }
 
 pub(super) fn cleanup_stale_playback_snapshot_placeholders(
@@ -1083,6 +1379,179 @@ mod tests {
                 "imported media exceeds the safe playback snapshot limit"
             ))
         ));
+    }
+
+    #[test]
+    fn p1_import_failure_before_durable_stage_is_tombstoned_and_not_visible() {
+        let temp = TempDir::new().unwrap();
+        let source_path = temp.path().join("early-failure.caf");
+        write_recoverable_caf(&source_path, 48_000);
+        let managed_root = temp.path().join("Open Scribe");
+        let mut store = SessionStore::open(&managed_root).unwrap();
+
+        assert!(
+            store
+                .import_recoverable_caf_inner(
+                    ImportMediaRequest {
+                        title: "Failed import".to_owned(),
+                        source_path,
+                    },
+                    Some(ImportFailurePoint::AfterPreparation),
+                )
+                .is_err()
+        );
+
+        let snapshot = store.runtime_library_snapshot().unwrap();
+        assert!(snapshot.current_session.is_none());
+        assert!(snapshot.saved_sessions.is_empty());
+        let (lifecycle, health, failures): (String, String, i64) = store
+            .connection
+            .query_row(
+                "SELECT sessions.lifecycle, sessions.health,
+                        COUNT(session_events.id)
+                 FROM sessions
+                 LEFT JOIN session_events ON session_events.session_id = sessions.id
+                                               AND session_events.event_kind = 'media_import_failed'
+                 WHERE sessions.origin = 'import'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(lifecycle, "deleted");
+        assert_eq!(health, "degraded");
+        assert_eq!(failures, 1);
+
+        drop(store);
+        let mut reopened = SessionStore::open(managed_root).unwrap();
+        assert!(reopened.recover_playable_sessions().unwrap().is_empty());
+        let snapshot = reopened.runtime_library_snapshot().unwrap();
+        assert!(snapshot.current_session.is_none());
+        assert!(snapshot.saved_sessions.is_empty());
+    }
+
+    #[test]
+    fn p1_staged_import_failure_reconciles_to_ready_instead_of_reporting_no_add() {
+        let temp = TempDir::new().unwrap();
+        let source_path = temp.path().join("staged-failure.caf");
+        write_recoverable_caf(&source_path, 48_000);
+        let mut store = SessionStore::open(temp.path().join("Open Scribe")).unwrap();
+
+        let evidence = store
+            .import_recoverable_caf_inner(
+                ImportMediaRequest {
+                    title: "Recovered staged import".to_owned(),
+                    source_path,
+                },
+                Some(ImportFailurePoint::AfterStagedJournal),
+            )
+            .unwrap();
+
+        assert!(evidence.ready_for_review);
+        let snapshot = store.runtime_library_snapshot().unwrap();
+        assert!(snapshot.current_session.is_none());
+        assert_eq!(snapshot.saved_sessions.len(), 1);
+        assert_eq!(snapshot.saved_sessions[0].session_id, evidence.session_id);
+    }
+
+    #[test]
+    fn p1_recovered_playback_lease_binds_exact_record_across_path_replacement_without_import_cap() {
+        let temp = TempDir::new().unwrap();
+        let mut store = SessionStore::open(temp.path().join("Open Scribe")).unwrap();
+        let prepared = store
+            .prepare_session_with_required_sources(
+                PrepareSessionRequest {
+                    title: "Recovered lease".to_owned(),
+                    origin: SessionOrigin::Capture,
+                },
+                vec![crate::MediaSourceKind::Microphone],
+            )
+            .unwrap();
+        let authorization = store
+            .authorize_media_open(crate::AuthorizeMediaOpenRequest {
+                session_id: prepared.session_id.clone(),
+                source_kind: crate::MediaSourceKind::Microphone,
+                source_display_name: "Synthetic microphone".to_owned(),
+            })
+            .unwrap();
+        write_recoverable_caf(&authorization.absolute_path, 0);
+        let initial_byte_length = authorization.absolute_path.metadata().unwrap().len();
+        store
+            .accept_media_open(crate::MediaOpenReceipt {
+                session_id: authorization.session_id.clone(),
+                track_id: authorization.track_id.clone(),
+                segment_id: authorization.segment_id.clone(),
+                open_token: authorization.open_token.clone(),
+                writer_generation: authorization.writer_generation,
+                relative_path: authorization.relative_path.clone(),
+                media_format: authorization.media_format.clone(),
+                sample_rate_hz: authorization.sample_rate_hz,
+                channels: authorization.channels,
+                initial_byte_length,
+            })
+            .unwrap();
+        let observed_byte_length = {
+            let mut writer = OpenOptions::new()
+                .append(true)
+                .open(&authorization.absolute_path)
+                .unwrap();
+            writer.write_all(&vec![0_u8; 960 * 2]).unwrap();
+            writer.sync_all().unwrap();
+            writer.metadata().unwrap().len()
+        };
+        store
+            .accept_first_sample(crate::FirstSampleReceipt {
+                session_id: authorization.session_id.clone(),
+                track_id: authorization.track_id.clone(),
+                segment_id: authorization.segment_id.clone(),
+                open_token: authorization.open_token.clone(),
+                writer_generation: authorization.writer_generation,
+                relative_path: authorization.relative_path.clone(),
+                first_sample_host_time: 42_000,
+                first_sample_frame_count: 960,
+                observed_byte_length,
+            })
+            .unwrap();
+        store
+            .confirm_recording(prepared.session_id.clone())
+            .unwrap();
+        store
+            .interrupt_session(crate::InterruptSessionRequest {
+                session_id: prepared.session_id,
+                reason: crate::SessionInterruptionReason::CaptureFailed,
+            })
+            .unwrap();
+        let recovered = store.recover_playable_sessions().unwrap().remove(0);
+        let original = fs::read(&authorization.absolute_path).unwrap();
+
+        let lease = store
+            .lease_recovered_playback(
+                &recovered.session_id,
+                &recovered.source_id,
+                &recovered.track_id,
+                &recovered.segment_id,
+            )
+            .unwrap();
+        assert!(matches!(
+            store.lease_recovered_playback(
+                &recovered.session_id,
+                "wrong-source",
+                &recovered.track_id,
+                &recovered.segment_id,
+            ),
+            Err(StoreError::InvalidState(
+                "recovered playback evidence is unavailable"
+            ))
+        ));
+        let managed_path = authorization.absolute_path;
+        fs::remove_file(&managed_path).unwrap();
+        write_recoverable_caf(&managed_path, 96_000);
+
+        let mut leased_file = lease.file.try_clone().unwrap();
+        let mut leased_bytes = Vec::new();
+        leased_file.read_to_end(&mut leased_bytes).unwrap();
+        assert_eq!(leased_bytes, original);
+        assert_eq!(lease.byte_length(), original.len() as u64);
+        assert_eq!(lease.digest_sha256(), recovered.digest_sha256);
     }
 
     #[test]

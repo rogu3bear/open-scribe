@@ -194,15 +194,47 @@ struct OpenScribeApp: App {
       stage: "recovered",
       detail: "bytes-\(recovered.byteLength)-frames-\(recovered.sampleCount)"
     )
-    controller.play(recovered)
-    guard controller.playingSessionId == recovered.sessionId else {
-      AppTelemetry.recoveryProof(stage: "recovery-failed", detail: "playback-open-failed")
+    guard let generation = controller.play(recovered) else {
+      AppTelemetry.recoveryProof(stage: "recovery-failed", detail: "playback-not-admitted")
+      NSApp.terminate(nil)
+      return
+    }
+    let recoveredIdentity = RecoveredPlaybackMediaIdentity(recovered)
+    var startup = controller.playbackStartupState(
+      generation: generation,
+      identity: recoveredIdentity
+    )
+    for _ in 0..<200 where startup == .pending {
+      do {
+        try await Task.sleep(nanoseconds: 25_000_000)
+      } catch {
+        controller.stopPlayback(generation: generation)
+        AppTelemetry.recoveryProof(stage: "recovery-failed", detail: "playback-wait-cancelled")
+        NSApp.terminate(nil)
+        return
+      }
+      startup = controller.playbackStartupState(
+        generation: generation,
+        identity: recoveredIdentity
+      )
+    }
+    guard startup == .playing else {
+      controller.stopPlayback(generation: generation)
+      let detail =
+        switch startup {
+        case .some(.failed): "playback-open-failed"
+        case .some(.superseded): "playback-open-superseded"
+        case .some(.pending): "playback-open-timeout"
+        case .some(.playing): "playback-opened"
+        case nil: "playback-open-state-unavailable"
+        }
+      AppTelemetry.recoveryProof(stage: "recovery-failed", detail: detail)
       NSApp.terminate(nil)
       return
     }
     AppTelemetry.recoveryProof(stage: "playback-opened", detail: "native-audio-engine")
     try? await Task.sleep(nanoseconds: 750_000_000)
-    controller.stopPlayback()
+    controller.stopPlayback(generation: generation)
     NSApp.terminate(nil)
   }
 }

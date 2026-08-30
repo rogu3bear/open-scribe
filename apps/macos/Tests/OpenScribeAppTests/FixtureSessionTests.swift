@@ -140,6 +140,17 @@ final class FixtureSessionTests: XCTestCase {
     )
   }
 
+  func testPlaybackControlActionDistinguishesPendingCancelFromPlayingStop() {
+    XCTAssertEqual(PlaybackControlAction.resolve(isPending: false, isPlaying: false), .play)
+    XCTAssertEqual(PlaybackControlAction.resolve(isPending: true, isPlaying: false), .cancel)
+    XCTAssertEqual(PlaybackControlAction.resolve(isPending: false, isPlaying: true), .stop)
+    XCTAssertEqual(PlaybackControlAction.resolve(isPending: true, isPlaying: true), .stop)
+    XCTAssertTrue(PlaybackControlAction.play.isEnabled(hasActivePlayback: false))
+    XCTAssertFalse(PlaybackControlAction.play.isEnabled(hasActivePlayback: true))
+    XCTAssertTrue(PlaybackControlAction.cancel.isEnabled(hasActivePlayback: true))
+    XCTAssertTrue(PlaybackControlAction.stop.isEnabled(hasActivePlayback: true))
+  }
+
   func testRecordActionIsUnavailableEverywhereWhileImportOwnsTheFileFlow() {
     XCTAssertTrue(MainWorkspaceActions.canRecord(liveCanStart: true, importIsBusy: false))
     XCTAssertFalse(MainWorkspaceActions.canRecord(liveCanStart: true, importIsBusy: true))
@@ -705,7 +716,6 @@ final class FixtureSessionTests: XCTestCase {
       sourceDisplayName: sourceDisplayName,
       segmentId: segmentId,
       relativePath: "audio/\(segmentId).caf",
-      absolutePath: "/tmp/\(segmentId).caf",
       sampleCount: sampleCount,
       durationNanoseconds: durationNanoseconds,
       byteLength: byteLength,

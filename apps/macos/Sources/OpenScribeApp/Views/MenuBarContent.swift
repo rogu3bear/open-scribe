@@ -78,13 +78,22 @@ struct MenuBarContent: View {
       Label("Recovered conversation", systemImage: "waveform.badge.checkmark")
       Text("Playable local audio")
         .foregroundStyle(.secondary)
-      if recoveredSessions.playingSessionId == recovered.sessionId {
-        Button("Stop Recovered Audio") {
-          recoveredSessions.stopPlayback()
-        }
-      } else {
+      let playbackAction = PlaybackControlAction.resolve(
+        isPending: recoveredSessions.pendingRecoveredMediaIdentity != nil,
+        isPlaying: recoveredSessions.playingRecoveredMediaIdentity != nil
+      )
+      if playbackAction == .play {
         Button("Play Recovered Audio") {
           recoveredSessions.play(recovered)
+        }
+        .disabled(
+          !playbackAction.isEnabled(
+            hasActivePlayback: recoveredSessions.activePlaybackSessionId != nil
+          )
+        )
+      } else {
+        Button("\(playbackAction.title) Recovered Audio") {
+          recoveredSessions.stopPlayback()
         }
       }
     }
