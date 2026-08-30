@@ -38,6 +38,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 struct OpenScribeApp: App {
   @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
   @StateObject private var runtimeStore: RuntimeLibraryStore
+  @StateObject private var importedMediaAuthority: ImportedMediaAuthorityAdapter
   @StateObject private var liveRecording: LiveMicrophoneRecordingController
   @StateObject private var recoveredSessions: RecoveredSessionController
 
@@ -60,7 +61,11 @@ struct OpenScribeApp: App {
       ?? LiveMicrophoneRecordingController(managedRoot: nil)
     let recovery = RecoveredSessionController(managedRoot: managedRoot)
     let runtime = RuntimeLibraryStore(managedRoot: managedRoot)
+    let importAuthority = ImportedMediaAuthorityAdapter { title, sourceURL in
+      try runtime.importManagedCaf(title: title, sourceURL: sourceURL)
+    }
     _runtimeStore = StateObject(wrappedValue: runtime)
+    _importedMediaAuthority = StateObject(wrappedValue: importAuthority)
     _liveRecording = StateObject(wrappedValue: controller)
     _recoveredSessions = StateObject(wrappedValue: recovery)
     if liveProofRoot != nil {
@@ -86,15 +91,17 @@ struct OpenScribeApp: App {
     WindowGroup("Open Scribe", id: "main") {
       ContentView(
         store: runtimeStore,
+        importedMediaAuthority: importedMediaAuthority,
         liveRecording: liveRecording,
         recoveredSessions: recoveredSessions
       )
     }
-    .defaultSize(width: 560, height: 680)
+    .defaultSize(width: 1040, height: 720)
 
     MenuBarExtra {
       MenuBarContent(
         store: runtimeStore,
+        importedMediaAuthority: importedMediaAuthority,
         liveRecording: liveRecording,
         recoveredSessions: recoveredSessions
       )

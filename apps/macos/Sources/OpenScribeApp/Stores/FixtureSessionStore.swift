@@ -2,11 +2,14 @@ import Foundation
 
 private enum RuntimeLibraryStoreError: Error {
   case managedRootUnavailable
+  case importUnavailable
+  case importEvidenceRejected
 }
 
 @MainActor
 final class RuntimeLibraryStore: ObservableObject {
   typealias SnapshotProvider = @Sendable () throws -> NativeRuntimeLibrarySnapshot
+  typealias ImportProvider = @Sendable (String, String) throws -> NativeImportedMediaEvidence
 
   @Published private(set) var currentSession: RuntimeSessionPresentation?
   @Published private(set) var savedSessions: [RuntimeSessionPresentation] = []
@@ -14,10 +17,16 @@ final class RuntimeLibraryStore: ObservableObject {
   @Published private(set) var errorMessage: String?
 
   private let snapshotProvider: SnapshotProvider
+  private let importProvider: ImportProvider?
   private var pollingTask: Task<Void, Never>?
 
-  init(snapshotProvider: @escaping SnapshotProvider, startsPolling: Bool = true) {
+  init(
+    snapshotProvider: @escaping SnapshotProvider,
+    importProvider: ImportProvider? = nil,
+    startsPolling: Bool = true
+  ) {
     self.snapshotProvider = snapshotProvider
+    self.importProvider = importProvider
     refresh()
     if startsPolling {
       pollingTask = Task { [weak self] in
@@ -34,12 +43,20 @@ final class RuntimeLibraryStore: ObservableObject {
     let controller = try? managedRoot.map {
       try NativeRecordingPreparation.open(managedRoot: $0.path)
     }
-    self.init(snapshotProvider: {
-      guard let controller else {
-        throw RuntimeLibraryStoreError.managedRootUnavailable
+    self.init(
+      snapshotProvider: {
+        guard let controller else {
+          throw RuntimeLibraryStoreError.managedRootUnavailable
+        }
+        return try controller.runtimeLibrarySnapshot()
+      },
+      importProvider: { title, sourcePath in
+        guard let controller else {
+          throw RuntimeLibraryStoreError.managedRootUnavailable
+        }
+        return try controller.importRecoverableCaf(title: title, sourcePath: sourcePath)
       }
-      return try controller.runtimeLibrarySnapshot()
-    })
+    )
   }
 
   deinit {
@@ -59,6 +76,19 @@ final class RuntimeLibraryStore: ObservableObject {
       errorMessage =
         "Live recording state is unavailable. The saved list is last known; recorded media was not changed."
     }
+  }
+
+  @discardableResult
+  func importManagedCaf(title: String, sourceURL: URL) throws -> NativeImportedMediaEvidence {
+    guard let importProvider else {
+      throw RuntimeLibraryStoreError.importUnavailable
+    }
+    let evidence = try importProvider(title, sourceURL.path)
+    guard evidence.originalUntouched, evidence.readyForReview else {
+      throw RuntimeLibraryStoreError.importEvidenceRejected
+    }
+    refresh()
+    return evidence
   }
 }
 
