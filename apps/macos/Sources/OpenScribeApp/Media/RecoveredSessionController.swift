@@ -610,6 +610,7 @@ private final class AnonymousCAFDecoder: @unchecked Sendable {
         .clientBufferUnavailable(clientFormatSummary)
       )
     }
+    buffer.frameLength = maximumFrames
     var frames = maximumFrames
     let status = ExtAudioFileRead(extendedAudioFile, &frames, buffer.mutableAudioBufferList)
     guard status == noErr else {
@@ -720,11 +721,13 @@ private final class BoundedImportedPlaybackSession: @unchecked Sendable {
     }
     let identifier = UUID()
     scheduledBuffers[identifier] = buffer
+    let generation = generation
+    let lifecycle = lifecycle
     player.scheduleBuffer(buffer, completionCallbackType: .dataPlayedBack) {
       [weak self, weak player] _ in
-      guard let self, let player else { return }
-      self.lifecycle.observe(.importedCompletionReceived(self.generation))
-      self.lifecycle.deliverImportedCompletion { [weak self, weak player] in
+      lifecycle.observe(.importedCompletionReceived(generation))
+      lifecycle.deliverImportedCompletion { [weak self, weak player] in
+        lifecycle.observe(.importedCompletionDelivered(generation))
         guard let self, let player else { return }
         self.queue.async {
           self.bufferFinished(identifier, player: player)
@@ -735,7 +738,6 @@ private final class BoundedImportedPlaybackSession: @unchecked Sendable {
   }
 
   private func bufferFinished(_ identifier: UUID, player: AVAudioPlayerNode) {
-    lifecycle.observe(.importedCompletionDelivered(generation))
     scheduledBuffers.removeValue(forKey: identifier)
     guard active else { return }
     do {
