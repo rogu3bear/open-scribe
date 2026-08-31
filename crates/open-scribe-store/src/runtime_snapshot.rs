@@ -402,9 +402,7 @@ impl SessionStore {
         let absolute_path = self.session_directory(session_id)?.join(relative_path);
         match fs::symlink_metadata(&absolute_path) {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                return Ok(Some(base(
-                    RuntimePlayableMediaAvailability::Unavailable,
-                )));
+                return Ok(Some(base(RuntimePlayableMediaAvailability::Unavailable)));
             }
             Err(_) => {
                 return Ok(Some(base(RuntimePlayableMediaAvailability::Corrupt)));

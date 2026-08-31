@@ -844,7 +844,7 @@ final class RecoveredSessionControllerTests: XCTestCase {
       importedPlaybackLeaseProvider: { _ in lease },
       player: player
     )
-    let imported = importedSession(availability: "available", absolutePath: "/tmp/imported.caf")
+    let imported = savedSession(availability: "available", absolutePath: "/tmp/imported.caf")
 
     controller.play(imported)
     await assertEventually { controller.playingSessionId == imported.sessionId }
@@ -869,7 +869,7 @@ final class RecoveredSessionControllerTests: XCTestCase {
       },
       player: player
     )
-    let imported = importedSession(
+    let imported = savedSession(
       sessionId: "pending-import",
       availability: "available",
       absolutePath: "/tmp/pending.caf"
@@ -889,7 +889,7 @@ final class RecoveredSessionControllerTests: XCTestCase {
 
     controller.stopPlayback()
     player.holdImportedPlayback = false
-    let replacement = importedSession(
+    let replacement = savedSession(
       sessionId: "replacement-import",
       availability: "available",
       absolutePath: "/tmp/replacement.caf"
@@ -985,7 +985,7 @@ final class RecoveredSessionControllerTests: XCTestCase {
     XCTAssertEqual(controller.errorMessage, "Recovered audio could not be opened for playback.")
   }
 
-  func testUnavailableAndCorruptImportedSessionsFailClosedBeforeNativePlayback() {
+  func testUnavailableAndCorruptCapturedSessionsUseNeutralSavedAudioMessaging() {
     for availability in ["unavailable", "corrupt"] {
       let player = RecoveredAudioPlayerFake()
       let leaseRequested = SendableFlag()
@@ -998,20 +998,20 @@ final class RecoveredSessionControllerTests: XCTestCase {
         player: player
       )
 
-      let imported = importedSession(availability: availability, absolutePath: nil)
-      controller.play(imported)
+      let captured = savedSession(sessionId: "session-captured", availability: availability, absolutePath: nil, sourceDisplayName: "Mac microphone")
+      controller.play(captured)
 
       XCTAssertNil(controller.playingSessionId)
       XCTAssertNil(controller.activePlaybackSessionId)
       XCTAssertNil(player.recoveredReceipt)
       XCTAssertEqual(player.stopCount, 1)
       XCTAssertFalse(leaseRequested.value)
-      XCTAssertTrue(controller.errorMessage?.contains(availability) == true)
-      XCTAssertEqual(controller.errorSessionId, imported.sessionId)
+      XCTAssertEqual(controller.errorMessage, availability == "corrupt" ? "Saved audio appears corrupt and was not opened." : "Saved audio is unavailable and was not opened.")
+      XCTAssertEqual(controller.errorSessionId, captured.sessionId)
     }
   }
 
-  func testImportedPlaybackFailsClosedWhenRustLeaseCannotBeAcquired() {
+  func testCapturedPlaybackOpenFailureUsesNeutralSavedAudioMessaging() {
     let player = RecoveredAudioPlayerFake()
     let controller = RecoveredSessionController(
       recoveryFactory: { RecoveryPreparationFake() },
@@ -1019,13 +1019,13 @@ final class RecoveredSessionControllerTests: XCTestCase {
       player: player
     )
 
-    controller.play(importedSession(availability: "available", absolutePath: "/tmp/imported.caf"))
+    controller.play(savedSession(sessionId: "session-captured", availability: "available", absolutePath: nil, sourceDisplayName: "Mac microphone"))
 
     XCTAssertNil(controller.playingSessionId)
     XCTAssertNil(player.recoveredReceipt)
     XCTAssertEqual(player.stopCount, 1)
-    XCTAssertEqual(controller.errorMessage, "Imported audio could not be opened for playback.")
-    XCTAssertEqual(controller.errorSessionId, "session-imported")
+    XCTAssertEqual(controller.errorMessage, "Saved audio could not be opened for playback.")
+    XCTAssertEqual(controller.errorSessionId, "session-captured")
   }
 
   func testFailedImportedReplacementReleasesThePriorLeaseAndPlayingState() async {
@@ -1038,7 +1038,7 @@ final class RecoveredSessionControllerTests: XCTestCase {
       importedPlaybackLeaseProvider: { _ in selectedLease.lease },
       player: player
     )
-    let first = importedSession(availability: "available", absolutePath: "/tmp/first.caf")
+    let first = savedSession(availability: "available", absolutePath: "/tmp/first.caf")
     controller.play(first)
     await assertEventually { controller.playingSessionId == first.sessionId }
     XCTAssertTrue(player.retainedLease === firstLease)
@@ -1074,7 +1074,7 @@ final class RecoveredSessionControllerTests: XCTestCase {
     XCTAssertNil(controller.playingSessionId)
     XCTAssertNil(player.recoveredReceipt)
     XCTAssertNil(player.retainedLease)
-    XCTAssertEqual(controller.errorMessage, "Imported audio could not be opened for playback.")
+    XCTAssertEqual(controller.errorMessage, "Saved audio could not be opened for playback.")
   }
 
   func testAnonymousSnapshotAcceptsOnlyTheCompleteAdmittedDigest() throws {
@@ -1766,7 +1766,7 @@ final class RecoveredSessionControllerTests: XCTestCase {
       importedPlaybackLeaseProvider: { _ in lease },
       player: player
     )
-    let imported = importedSession(availability: "available", absolutePath: "/tmp/imported.caf")
+    let imported = savedSession(availability: "available", absolutePath: "/tmp/imported.caf")
 
     controller.play(imported)
     await assertEventually { controller.playingSessionId == imported.sessionId }
@@ -1782,7 +1782,7 @@ final class RecoveredSessionControllerTests: XCTestCase {
     XCTAssertNil(controller.playingSessionId)
     XCTAssertEqual(
       controller.errorMessage,
-      "Imported audio playback stopped because decoding failed."
+      "Saved audio playback stopped because decoding failed."
     )
   }
 
@@ -1794,7 +1794,7 @@ final class RecoveredSessionControllerTests: XCTestCase {
       importedPlaybackLeaseProvider: { _ in lease },
       player: player
     )
-    let imported = importedSession(availability: "available", absolutePath: nil)
+    let imported = savedSession(availability: "available", absolutePath: nil)
 
     controller.play(imported)
     await assertEventually { controller.playingSessionId == imported.sessionId }
@@ -1823,12 +1823,12 @@ final class RecoveredSessionControllerTests: XCTestCase {
       player: player,
       playbackTerminationDecisionObserver: decisions.record
     )
-    let first = importedSession(
+    let first = savedSession(
       sessionId: "session-first",
       availability: "available",
       absolutePath: "/tmp/first.caf"
     )
-    let second = importedSession(
+    let second = savedSession(
       sessionId: "session-second",
       availability: "available",
       absolutePath: "/tmp/second.caf"
@@ -1872,23 +1872,25 @@ final class RecoveredSessionControllerTests: XCTestCase {
       },
       player: player
     )
-    let imported = importedSession(
+    let captured = savedSession(
+      sessionId: "session-captured",
       availability: "available",
       absolutePath: "/managed/large.caf",
-      byteLength: 268_435_457
+      byteLength: 268_435_457,
+      sourceDisplayName: "Mac microphone"
     )
 
-    controller.play(imported)
+    controller.play(captured)
 
     XCTAssertNil(controller.playingSessionId)
     XCTAssertNil(player.retainedLease)
     XCTAssertFalse(leaseRequested.value)
     XCTAssertEqual(
       controller.errorMessage,
-      "Imported audio is too large for safe playback on this version of Open Scribe."
+      "Saved audio is too large for safe playback on this version of Open Scribe."
     )
-    XCTAssertEqual(imported.playableMedia?.sourceDisplayName, "interview.caf")
-    XCTAssertTrue(imported.playableMedia?.isPlayable == true)
+    XCTAssertEqual(captured.playableMedia?.sourceDisplayName, "Mac microphone")
+    XCTAssertTrue(captured.playableMedia?.isPlayable == true)
   }
 
   private func nativePlaybackCAF(frameCount: AVAudioFrameCount) throws -> URL {
@@ -1985,16 +1987,14 @@ final class RecoveredSessionControllerTests: XCTestCase {
     )
   }
 
-  private func importedSession(
-    sessionId: String = "session-imported",
-    availability: String,
-    absolutePath: String?,
-    byteLength: UInt64 = 192_068
+  private func savedSession(
+    sessionId: String = "session-imported", availability: String, absolutePath: String?,
+    byteLength: UInt64 = 192_068, sourceDisplayName: String = "interview.caf"
   ) -> RuntimeSessionPresentation {
     RuntimeSessionPresentation(
       native: NativeRuntimeSessionSnapshot(
         sessionId: sessionId,
-        title: "Imported interview",
+        title: "Saved conversation",
         lifecycle: "ready_for_review",
         health: "healthy",
         elapsedSeconds: 2,
@@ -2004,7 +2004,7 @@ final class RecoveredSessionControllerTests: XCTestCase {
         recovered: false,
         sources: [],
         playableMedia: NativeRuntimePlayableMediaSnapshot(
-          sourceDisplayName: "interview.caf",
+          sourceDisplayName: sourceDisplayName,
           availability: availability,
           absolutePath: absolutePath,
           durationNanoseconds: 2_000_000_000,

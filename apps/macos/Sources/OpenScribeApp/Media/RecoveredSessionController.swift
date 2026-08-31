@@ -1396,7 +1396,7 @@ final class RecoveredSessionController: ObservableObject {
               ""
             case .failed:
               failedRecoveredIdentity == nil
-                ? "Imported audio playback stopped because decoding failed."
+                ? "Saved audio playback stopped because decoding failed."
                 : "Recovered audio playback stopped because decoding failed."
             case .outputRouteChanged:
               "Playback stopped because the audio output changed. Press Play to restart."
@@ -1553,15 +1553,15 @@ final class RecoveredSessionController: ObservableObject {
     guard media.isPlayable else {
       setPlaybackError(
         media.availability == "corrupt"
-          ? "Imported audio appears corrupt and was not opened."
-          : "Imported audio is unavailable and was not opened.",
+          ? "Saved audio appears corrupt and was not opened."
+          : "Saved audio is unavailable and was not opened.",
         sessionId: session.sessionId
       )
       return
     }
     guard media.byteLength <= ImportedPlaybackMemoryPolicy.maximumSnapshotByteLength else {
       setPlaybackError(
-        "Imported audio is too large for safe playback on this version of Open Scribe.",
+        "Saved audio is too large for safe playback on this version of Open Scribe.",
         sessionId: session.sessionId
       )
       return
@@ -1596,7 +1596,7 @@ final class RecoveredSessionController: ObservableObject {
           self.pendingRecoveredMediaIdentity = nil
           self.playingRecoveredMediaIdentity = nil
           self.setPlaybackError(
-            "Imported audio is too large for safe playback on this version of Open Scribe.",
+            "Saved audio is too large for safe playback on this version of Open Scribe.",
             sessionId: session.sessionId
           )
         } catch {
@@ -1609,14 +1609,14 @@ final class RecoveredSessionController: ObservableObject {
           self.pendingRecoveredMediaIdentity = nil
           self.playingRecoveredMediaIdentity = nil
           self.setPlaybackError(
-            "Imported audio could not be opened for playback.",
+            "Saved audio could not be opened for playback.",
             sessionId: session.sessionId
           )
         }
       }
     } catch {
       setPlaybackError(
-        "Imported audio could not be opened for playback.",
+        "Saved audio could not be opened for playback.",
         sessionId: session.sessionId
       )
     }

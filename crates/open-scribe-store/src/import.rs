@@ -688,12 +688,13 @@ impl SessionStore {
                 ));
             }
             if track_entries.is_empty() {
-                fd_fs::unlinkat(&audio_directory, &track_name, fd_fs::AtFlags::REMOVEDIR)
-                    .map_err(|_| {
+                fd_fs::unlinkat(&audio_directory, &track_name, fd_fs::AtFlags::REMOVEDIR).map_err(
+                    |_| {
                         StoreError::IntegrityMismatch(
                             "empty unstaged import track could not be removed",
                         )
-                    })?;
+                    },
+                )?;
                 fd_fs::fsync(&audio_directory).map_err(|_| {
                     StoreError::IntegrityMismatch(
                         "unstaged import audio cleanup was not synchronized",
@@ -713,8 +714,7 @@ impl SessionStore {
             let staging_stat = fd_fs::fstat(&staging_fd).map_err(|_| {
                 StoreError::IntegrityMismatch("unstaged import media identity is unavailable")
             })?;
-            if fd_fs::FileType::from_raw_mode(staging_stat.st_mode)
-                != fd_fs::FileType::RegularFile
+            if fd_fs::FileType::from_raw_mode(staging_stat.st_mode) != fd_fs::FileType::RegularFile
                 || staging_stat.st_dev as u64 != payload_u64(payload, "file_device")?
                 || staging_stat.st_ino as u64 != payload_u64(payload, "file_inode")?
             {
@@ -1631,17 +1631,18 @@ mod tests {
         assert_eq!(lifecycle, "deleted");
         assert_eq!(health, "degraded");
         assert_eq!(
-            fs::read_dir(
-                store
-                    .session_directory(&session_id)
-                    .unwrap()
-                    .join("audio")
-            )
-            .unwrap()
-            .count(),
+            fs::read_dir(store.session_directory(&session_id).unwrap().join("audio"))
+                .unwrap()
+                .count(),
             0
         );
-        assert!(store.runtime_library_snapshot().unwrap().saved_sessions.is_empty());
+        assert!(
+            store
+                .runtime_library_snapshot()
+                .unwrap()
+                .saved_sessions
+                .is_empty()
+        );
     }
 
     #[test]
