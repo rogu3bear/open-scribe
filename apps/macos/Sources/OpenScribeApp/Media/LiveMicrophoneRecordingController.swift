@@ -157,12 +157,12 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
     case .preparing: "Preparing durable recording…"
     case .starting: "Starting microphone + system audio…"
     case .capturing:
-      if microphoneSourceHealth?.event == .routeInterrupted {
+      if !failedSources.isEmpty {
+        "Recording continues with remaining audio"
+      } else if microphoneSourceHealth?.event == .routeInterrupted {
         "Recording continues; checking microphone after an audio-route change"
       } else {
-        failedSources.isEmpty
-          ? "Recording microphone + system audio"
-          : "Recording continues with remaining audio"
+        "Recording microphone + system audio"
       }
     case .stopping: "Securing recording…"
     case .saved: "Audio segment saved"
@@ -273,7 +273,7 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
         },
         onObservation: { [weak self] observation in
           Task { @MainActor [weak self] in
-            self?.acceptMicrophoneObservation(observation)
+            await self?.acceptMicrophoneObservation(observation)
           }
         },
         onFailure: { [weak self] error in
@@ -413,7 +413,9 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
     phase = .capturing
   }
 
-  private func acceptMicrophoneObservation(_ observation: MicrophoneSourceHealthObservation) {
+  private func acceptMicrophoneObservation(
+    _ observation: MicrophoneSourceHealthObservation
+  ) async {
     guard phase == .starting || phase == .capturing,
       let activeSessionId,
       let writer = writers[.microphone]
@@ -424,6 +426,7 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
       observation.identity.writerGeneration == authorization.writerGeneration,
       observation.sequence > acceptedMicrophoneObservationSequence
     else { return }
+    guard !failedSources.contains(.microphone) else { return }
     acceptedMicrophoneObservationSequence = observation.sequence
     microphoneSourceHealth = observation
     let rustSourceState: String
@@ -441,6 +444,14 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
         visibleState: phase.rawValue
       )
     )
+    if observation.event == .routeInterrupted {
+      await handleCaptureFailure(
+        "The microphone audio route stopped.",
+        code: "capture-route-interrupted",
+        source: .microphone,
+        interruptionReason: .captureFailed
+      )
+    }
   }
 
   private func handleCaptureFailure(
