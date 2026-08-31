@@ -6,6 +6,40 @@ private enum RuntimeLibraryStoreError: Error {
   case importEvidenceRejected
 }
 
+enum StructuredNativeIO {
+  static func read<Result: Sendable>(
+    _ operation: @escaping @Sendable () throws -> Result
+  ) async throws -> Result {
+    try await run(operation, checksCancellationAfterOperation: true)
+  }
+
+  static func mutation<Result: Sendable>(
+    _ operation: @escaping @Sendable () throws -> Result
+  ) async throws -> Result {
+    try await run(operation, checksCancellationAfterOperation: false)
+  }
+
+  private static func run<Result: Sendable>(
+    _ operation: @escaping @Sendable () throws -> Result,
+    checksCancellationAfterOperation: Bool
+  ) async throws -> Result {
+    try await withThrowingTaskGroup(of: Result.self) { group in
+      group.addTask(priority: .userInitiated) {
+        try Task.checkCancellation()
+        let result = try operation()
+        if checksCancellationAfterOperation {
+          try Task.checkCancellation()
+        }
+        return result
+      }
+      guard let result = try await group.next() else {
+        throw CancellationError()
+      }
+      return result
+    }
+  }
+}
+
 @MainActor
 final class RuntimeLibraryStore: ObservableObject {
   typealias SnapshotProvider = @Sendable () throws -> NativeRuntimeLibrarySnapshot
@@ -17,8 +51,11 @@ final class RuntimeLibraryStore: ObservableObject {
   @Published private(set) var errorMessage: String?
 
   private let snapshotProvider: SnapshotProvider
-  private let importProvider: ImportProvider?
+  nonisolated private let importProvider: ImportProvider?
   private var pollingTask: Task<Void, Never>?
+  private var refreshTask: Task<Void, Never>?
+  private var refreshGeneration: UInt64 = 0
+  private var refreshQueued = false
 
   init(
     snapshotProvider: @escaping SnapshotProvider,
@@ -61,25 +98,23 @@ final class RuntimeLibraryStore: ObservableObject {
 
   deinit {
     pollingTask?.cancel()
+    refreshTask?.cancel()
   }
 
   func refresh() {
-    do {
-      let native = try snapshotProvider()
-      currentSession = native.currentSession.map(RuntimeSessionPresentation.init(native:))
-      savedSessions = native.savedSessions.map(RuntimeSessionPresentation.init(native:))
-      isSnapshotStale = false
-      errorMessage = nil
-    } catch {
-      currentSession = nil
-      isSnapshotStale = true
-      errorMessage =
-        "Live recording state is unavailable. The saved list is last known; recorded media was not changed."
+    refreshGeneration &+= 1
+    if refreshTask != nil {
+      refreshQueued = true
+      return
     }
+    startRefresh(generation: refreshGeneration)
   }
 
   @discardableResult
-  func importManagedCaf(title: String, sourceURL: URL) throws -> NativeImportedMediaEvidence {
+  nonisolated func importManagedCaf(
+    title: String,
+    sourceURL: URL
+  ) throws -> NativeImportedMediaEvidence {
     guard let importProvider else {
       throw RuntimeLibraryStoreError.importUnavailable
     }
@@ -87,8 +122,51 @@ final class RuntimeLibraryStore: ObservableObject {
     guard evidence.originalUntouched, evidence.readyForReview else {
       throw RuntimeLibraryStoreError.importEvidenceRejected
     }
-    refresh()
+    Task { @MainActor [weak self] in
+      self?.refresh()
+    }
     return evidence
+  }
+
+  private func startRefresh(generation: UInt64) {
+    let snapshotProvider = snapshotProvider
+    refreshTask = Task { [weak self] in
+      let result: Result<NativeRuntimeLibrarySnapshot, Error>
+      do {
+        result = .success(try await StructuredNativeIO.read(snapshotProvider))
+      } catch {
+        result = .failure(error)
+      }
+      guard let self else { return }
+      self.finishRefresh(result, generation: generation)
+    }
+  }
+
+  private func finishRefresh(
+    _ result: Result<NativeRuntimeLibrarySnapshot, Error>,
+    generation: UInt64
+  ) {
+    refreshTask = nil
+    if generation == refreshGeneration {
+      switch result {
+      case .success(let native):
+        currentSession = native.currentSession.map(RuntimeSessionPresentation.init(native:))
+        savedSessions = native.savedSessions.map(RuntimeSessionPresentation.init(native:))
+        isSnapshotStale = false
+        errorMessage = nil
+      case .failure(let error) where error is CancellationError:
+        break
+      case .failure:
+        currentSession = nil
+        isSnapshotStale = true
+        errorMessage =
+          "Live recording state is unavailable. The saved list is last known; recorded media was not changed."
+      }
+    }
+    if refreshQueued || generation != refreshGeneration {
+      refreshQueued = false
+      startRefresh(generation: refreshGeneration)
+    }
   }
 }
 

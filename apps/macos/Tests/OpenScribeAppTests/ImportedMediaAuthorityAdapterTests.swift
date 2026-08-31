@@ -5,9 +5,9 @@ import XCTest
 
 @MainActor
 final class ImportedMediaAuthorityAdapterTests: XCTestCase {
-  func testSecurityScopeStaysOpenThroughImportAndClosesAfterSuccess() {
+  func testSecurityScopeStaysOpenThroughImportAndClosesAfterSuccess() async {
     let selectedURL = URL(fileURLWithPath: "/tmp/Interview.caf")
-    var events: [String] = []
+    let events = ImportEventRecorder()
     let adapter = ImportedMediaAuthorityAdapter(
       picker: {
         events.append("pick")
@@ -23,16 +23,18 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
         events.append("stop")
       },
       importer: { title, url in
-        XCTAssertEqual(title, "Interview")
-        XCTAssertEqual(url, selectedURL)
         events.append("import")
+        events.recordImport(title: title, url: url)
         return acceptedEvidence()
       }
     )
 
     adapter.chooseAndImport()
+    await assertEventually { adapter.phase == .succeeded }
 
-    XCTAssertEqual(events, ["pick", "start", "import", "stop"])
+    XCTAssertEqual(events.snapshot(), ["pick", "start", "import", "stop"])
+    XCTAssertEqual(events.importTitle, "Interview")
+    XCTAssertEqual(events.importURL, selectedURL)
     XCTAssertEqual(adapter.phase, .succeeded)
     XCTAssertEqual(adapter.importedSessionId, "imported-session")
     XCTAssertEqual(
@@ -42,14 +44,14 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
   }
 
   func testScopeDenialFailsClosedWithoutCallingRustOrStoppingUnopenedScope() {
-    var importCalled = false
+    let importCalled = ImportFlag()
     var stopCalled = false
     let adapter = ImportedMediaAuthorityAdapter(
       picker: { URL(fileURLWithPath: "/tmp/Denied.caf") },
       startSecurityScope: { _ in false },
       stopSecurityScope: { _ in stopCalled = true },
       importer: { _, _ in
-        importCalled = true
+        importCalled.set()
         return acceptedEvidence()
       }
     )
@@ -58,12 +60,12 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
 
     XCTAssertEqual(adapter.phase, .failed)
     XCTAssertNil(adapter.importedSessionId)
-    XCTAssertFalse(importCalled)
+    XCTAssertFalse(importCalled.value)
     XCTAssertFalse(stopCalled)
     XCTAssertTrue(adapter.statusMessage?.contains("Nothing was added") == true)
   }
 
-  func testRustFailureClosesScopeAndReportsNoLibraryAddition() {
+  func testRustFailureClosesScopeAndReportsNoLibraryAddition() async {
     var stopCalled = false
     let adapter = ImportedMediaAuthorityAdapter(
       picker: { URL(fileURLWithPath: "/tmp/Unsupported.wav") },
@@ -73,6 +75,7 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
     )
 
     adapter.chooseAndImport()
+    await assertEventually { adapter.phase == .failed }
 
     XCTAssertTrue(stopCalled)
     XCTAssertEqual(adapter.phase, .failed)
@@ -81,7 +84,7 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
     XCTAssertTrue(adapter.statusMessage?.contains("Nothing was added") == true)
   }
 
-  func testStartingAnotherChoiceClearsThePreviousImportedIdentity() {
+  func testStartingAnotherChoiceClearsThePreviousImportedIdentity() async {
     let selectedURL = URL(fileURLWithPath: "/tmp/First.caf")
     var selections: [URL?] = [selectedURL, nil]
     let adapter = ImportedMediaAuthorityAdapter(
@@ -92,6 +95,7 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
     )
 
     adapter.chooseAndImport()
+    await assertEventually { adapter.phase == .succeeded }
     XCTAssertEqual(adapter.importedSessionId, "imported-session")
 
     adapter.chooseAndImport()
@@ -100,7 +104,7 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
     XCTAssertNil(adapter.statusMessage)
   }
 
-  func testTerminalPhaseCannotReenterBeforeSecurityScopeCleanupFinishes() {
+  func testTerminalPhaseCannotReenterBeforeSecurityScopeCleanupFinishes() async {
     let selectedURL = URL(fileURLWithPath: "/tmp/Interview.caf")
     var pickerCount = 0
     var stopCount = 0
@@ -119,6 +123,7 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
     )
 
     adapter.chooseAndImport()
+    await assertEventually { adapter.phase == .succeeded }
 
     XCTAssertEqual(pickerCount, 1)
     XCTAssertEqual(stopCount, 1)
@@ -126,7 +131,7 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
     XCTAssertEqual(adapter.importedSessionId, "imported-session")
   }
 
-  func testRuntimeStoreRefreshesTheExistingLibraryAfterAcceptedImport() throws {
+  func testRuntimeStoreRefreshesTheExistingLibraryAfterAcceptedImport() async throws {
     let fixture = ImportRuntimeFixture()
     let store = RuntimeLibraryStore(
       snapshotProvider: { fixture.snapshot() },
@@ -137,10 +142,13 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
     )
     XCTAssertTrue(store.savedSessions.isEmpty)
 
-    let evidence = try store.importManagedCaf(
-      title: "Customer interview",
-      sourceURL: URL(fileURLWithPath: "/tmp/customer.caf")
-    )
+    let evidence = try await StructuredNativeIO.mutation {
+      try store.importManagedCaf(
+        title: "Customer interview",
+        sourceURL: URL(fileURLWithPath: "/tmp/customer.caf")
+      )
+    }
+    await assertEventually { store.savedSessions.count == 1 }
 
     XCTAssertTrue(evidence.readyForReview)
     XCTAssertEqual(store.savedSessions.map(\.sessionId), ["imported-session"])
@@ -152,7 +160,7 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
     XCTAssertFalse(store.isSnapshotStale)
   }
 
-  func testAcceptedImportSelectsAfterATransientLibraryProjectionFailure() {
+  func testAcceptedImportSelectsAfterATransientLibraryProjectionFailure() async {
     let fixture = DelayedImportProjectionFixture()
     let store = RuntimeLibraryStore(
       snapshotProvider: { try fixture.snapshot() },
@@ -167,8 +175,10 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
       stopSecurityScope: { _ in },
       importer: store.importManagedCaf
     )
+    await assertEventually { store.savedSessions.map(\.sessionId) == ["older-session"] }
 
     adapter.chooseAndImport()
+    await assertEventually { adapter.phase == .succeeded && store.isSnapshotStale }
 
     XCTAssertEqual(adapter.phase, .succeeded)
     XCTAssertEqual(adapter.importedSessionId, "imported-session")
@@ -184,6 +194,7 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
     XCTAssertEqual(navigation.selectedSessionId, "older-session")
 
     store.refresh()
+    await assertEventually { fixture.snapshotFailureCount == 2 }
     navigation.synchronize(
       currentSessionId: store.currentSession?.sessionId,
       savedSessionIds: store.savedSessions.map(\.sessionId),
@@ -195,6 +206,9 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
     XCTAssertEqual(navigation.selectedSessionId, "older-session")
 
     store.refresh()
+    await assertEventually {
+      store.savedSessions.map(\.sessionId) == ["older-session", "imported-session"]
+    }
     navigation.synchronize(
       currentSessionId: store.currentSession?.sessionId,
       savedSessionIds: store.savedSessions.map(\.sessionId),
@@ -207,6 +221,55 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
     XCTAssertEqual(navigation.selectedSessionId, "imported-session")
     XCTAssertNil(navigation.pendingImportedSessionId)
     XCTAssertFalse(store.isSnapshotStale)
+  }
+
+  func testImportWorkerLeavesMainActorResponsiveWhileNativeImportIsBlocked() async {
+    let gate = BlockingImportGate()
+    let adapter = ImportedMediaAuthorityAdapter(
+      picker: { URL(fileURLWithPath: "/tmp/blocked.caf") },
+      startSecurityScope: { _ in true },
+      stopSecurityScope: { _ in gate.recordScopeClosed() },
+      importer: { _, _ in
+        gate.enterAndWait()
+        return acceptedEvidence()
+      }
+    )
+
+    adapter.chooseAndImport()
+    let entered = await waitUntil { gate.hasEntered }
+    XCTAssertTrue(entered)
+    XCTAssertEqual(adapter.phase, .importing)
+    XCTAssertFalse(gate.scopeClosed)
+    var mainActorHeartbeat = false
+    mainActorHeartbeat = true
+    XCTAssertTrue(mainActorHeartbeat)
+
+    gate.release()
+    await assertEventually { adapter.phase == .succeeded }
+    XCTAssertTrue(gate.scopeClosed)
+  }
+
+  private func waitUntil(
+    timeoutNanoseconds: UInt64 = 3_000_000_000,
+    _ predicate: () -> Bool
+  ) async -> Bool {
+    let started = DispatchTime.now().uptimeNanoseconds
+    while !predicate() {
+      if DispatchTime.now().uptimeNanoseconds - started >= timeoutNanoseconds {
+        return false
+      }
+      try? await Task.sleep(nanoseconds: 10_000_000)
+    }
+    return true
+  }
+
+  private func assertEventually(
+    file: StaticString = #filePath,
+    line: UInt = #line,
+    _ predicate: () -> Bool
+  ) async {
+    let observed = await waitUntil(predicate)
+    XCTAssertTrue(observed, file: file, line: line)
   }
 }
 
@@ -269,6 +332,11 @@ private final class DelayedImportProjectionFixture: @unchecked Sendable {
   private let lock = NSLock()
   private var importedTitle: String?
   private var snapshotFailuresRemaining = 0
+  private var observedSnapshotFailures = 0
+
+  var snapshotFailureCount: Int {
+    lock.withLock { observedSnapshotFailures }
+  }
 
   func importMedia(title: String, sourcePath: String) -> NativeImportedMediaEvidence {
     lock.withLock {
@@ -283,6 +351,7 @@ private final class DelayedImportProjectionFixture: @unchecked Sendable {
     let projectedTitle: String? = try lock.withLock {
       if snapshotFailuresRemaining > 0 {
         snapshotFailuresRemaining -= 1
+        observedSnapshotFailures += 1
         throw CocoaError(.fileReadUnknown)
       }
       return self.importedTitle
@@ -326,5 +395,63 @@ private final class DelayedImportProjectionFixture: @unchecked Sendable {
       currentSession: nil,
       savedSessions: [older] + (imported.map { [$0] } ?? [])
     )
+  }
+}
+
+private final class ImportEventRecorder: @unchecked Sendable {
+  private let lock = NSLock()
+  private var events: [String] = []
+  private var recordedTitle: String?
+  private var recordedURL: URL?
+
+  func append(_ event: String) {
+    lock.withLock { events.append(event) }
+  }
+
+  func recordImport(title: String, url: URL) {
+    lock.withLock {
+      recordedTitle = title
+      recordedURL = url
+    }
+  }
+
+  func snapshot() -> [String] { lock.withLock { events } }
+  var importTitle: String? { lock.withLock { recordedTitle } }
+  var importURL: URL? { lock.withLock { recordedURL } }
+}
+
+private final class ImportFlag: @unchecked Sendable {
+  private let lock = NSLock()
+  private var storedValue = false
+  func set() { lock.withLock { storedValue = true } }
+  var value: Bool { lock.withLock { storedValue } }
+}
+
+private final class BlockingImportGate: @unchecked Sendable {
+  private let condition = NSCondition()
+  private var entered = false
+  private var released = false
+  private var didCloseScope = false
+
+  var hasEntered: Bool { condition.withLock { entered } }
+  var scopeClosed: Bool { condition.withLock { didCloseScope } }
+
+  func enterAndWait() {
+    condition.lock()
+    entered = true
+    condition.broadcast()
+    while !released { condition.wait() }
+    condition.unlock()
+  }
+
+  func release() {
+    condition.withLock {
+      released = true
+      condition.broadcast()
+    }
+  }
+
+  func recordScopeClosed() {
+    condition.withLock { didCloseScope = true }
   }
 }

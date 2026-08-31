@@ -306,6 +306,12 @@ private final class PlaybackTerminationRecorder: @unchecked Sendable {
       }
     }
   }
+
+  func contains(generation: UUID, outcome: PlaybackTerminationOutcome) -> Bool {
+    lock.withLock {
+      storage.contains { $0.generation == generation && $0.outcome == outcome }
+    }
+  }
 }
 
 private final class PlaybackTerminationDecisionRecorder: @unchecked Sendable {
@@ -1703,6 +1709,55 @@ final class RecoveredSessionControllerTests: XCTestCase {
     XCTAssertFalse(termination.contains(generation: generation))
   }
 
+  func testNativeOutputConfigurationChangeTerminatesAndReleasesImportedLease() async throws {
+    let mediaURL = try nativePlaybackCAF(frameCount: 24_000)
+    defer { try? FileManager.default.removeItem(at: mediaURL.deletingLastPathComponent()) }
+    let leaseReleased = SendableFlag()
+    var lease: DescriptorPlaybackLeaseProbe? = try DescriptorPlaybackLeaseProbe(
+      url: mediaURL,
+      released: leaseReleased
+    )
+    let descriptor = try XCTUnwrap(lease?.fileDescriptor)
+    let lifecycle = NativePlaybackLifecycleRecorder()
+    let player = RecoveredAudioPlayer(
+      lifecycle: NativePlaybackLifecycleHooks(observer: lifecycle.record)
+    )
+    let termination = PlaybackTerminationRecorder()
+    player.setPlaybackTerminationHandler { termination.record($0) }
+    let generation = UUID()
+
+    try await player.playImported(
+      receipt: try XCTUnwrap(lease?.playbackPath()),
+      retaining: try XCTUnwrap(lease),
+      generation: generation
+    )
+    lease = nil
+    player.handleOutputConfigurationChange(generation: generation)
+
+    let terminated = await waitUntil {
+      termination.contains(generation: generation, outcome: .outputRouteChanged)
+    }
+    XCTAssertTrue(terminated)
+    let released = await waitUntil { leaseReleased.value }
+    XCTAssertTrue(released)
+    XCTAssertEqual(fcntl(descriptor, F_GETFD), -1)
+    XCTAssertTrue(
+      lifecycle.occursInOrder([
+        .outputConfigurationChanged(generation),
+        .importedSessionDeactivated(generation),
+        .importedDecoderClosed(generation),
+        .playerStopped(generation),
+        .engineStopped(generation),
+        .anonymousRegionReleased(generation),
+      ])
+    )
+
+    player.handleOutputConfigurationChange(generation: generation)
+    XCTAssertTrue(
+      termination.contains(generation: generation, outcome: .outputRouteChanged)
+    )
+  }
+
   func testRecoveryAndAsyncDecodeFailureReleaseImportedPlayingTruth() async {
     let player = RecoveredAudioPlayerFake()
     let lease = ImportedPlaybackLeaseFake(path: descriptorReceipt())
@@ -1728,6 +1783,31 @@ final class RecoveredSessionControllerTests: XCTestCase {
     XCTAssertEqual(
       controller.errorMessage,
       "Imported audio playback stopped because decoding failed."
+    )
+  }
+
+  func testOutputRouteTerminationClearsPlayingTruthAndReportsRestartAction() async {
+    let player = RecoveredAudioPlayerFake()
+    let lease = ImportedPlaybackLeaseFake(path: descriptorReceipt())
+    let controller = RecoveredSessionController(
+      recoveryFactory: { RecoveryPreparationFake() },
+      importedPlaybackLeaseProvider: { _ in lease },
+      player: player
+    )
+    let imported = importedSession(availability: "available", absolutePath: nil)
+
+    controller.play(imported)
+    await assertEventually { controller.playingSessionId == imported.sessionId }
+    let generation = player.importedGeneration!
+    player.terminate(generation: generation, outcome: .outputRouteChanged)
+
+    await assertEventually { controller.errorMessage != nil }
+    XCTAssertNil(controller.activePlaybackSessionId)
+    XCTAssertNil(controller.playingSessionId)
+    XCTAssertNil(player.retainedLease)
+    XCTAssertEqual(
+      controller.errorMessage,
+      "Playback stopped because the audio output changed. Press Play to restart."
     )
   }
 

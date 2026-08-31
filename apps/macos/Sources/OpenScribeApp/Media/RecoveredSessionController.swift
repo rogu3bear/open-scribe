@@ -26,9 +26,10 @@ protocol RecoveredAudioPlaying: AnyObject {
   func stop()
 }
 
-enum PlaybackTerminationOutcome: Sendable {
+enum PlaybackTerminationOutcome: Equatable, Sendable {
   case finished
   case failed
+  case outputRouteChanged
 }
 
 struct PlaybackTermination: Sendable {
@@ -48,6 +49,50 @@ enum NativePlaybackLifecycleEvent: Equatable, Sendable {
   case recoveredCompletionDelivered(UUID)
   case playerStopped(UUID?)
   case engineStopped(UUID?)
+  case outputConfigurationChanged(UUID)
+}
+
+private final class PlaybackGenerationCell: @unchecked Sendable {
+  private let lock = NSLock()
+  private var generation: UUID?
+
+  func set(_ generation: UUID?) {
+    lock.lock()
+    self.generation = generation
+    lock.unlock()
+  }
+
+  func snapshot() -> UUID? {
+    lock.lock()
+    defer { lock.unlock() }
+    return generation
+  }
+}
+
+private final class PlaybackEngineConfigurationObserver: @unchecked Sendable {
+  private let center: NotificationCenter
+  private var token: NSObjectProtocol?
+
+  init(
+    center: NotificationCenter,
+    engine: AVAudioEngine,
+    handler: @escaping @Sendable () -> Void
+  ) {
+    self.center = center
+    token = center.addObserver(
+      forName: .AVAudioEngineConfigurationChange,
+      object: engine,
+      queue: nil
+    ) { _ in
+      handler()
+    }
+  }
+
+  deinit {
+    if let token {
+      center.removeObserver(token)
+    }
+  }
 }
 
 final class NativePlaybackLifecycleHooks: @unchecked Sendable {
@@ -1077,10 +1122,25 @@ final class RecoveredAudioPlayer: RecoveredAudioPlaying {
   private var activeGeneration: UUID?
   private var terminationHandler: (@Sendable (PlaybackTermination) -> Void)?
   private let lifecycle: NativePlaybackLifecycleHooks
+  private let generationCell = PlaybackGenerationCell()
+  private var configurationObserver: PlaybackEngineConfigurationObserver?
 
-  init(lifecycle: NativePlaybackLifecycleHooks = .production) {
+  init(
+    lifecycle: NativePlaybackLifecycleHooks = .production,
+    notificationCenter: NotificationCenter = .default
+  ) {
     self.lifecycle = lifecycle
     engine.attach(player)
+    let generationCell = generationCell
+    configurationObserver = PlaybackEngineConfigurationObserver(
+      center: notificationCenter,
+      engine: engine
+    ) { [weak self] in
+      guard let generation = generationCell.snapshot() else { return }
+      Task { @MainActor [weak self] in
+        self?.handleOutputConfigurationChange(generation: generation)
+      }
+    }
   }
 
   func playRecovered(
@@ -1091,6 +1151,7 @@ final class RecoveredAudioPlayer: RecoveredAudioPlaying {
     try Task.checkCancellation()
     releasePlaybackResources()
     activeGeneration = generation
+    generationCell.set(generation)
     do {
       let receipt = try RecoveredPlaybackDescriptorReceipt(serialized: serializedReceipt)
       let source = try await StructuredImportedPlaybackCopy.run { isCancelled in
@@ -1121,6 +1182,7 @@ final class RecoveredAudioPlayer: RecoveredAudioPlaying {
     try Task.checkCancellation()
     releasePlaybackResources()
     activeGeneration = generation
+    generationCell.set(generation)
     do {
       let receipt = try ImportedPlaybackDescriptorReceipt(serialized: serializedReceipt)
       try ImportedPlaybackMemoryPolicy.validate(receipt)
@@ -1158,6 +1220,16 @@ final class RecoveredAudioPlayer: RecoveredAudioPlaying {
     releasePlaybackResources()
   }
 
+  func handleOutputConfigurationChange(generation: UUID? = nil) {
+    guard let generation = generation ?? generationCell.snapshot(), activeGeneration == generation
+    else { return }
+    lifecycle.observe(.outputConfigurationChanged(generation))
+    releasePlaybackResources(generation: generation)
+    terminationHandler?(
+      PlaybackTermination(generation: generation, outcome: .outputRouteChanged)
+    )
+  }
+
   private func beginCallbackPlayback(
     source: any CallbackAudioByteSource,
     kind: CallbackPlaybackKind,
@@ -1190,6 +1262,7 @@ final class RecoveredAudioPlayer: RecoveredAudioPlaying {
     if let generation, activeGeneration != generation { return }
     let releasingGeneration = activeGeneration
     activeGeneration = nil
+    generationCell.set(nil)
     let playback = callbackPlayback
     callbackPlayback = nil
     PlaybackTeardownOrder.release(
@@ -1304,7 +1377,7 @@ final class RecoveredSessionController: ObservableObject {
         let startupState: RecoveredPlaybackStartupState =
           switch termination.outcome {
           case .finished: .playing
-          case .failed: .failed
+          case .failed, .outputRouteChanged: .failed
           }
         self.settleRecoveredPlaybackStartup(
           generation: termination.generation,
@@ -1316,11 +1389,20 @@ final class RecoveredSessionController: ObservableObject {
         self.playingSessionId = nil
         self.pendingRecoveredMediaIdentity = nil
         self.playingRecoveredMediaIdentity = nil
-        if case .failed = termination.outcome {
+        if termination.outcome != .finished {
+          let playbackErrorMessage =
+            switch termination.outcome {
+            case .finished:
+              ""
+            case .failed:
+              failedRecoveredIdentity == nil
+                ? "Imported audio playback stopped because decoding failed."
+                : "Recovered audio playback stopped because decoding failed."
+            case .outputRouteChanged:
+              "Playback stopped because the audio output changed. Press Play to restart."
+            }
           self.setPlaybackError(
-            failedRecoveredIdentity == nil
-              ? "Imported audio playback stopped because decoding failed."
-              : "Recovered audio playback stopped because decoding failed.",
+            playbackErrorMessage,
             sessionId: failedSessionId,
             recoveredMediaIdentity: failedRecoveredIdentity
           )

@@ -7195,6 +7195,14 @@ mod tests {
                 .all(|source| source.lifecycle == "sealed")
         );
         assert!(!saved.recovered);
+        let playable = saved.playable_media.as_ref().unwrap();
+        assert_eq!(playable.source_display_name, "Mac microphone");
+        assert_eq!(playable.sample_count, 960);
+        assert_eq!(playable.availability, RuntimePlayableMediaAvailability::Available);
+        assert!(playable.absolute_path.is_none());
+        let lease = store.lease_imported_playback(&prepared.session_id).unwrap();
+        assert_eq!(lease.byte_length(), playable.byte_length);
+        assert_eq!(lease.digest_sha256().len(), 64);
     }
 
     #[test]

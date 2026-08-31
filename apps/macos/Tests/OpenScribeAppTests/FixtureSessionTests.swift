@@ -266,7 +266,7 @@ final class FixtureSessionTests: XCTestCase {
     XCTAssertNil(ready.displayedTimerText)
   }
 
-  func testMainAndMenuShareOneRustOwnedRuntimeLibrarySnapshot() {
+  func testMainAndMenuShareOneRustOwnedRuntimeLibrarySnapshot() async {
     let current = NativeRuntimeSessionSnapshot(
       sessionId: "session-live",
       title: "Design review",
@@ -318,6 +318,7 @@ final class FixtureSessionTests: XCTestCase {
     )
 
     store.refresh()
+    await assertEventually { store.currentSession?.sessionId == "session-live" }
     let importAuthority = ImportedMediaAuthorityAdapter(
       picker: { nil },
       importer: { _, _ in throw CocoaError(.fileReadUnknown) }
@@ -336,7 +337,7 @@ final class FixtureSessionTests: XCTestCase {
     XCTAssertTrue(store.savedSessions[0].recovered)
   }
 
-  func testMenuBarRecordIsUnavailableWhileImportChoosesAndImports() {
+  func testMenuBarRecordIsUnavailableWhileImportChoosesAndImports() async {
     let store = RuntimeLibraryStore(
       snapshotProvider: {
         NativeRuntimeLibrarySnapshot(currentSession: nil, savedSessions: [])
@@ -345,22 +346,20 @@ final class FixtureSessionTests: XCTestCase {
     )
     let liveRecording = LiveMicrophoneRecordingController(managedRoot: nil)
     let recoveredSessions = RecoveredSessionController(managedRoot: nil)
-    var recordAvailability = [Bool]()
-    var menu: MenuBarContent!
+    let gate = FixtureBlockingGate()
     let selectedURL = URL(fileURLWithPath: "/tmp/meeting.caf")
     let importAuthority = ImportedMediaAuthorityAdapter(
       picker: {
-        recordAvailability.append(menu.recordActionEnabled)
         return selectedURL
       },
       startSecurityScope: { _ in true },
       stopSecurityScope: { _ in },
       importer: { _, _ in
-        recordAvailability.append(menu.recordActionEnabled)
+        gate.enterAndWait()
         throw CocoaError(.fileReadCorruptFile)
       }
     )
-    menu = MenuBarContent(
+    let menu = MenuBarContent(
       store: store,
       importedMediaAuthority: importAuthority,
       liveRecording: liveRecording,
@@ -369,8 +368,13 @@ final class FixtureSessionTests: XCTestCase {
 
     XCTAssertTrue(menu.recordActionEnabled)
     importAuthority.chooseAndImport()
+    let importEntered = await waitUntil { gate.hasEntered }
+    XCTAssertTrue(importEntered)
 
-    XCTAssertEqual(recordAvailability, [false, false])
+    XCTAssertFalse(menu.recordActionEnabled)
+    XCTAssertEqual(importAuthority.phase, .importing)
+    gate.release()
+    await assertEventually { importAuthority.phase == .failed }
     XCTAssertEqual(importAuthority.phase, .failed)
   }
 
@@ -410,6 +414,49 @@ final class FixtureSessionTests: XCTestCase {
     XCTAssertEqual(
       interrupted.interruptionText,
       "A capture source failed; durable recovery state was preserved."
+    )
+  }
+
+  func testDegradedRecordingOutranksHealthyRecordingForVisibleAndVoiceOverStatus() {
+    let degraded = RuntimeSessionPresentation(
+      native: NativeRuntimeSessionSnapshot(
+        sessionId: "session-degraded",
+        title: "Degraded conversation",
+        lifecycle: "recording",
+        health: "degraded",
+        elapsedSeconds: 42,
+        journalDurable: true,
+        mediaFilesOpen: true,
+        interruptionReason: nil,
+        recovered: false,
+        sources: [
+          NativeRuntimeSourceSnapshot(
+            kind: .microphone,
+            displayName: "Mac microphone",
+            lifecycle: "failed"
+          ),
+          NativeRuntimeSourceSnapshot(
+            kind: .systemAudio,
+            displayName: "Mac system audio",
+            lifecycle: "capturing"
+          ),
+        ],
+        playableMedia: nil
+      )
+    )
+
+    XCTAssertTrue(degraded.isDegradedRecording)
+    XCTAssertFalse(degraded.isRecording)
+    XCTAssertTrue(degraded.needsAttention)
+    XCTAssertEqual(degraded.statusText, "Recording — degraded")
+    XCTAssertEqual(
+      MenuBarLabel.accessibilityStatus(
+        session: degraded,
+        snapshotStale: false,
+        livePhase: .capturing,
+        liveStatus: "Recording microphone + system audio"
+      ),
+      "Recording — degraded"
     )
   }
 
@@ -601,7 +648,7 @@ final class FixtureSessionTests: XCTestCase {
     XCTAssertNil(healthy.interruptionText)
   }
 
-  func testRuntimeSnapshotReadFailureInvalidatesLiveAuthorityButPreservesSavedLibrary() {
+  func testRuntimeSnapshotReadFailureInvalidatesLiveAuthorityButPreservesSavedLibrary() async {
     let current = NativeRuntimeSessionSnapshot(
       sessionId: "session-live",
       title: "Live conversation",
@@ -648,10 +695,11 @@ final class FixtureSessionTests: XCTestCase {
       },
       startsPolling: false
     )
-    XCTAssertTrue(store.currentSession?.isRecording == true)
+    await assertEventually { store.currentSession?.isRecording == true }
 
     failure.enable()
     store.refresh()
+    await assertEventually { store.isSnapshotStale }
 
     XCTAssertNil(store.currentSession)
     XCTAssertEqual(store.savedSessions.map(\.sessionId), ["session-saved"])
@@ -666,6 +714,29 @@ final class FixtureSessionTests: XCTestCase {
       ),
       "Live recording state unavailable"
     )
+  }
+
+  private func waitUntil(
+    timeoutNanoseconds: UInt64 = 3_000_000_000,
+    _ predicate: () -> Bool
+  ) async -> Bool {
+    let started = DispatchTime.now().uptimeNanoseconds
+    while !predicate() {
+      if DispatchTime.now().uptimeNanoseconds - started >= timeoutNanoseconds {
+        return false
+      }
+      try? await Task.sleep(nanoseconds: 10_000_000)
+    }
+    return true
+  }
+
+  private func assertEventually(
+    file: StaticString = #filePath,
+    line: UInt = #line,
+    _ predicate: () -> Bool
+  ) async {
+    let observed = await waitUntil(predicate)
+    XCTAssertTrue(observed, file: file, line: line)
   }
 
   private func recoveredSessionPresentation(sessionId: String) -> RuntimeSessionPresentation {
@@ -725,5 +796,32 @@ final class FixtureSessionTests: XCTestCase {
       recordingStarted: false,
       lastJournalSequence: 12
     )
+  }
+}
+
+private final class FixtureBlockingGate: @unchecked Sendable {
+  private let condition = NSCondition()
+  private var entered = false
+  private var released = false
+
+  var hasEntered: Bool {
+    condition.lock()
+    defer { condition.unlock() }
+    return entered
+  }
+
+  func enterAndWait() {
+    condition.lock()
+    entered = true
+    condition.broadcast()
+    while !released { condition.wait() }
+    condition.unlock()
+  }
+
+  func release() {
+    condition.lock()
+    released = true
+    condition.broadcast()
+    condition.unlock()
   }
 }

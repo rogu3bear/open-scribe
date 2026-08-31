@@ -17,7 +17,7 @@ pub struct RuntimeSourceSnapshot {
     pub lifecycle: String,
 }
 
-/// Current read-only playback posture for one imported managed audio file.
+/// Current read-only playback posture for one managed audio file.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RuntimePlayableMediaAvailability {
     Available,
@@ -298,42 +298,71 @@ impl SessionStore {
         origin: &str,
         lifecycle: &str,
     ) -> Result<Option<RuntimePlayableMediaSnapshot>, StoreError> {
-        if origin != "import" || lifecycle != "ready_for_review" {
+        if lifecycle != "ready_for_review" {
             return Ok(None);
         }
-        let mut statement = connection.prepare(
-            "SELECT sources.display_name, segments.relative_path,
-                    segments.sample_count, segments.byte_length, segments.digest,
-                    imports.source_digest, segments.file_device, segments.file_inode
-             FROM imports
-             JOIN segments ON segments.session_id = imports.session_id
-                          AND segments.relative_path = imports.relative_path
-             JOIN tracks ON tracks.id = segments.track_id
-                         AND tracks.session_id = segments.session_id
-             JOIN sources ON sources.id = tracks.source_id
-                          AND sources.session_id = tracks.session_id
-             WHERE imports.session_id = ?1
-               AND segments.lifecycle = 'sealed'
-               AND segments.media_format = 'caf-pcm-s16le'
-             ORDER BY segments.sequence",
-        )?;
-        let rows = statement
-            .query_map([session_id], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, i64>(2)?,
-                    row.get::<_, i64>(3)?,
-                    row.get::<_, String>(4)?,
-                    row.get::<_, String>(5)?,
-                    row.get::<_, i64>(6)?,
-                    row.get::<_, i64>(7)?,
-                ))
-            })?
-            .collect::<Result<Vec<_>, _>>()?;
+        let rows = if origin == "import" {
+            let mut statement = connection.prepare(
+                "SELECT sources.display_name, segments.relative_path,
+                        segments.sample_count, segments.byte_length, segments.digest,
+                        imports.source_digest, segments.file_device, segments.file_inode
+                 FROM imports
+                 JOIN segments ON segments.session_id = imports.session_id
+                              AND segments.relative_path = imports.relative_path
+                 JOIN tracks ON tracks.id = segments.track_id
+                             AND tracks.session_id = segments.session_id
+                 JOIN sources ON sources.id = tracks.source_id
+                              AND sources.session_id = tracks.session_id
+                 WHERE imports.session_id = ?1
+                   AND segments.lifecycle = 'sealed'
+                   AND segments.media_format = 'caf-pcm-s16le'
+                 ORDER BY segments.sequence",
+            )?;
+            statement
+                .query_map([session_id], playable_media_row)?
+                .collect::<Result<Vec<_>, _>>()?
+        } else if origin == "capture" {
+            let mut statement = connection.prepare(
+                "SELECT sources.display_name, segments.relative_path,
+                        segments.sample_count, segments.byte_length, segments.digest,
+                        segments.digest, segments.file_device, segments.file_inode
+                 FROM sessions
+                 JOIN segments ON segments.session_id = sessions.id
+                 JOIN tracks ON tracks.id = segments.track_id
+                             AND tracks.session_id = segments.session_id
+                 JOIN sources ON sources.id = tracks.source_id
+                              AND sources.session_id = tracks.session_id
+                 WHERE sessions.id = ?1
+                   AND sessions.origin = 'capture'
+                   AND sessions.lifecycle = 'ready_for_review'
+                   AND sessions.health = 'healthy'
+                   AND segments.lifecycle = 'sealed'
+                   AND segments.seal_state = 'sealed'
+                   AND segments.recovery_state = 'not_required'
+                   AND segments.media_format = 'caf-pcm-s16le'
+                   AND NOT EXISTS (
+                     SELECT 1 FROM recovery_runs
+                     WHERE recovery_runs.session_id = sessions.id
+                       AND recovery_runs.disposition = 'playable_media_recovered'
+                   )
+                 ORDER BY CASE sources.kind
+                            WHEN 'microphone' THEN 0
+                            WHEN 'application_audio' THEN 1
+                            WHEN 'system_audio' THEN 2
+                            ELSE 3
+                          END,
+                          segments.sequence, segments.id
+                 LIMIT 1",
+            )?;
+            statement
+                .query_map([session_id], playable_media_row)?
+                .collect::<Result<Vec<_>, _>>()?
+        } else {
+            return Ok(None);
+        };
         if rows.len() != 1 {
             return Ok(Some(RuntimePlayableMediaSnapshot {
-                source_display_name: "Imported audio".to_owned(),
+                source_display_name: "Saved audio".to_owned(),
                 availability: RuntimePlayableMediaAvailability::Corrupt,
                 absolute_path: None,
                 duration_nanoseconds: 0,
@@ -354,10 +383,10 @@ impl SessionStore {
         let sample_count = u64::try_from(*stored_sample_count).unwrap_or(0);
         let byte_length = u64::try_from(*stored_byte_length).unwrap_or(0);
         let duration_nanoseconds = sample_count.saturating_mul(1_000_000_000) / 48_000;
-        let base = |availability, absolute_path| RuntimePlayableMediaSnapshot {
+        let base = |availability| RuntimePlayableMediaSnapshot {
             source_display_name: source_display_name.clone(),
             availability,
-            absolute_path,
+            absolute_path: None,
             duration_nanoseconds,
             sample_count,
             byte_length,
@@ -368,18 +397,17 @@ impl SessionStore {
             || digest_sha256.len() != 64
             || digest_sha256 != import_digest_sha256
         {
-            return Ok(Some(base(RuntimePlayableMediaAvailability::Corrupt, None)));
+            return Ok(Some(base(RuntimePlayableMediaAvailability::Corrupt)));
         }
         let absolute_path = self.session_directory(session_id)?.join(relative_path);
         match fs::symlink_metadata(&absolute_path) {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 return Ok(Some(base(
                     RuntimePlayableMediaAvailability::Unavailable,
-                    None,
                 )));
             }
             Err(_) => {
-                return Ok(Some(base(RuntimePlayableMediaAvailability::Corrupt, None)));
+                return Ok(Some(base(RuntimePlayableMediaAvailability::Corrupt)));
             }
             Ok(_) => {}
         }
@@ -389,18 +417,30 @@ impl SessionStore {
             MediaLengthRequirement::Exact(byte_length),
             true,
         ) else {
-            return Ok(Some(base(RuntimePlayableMediaAvailability::Corrupt, None)));
+            return Ok(Some(base(RuntimePlayableMediaAvailability::Corrupt)));
         };
         if validated.device != u64::try_from(*stored_device).unwrap_or(0)
             || validated.inode != u64::try_from(*stored_inode).unwrap_or(0)
             || validated.recoverable_sample_count != Some(sample_count)
             || validated.digest_sha256.as_deref() != Some(import_digest_sha256.as_str())
         {
-            return Ok(Some(base(RuntimePlayableMediaAvailability::Corrupt, None)));
+            return Ok(Some(base(RuntimePlayableMediaAvailability::Corrupt)));
         }
-        Ok(Some(base(
-            RuntimePlayableMediaAvailability::Available,
-            Some(absolute_path),
-        )))
+        Ok(Some(base(RuntimePlayableMediaAvailability::Available)))
     }
+}
+
+fn playable_media_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<(String, String, i64, i64, String, String, i64, i64)> {
+    Ok((
+        row.get(0)?,
+        row.get(1)?,
+        row.get(2)?,
+        row.get(3)?,
+        row.get(4)?,
+        row.get(5)?,
+        row.get(6)?,
+        row.get(7)?,
+    ))
 }

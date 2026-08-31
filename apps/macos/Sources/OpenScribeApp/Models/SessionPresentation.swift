@@ -41,7 +41,6 @@ struct RuntimeSourcePresentation: Equatable, Sendable {
 struct RuntimePlayableMediaPresentation: Equatable, Sendable {
   let sourceDisplayName: String
   let availability: String
-  let absolutePath: String?
   let durationNanoseconds: UInt64
   let sampleCount: UInt64
   let byteLength: UInt64
@@ -49,14 +48,13 @@ struct RuntimePlayableMediaPresentation: Equatable, Sendable {
   init(native: NativeRuntimePlayableMediaSnapshot) {
     sourceDisplayName = native.sourceDisplayName
     availability = native.availability
-    absolutePath = native.absolutePath
     durationNanoseconds = native.durationNanoseconds
     sampleCount = native.sampleCount
     byteLength = native.byteLength
   }
 
   var isPlayable: Bool {
-    availability == "available" && absolutePath != nil && sampleCount > 0 && byteLength > 0
+    availability == "available" && sampleCount > 0 && byteLength > 0
   }
 
   var durationText: String {
@@ -137,7 +135,11 @@ struct RuntimeSessionPresentation: Equatable, Sendable, Identifiable {
   var id: String { sessionId }
 
   var isRecording: Bool {
-    lifecycle == "recording" && journalDurable && mediaFilesOpen
+    lifecycle == "recording" && health == "healthy" && journalDurable && mediaFilesOpen
+  }
+
+  var isDegradedRecording: Bool {
+    lifecycle == "recording" && health == "degraded"
   }
 
   var needsAttention: Bool {
@@ -157,6 +159,7 @@ struct RuntimeSessionPresentation: Equatable, Sendable, Identifiable {
 
   var statusText: String {
     if recovered && needsAttention { return "Recovered partial recording" }
+    if isDegradedRecording { return "Recording — degraded" }
     if let playableMedia { return playableMedia.statusText }
     return switch lifecycle {
     case "preparing": "Preparing durable recording…"

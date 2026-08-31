@@ -12,9 +12,9 @@ enum ImportedMediaAuthorityPhase: Equatable {
 @MainActor
 final class ImportedMediaAuthorityAdapter: ObservableObject {
   typealias Picker = @MainActor () -> URL?
-  typealias StartSecurityScope = (URL) -> Bool
-  typealias StopSecurityScope = (URL) -> Void
-  typealias Importer = (String, URL) throws -> NativeImportedMediaEvidence
+  typealias StartSecurityScope = @MainActor (URL) -> Bool
+  typealias StopSecurityScope = @MainActor (URL) -> Void
+  typealias Importer = @Sendable (String, URL) throws -> NativeImportedMediaEvidence
 
   @Published private(set) var phase: ImportedMediaAuthorityPhase = .idle
   @Published private(set) var statusMessage: String?
@@ -24,7 +24,7 @@ final class ImportedMediaAuthorityAdapter: ObservableObject {
   private let startSecurityScope: StartSecurityScope
   private let stopSecurityScope: StopSecurityScope
   private let importer: Importer
-  private var operationInProgress = false
+  private var operationTask: Task<Void, Never>?
 
   init(
     picker: @escaping Picker = ImportedMediaAuthorityAdapter.openPanelSelection,
@@ -47,9 +47,7 @@ final class ImportedMediaAuthorityAdapter: ObservableObject {
   }
 
   func chooseAndImport() {
-    guard !operationInProgress else { return }
-    operationInProgress = true
-    defer { operationInProgress = false }
+    guard operationTask == nil else { return }
     phase = .choosing
     statusMessage = nil
     importedSessionId = nil
@@ -63,25 +61,44 @@ final class ImportedMediaAuthorityAdapter: ObservableObject {
         "Open Scribe could not read the selected file. Nothing was added to the conversation library."
       return
     }
-    defer { stopSecurityScope(selectedURL) }
-
     phase = .importing
     let proposedTitle = selectedURL.deletingPathExtension().lastPathComponent
       .trimmingCharacters(in: .whitespacesAndNewlines)
     let title = proposedTitle.isEmpty ? "Imported conversation" : proposedTitle
-    do {
-      let evidence = try importer(title, selectedURL)
-      guard evidence.originalUntouched, evidence.readyForReview else {
-        throw ImportedMediaAuthorityError.unacceptedEvidence
+    let importer = importer
+    operationTask = Task { [weak self] in
+      guard let self else { return }
+      let result: Result<NativeImportedMediaEvidence, Error>
+      do {
+        result = .success(
+          try await StructuredNativeIO.mutation {
+            try importer(title, selectedURL)
+          }
+        )
+      } catch {
+        result = .failure(error)
       }
-      importedSessionId = evidence.sessionId
-      phase = .succeeded
-      statusMessage = "Imported \(title) into the local conversation library."
-    } catch {
-      phase = .failed
-      statusMessage =
-        "The selected file could not be imported as a supported local CAF. Nothing was added to the conversation library."
+      self.stopSecurityScope(selectedURL)
+      defer { self.operationTask = nil }
+      switch result {
+      case .success(let evidence)
+        where evidence.originalUntouched && evidence.readyForReview:
+        self.importedSessionId = evidence.sessionId
+        self.phase = .succeeded
+        self.statusMessage = "Imported \(title) into the local conversation library."
+      case .failure(let error) where error is CancellationError:
+        self.phase = .idle
+        self.statusMessage = "Import cancelled before the local copy began."
+      default:
+        self.phase = .failed
+        self.statusMessage =
+          "The selected file could not be imported as a supported local CAF. Nothing was added to the conversation library."
+      }
     }
+  }
+
+  func cancelImport() {
+    operationTask?.cancel()
   }
 
   private static func openPanelSelection() -> URL? {
