@@ -100,9 +100,9 @@ struct ImportPaths {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ImportFailurePoint {
-    AfterPreparation,
-    AfterManagedCopy,
-    AfterStagedJournal,
+    PreparationDurable,
+    ManagedCopyComplete,
+    StagedJournalDurable,
 }
 
 impl SessionStore {
@@ -137,7 +137,7 @@ impl SessionStore {
 
         let session_id = prepared.session_id.clone();
         let import_result = (|| {
-            interrupt_import_if(failure, ImportFailurePoint::AfterPreparation)?;
+            interrupt_import_if(failure, ImportFailurePoint::PreparationDurable)?;
 
             let source_id = Uuid::now_v7().to_string();
             let track_id = Uuid::now_v7().to_string();
@@ -218,7 +218,7 @@ impl SessionStore {
                 ));
             }
             revalidate_import_source(&source)?;
-            interrupt_import_if(failure, ImportFailurePoint::AfterManagedCopy)?;
+            interrupt_import_if(failure, ImportFailurePoint::ManagedCopyComplete)?;
 
             let payload = json!({
                 "source_id": source_id,
@@ -239,7 +239,7 @@ impl SessionStore {
                 Some(&relative_path),
                 payload.clone(),
             )?;
-            interrupt_import_if(failure, ImportFailurePoint::AfterStagedJournal)?;
+            interrupt_import_if(failure, ImportFailurePoint::StagedJournalDurable)?;
 
             rename_import_entry(&track_directory)?;
             fd_fs::fsync(&track_directory).map_err(|_| {
@@ -1565,7 +1565,7 @@ mod tests {
                         title: "Failed import".to_owned(),
                         source_path,
                     },
-                    Some(ImportFailurePoint::AfterPreparation),
+                    Some(ImportFailurePoint::PreparationDurable),
                 )
                 .is_err()
         );
@@ -1614,7 +1614,7 @@ mod tests {
                         title: "Cleaned import".to_owned(),
                         source_path: source_path.clone(),
                     },
-                    Some(ImportFailurePoint::AfterManagedCopy),
+                    Some(ImportFailurePoint::ManagedCopyComplete),
                 )
                 .is_err()
         );
@@ -1658,7 +1658,7 @@ mod tests {
                     title: "Recovered staged import".to_owned(),
                     source_path,
                 },
-                Some(ImportFailurePoint::AfterStagedJournal),
+                Some(ImportFailurePoint::StagedJournalDurable),
             )
             .unwrap();
 

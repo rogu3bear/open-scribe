@@ -1617,12 +1617,12 @@ impl SessionStore {
                 "accepted media file identity changed",
             ));
         }
-        if let Some(decoded_sample_count) = validated.recoverable_sample_count {
-            if decoded_sample_count != receipt.sample_count {
-                return Err(StoreError::IntegrityMismatch(
-                    "segment-seal sample total does not match the accepted CAF",
-                ));
-            }
+        if let Some(decoded_sample_count) = validated.recoverable_sample_count
+            && decoded_sample_count != receipt.sample_count
+        {
+            return Err(StoreError::IntegrityMismatch(
+                "segment-seal sample total does not match the accepted CAF",
+            ));
         }
         let digest = validated
             .digest_sha256

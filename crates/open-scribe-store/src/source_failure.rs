@@ -90,12 +90,12 @@ impl SessionStore {
             .filter(|record| record.body.event_kind == "source_failed")
         {
             let parsed = parse_source_failure_payload(&record.body.payload)?;
-            if parsed.source_kind == request.source_kind {
-                if accepted.replace((record, parsed)).is_some() {
-                    return Err(StoreError::IntegrityMismatch(
-                        "source failure was journaled more than once",
-                    ));
-                }
+            if parsed.source_kind == request.source_kind
+                && accepted.replace((record, parsed)).is_some()
+            {
+                return Err(StoreError::IntegrityMismatch(
+                    "source failure was journaled more than once",
+                ));
             }
         }
         if let Some((accepted, parsed)) = accepted {

@@ -434,9 +434,9 @@ impl SessionStore {
     }
 }
 
-fn playable_media_row(
-    row: &rusqlite::Row<'_>,
-) -> rusqlite::Result<(String, String, i64, i64, String, String, i64, i64)> {
+type PlayableMediaRow = (String, String, i64, i64, String, String, i64, i64);
+
+fn playable_media_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<PlayableMediaRow> {
     Ok((
         row.get(0)?,
         row.get(1)?,
