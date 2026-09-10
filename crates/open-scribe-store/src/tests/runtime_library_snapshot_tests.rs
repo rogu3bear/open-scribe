@@ -106,6 +106,75 @@ fn runtime_library_snapshot_exposes_saved_session_without_fixture_state() {
 }
 
 #[test]
+fn degraded_saved_capture_plays_surviving_source_and_rejects_changed_media() {
+    for failed_kind in [MediaSourceKind::Microphone, MediaSourceKind::SystemAudio] {
+        let temp = TempDir::new().unwrap();
+        let mut store = open_store(&temp);
+        let (prepared, microphone, system) = prepared_dual_first_samples(&mut store);
+        store
+            .confirm_recording(prepared.session_id.clone())
+            .unwrap();
+        let (failed, surviving, surviving_name) = if failed_kind == MediaSourceKind::Microphone {
+            (&microphone, &system, "Mac system audio")
+        } else {
+            (&system, &microphone, "Mac microphone")
+        };
+        replace_with_recoverable_pcm_caf(failed, 48_000);
+        let mut receipt = seal_receipt(failed, fs::metadata(&failed.absolute_path).unwrap().len());
+        receipt.sample_count = 48_000;
+        store.seal_segment(receipt).unwrap();
+        store
+            .record_source_failure(SourceFailureRequest {
+                session_id: prepared.session_id.clone(),
+                source_kind: failed_kind,
+                reason: SourceFailureReason::CaptureFailed,
+            })
+            .unwrap();
+        replace_with_recoverable_pcm_caf(surviving, 96_000);
+        let mut receipt = seal_receipt(
+            surviving,
+            fs::metadata(&surviving.absolute_path).unwrap().len(),
+        );
+        receipt.sample_count = 96_000;
+        store.seal_segment(receipt).unwrap();
+
+        let snapshot = store.runtime_library_snapshot().unwrap();
+        assert!(snapshot.current_session.is_none());
+        let saved = &snapshot.saved_sessions[0];
+        assert_eq!(saved.health, "degraded");
+        assert!(!saved.recovered);
+        let playable = saved.playable_media.as_ref().unwrap();
+        assert_eq!(
+            playable.availability,
+            RuntimePlayableMediaAvailability::Available
+        );
+        assert_eq!(playable.source_display_name, surviving_name);
+        assert_eq!(saved.elapsed_seconds, 2);
+        assert_eq!(
+            store
+                .lease_imported_playback(&prepared.session_id)
+                .unwrap()
+                .byte_length(),
+            playable.byte_length
+        );
+
+        let mut bytes = fs::read(&surviving.absolute_path).unwrap();
+        *bytes.last_mut().unwrap() ^= 1;
+        fs::write(&surviving.absolute_path, bytes).unwrap();
+        assert!(store.lease_imported_playback(&prepared.session_id).is_err());
+        let changed = store.runtime_library_snapshot().unwrap();
+        assert_eq!(
+            changed.saved_sessions[0]
+                .playable_media
+                .as_ref()
+                .unwrap()
+                .availability,
+            RuntimePlayableMediaAvailability::Corrupt
+        );
+    }
+}
+
+#[test]
 fn runtime_library_snapshot_reads_session_and_sources_from_one_database_moment() {
     let temp = TempDir::new().unwrap();
     let mut writer = open_store(&temp);

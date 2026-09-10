@@ -341,7 +341,7 @@ impl SessionStore {
                  WHERE sessions.id = ?1
                    AND sessions.origin = 'capture'
                    AND sessions.lifecycle = 'ready_for_review'
-                   AND sessions.health = 'healthy'
+                   AND sessions.health IN ('healthy', 'degraded')
                    AND segments.lifecycle = 'sealed'
                    AND segments.seal_state = 'sealed'
                    AND segments.recovery_state = 'not_required'
@@ -351,7 +351,8 @@ impl SessionStore {
                      WHERE recovery_runs.session_id = sessions.id
                        AND recovery_runs.disposition = 'playable_media_recovered'
                    )
-                 ORDER BY CASE sources.kind
+                 ORDER BY CASE WHEN sources.lifecycle = 'failed' THEN 1 ELSE 0 END,
+                          CASE sources.kind
                             WHEN 'microphone' THEN 0
                             WHEN 'application_audio' THEN 1
                             WHEN 'system_audio' THEN 2

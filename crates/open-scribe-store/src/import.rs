@@ -298,7 +298,7 @@ impl SessionStore {
                       AND segments.relative_path = imports.relative_path)
                      OR
                      (sessions.origin = 'capture'
-                      AND sessions.health = 'healthy'
+                      AND sessions.health IN ('healthy', 'degraded')
                       AND segments.recovery_state = 'not_required'
                       AND NOT EXISTS (
                         SELECT 1 FROM recovery_runs
@@ -306,7 +306,8 @@ impl SessionStore {
                           AND recovery_runs.disposition = 'playable_media_recovered'
                       ))
                    )
-                 ORDER BY CASE sources.kind
+                 ORDER BY CASE WHEN sources.lifecycle = 'failed' THEN 1 ELSE 0 END,
+                          CASE sources.kind
                             WHEN 'microphone' THEN 0
                             WHEN 'application_audio' THEN 1
                             WHEN 'system_audio' THEN 2
