@@ -79,7 +79,7 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
   private var systemCapture: SystemAudioCapturing?
   private var sourcesWithFirstSample: Set<NativeMediaSourceKind> = []
   private var failedSources: Set<NativeMediaSourceKind> = []
-  private var sourcesHandlingFailure: Set<NativeMediaSourceKind> = []
+  private var sourceFailureTask: Task<Void, Never>?
   private var activeSessionId: String?
   private var acceptedMicrophoneObservationSequence: UInt64 = 0
 
@@ -181,7 +181,6 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
     writers = [:]
     sourcesWithFirstSample = []
     failedSources = []
-    sourcesHandlingFailure = []
     microphoneSourceHealth = nil
     acceptedMicrophoneObservationSequence = 0
     phase = .requestingPermission
@@ -299,6 +298,11 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
   }
 
   func stop() async {
+    let sessionToStop = activeSessionId
+    while let sourceFailureTask {
+      await sourceFailureTask.value
+    }
+    guard activeSessionId == sessionToStop else { return }
     guard canStop, let preparation else { return }
     phase = .stopping
     let continuingSources = Set(requiredSources).subtracting(failedSources)
@@ -462,15 +466,25 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
     source: NativeMediaSourceKind? = nil,
     interruptionReason: NativeSessionInterruptionReason
   ) async {
+    let failedSessionId = activeSessionId
+    while let sourceFailureTask {
+      await sourceFailureTask.value
+    }
+    guard activeSessionId == failedSessionId, phase == .starting || phase == .capturing else {
+      return
+    }
     if let source {
       guard writers[source] != nil else { return }
-      guard !failedSources.contains(source), !sourcesHandlingFailure.contains(source) else {
+      guard !failedSources.contains(source) else {
         return
       }
       if phase == .capturing, Set(requiredSources).subtracting(failedSources).count > 1 {
-        sourcesHandlingFailure.insert(source)
-        await degradeCaptureAfterSourceFailure(source: source, message: message, code: code)
-        sourcesHandlingFailure.remove(source)
+        let task = Task { @MainActor in
+          await self.degradeCaptureAfterSourceFailure(source: source, message: message, code: code)
+          self.sourceFailureTask = nil
+        }
+        sourceFailureTask = task
+        await task.value
         return
       }
     }
@@ -542,6 +556,7 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
     stopCapture: Bool = true,
     interruptionReason: NativeSessionInterruptionReason? = nil
   ) async {
+    phase = .stopping
     if stopCapture {
       _ = microphoneCapture?.stop()
       _ = try? await systemCapture?.stop()
@@ -600,7 +615,6 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
     systemCapture = nil
     sourcesWithFirstSample = []
     failedSources = []
-    sourcesHandlingFailure = []
     microphoneSourceHealth = nil
     acceptedMicrophoneObservationSequence = 0
     activeSessionId = nil

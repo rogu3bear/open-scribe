@@ -191,6 +191,7 @@ private final class SystemAudioCaptureFake: SystemAudioCapturing, @unchecked Sen
   var lastHostTime: UInt64? = 53_000
   var startError: Error?
   var stopError: Error?
+  var stopGate: SystemAudioStopGate?
   private(set) var stopCount = 0
 
   func start(
@@ -206,6 +207,9 @@ private final class SystemAudioCaptureFake: SystemAudioCapturing, @unchecked Sen
 
   func stop() async throws -> UInt64? {
     stopCount += 1
+    if let stopGate {
+      await stopGate.wait()
+    }
     if let stopError {
       throw stopError
     }
@@ -218,6 +222,27 @@ private final class SystemAudioCaptureFake: SystemAudioCapturing, @unchecked Sen
 
   func emitFailure(_ error: SystemAudioCaptureAdapterError) {
     failureHandler?(error)
+  }
+}
+
+private actor SystemAudioStopGate {
+  nonisolated let entered = XCTestExpectation(description: "System audio stop suspended")
+  private var waiters: [CheckedContinuation<Void, Never>] = []
+  private var released = false
+
+  func wait() async {
+    guard !released else { return }
+    await withCheckedContinuation { continuation in
+      waiters.append(continuation)
+      if waiters.count == 1 { entered.fulfill() }
+    }
+  }
+
+  func release() {
+    released = true
+    let pending = waiters
+    waiters = []
+    pending.forEach { $0.resume() }
   }
 }
 
@@ -502,6 +527,75 @@ final class LiveMicrophoneRecordingControllerTests: XCTestCase {
     XCTAssertEqual(microphone.stopCount, 1)
     XCTAssertEqual(systemAudio.stopCount, 1)
     XCTAssertEqual(controller.savedPaths.count, 2)
+  }
+
+  func testStopWaitsForSuspendedSystemAudioRetirement() async throws {
+    try await checkSuspendedSourceRetirement(requestStop: true)
+  }
+
+  func testSecondSourceFailureWaitsForSuspendedSystemAudioRetirement() async throws {
+    try await checkSuspendedSourceRetirement(requestStop: false)
+  }
+
+  private func checkSuspendedSourceRetirement(requestStop: Bool) async throws {
+    let preparation = RecordingPreparationFake(requiredSources: [.microphone, .systemAudio])
+    let writers = SegmentWriterMap()
+    let microphone = MicrophoneCaptureFake()
+    let systemAudio = SystemAudioCaptureFake()
+    let gate = SystemAudioStopGate()
+    systemAudio.stopGate = gate
+    let controller = LiveMicrophoneRecordingController(
+      permission: AuthorizedMicrophonePermission(),
+      preparationFactory: { preparation },
+      writerFactory: { authorization in
+        let writer = SegmentWriterFake(authorization: authorization)
+        writers.store(writer)
+        return writer
+      },
+      captureFactory: { _ in microphone },
+      requiredSources: [.microphone, .systemAudio],
+      systemCaptureFactory: { _ in systemAudio }
+    )
+    await controller.start()
+    let microphoneWriter = try XCTUnwrap(writers.writer(for: .microphone))
+    let systemWriter = try XCTUnwrap(writers.writer(for: .systemAudio))
+    microphone.emitFirstSample(
+      try microphoneWriter.firstSampleReceipt(hostTime: 42_000, frameCount: 480)
+    )
+    systemAudio.emitFirstSample(
+      try systemWriter.firstSampleReceipt(hostTime: 43_000, frameCount: 480)
+    )
+    for _ in 0..<100 where controller.phase != .capturing {
+      await Task.yield()
+    }
+    XCTAssertEqual(controller.phase, .capturing)
+    systemAudio.emitFailure(.writerFailed)
+    await fulfillment(of: [gate.entered], timeout: 3)
+
+    let stopTask: Task<Void, Never>?
+    if requestStop {
+      stopTask = Task { @MainActor in await controller.stop() }
+    } else {
+      stopTask = nil
+      microphone.emitFailure(.writerFailed)
+    }
+    for _ in 0..<20 { await Task.yield() }
+    XCTAssertEqual(systemAudio.stopCount, 1)
+    XCTAssertEqual(microphone.stopCount, 0)
+    XCTAssertEqual(preparation.sealedSegmentCount, 0)
+
+    await gate.release()
+    await stopTask?.value
+    for _ in 0..<100 where controller.phase == .capturing || controller.phase == .stopping {
+      await Task.yield()
+    }
+    XCTAssertEqual(controller.phase, requestStop ? .saved : .failed)
+    XCTAssertEqual(systemAudio.stopCount, 1)
+    XCTAssertEqual(microphone.stopCount, 1)
+    XCTAssertEqual(preparation.failedSources, [.systemAudio])
+    XCTAssertEqual(preparation.sealedSegmentCount, requestStop ? 2 : 1)
+    XCTAssertEqual(preparation.interruptionReasons, requestStop ? [] : [.captureFailed])
+    XCTAssertTrue(controller.canStart)
   }
 
   func testFailureOfLastContinuingSourceInterruptsTheDegradedSession() async throws {
