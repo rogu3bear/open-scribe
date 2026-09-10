@@ -52,6 +52,20 @@ pub struct SourceFailureEvidence {
     pub last_journal_sequence: u64,
 }
 
+#[derive(Clone, Copy)]
+struct ParsedSourceFailure {
+    source_kind: MediaSourceKind,
+    reason: SourceFailureReason,
+}
+
+struct SourceFailureProjectionState {
+    session_lifecycle: String,
+    session_health: String,
+    source_lifecycle: String,
+    required_lifecycle: String,
+    continuing_sources: i64,
+}
+
 impl SessionStore {
     /// Records one already-sealed source failure while another durable source continues.
     pub fn record_source_failure(
@@ -61,22 +75,8 @@ impl SessionStore {
         if Uuid::parse_str(&request.session_id.0).is_err() {
             return Err(StoreError::InvalidRequest("session ID is not a UUID"));
         }
-        let (session_lifecycle, source_lifecycle): (String, String) = self
-            .connection
-            .query_row(
-                "SELECT sessions.lifecycle, required.lifecycle
-                 FROM sessions
-                 JOIN required_sources required ON required.session_id = sessions.id
-                 WHERE sessions.id = ?1 AND required.kind = ?2",
-                params![request.session_id.0, request.source_kind.as_str()],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .map_err(|error| match error {
-                rusqlite::Error::QueryReturnedNoRows => {
-                    StoreError::InvalidState("required source does not exist")
-                }
-                other => StoreError::Sqlite(other),
-            })?;
+        let state =
+            self.source_failure_projection_state(&request.session_id.0, request.source_kind)?;
         let journal_path = self
             .session_directory(&request.session_id.0)?
             .join(JOURNAL_NAME);
@@ -84,54 +84,48 @@ impl SessionStore {
             JournalValidation::Valid(records) => records,
             _ => return Err(StoreError::IntegrityMismatch("session journal is invalid")),
         };
-        let accepted = records
+        let mut accepted = None;
+        for record in records
             .iter()
             .filter(|record| record.body.event_kind == "source_failed")
-            .filter_map(|record| {
-                let source_kind = payload_string(&record.body.payload, "source_kind").ok()?;
-                (source_kind == request.source_kind.as_str()).then_some(record)
-            })
-            .collect::<Vec<_>>();
-        if accepted.len() > 1 {
-            return Err(StoreError::IntegrityMismatch(
-                "source failure was journaled more than once",
-            ));
+        {
+            let parsed = parse_source_failure_payload(&record.body.payload)?;
+            if parsed.source_kind == request.source_kind {
+                if accepted.replace((record, parsed)).is_some() {
+                    return Err(StoreError::IntegrityMismatch(
+                        "source failure was journaled more than once",
+                    ));
+                }
+            }
         }
-        if let Some(accepted) = accepted.first() {
-            let accepted_reason =
-                SourceFailureReason::from_str(payload_string(&accepted.body.payload, "reason")?)?;
-            if accepted_reason != request.reason {
+        if let Some((accepted, parsed)) = accepted {
+            if parsed.reason != request.reason {
                 return Err(StoreError::IntegrityMismatch(
                     "repeated source failure changed accepted evidence",
                 ));
             }
-            if source_lifecycle == "sealed" && session_lifecycle == "recording" {
+            if state.source_lifecycle == "sealed"
+                && state.required_lifecycle == "sealed"
+                && state.session_lifecycle == "recording"
+            {
                 self.project_source_failure(
                     &request.session_id.0,
                     &accepted.body.payload,
                     accepted,
                 )?;
-            } else if source_lifecycle != "failed"
-                || !matches!(session_lifecycle.as_str(), "recording" | "interrupted")
-            {
-                return Err(StoreError::InvalidState(
-                    "source failure projection is not replayable",
-                ));
             }
+            self.validate_projected_source_failure(&request.session_id.0, parsed, accepted)?;
             return Ok(source_failure_evidence(request, accepted.body.sequence));
         }
-        if session_lifecycle != "recording" || source_lifecycle != "sealed" {
+        if state.session_lifecycle != "recording"
+            || state.source_lifecycle != "sealed"
+            || state.required_lifecycle != "sealed"
+        {
             return Err(StoreError::InvalidState(
                 "source must be sealed during Recording before failure is accepted",
             ));
         }
-        let continuing_sources: i64 = self.connection.query_row(
-            "SELECT COUNT(*) FROM required_sources
-             WHERE session_id = ?1 AND kind != ?2 AND lifecycle = 'capturing'",
-            params![request.session_id.0, request.source_kind.as_str()],
-            |row| row.get(0),
-        )?;
-        if continuing_sources == 0 {
+        if state.continuing_sources == 0 {
             return Err(StoreError::InvalidState(
                 "no durable source remains to continue Recording",
             ));
@@ -149,6 +143,14 @@ impl SessionStore {
             payload.clone(),
         )?;
         self.project_source_failure(&request.session_id.0, &payload, &journal_record)?;
+        self.validate_projected_source_failure(
+            &request.session_id.0,
+            ParsedSourceFailure {
+                source_kind: request.source_kind,
+                reason: request.reason,
+            },
+            &journal_record,
+        )?;
 
         Ok(source_failure_evidence(
             request,
@@ -162,14 +164,8 @@ impl SessionStore {
         payload: &Value,
         journal_record: &JournalRecord,
     ) -> Result<(), StoreError> {
-        let source_kind = payload_string(payload, "source_kind")?;
-        MediaSourceKind::from_str(source_kind)?;
-        SourceFailureReason::from_str(payload_string(payload, "reason")?)?;
-        if payload.get("recording_continues").and_then(Value::as_bool) != Some(true) {
-            return Err(StoreError::IntegrityMismatch(
-                "source failure continuation evidence is invalid",
-            ));
-        }
+        let parsed = parse_source_failure_payload(payload)?;
+        let source_kind = parsed.source_kind.as_str();
         let (event_sequence, prior_digest) = next_database_event(&self.connection, session_id)?;
         let digest = event_digest(
             session_id,
@@ -225,6 +221,83 @@ impl SessionStore {
         Ok(())
     }
 
+    fn source_failure_projection_state(
+        &self,
+        session_id: &str,
+        source_kind: MediaSourceKind,
+    ) -> Result<SourceFailureProjectionState, StoreError> {
+        self.connection
+            .query_row(
+                "SELECT sessions.lifecycle, sessions.health, sources.lifecycle,
+                        required.lifecycle,
+                        (SELECT COUNT(*) FROM required_sources continuing
+                         WHERE continuing.session_id = sessions.id
+                           AND continuing.kind != ?2
+                           AND continuing.lifecycle = 'capturing')
+                 FROM sessions
+                 JOIN required_sources required ON required.session_id = sessions.id
+                 JOIN sources ON sources.session_id = sessions.id
+                             AND sources.kind = required.kind
+                 WHERE sessions.id = ?1 AND required.kind = ?2",
+                params![session_id, source_kind.as_str()],
+                |row| {
+                    Ok(SourceFailureProjectionState {
+                        session_lifecycle: row.get(0)?,
+                        session_health: row.get(1)?,
+                        source_lifecycle: row.get(2)?,
+                        required_lifecycle: row.get(3)?,
+                        continuing_sources: row.get(4)?,
+                    })
+                },
+            )
+            .map_err(|error| match error {
+                rusqlite::Error::QueryReturnedNoRows => {
+                    StoreError::InvalidState("required source projection does not exist")
+                }
+                other => StoreError::Sqlite(other),
+            })
+    }
+
+    fn validate_projected_source_failure(
+        &self,
+        session_id: &str,
+        parsed: ParsedSourceFailure,
+        journal_record: &JournalRecord,
+    ) -> Result<(), StoreError> {
+        let state = self.source_failure_projection_state(session_id, parsed.source_kind)?;
+        if state.session_lifecycle != "recording"
+            || state.session_health != "degraded"
+            || state.source_lifecycle != "failed"
+            || state.required_lifecycle != "failed"
+            || state.continuing_sources == 0
+        {
+            return Err(StoreError::InvalidState(
+                "source failure projection no longer permits continuation",
+            ));
+        }
+        let (event_kind, payload_json): (String, String) = self
+            .connection
+            .query_row(
+                "SELECT event_kind, payload_json FROM session_events
+                 WHERE session_id = ?1 AND id = ?2",
+                params![session_id, journal_record.body.event_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .map_err(|error| match error {
+                rusqlite::Error::QueryReturnedNoRows => StoreError::IntegrityMismatch(
+                    "accepted source failure database event is missing",
+                ),
+                other => StoreError::Sqlite(other),
+            })?;
+        let event_payload: Value = serde_json::from_str(&payload_json)?;
+        if event_kind != "source_failed" || event_payload != journal_record.body.payload {
+            return Err(StoreError::IntegrityMismatch(
+                "accepted source failure database event diverged",
+            ));
+        }
+        Ok(())
+    }
+
     pub(super) fn reconcile_source_failures(
         &mut self,
         session_id: &str,
@@ -260,17 +333,9 @@ impl SessionStore {
         let mut seen = std::collections::BTreeSet::new();
         let mut unprojected = None;
         for (index, failure) in failures.iter().enumerate() {
-            let source_kind =
-                MediaSourceKind::from_str(payload_string(&failure.body.payload, "source_kind")?)?;
-            SourceFailureReason::from_str(payload_string(&failure.body.payload, "reason")?)?;
-            if failure
-                .body
-                .payload
-                .get("recording_continues")
-                .and_then(Value::as_bool)
-                != Some(true)
-                || !seen.insert(source_kind.as_str())
-            {
+            let parsed = parse_source_failure_payload(&failure.body.payload)?;
+            let source_kind = parsed.source_kind;
+            if !seen.insert(source_kind.as_str()) {
                 return Ok(RecoveryDisposition::IntegrityMismatch);
             }
             let (session_lifecycle, session_health, source_lifecycle, required_lifecycle): (
@@ -328,6 +393,20 @@ impl SessionStore {
     }
 }
 
+fn parse_source_failure_payload(payload: &Value) -> Result<ParsedSourceFailure, StoreError> {
+    let source_kind = MediaSourceKind::from_str(payload_string(payload, "source_kind")?)?;
+    let reason = SourceFailureReason::from_str(payload_string(payload, "reason")?)?;
+    if payload.get("recording_continues").and_then(Value::as_bool) != Some(true) {
+        return Err(StoreError::IntegrityMismatch(
+            "source failure continuation evidence is invalid",
+        ));
+    }
+    Ok(ParsedSourceFailure {
+        source_kind,
+        reason,
+    })
+}
+
 fn source_failure_evidence(request: SourceFailureRequest, sequence: u64) -> SourceFailureEvidence {
     SourceFailureEvidence {
         session_id: request.session_id,
@@ -351,8 +430,9 @@ mod tests {
 
     use super::*;
     use crate::{
-        AuthorizeMediaOpenRequest, FirstSampleReceipt, MediaOpenAuthorization, MediaOpenReceipt,
-        PrepareSessionRequest, SealSegmentReceipt, SessionOrigin,
+        AuthorizeMediaOpenRequest, FirstSampleReceipt, InterruptSessionRequest,
+        MediaOpenAuthorization, MediaOpenReceipt, PrepareSessionRequest, SealSegmentReceipt,
+        SessionInterruptionReason, SessionOrigin,
     };
 
     #[test]
@@ -467,6 +547,114 @@ mod tests {
             RecoveryDisposition::SourceFailedRecording
         );
         assert_eq!(source_failure_event_count(&reopened, &session_id.0), 2);
+    }
+
+    #[test]
+    fn malformed_source_kind_and_reason_are_rejected_before_retry() {
+        assert_malformed_failure_rejected(json!({
+            "source_kind": "unsupported_audio",
+            "reason": SourceFailureReason::CaptureFailed.as_str(),
+            "recording_continues": true,
+        }));
+        assert_malformed_failure_rejected(json!({
+            "source_kind": MediaSourceKind::SystemAudio.as_str(),
+            "reason": "unsupported_failure",
+            "recording_continues": true,
+        }));
+    }
+
+    #[test]
+    fn false_or_malformed_recording_continuation_is_rejected_before_retry() {
+        assert_malformed_failure_rejected(json!({
+            "source_kind": MediaSourceKind::SystemAudio.as_str(),
+            "reason": SourceFailureReason::CaptureFailed.as_str(),
+            "recording_continues": false,
+        }));
+        assert_malformed_failure_rejected(json!({
+            "source_kind": MediaSourceKind::SystemAudio.as_str(),
+            "reason": SourceFailureReason::CaptureFailed.as_str(),
+            "recording_continues": "true",
+        }));
+    }
+
+    #[test]
+    fn idempotent_retry_after_interruption_does_not_claim_continuation() {
+        let temp = TempDir::new().unwrap();
+        let mut store = SessionStore::open(temp.path().join("Open Scribe")).unwrap();
+        let (session_id, _, _, system) = prepared_three_sources(&mut store);
+        let request = SourceFailureRequest {
+            session_id: session_id.clone(),
+            source_kind: MediaSourceKind::SystemAudio,
+            reason: SourceFailureReason::CaptureFailed,
+        };
+        fail_source(&mut store, &system);
+        store
+            .interrupt_session(InterruptSessionRequest {
+                session_id,
+                reason: SessionInterruptionReason::CaptureFailed,
+            })
+            .unwrap();
+
+        assert!(matches!(
+            store.record_source_failure(request),
+            Err(StoreError::InvalidState(_) | StoreError::IntegrityMismatch(_))
+        ));
+    }
+
+    #[test]
+    fn idempotent_retry_rejects_projection_or_event_divergence() {
+        for mutation in [
+            "DELETE FROM session_events
+             WHERE session_id = ?1 AND event_kind = 'source_failed'",
+            "UPDATE session_events SET payload_json = '{}'
+             WHERE session_id = ?1 AND event_kind = 'source_failed'",
+            "UPDATE sessions SET health = 'healthy' WHERE id = ?1",
+            "UPDATE sources SET lifecycle = 'sealed'
+             WHERE session_id = ?1 AND kind = 'system_audio'",
+            "UPDATE required_sources SET lifecycle = 'sealed'
+             WHERE session_id = ?1 AND kind = 'system_audio'",
+            "UPDATE required_sources SET lifecycle = 'failed'
+             WHERE session_id = ?1 AND kind != 'system_audio'",
+        ] {
+            assert_projected_failure_retry_rejected(mutation);
+        }
+    }
+
+    fn assert_malformed_failure_rejected(payload: Value) {
+        let temp = TempDir::new().unwrap();
+        let mut store = SessionStore::open(temp.path().join("Open Scribe")).unwrap();
+        let (session_id, _, _, system) = prepared_three_sources(&mut store);
+        seal_source(&mut store, &system);
+        store
+            .append_session_journal(&session_id.0, "source_failed", None, payload)
+            .unwrap();
+
+        assert!(matches!(
+            store.record_source_failure(SourceFailureRequest {
+                session_id,
+                source_kind: MediaSourceKind::SystemAudio,
+                reason: SourceFailureReason::CaptureFailed,
+            }),
+            Err(StoreError::IntegrityMismatch(_))
+        ));
+    }
+
+    fn assert_projected_failure_retry_rejected(mutation: &str) {
+        let temp = TempDir::new().unwrap();
+        let mut store = SessionStore::open(temp.path().join("Open Scribe")).unwrap();
+        let (session_id, _, _, system) = prepared_three_sources(&mut store);
+        let request = SourceFailureRequest {
+            session_id: session_id.clone(),
+            source_kind: MediaSourceKind::SystemAudio,
+            reason: SourceFailureReason::CaptureFailed,
+        };
+        fail_source(&mut store, &system);
+        store.connection.execute(mutation, [&session_id.0]).unwrap();
+
+        assert!(matches!(
+            store.record_source_failure(request),
+            Err(StoreError::InvalidState(_) | StoreError::IntegrityMismatch(_))
+        ));
     }
 
     fn prepared_three_sources(
