@@ -37,7 +37,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 @main
 struct OpenScribeApp: App {
   @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
-  @StateObject private var sessionStore: FixtureSessionStore
+  @StateObject private var runtimeStore: RuntimeLibraryStore
   @StateObject private var liveRecording: LiveMicrophoneRecordingController
   @StateObject private var recoveredSessions: RecoveredSessionController
 
@@ -45,7 +45,6 @@ struct OpenScribeApp: App {
 
   init() {
     let arguments = ProcessInfo.processInfo.arguments
-    let fixture = FixtureLaunchSelection.selected(from: arguments)
     let liveProofRoot = Self.argumentRoot("--m1-live-microphone-proof-root", from: arguments)
     let forcedCaptureRoot = Self.argumentRoot(
       "--m1-forced-termination-capture-root",
@@ -60,7 +59,8 @@ struct OpenScribeApp: App {
       managedRoot.map(LiveMicrophoneRecordingController.init(managedRoot:))
       ?? LiveMicrophoneRecordingController(managedRoot: nil)
     let recovery = RecoveredSessionController(managedRoot: managedRoot)
-    _sessionStore = StateObject(wrappedValue: FixtureSessionStore(fixture: fixture))
+    let runtime = RuntimeLibraryStore(managedRoot: managedRoot)
+    _runtimeStore = StateObject(wrappedValue: runtime)
     _liveRecording = StateObject(wrappedValue: controller)
     _recoveredSessions = StateObject(wrappedValue: recovery)
     if liveProofRoot != nil {
@@ -74,6 +74,7 @@ struct OpenScribeApp: App {
     } else {
       Task { @MainActor in
         recovery.recoverOnLaunch()
+        runtime.refresh()
         if forcedRecoveryRoot != nil {
           await Self.runForcedTerminationRecoveryProof(controller: recovery)
         }
@@ -83,18 +84,22 @@ struct OpenScribeApp: App {
 
   var body: some Scene {
     WindowGroup("Open Scribe", id: "main") {
-      ContentView(store: sessionStore, recoveredSessions: recoveredSessions)
+      ContentView(
+        store: runtimeStore,
+        liveRecording: liveRecording,
+        recoveredSessions: recoveredSessions
+      )
     }
-    .defaultSize(width: 520, height: 560)
+    .defaultSize(width: 560, height: 680)
 
     MenuBarExtra {
       MenuBarContent(
-        store: sessionStore,
+        store: runtimeStore,
         liveRecording: liveRecording,
         recoveredSessions: recoveredSessions
       )
     } label: {
-      MenuBarLabel(store: sessionStore, liveRecording: liveRecording)
+      MenuBarLabel(store: runtimeStore, liveRecording: liveRecording)
     }
 
     Settings {

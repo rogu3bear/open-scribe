@@ -1,5 +1,67 @@
 import Foundation
 
+private enum RuntimeLibraryStoreError: Error {
+  case managedRootUnavailable
+}
+
+@MainActor
+final class RuntimeLibraryStore: ObservableObject {
+  typealias SnapshotProvider = @Sendable () throws -> NativeRuntimeLibrarySnapshot
+
+  @Published private(set) var currentSession: RuntimeSessionPresentation?
+  @Published private(set) var savedSessions: [RuntimeSessionPresentation] = []
+  @Published private(set) var isSnapshotStale = false
+  @Published private(set) var errorMessage: String?
+
+  private let snapshotProvider: SnapshotProvider
+  private var pollingTask: Task<Void, Never>?
+
+  init(snapshotProvider: @escaping SnapshotProvider, startsPolling: Bool = true) {
+    self.snapshotProvider = snapshotProvider
+    refresh()
+    if startsPolling {
+      pollingTask = Task { [weak self] in
+        while !Task.isCancelled {
+          try? await Task.sleep(for: .seconds(1))
+          guard !Task.isCancelled else { return }
+          self?.refresh()
+        }
+      }
+    }
+  }
+
+  convenience init(managedRoot: URL?) {
+    let controller = try? managedRoot.map {
+      try NativeRecordingPreparation.open(managedRoot: $0.path)
+    }
+    self.init(snapshotProvider: {
+      guard let controller else {
+        throw RuntimeLibraryStoreError.managedRootUnavailable
+      }
+      return try controller.runtimeLibrarySnapshot()
+    })
+  }
+
+  deinit {
+    pollingTask?.cancel()
+  }
+
+  func refresh() {
+    do {
+      let native = try snapshotProvider()
+      currentSession = native.currentSession.map(RuntimeSessionPresentation.init(native:))
+      savedSessions = native.savedSessions.map(RuntimeSessionPresentation.init(native:))
+      isSnapshotStale = false
+      errorMessage = nil
+    } catch {
+      currentSession = nil
+      isSnapshotStale = true
+      errorMessage =
+        "Live recording state is unavailable. The saved list is last known; recorded media was not changed."
+    }
+  }
+}
+
 @MainActor
 final class FixtureSessionStore: ObservableObject {
   @Published private(set) var snapshot: SessionPresentation

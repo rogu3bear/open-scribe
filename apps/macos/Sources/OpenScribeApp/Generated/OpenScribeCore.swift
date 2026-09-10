@@ -612,6 +612,8 @@ public protocol NativeRecordingPreparationProtocol: AnyObject, Sendable {
 
   func recoverPlayableSessions() throws -> [NativeRecoveredPlayableSession]
 
+  func runtimeLibrarySnapshot() throws -> NativeRuntimeLibrarySnapshot
+
   func sealSegment(receipt: NativeSealSegmentReceipt) throws -> NativeSealedSegmentEvidence
 
 }
@@ -770,6 +772,16 @@ open class NativeRecordingPreparation: NativeRecordingPreparationProtocol, @unch
       try rustCallWithError(FfiConverterTypeNativeStorageError_lift) {
         uniffiCallStatus in
         uniffi_open_scribe_uniffi_fn_method_nativerecordingpreparation_recover_playable_sessions(
+          self.uniffiCloneHandle(), uniffiCallStatus
+        )
+      })
+  }
+
+  open func runtimeLibrarySnapshot() throws -> NativeRuntimeLibrarySnapshot {
+    return try FfiConverterTypeNativeRuntimeLibrarySnapshot_lift(
+      try rustCallWithError(FfiConverterTypeNativeStorageError_lift) {
+        uniffiCallStatus in
+        uniffi_open_scribe_uniffi_fn_method_nativerecordingpreparation_runtime_library_snapshot(
           self.uniffiCloneHandle(), uniffiCallStatus
         )
       })
@@ -1561,6 +1573,213 @@ public func FfiConverterTypeNativeRecoveredPlayableSession_lower(
   _ value: NativeRecoveredPlayableSession
 ) -> RustBuffer {
   return FfiConverterTypeNativeRecoveredPlayableSession.lower(value)
+}
+
+public struct NativeRuntimeLibrarySnapshot: Equatable, Hashable {
+  public let currentSession: NativeRuntimeSessionSnapshot?
+  public let savedSessions: [NativeRuntimeSessionSnapshot]
+
+  // Default memberwise initializers are never public by default, so we
+  // declare one manually.
+  public init(
+    currentSession: NativeRuntimeSessionSnapshot?, savedSessions: [NativeRuntimeSessionSnapshot]
+  ) {
+    self.currentSession = currentSession
+    self.savedSessions = savedSessions
+  }
+
+}
+
+#if compiler(>=6)
+  extension NativeRuntimeLibrarySnapshot: Sendable {}
+#endif
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeNativeRuntimeLibrarySnapshot: FfiConverterRustBuffer {
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws
+    -> NativeRuntimeLibrarySnapshot
+  {
+    return
+      try NativeRuntimeLibrarySnapshot(
+        currentSession: FfiConverterOptionTypeNativeRuntimeSessionSnapshot.read(from: &buf),
+        savedSessions: FfiConverterSequenceTypeNativeRuntimeSessionSnapshot.read(from: &buf)
+      )
+  }
+
+  public static func write(_ value: NativeRuntimeLibrarySnapshot, into buf: inout [UInt8]) {
+    FfiConverterOptionTypeNativeRuntimeSessionSnapshot.write(value.currentSession, into: &buf)
+    FfiConverterSequenceTypeNativeRuntimeSessionSnapshot.write(value.savedSessions, into: &buf)
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeRuntimeLibrarySnapshot_lift(_ buf: RustBuffer) throws
+  -> NativeRuntimeLibrarySnapshot
+{
+  return try FfiConverterTypeNativeRuntimeLibrarySnapshot.lift(buf)
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeRuntimeLibrarySnapshot_lower(
+  _ value: NativeRuntimeLibrarySnapshot
+) -> RustBuffer {
+  return FfiConverterTypeNativeRuntimeLibrarySnapshot.lower(value)
+}
+
+public struct NativeRuntimeSessionSnapshot: Equatable, Hashable {
+  public let sessionId: String
+  public let title: String
+  public let lifecycle: String
+  public let health: String
+  public let elapsedSeconds: UInt64
+  public let journalDurable: Bool
+  public let mediaFilesOpen: Bool
+  public let interruptionReason: String?
+  public let recovered: Bool
+  public let sources: [NativeRuntimeSourceSnapshot]
+
+  // Default memberwise initializers are never public by default, so we
+  // declare one manually.
+  public init(
+    sessionId: String, title: String, lifecycle: String, health: String, elapsedSeconds: UInt64,
+    journalDurable: Bool, mediaFilesOpen: Bool, interruptionReason: String?, recovered: Bool,
+    sources: [NativeRuntimeSourceSnapshot]
+  ) {
+    self.sessionId = sessionId
+    self.title = title
+    self.lifecycle = lifecycle
+    self.health = health
+    self.elapsedSeconds = elapsedSeconds
+    self.journalDurable = journalDurable
+    self.mediaFilesOpen = mediaFilesOpen
+    self.interruptionReason = interruptionReason
+    self.recovered = recovered
+    self.sources = sources
+  }
+
+}
+
+#if compiler(>=6)
+  extension NativeRuntimeSessionSnapshot: Sendable {}
+#endif
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeNativeRuntimeSessionSnapshot: FfiConverterRustBuffer {
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws
+    -> NativeRuntimeSessionSnapshot
+  {
+    return
+      try NativeRuntimeSessionSnapshot(
+        sessionId: FfiConverterString.read(from: &buf),
+        title: FfiConverterString.read(from: &buf),
+        lifecycle: FfiConverterString.read(from: &buf),
+        health: FfiConverterString.read(from: &buf),
+        elapsedSeconds: FfiConverterUInt64.read(from: &buf),
+        journalDurable: FfiConverterBool.read(from: &buf),
+        mediaFilesOpen: FfiConverterBool.read(from: &buf),
+        interruptionReason: FfiConverterOptionString.read(from: &buf),
+        recovered: FfiConverterBool.read(from: &buf),
+        sources: FfiConverterSequenceTypeNativeRuntimeSourceSnapshot.read(from: &buf)
+      )
+  }
+
+  public static func write(_ value: NativeRuntimeSessionSnapshot, into buf: inout [UInt8]) {
+    FfiConverterString.write(value.sessionId, into: &buf)
+    FfiConverterString.write(value.title, into: &buf)
+    FfiConverterString.write(value.lifecycle, into: &buf)
+    FfiConverterString.write(value.health, into: &buf)
+    FfiConverterUInt64.write(value.elapsedSeconds, into: &buf)
+    FfiConverterBool.write(value.journalDurable, into: &buf)
+    FfiConverterBool.write(value.mediaFilesOpen, into: &buf)
+    FfiConverterOptionString.write(value.interruptionReason, into: &buf)
+    FfiConverterBool.write(value.recovered, into: &buf)
+    FfiConverterSequenceTypeNativeRuntimeSourceSnapshot.write(value.sources, into: &buf)
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeRuntimeSessionSnapshot_lift(_ buf: RustBuffer) throws
+  -> NativeRuntimeSessionSnapshot
+{
+  return try FfiConverterTypeNativeRuntimeSessionSnapshot.lift(buf)
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeRuntimeSessionSnapshot_lower(
+  _ value: NativeRuntimeSessionSnapshot
+) -> RustBuffer {
+  return FfiConverterTypeNativeRuntimeSessionSnapshot.lower(value)
+}
+
+public struct NativeRuntimeSourceSnapshot: Equatable, Hashable {
+  public let kind: NativeMediaSourceKind
+  public let displayName: String
+  public let lifecycle: String
+
+  // Default memberwise initializers are never public by default, so we
+  // declare one manually.
+  public init(kind: NativeMediaSourceKind, displayName: String, lifecycle: String) {
+    self.kind = kind
+    self.displayName = displayName
+    self.lifecycle = lifecycle
+  }
+
+}
+
+#if compiler(>=6)
+  extension NativeRuntimeSourceSnapshot: Sendable {}
+#endif
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeNativeRuntimeSourceSnapshot: FfiConverterRustBuffer {
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws
+    -> NativeRuntimeSourceSnapshot
+  {
+    return
+      try NativeRuntimeSourceSnapshot(
+        kind: FfiConverterTypeNativeMediaSourceKind.read(from: &buf),
+        displayName: FfiConverterString.read(from: &buf),
+        lifecycle: FfiConverterString.read(from: &buf)
+      )
+  }
+
+  public static func write(_ value: NativeRuntimeSourceSnapshot, into buf: inout [UInt8]) {
+    FfiConverterTypeNativeMediaSourceKind.write(value.kind, into: &buf)
+    FfiConverterString.write(value.displayName, into: &buf)
+    FfiConverterString.write(value.lifecycle, into: &buf)
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeRuntimeSourceSnapshot_lift(_ buf: RustBuffer) throws
+  -> NativeRuntimeSourceSnapshot
+{
+  return try FfiConverterTypeNativeRuntimeSourceSnapshot.lift(buf)
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeRuntimeSourceSnapshot_lower(_ value: NativeRuntimeSourceSnapshot)
+  -> RustBuffer
+{
+  return FfiConverterTypeNativeRuntimeSourceSnapshot.lower(value)
 }
 
 public struct NativeSealSegmentReceipt: Equatable, Hashable {
@@ -2619,6 +2838,30 @@ private struct FfiConverterOptionString: FfiConverterRustBuffer {
 #if swift(>=5.8)
   @_documentation(visibility: private)
 #endif
+private struct FfiConverterOptionTypeNativeRuntimeSessionSnapshot: FfiConverterRustBuffer {
+  typealias SwiftType = NativeRuntimeSessionSnapshot?
+
+  public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+    guard let value = value else {
+      writeInt(&buf, Int8(0))
+      return
+    }
+    writeInt(&buf, Int8(1))
+    FfiConverterTypeNativeRuntimeSessionSnapshot.write(value, into: &buf)
+  }
+
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+    switch try readInt(&buf) as Int8 {
+    case 0: return nil
+    case 1: return try FfiConverterTypeNativeRuntimeSessionSnapshot.read(from: &buf)
+    default: throw UniffiInternalError.unexpectedOptionalTag
+    }
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
 private struct FfiConverterSequenceTypeNativeRecoveredPlayableSession: FfiConverterRustBuffer {
   typealias SwiftType = [NativeRecoveredPlayableSession]
 
@@ -2638,6 +2881,60 @@ private struct FfiConverterSequenceTypeNativeRecoveredPlayableSession: FfiConver
     seq.reserveCapacity(Int(len))
     for _ in 0..<len {
       seq.append(try FfiConverterTypeNativeRecoveredPlayableSession.read(from: &buf))
+    }
+    return seq
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+private struct FfiConverterSequenceTypeNativeRuntimeSessionSnapshot: FfiConverterRustBuffer {
+  typealias SwiftType = [NativeRuntimeSessionSnapshot]
+
+  public static func write(_ value: [NativeRuntimeSessionSnapshot], into buf: inout [UInt8]) {
+    let len = Int32(value.count)
+    writeInt(&buf, len)
+    for item in value {
+      FfiConverterTypeNativeRuntimeSessionSnapshot.write(item, into: &buf)
+    }
+  }
+
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws
+    -> [NativeRuntimeSessionSnapshot]
+  {
+    let len: Int32 = try readInt(&buf)
+    var seq = [NativeRuntimeSessionSnapshot]()
+    seq.reserveCapacity(Int(len))
+    for _ in 0..<len {
+      seq.append(try FfiConverterTypeNativeRuntimeSessionSnapshot.read(from: &buf))
+    }
+    return seq
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+private struct FfiConverterSequenceTypeNativeRuntimeSourceSnapshot: FfiConverterRustBuffer {
+  typealias SwiftType = [NativeRuntimeSourceSnapshot]
+
+  public static func write(_ value: [NativeRuntimeSourceSnapshot], into buf: inout [UInt8]) {
+    let len = Int32(value.count)
+    writeInt(&buf, len)
+    for item in value {
+      FfiConverterTypeNativeRuntimeSourceSnapshot.write(item, into: &buf)
+    }
+  }
+
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws
+    -> [NativeRuntimeSourceSnapshot]
+  {
+    let len: Int32 = try readInt(&buf)
+    var seq = [NativeRuntimeSourceSnapshot]()
+    seq.reserveCapacity(Int(len))
+    for _ in 0..<len {
+      seq.append(try FfiConverterTypeNativeRuntimeSourceSnapshot.read(from: &buf))
     }
     return seq
   }
@@ -2827,6 +3124,11 @@ private let initializationResult: InitializationResult = {
   }
   if uniffi_open_scribe_uniffi_checksum_method_nativerecordingpreparation_recover_playable_sessions()
     != 18911
+  {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_open_scribe_uniffi_checksum_method_nativerecordingpreparation_runtime_library_snapshot()
+    != 27695
   {
     return InitializationResult.apiChecksumMismatch
   }

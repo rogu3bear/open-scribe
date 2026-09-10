@@ -1,128 +1,159 @@
 import SwiftUI
 
 struct CompactLiveView: View {
-  @ObservedObject var store: FixtureSessionStore
+  @ObservedObject var store: RuntimeLibraryStore
+  @ObservedObject var liveRecording: LiveMicrophoneRecordingController
+
+  @MainActor
+  init(
+    store: RuntimeLibraryStore,
+    liveRecording: LiveMicrophoneRecordingController? = nil
+  ) {
+    self.store = store
+    self.liveRecording = liveRecording ?? LiveMicrophoneRecordingController(managedRoot: nil)
+  }
 
   var body: some View {
     VStack(alignment: .leading, spacing: 20) {
-      Label("Deterministic state fixture — no media is captured.", systemImage: "testtube.2")
-        .font(.callout.weight(.medium))
-        .foregroundStyle(.secondary)
-
       HStack(alignment: .firstTextBaseline, spacing: 12) {
-        if let symbol = store.snapshot.resolvedSymbolName {
-          Image(systemName: symbol)
-            .foregroundStyle(statusColor)
-        }
-        Text(store.snapshot.statusText)
+        Image(systemName: statusSymbol)
+          .foregroundStyle(statusColor)
+        Text(statusText)
           .font(.title2.weight(.semibold))
         Spacer()
-        if let timer = store.displayedTimerText {
-          Text(timer)
+        if let current = store.currentSession {
+          Text(current.timerText)
             .font(.title3.monospacedDigit())
         }
       }
       .accessibilityElement(children: .ignore)
-      .accessibilityLabel(store.displayedAccessibilityValue)
+      .accessibilityLabel(accessibilityStatus)
 
-      VStack(alignment: .leading, spacing: 10) {
-        Text("Sources")
+      if let current = store.currentSession {
+        Text(current.title)
           .font(.headline)
-        ForEach(store.snapshot.sources, id: \.id) { source in
-          VStack(alignment: .leading, spacing: 3) {
-            HStack {
+          .textSelection(.enabled)
+
+        VStack(alignment: .leading, spacing: 10) {
+          Text("Sources")
+            .font(.headline)
+          ForEach(current.sources, id: \.kind) { source in
+            HStack(spacing: 10) {
+              Image(systemName: source.symbolName)
+                .frame(width: 18)
               Text(source.name)
               Spacer()
-              Text(source.activity.capitalized)
-                .foregroundStyle(.secondary)
+              Text(source.stateText)
+                .foregroundStyle(source.lifecycle == "failed" ? .orange : .secondary)
             }
-            if let detail = source.healthDetail {
-              Text(detail)
-                .font(.caption)
-                .foregroundStyle(.orange)
-            }
-            if let recoveryHint = source.permissionRecoveryHint {
-              Text(recoveryHint)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            }
+            .accessibilityElement(children: .combine)
           }
-          .accessibilityElement(children: .combine)
         }
+
+        if let interruption = current.interruptionText {
+          Label(interruption, systemImage: "exclamationmark.triangle")
+            .font(.callout)
+            .foregroundStyle(.orange)
+            .accessibilityLabel("Recording needs attention. \(interruption)")
+        }
+
+        GroupBox("Durable state") {
+          Grid(alignment: .leading, horizontalSpacing: 18, verticalSpacing: 7) {
+            EvidenceRow(label: "Lifecycle", value: current.lifecycle)
+            EvidenceRow(label: "Health", value: current.health)
+            EvidenceRow(label: "Journal durable", value: yesNo(current.journalDurable))
+            EvidenceRow(label: "Media open", value: yesNo(current.mediaFilesOpen))
+            EvidenceRow(label: "Recovery", value: current.recoveryText)
+          }
+          .frame(maxWidth: .infinity, alignment: .leading)
+          .padding(4)
+        }
+      } else {
+        Text(
+          "Start deliberately from this window or the menu bar. Open Scribe will show Recording only after both required sources are durably active."
+        )
+        .foregroundStyle(.secondary)
+        .fixedSize(horizontal: false, vertical: true)
       }
 
-      GroupBox("Rust evidence") {
-        Grid(alignment: .leading, horizontalSpacing: 18, verticalSpacing: 7) {
-          EvidenceRow(label: "Lifecycle", value: store.snapshot.lifecycle)
-          EvidenceRow(label: "Health", value: store.snapshot.health)
-          EvidenceRow(label: "Journal durable", value: yesNo(store.snapshot.journalDurable))
-          EvidenceRow(label: "Media-open evidence", value: yesNo(store.snapshot.mediaFilesOpen))
-          EvidenceRow(label: "Recovery", value: store.snapshot.recoveryStatus)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(4)
-      }
-
-      if let error = store.commandError {
+      if let error = liveRecording.errorMessage ?? store.errorMessage {
         Text(error)
-          .font(.caption)
+          .font(.callout)
           .foregroundStyle(.red)
-          .accessibilityLabel("Command failed: \(error)")
+          .accessibilityLabel("Recording or library error: \(error)")
       }
 
       HStack {
-        SessionCommands(store: store)
-        Spacer()
-        Button("Inspect state") {
-          store.inspect()
+        if liveRecording.canStart {
+          Button("Record Microphone + System Audio") {
+            Task {
+              await liveRecording.start()
+              store.refresh()
+            }
+          }
+          .keyboardShortcut("r", modifiers: [.command, .shift])
         }
-        .keyboardShortcut("i", modifiers: [.command, .shift])
-        .accessibilityValue(store.displayedAccessibilityValue)
+        if liveRecording.canStop {
+          Button("Stop and Save") {
+            Task {
+              await liveRecording.stop()
+              store.refresh()
+            }
+          }
+          .keyboardShortcut("s", modifiers: [.command, .shift])
+        }
+        Spacer()
+        Button("Refresh Library") {
+          store.refresh()
+        }
       }
     }
     .padding(24)
-    .frame(minWidth: 460, minHeight: 500, alignment: .topLeading)
+    .frame(minWidth: 500, minHeight: 430, alignment: .topLeading)
     .onAppear {
-      AppTelemetry.sceneAppeared("primary", snapshot: store.snapshot)
+      store.refresh()
+      AppTelemetry.runtimeSceneAppeared("primary", session: store.currentSession)
     }
   }
 
+  private var statusText: String {
+    if let current = store.currentSession { return current.statusText }
+    return switch liveRecording.phase {
+    case .requestingPermission, .preparing, .starting: liveRecording.statusText
+    case .capturing: "Confirming durable recording…"
+    case .stopping: "Securing recording…"
+    case .failed: "Recording needs attention"
+    default: "Ready to record"
+    }
+  }
+
+  private var statusSymbol: String {
+    if store.currentSession?.isRecording == true { return "record.circle.fill" }
+    if store.currentSession?.needsAttention == true || liveRecording.phase == .failed {
+      return "exclamationmark.circle"
+    }
+    if liveRecording.phase == .starting || liveRecording.phase == .preparing {
+      return "waveform"
+    }
+    return "record.circle"
+  }
+
   private var statusColor: Color {
-    if store.snapshot.isWarning { return .orange }
-    if store.snapshot.isDurableRecording { return .red }
+    if store.currentSession?.isRecording == true { return .red }
+    if store.currentSession?.needsAttention == true || liveRecording.phase == .failed {
+      return .orange
+    }
     return .secondary
+  }
+
+  private var accessibilityStatus: String {
+    guard let current = store.currentSession else { return statusText }
+    let sources = current.sources.map { "\($0.name): \($0.stateText)" }.joined(separator: ", ")
+    return "\(current.statusText), \(current.timerText). \(sources)."
   }
 
   private func yesNo(_ value: Bool) -> String {
     value ? "Yes" : "No"
-  }
-}
-
-struct SessionCommands: View {
-  @ObservedObject var store: FixtureSessionStore
-
-  var body: some View {
-    switch store.snapshot.presentation {
-    case "idle":
-      Button("Prepare fixture") { store.send(.prepare) }
-    case "ready":
-      Button("Start fixture") { store.send(.requestStart) }
-    case "starting":
-      Button("Confirm evidence") {
-        store.send(.confirmRecording, journalDurable: true, mediaFilesOpen: true)
-      }
-      Button("Cancel") { store.send(.cancelStart) }
-    case "recording", "recording_degraded", "permission_revoked":
-      Button("Pause") { store.send(.pause) }
-      Button("Finalize fixture") { store.send(.beginFinalizing, mediaSafe: true) }
-    case "paused":
-      Button("Resume") { store.send(.resume) }
-      Button("Finalize fixture") { store.send(.beginFinalizing, mediaSafe: true) }
-    case "finalizing":
-      Button("Complete fixture") { store.send(.complete) }
-    default:
-      EmptyView()
-    }
   }
 }
 

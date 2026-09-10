@@ -6,6 +6,7 @@ repo_root="$(CDPATH='' cd -- "$script_dir/.." && pwd)"
 cd "$repo_root"
 
 cargo fmt --all --check
+cargo test --locked -p open-scribe-store runtime_library_snapshot
 cargo test --locked \
 	-p open-scribe-types \
 	-p open-scribe-domain \
@@ -28,5 +29,5 @@ git diff --check
 
 printf '%s\n' \
 	'STATE_FIXTURES_GREEN' \
-	'proof=rust_fixture_catalog,deterministic_transition_errors,durability_guard,wasm_safe_types_domain_evidence,coarse_uniffi_round_trip,fresh_generated_bindings,swift_fixture_mapping,shared_menu_live_store,reviewed_symbol_fallbacks,ready_starting_non_recording,accessibility_truth,keyboard_inspection,exact_unsigned_app_launch,diff_hygiene' \
-	'excludes=real_capture,media_journal_io,persistence,recovery_execution,transcription,diarization,ocr,context,providers,llm,deployment,signing,notarization,release'
+	'proof=rust_fixture_catalog,deterministic_transition_errors,durability_guard,coherent_runtime_library_snapshot,wasm_safe_types_domain_evidence,coarse_uniffi_round_trip,fresh_generated_bindings,swift_fixture_mapping,shared_menu_live_store,reviewed_symbol_fallbacks,ready_starting_non_recording,accessibility_truth,keyboard_inspection,exact_unsigned_app_launch,diff_hygiene' \
+	'excludes=real_capture,full_media_journal_io,full_persistence,recovery_execution,transcription,diarization,ocr,context,providers,llm,deployment,signing,notarization,release'
