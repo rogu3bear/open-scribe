@@ -4,19 +4,20 @@ This file routes work to repository truth. `CLAUDE.md` is its byte-identical mir
 
 ## Current stage
 
-The repository contains founding doctrine, a **functional Milestone 0 native and website development proof**, and bounded M1 dual-source runtime proof. Rust durably declares required sources, alone enters `Recording` after every source has open media and first-sample evidence, admits post-Recording interruption, projects strictly validated multi-track recovery atomically, and exposes one coarse live-and-library snapshot. The main window and menu bar consume that same Rust-owned snapshot for timer, per-source state, interruption/recovery, and saved-session visibility; deterministic fixtures remain test-only. Swift wires microphone and ScreenCaptureKit all-system-audio adapters through bounded buffers and managed writers. Exact local runtime gates have captured, sealed, independently decoded, externally killed, atomically recovered, and replay-discovered both real source tracks in an unsigned arm64 app. No source-loss continuation, permission revocation during capture, application-scoped selection, two-hour synchronization, transcription, context observation, deployment, signing, or release capability is proved.
+Read current capability and milestone evidence in `ANCHOR.md`, `ACTOR.md`, and
+its named runtime receipts. Reacquire the exact checkout and receipt before
+making a capability claim. Short unsigned capture/recovery proof cannot prove
+source-loss continuation, permission revocation, application-scoped selection,
+long-session synchronization, transcription, signing, or release.
 
-The active boundary includes a durable required-source plan, Rust-owned `Recording` transition, ScreenCaptureKit all-system-audio source adapter, and atomic multi-track recovery: every declared source must have an open managed file and durable first-sample evidence. Bind the exact checkout and receipt before relying on it. Do not infer source-loss continuation, permission-revocation behavior, application-scoped selection, long-session behavior, transcription, signing, or release from the short unsigned runtime receipts. The next sequential work is Rust-owned source-failure/degraded state plus an exact runtime loss stimulus, followed by pressure and long-session synchronization.
+## Task routing
 
-## Mandatory orientation
-
-Before material work:
-
-1. Read `docs/product/FOUNDING_PRD.md`; it is the upstream product and founding-architecture contract.
-2. Read `NORTH_STAR.md` for the mission projection.
-3. Read `ANCHOR.md` for non-negotiable invariants.
-4. Read `LAYERS.md` and classify the decision.
-5. Read only the task-routed file: `ARCHITECTURE.md` for structure, `ACTOR.md` for verified actions, `NUANCE.md` for reproduced traps, or `SOUL.md` for non-authoritative project posture.
+Read `ANCHOR.md` for invariants. For product or architectural decisions, read
+the relevant clauses of `docs/product/FOUNDING_PRD.md` and the mission projection
+in `NORTH_STAR.md`. Use `LAYERS.md` to resolve disputed ownership. Then select
+`ARCHITECTURE.md` for structure, `ACTOR.md` for verified actions, `NUANCE.md` for
+reproduced traps, or `SOUL.md` for non-authoritative posture. Read the clauses
+that govern the task; routine work does not require every sidecar.
 
 ## Authority and change control
 
@@ -56,9 +57,10 @@ Stop on a material PRD conflict, an ownership collision, unscoped remote data fl
 - `reconcile` — expose divergence; do not narrate it into false coherence.
 
 <!-- forest-alignment:start -->
-## Forest Alignment
+## Operating scope
 
-- `/Users/star/dev/AGENTS.md` owns cross-repository coordination and evidence boundaries; this repository owns Open Scribe product, runtime, build, and release truth.
-- Run Git, build, test, and release operations from this exact repository/worktree. A receipt in another repository proves nothing here.
-- Branch names are work-descriptive and tool-neutral. Preserve dirty work and keep proof bound to the exact checkout and SHA.
+Inherit the active harness and enclosing workspace rules. This repository owns
+its product intent, implementation, and proof. Read `ANCHOR.md` when present,
+then follow the task's specific owner below. Preserve one writer and unrelated
+changes; keep local verification, integration, and live release evidence distinct.
 <!-- forest-alignment:end -->
