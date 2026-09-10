@@ -102,11 +102,11 @@ final class RuntimeLibraryStore: ObservableObject {
   }
 
   func refresh() {
-    refreshGeneration &+= 1
     if refreshTask != nil {
       refreshQueued = true
       return
     }
+    refreshGeneration &+= 1
     startRefresh(generation: refreshGeneration)
   }
 

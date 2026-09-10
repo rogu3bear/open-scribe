@@ -648,6 +648,40 @@ final class FixtureSessionTests: XCTestCase {
     XCTAssertNil(healthy.interruptionText)
   }
 
+  func testSlowSnapshotIsPublishedDespiteRepeatedPolling() async {
+    let firstRead = FixtureBlockingGate()
+    let nextRead = FixtureBlockingGate()
+    let counter = SnapshotInvocationCounter()
+    defer {
+      firstRead.release()
+      nextRead.release()
+    }
+    let saved = recoveredSessionPresentation(sessionId: "slow-saved-session")
+    let store = RuntimeLibraryStore(
+      snapshotProvider: {
+        let invocation = counter.next()
+        (invocation == 1 ? firstRead : nextRead).enterAndWait()
+        return NativeRuntimeLibrarySnapshot(
+          currentSession: nil,
+          savedSessions: [
+            NativeRuntimeSessionSnapshot(
+              sessionId: "slow-saved-session", title: "Slow saved meeting",
+              lifecycle: "ready_for_review", health: "healthy", elapsedSeconds: 2,
+              journalDurable: true, mediaFilesOpen: false, interruptionReason: nil,
+              recovered: true, sources: [], playableMedia: nil
+            )
+          ]
+        )
+      }
+    )
+    await assertEventually { firstRead.hasEntered }
+    try? await Task.sleep(for: .milliseconds(2_200))
+    firstRead.release()
+    await assertEventually { nextRead.hasEntered }
+    XCTAssertEqual(store.savedSessions.map(\.sessionId), [saved.sessionId])
+    XCTAssertFalse(store.isSnapshotStale)
+  }
+
   func testRuntimeSnapshotReadFailureInvalidatesLiveAuthorityButPreservesSavedLibrary() async {
     let current = NativeRuntimeSessionSnapshot(
       sessionId: "session-live",
@@ -796,6 +830,18 @@ final class FixtureSessionTests: XCTestCase {
       recordingStarted: false,
       lastJournalSequence: 12
     )
+  }
+}
+
+private final class SnapshotInvocationCounter: @unchecked Sendable {
+  private let lock = NSLock()
+  private var count = 0
+
+  func next() -> Int {
+    lock.withLock {
+      count += 1
+      return count
+    }
   }
 }
 
