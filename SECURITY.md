@@ -5,12 +5,13 @@ Open Scribe handles highly sensitive conversation and screen-derived evidence. S
 ## Current status
 
 This repository contains a bounded unsigned native development application and
-early-M1 microphone proof, but no supported release or deployed product. The
-app has development microphone/sandbox configuration and Rust-owned local
-session persistence. One explicit local proof processed temporary microphone
-audio and deleted that proof media. System audio, playable forced-termination
-recovery, transcription, providers, updates, signing, and release remain
-unimplemented or unproved. There are no supported release versions.
+M1 development evidence, but no supported release or deployed product. Exact
+earlier runtime candidates captured microphone plus all-authorized system audio
+and recovered playable media after forced termination. Those bounded receipts
+do not prove the current candidate, source-loss continuation, permission
+revocation, disk pressure, long-session synchronization, transcription,
+providers, updates, signing, or release. There are no supported release
+versions.
 
 ## Reporting a vulnerability
 

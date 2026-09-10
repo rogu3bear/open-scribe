@@ -45,6 +45,11 @@ pub enum NativeSessionInterruptionReason {
     SegmentSealFailed,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, uniffi::Enum)]
+pub enum NativeSourceFailureReason {
+    CaptureFailed,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
 pub struct NativePreparedSession {
     pub session_id: String,
@@ -162,11 +167,27 @@ pub struct NativeSessionInterruptionEvidence {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct NativeSourceFailureEvidence {
+    pub session_id: String,
+    pub source_kind: NativeMediaSourceKind,
+    pub reason: NativeSourceFailureReason,
+    pub journal_durable: bool,
+    pub source_failed: bool,
+    pub session_degraded: bool,
+    pub session_interrupted: bool,
+    pub recording_continues: bool,
+    pub last_journal_sequence: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
 pub struct NativeRecoveredPlayableSession {
     pub session_id: String,
+    pub source_id: String,
+    pub track_id: String,
+    pub source_kind: NativeMediaSourceKind,
+    pub source_display_name: String,
     pub segment_id: String,
     pub relative_path: String,
-    pub absolute_path: String,
     pub sample_count: u64,
     pub duration_nanoseconds: u64,
     pub byte_length: u64,
@@ -185,6 +206,16 @@ pub struct NativeRuntimeSourceSnapshot {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct NativeRuntimePlayableMediaSnapshot {
+    pub source_display_name: String,
+    pub availability: String,
+    pub absolute_path: Option<String>,
+    pub duration_nanoseconds: u64,
+    pub sample_count: u64,
+    pub byte_length: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
 pub struct NativeRuntimeSessionSnapshot {
     pub session_id: String,
     pub title: String,
@@ -196,12 +227,26 @@ pub struct NativeRuntimeSessionSnapshot {
     pub interruption_reason: Option<String>,
     pub recovered: bool,
     pub sources: Vec<NativeRuntimeSourceSnapshot>,
+    pub playable_media: Option<NativeRuntimePlayableMediaSnapshot>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
 pub struct NativeRuntimeLibrarySnapshot {
     pub current_session: Option<NativeRuntimeSessionSnapshot>,
     pub saved_sessions: Vec<NativeRuntimeSessionSnapshot>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct NativeImportedMediaEvidence {
+    pub session_id: String,
+    pub relative_path: String,
+    pub byte_length: u64,
+    pub sample_count: u64,
+    pub digest_sha256: String,
+    pub journal_version: u32,
+    pub last_journal_sequence: u64,
+    pub original_untouched: bool,
+    pub ready_for_review: bool,
 }
 
 #[derive(Debug, thiserror::Error, uniffi::Error)]
@@ -221,6 +266,38 @@ pub enum NativeStorageError {
 #[derive(uniffi::Object)]
 pub struct NativeRecordingPreparation {
     controller: Mutex<open_scribe_core::RecordingPreparationController>,
+}
+
+#[derive(uniffi::Object)]
+pub struct NativeImportedPlaybackLease {
+    lease: open_scribe_core::ImportedPlaybackLease,
+    strategy: NativePlaybackLeaseStrategy,
+}
+
+enum NativePlaybackLeaseStrategy {
+    ImportedSnapshot,
+    RecoveredVerifiedChunks,
+}
+
+#[uniffi::export]
+impl NativeImportedPlaybackLease {
+    pub fn playback_path(&self) -> String {
+        match self.strategy {
+            NativePlaybackLeaseStrategy::ImportedSnapshot => format!(
+                "v1;fd={};byte_length={};sha256={};max_byte_length={}",
+                self.lease.raw_file_descriptor(),
+                self.lease.byte_length(),
+                self.lease.digest_sha256(),
+                open_scribe_core::ImportedPlaybackLease::maximum_snapshot_byte_length(),
+            ),
+            NativePlaybackLeaseStrategy::RecoveredVerifiedChunks => format!(
+                "v2;fd={};byte_length={};sha256={};chunk_byte_length=65536",
+                self.lease.raw_file_descriptor(),
+                self.lease.byte_length(),
+                self.lease.digest_sha256(),
+            ),
+        }
+    }
 }
 
 #[uniffi::export]
@@ -441,6 +518,33 @@ impl NativeRecordingPreparation {
         })
     }
 
+    pub fn record_source_failure(
+        &self,
+        session_id: String,
+        source_kind: NativeMediaSourceKind,
+        reason: NativeSourceFailureReason,
+    ) -> Result<NativeSourceFailureEvidence, NativeStorageError> {
+        let evidence = self
+            .controller()?
+            .record_source_failure(
+                open_scribe_types::SessionId(session_id),
+                map_media_source_kind(source_kind),
+                map_source_failure_reason(reason),
+            )
+            .map_err(map_storage_error)?;
+        Ok(NativeSourceFailureEvidence {
+            session_id: evidence.session_id.0,
+            source_kind,
+            reason,
+            journal_durable: evidence.journal_durable,
+            source_failed: evidence.source_failed,
+            session_degraded: evidence.session_degraded,
+            session_interrupted: evidence.session_interrupted,
+            recording_continues: evidence.recording_continues,
+            last_journal_sequence: evidence.last_journal_sequence,
+        })
+    }
+
     pub fn recover_playable_sessions(
         &self,
     ) -> Result<Vec<NativeRecoveredPlayableSession>, NativeStorageError> {
@@ -452,9 +556,12 @@ impl NativeRecordingPreparation {
             .into_iter()
             .map(|recovered| NativeRecoveredPlayableSession {
                 session_id: recovered.session_id.0,
+                source_id: recovered.source_id,
+                track_id: recovered.track_id,
+                source_kind: map_native_media_source_kind(recovered.source_kind),
+                source_display_name: recovered.source_display_name,
                 segment_id: recovered.segment_id,
                 relative_path: recovered.relative_path,
-                absolute_path: recovered.absolute_path.to_string_lossy().into_owned(),
                 sample_count: recovered.sample_count,
                 duration_nanoseconds: recovered.duration_nanoseconds,
                 byte_length: recovered.byte_length,
@@ -465,6 +572,64 @@ impl NativeRecordingPreparation {
                 last_journal_sequence: recovered.last_journal_sequence,
             })
             .collect())
+    }
+
+    pub fn import_recoverable_caf(
+        &self,
+        title: String,
+        source_path: String,
+    ) -> Result<NativeImportedMediaEvidence, NativeStorageError> {
+        let evidence = self
+            .controller()?
+            .import_recoverable_caf(title, source_path.into())
+            .map_err(map_storage_error)?;
+        Ok(NativeImportedMediaEvidence {
+            session_id: evidence.session_id.0,
+            relative_path: evidence.relative_path,
+            byte_length: evidence.byte_length,
+            sample_count: evidence.sample_count,
+            digest_sha256: evidence.digest_sha256,
+            journal_version: evidence.journal_version,
+            last_journal_sequence: evidence.last_journal_sequence,
+            original_untouched: evidence.original_untouched,
+            ready_for_review: evidence.ready_for_review,
+        })
+    }
+
+    pub fn lease_imported_playback(
+        &self,
+        session_id: String,
+    ) -> Result<Arc<NativeImportedPlaybackLease>, NativeStorageError> {
+        let lease = self
+            .controller()?
+            .lease_imported_playback(open_scribe_types::SessionId(session_id))
+            .map_err(map_storage_error)?;
+        Ok(Arc::new(NativeImportedPlaybackLease {
+            lease,
+            strategy: NativePlaybackLeaseStrategy::ImportedSnapshot,
+        }))
+    }
+
+    pub fn lease_recovered_playback(
+        &self,
+        session_id: String,
+        source_id: String,
+        track_id: String,
+        segment_id: String,
+    ) -> Result<Arc<NativeImportedPlaybackLease>, NativeStorageError> {
+        let lease = self
+            .controller()?
+            .lease_recovered_playback(
+                open_scribe_types::SessionId(session_id),
+                source_id,
+                track_id,
+                segment_id,
+            )
+            .map_err(map_storage_error)?;
+        Ok(Arc::new(NativeImportedPlaybackLease {
+            lease,
+            strategy: NativePlaybackLeaseStrategy::RecoveredVerifiedChunks,
+        }))
     }
 
     pub fn runtime_library_snapshot(
@@ -542,6 +707,16 @@ const fn map_session_interruption_reason(
     }
 }
 
+const fn map_source_failure_reason(
+    reason: NativeSourceFailureReason,
+) -> open_scribe_core::SourceFailureReason {
+    match reason {
+        NativeSourceFailureReason::CaptureFailed => {
+            open_scribe_core::SourceFailureReason::CaptureFailed
+        }
+    }
+}
+
 fn map_runtime_session_snapshot(
     snapshot: open_scribe_core::RuntimeSessionSnapshot,
 ) -> NativeRuntimeSessionSnapshot {
@@ -581,6 +756,25 @@ fn map_runtime_session_snapshot(
                 lifecycle: source.lifecycle,
             })
             .collect(),
+        playable_media: snapshot
+            .playable_media
+            .map(|media| NativeRuntimePlayableMediaSnapshot {
+                source_display_name: media.source_display_name,
+                availability: match media.availability {
+                    open_scribe_core::RuntimePlayableMediaAvailability::Available => "available",
+                    open_scribe_core::RuntimePlayableMediaAvailability::Unavailable => {
+                        "unavailable"
+                    }
+                    open_scribe_core::RuntimePlayableMediaAvailability::Corrupt => "corrupt",
+                }
+                .to_owned(),
+                absolute_path: media
+                    .absolute_path
+                    .map(|path| path.to_string_lossy().into_owned()),
+                duration_nanoseconds: media.duration_nanoseconds,
+                sample_count: media.sample_count,
+                byte_length: media.byte_length,
+            }),
     }
 }
 
@@ -992,6 +1186,67 @@ mod tests {
     }
 
     #[test]
+    fn managed_caf_import_round_trips_through_uniffi_and_the_runtime_library() {
+        use std::fs::{self, File};
+        use std::io::Write;
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let base = std::env::temp_dir().join(format!(
+            "open-scribe-uniffi-import-{}-{unique}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&base).unwrap();
+        let source = base.join("customer-interview.caf");
+        let mut file = File::create(&source).unwrap();
+        file.write_all(b"caff\0\x01\0\0").unwrap();
+        file.write_all(b"desc").unwrap();
+        file.write_all(&32_i64.to_be_bytes()).unwrap();
+        file.write_all(&48_000_f64.to_bits().to_be_bytes()).unwrap();
+        file.write_all(b"lpcm").unwrap();
+        file.write_all(&2_u32.to_be_bytes()).unwrap();
+        file.write_all(&2_u32.to_be_bytes()).unwrap();
+        file.write_all(&1_u32.to_be_bytes()).unwrap();
+        file.write_all(&1_u32.to_be_bytes()).unwrap();
+        file.write_all(&16_u32.to_be_bytes()).unwrap();
+        file.write_all(b"data").unwrap();
+        file.write_all(&(-1_i64).to_be_bytes()).unwrap();
+        file.write_all(&0_u32.to_be_bytes()).unwrap();
+        file.write_all(&vec![0_u8; 960 * 2]).unwrap();
+        file.sync_all().unwrap();
+        drop(file);
+
+        let managed_root = base.join("Open Scribe");
+        let controller =
+            NativeRecordingPreparation::open(managed_root.to_string_lossy().into_owned()).unwrap();
+        let evidence = controller
+            .import_recoverable_caf(
+                "Customer interview".to_owned(),
+                source.to_string_lossy().into_owned(),
+            )
+            .unwrap();
+
+        assert!(evidence.original_untouched);
+        assert!(evidence.ready_for_review);
+        assert_eq!(evidence.sample_count, 960);
+        let snapshot = controller.runtime_library_snapshot().unwrap();
+        assert!(snapshot.current_session.is_none());
+        assert_eq!(snapshot.saved_sessions.len(), 1);
+        assert_eq!(snapshot.saved_sessions[0].session_id, evidence.session_id);
+        assert_eq!(snapshot.saved_sessions[0].title, "Customer interview");
+        let lease = controller
+            .lease_imported_playback(evidence.session_id)
+            .unwrap();
+        let playback_receipt = lease.playback_path();
+        assert!(playback_receipt.starts_with("v1;fd="));
+        assert!(playback_receipt.contains(";max_byte_length=268435456"));
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
     fn coarse_media_open_round_trips_without_recording() {
         use std::fs::{self, OpenOptions};
         use std::io::Write;
@@ -1086,6 +1341,114 @@ mod tests {
         assert!(interruption.journal_durable);
         assert!(interruption.session_interrupted);
         assert!(!interruption.recording_started);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn recovered_playable_identity_round_trips_through_uniffi() {
+        use std::fs::{self, OpenOptions};
+        use std::io::Write;
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "open-scribe-uniffi-recovery-{}-{unique}",
+            std::process::id()
+        ));
+        let controller =
+            NativeRecordingPreparation::open(root.to_string_lossy().into_owned()).unwrap();
+        let prepared = controller
+            .prepare_session("Recovered identity".to_owned())
+            .unwrap();
+        let authorization = controller
+            .authorize_initial_media(
+                prepared.session_id.clone(),
+                NativeMediaSourceKind::Microphone,
+                "Synthetic microphone".to_owned(),
+            )
+            .unwrap();
+        let mut file = OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&authorization.absolute_path)
+            .unwrap();
+        file.write_all(b"caff\0\x01\0\0").unwrap();
+        file.write_all(b"desc").unwrap();
+        file.write_all(&32_i64.to_be_bytes()).unwrap();
+        file.write_all(&48_000_f64.to_bits().to_be_bytes()).unwrap();
+        file.write_all(b"lpcm").unwrap();
+        file.write_all(&2_u32.to_be_bytes()).unwrap();
+        file.write_all(&2_u32.to_be_bytes()).unwrap();
+        file.write_all(&1_u32.to_be_bytes()).unwrap();
+        file.write_all(&1_u32.to_be_bytes()).unwrap();
+        file.write_all(&16_u32.to_be_bytes()).unwrap();
+        file.write_all(b"data").unwrap();
+        file.write_all(&(-1_i64).to_be_bytes()).unwrap();
+        file.write_all(&0_u32.to_be_bytes()).unwrap();
+        file.sync_all().unwrap();
+        let initial_byte_length = file.metadata().unwrap().len();
+
+        controller
+            .accept_media_open(NativeMediaOpenReceipt {
+                session_id: authorization.session_id.clone(),
+                track_id: authorization.track_id.clone(),
+                segment_id: authorization.segment_id.clone(),
+                open_token: authorization.open_token.clone(),
+                writer_generation: authorization.writer_generation,
+                relative_path: authorization.relative_path.clone(),
+                initial_byte_length,
+            })
+            .unwrap();
+        file.write_all(&vec![0_u8; 960 * 2]).unwrap();
+        file.sync_all().unwrap();
+        controller
+            .accept_first_sample(NativeFirstSampleReceipt {
+                session_id: authorization.session_id.clone(),
+                track_id: authorization.track_id.clone(),
+                segment_id: authorization.segment_id.clone(),
+                open_token: authorization.open_token.clone(),
+                writer_generation: authorization.writer_generation,
+                relative_path: authorization.relative_path.clone(),
+                first_sample_host_time: 42_000,
+                first_sample_frame_count: 960,
+                observed_byte_length: file.metadata().unwrap().len(),
+            })
+            .unwrap();
+        controller
+            .confirm_recording(authorization.session_id.clone())
+            .unwrap();
+        controller
+            .interrupt_session(
+                authorization.session_id.clone(),
+                NativeSessionInterruptionReason::CaptureFailed,
+            )
+            .unwrap();
+        drop(file);
+
+        let recovered = controller.recover_playable_sessions().unwrap();
+        assert_eq!(recovered.len(), 1);
+        assert_eq!(recovered[0].session_id, authorization.session_id);
+        assert_eq!(recovered[0].source_id, authorization.source_id);
+        assert_eq!(recovered[0].track_id, authorization.track_id);
+        assert_eq!(recovered[0].segment_id, authorization.segment_id);
+        assert_eq!(recovered[0].source_kind, NativeMediaSourceKind::Microphone);
+        assert_eq!(recovered[0].source_display_name, "Synthetic microphone");
+        assert_eq!(recovered[0].sample_count, 960);
+        let lease = controller
+            .lease_recovered_playback(
+                authorization.session_id,
+                authorization.source_id,
+                authorization.track_id,
+                authorization.segment_id,
+            )
+            .unwrap();
+        let receipt = lease.playback_path();
+        assert!(receipt.starts_with("v2;fd="));
+        assert!(receipt.contains(";chunk_byte_length=65536"));
+        drop(lease);
         fs::remove_dir_all(root).unwrap();
     }
 }

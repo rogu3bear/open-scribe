@@ -6,6 +6,8 @@ Open Scribe tests the evidence chain in order: source/configuration, determinist
 
 Characterization tests pin observed behavior before correction. Safety-critical invariants—durable media before capture claims, audio survival independent of transcription, required-source truth, and recovery—need tests at the layer that owns the claim plus runtime evidence on an exact artifact.
 
+Repository and source tests currently cover managed local CAF import, deterministic deduplication and rejection, imported-conversation projection, validated-byte playback leasing, and shared recovered/imported playback failures. Those tests do not prove behavior with real user-selected files, broader media formats, large files, long-running sessions, source-loss recovery, an installed or signed artifact, or public delivery.
+
 ## Safety Net Map
 
 | Surface | Existing Safety Net | Important Gap | Priority | Owner |
@@ -18,7 +20,7 @@ Characterization tests pin observed behavior before correction. Safety-critical 
 | Single-instance guard | Exact lock ownership unit test | AppDelegate conflates an existing instance with lock-file I/O failure | P1 | Native shell owner |
 | Menu-bar UI | Build and scene-launch fixture | No UI automation for source selection, durable state transitions, or error recovery | P1 | UX/QA owner |
 | System/application audio | Founding requirements only | No selected-source implementation or proof | P0 | Platform capture owner |
-| Playback/import/transcription/diarization | Recovered microphone playback only | Import, transcription, diarization, and general library playback are not implemented | P1 after recorder | Conversation-loop owner |
+| Playback/import/transcription/diarization | Managed local CAF import, deterministic deduplication/rejection, imported-conversation projection, validated-byte playback leasing, and shared recovered/imported playback failure tests | No real-user-file or broader-format runtime proof; large-file, long-session, transcription, diarization, installed/signed-artifact, source-loss, and public-delivery behavior remain unproved | P1 after recorder | Conversation-loop owner |
 | Release | Scaffold/build checks | No signed, notarized, installed, upgrade, rollback, or public-source binding | P1 before release | Release owner |
 
 ## Characterization Backlog
@@ -30,7 +32,8 @@ Characterization tests pin observed behavior before correction. Safety-critical 
 - [x] **P0 — Durable-state owner:** prove forced-process termination, relaunch discovery, playable recovery, persistent playback, and idempotent completion on an exact artifact.
 - [ ] **P0 — Platform capture owner:** characterize required-source loss independently for microphone and the selected system-audio mode.
 - [ ] **P1 — Conversation-loop owner:** characterize transcription retry/replacement while the sealed audio remains unchanged.
-- [ ] **P1 — Library owner:** characterize import deduplication, unsupported media, large files, and partial metadata.
+- [x] **P1 — Library owner:** characterize managed local CAF import deduplication and unsupported or malformed media rejection.
+- [ ] **P1 — Library owner:** characterize large files and partial metadata with real user-selected sources and broader formats.
 
 ## CI Gates
 

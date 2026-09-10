@@ -7,10 +7,10 @@ struct CompactLiveView: View {
   @MainActor
   init(
     store: RuntimeLibraryStore,
-    liveRecording: LiveMicrophoneRecordingController? = nil
+    liveRecording: LiveMicrophoneRecordingController
   ) {
     self.store = store
-    self.liveRecording = liveRecording ?? LiveMicrophoneRecordingController(managedRoot: nil)
+    self.liveRecording = liveRecording
   }
 
   var body: some View {
@@ -37,6 +37,7 @@ struct CompactLiveView: View {
         VStack(alignment: .leading, spacing: 10) {
           Text("Sources")
             .font(.headline)
+            .accessibilityAddTraits(.isHeader)
           ForEach(current.sources, id: \.kind) { source in
             HStack(spacing: 10) {
               Image(systemName: source.symbolName)
@@ -57,16 +58,10 @@ struct CompactLiveView: View {
             .accessibilityLabel("Recording needs attention. \(interruption)")
         }
 
-        GroupBox("Durable state") {
-          Grid(alignment: .leading, horizontalSpacing: 18, verticalSpacing: 7) {
-            EvidenceRow(label: "Lifecycle", value: current.lifecycle)
-            EvidenceRow(label: "Health", value: current.health)
-            EvidenceRow(label: "Journal durable", value: yesNo(current.journalDurable))
-            EvidenceRow(label: "Media open", value: yesNo(current.mediaFilesOpen))
-            EvidenceRow(label: "Recovery", value: current.recoveryText)
-          }
-          .frame(maxWidth: .infinity, alignment: .leading)
-          .padding(4)
+        if current.isRecording {
+          Label("Audio is being saved locally as you record.", systemImage: "lock.shield")
+            .font(.callout)
+            .foregroundStyle(.secondary)
         }
       } else {
         Text(
@@ -76,43 +71,11 @@ struct CompactLiveView: View {
         .fixedSize(horizontal: false, vertical: true)
       }
 
-      if let error = liveRecording.errorMessage ?? store.errorMessage {
-        Text(error)
-          .font(.callout)
-          .foregroundStyle(.red)
-          .accessibilityLabel("Recording or library error: \(error)")
-      }
-
-      HStack {
-        if liveRecording.canStart {
-          Button("Record Microphone + System Audio") {
-            Task {
-              await liveRecording.start()
-              store.refresh()
-            }
-          }
-          .keyboardShortcut("r", modifiers: [.command, .shift])
-        }
-        if liveRecording.canStop {
-          Button("Stop and Save") {
-            Task {
-              await liveRecording.stop()
-              store.refresh()
-            }
-          }
-          .keyboardShortcut("s", modifiers: [.command, .shift])
-        }
-        Spacer()
-        Button("Refresh Library") {
-          store.refresh()
-        }
-      }
     }
     .padding(24)
     .frame(minWidth: 500, minHeight: 430, alignment: .topLeading)
     .onAppear {
-      store.refresh()
-      AppTelemetry.runtimeSceneAppeared("primary", session: store.currentSession)
+      AppTelemetry.runtimeSceneAppeared("live-session", session: store.currentSession)
     }
   }
 
@@ -150,22 +113,5 @@ struct CompactLiveView: View {
     guard let current = store.currentSession else { return statusText }
     let sources = current.sources.map { "\($0.name): \($0.stateText)" }.joined(separator: ", ")
     return "\(current.statusText), \(current.timerText). \(sources)."
-  }
-
-  private func yesNo(_ value: Bool) -> String {
-    value ? "Yes" : "No"
-  }
-}
-
-private struct EvidenceRow: View {
-  let label: String
-  let value: String
-
-  var body: some View {
-    GridRow {
-      Text(label).foregroundStyle(.secondary)
-      Text(value.replacingOccurrences(of: "_", with: " ").capitalized)
-        .textSelection(.enabled)
-    }
   }
 }

@@ -10,26 +10,49 @@ trap 'rm -f "$temporary_path"' EXIT
 cd "$repo_root"
 metadata_json="$(cargo metadata --locked --format-version 1)"
 lock_sha="$(shasum -a 256 Cargo.lock | awk '{print $1}')"
+lock_packages_json="$(awk '
+  function emit() {
+    if (name != "" && version != "") {
+      printf "%s\t%s\t%s\n", name, version, source
+    }
+  }
+  /^\[\[package\]\]$/ { emit(); name = ""; version = ""; source = ""; next }
+  /^name = "/ { name = $0; sub(/^name = "/, "", name); sub(/"$/, "", name); next }
+  /^version = "/ { version = $0; sub(/^version = "/, "", version); sub(/"$/, "", version); next }
+  /^source = "/ { source = $0; sub(/^source = "/, "", source); sub(/"$/, "", source); next }
+  END { emit() }
+' Cargo.lock | jq -Rn '[inputs | split("\t") | {name: .[0], version: .[1], source: .[2]}]')"
 
 jq -S \
 	--arg lock_sha "$lock_sha" \
+	--argjson locked "$lock_packages_json" \
 	'{
       schema: "open-scribe.components/v1",
       status: "open",
       cargo_lock_sha256: $lock_sha,
-      scope: "complete Cargo dependency graph; shipped-target and license-obligation review remains pending",
+      scope: "complete Cargo.lock package set; shipped-target and license-obligation review remains pending",
       components: [
-        .packages[] |
+        $locked[] as $locked_package |
+        ([.packages[] | select(
+          .name == $locked_package.name
+          and .version == $locked_package.version
+          and ((.source // "") == $locked_package.source)
+        )] | first) as $metadata_package |
+        (if $locked_package.source == "" then
+          ("workspace:" + $locked_package.name)
+        else $locked_package.source end) as $source_identity |
         {
-          id: ("cargo:" + .name + "@" + .version),
-          kind: (if .source == null then "workspace-rust" else "rust" end),
-          source: (if .source == null then ("workspace:" + .name) else .source end),
-          license: (.license // "UNKNOWN"),
-          obligation: (if .source == null then "MIT repository license" else "Pending review" end),
+          id: ("cargo:" + $locked_package.name + "@" + $locked_package.version + "|" + $source_identity),
+          kind: (if $locked_package.source == "" then "workspace-rust" else "rust" end),
+          source: $source_identity,
+          license: ($metadata_package.license // "UNKNOWN"),
+          obligation: (if $locked_package.source == "" then
+            "MIT repository license"
+          else "Pending review" end),
           included_targets: [],
           binary_path: null,
           sha256: null,
-          review_state: (if .source == null then "Admitted" else "Pending" end)
+          review_state: (if $locked_package.source == "" then "Admitted" else "Pending" end)
         }
       ] | sort_by(.id)
     }' <<<"$metadata_json" >"$temporary_path"

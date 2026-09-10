@@ -4,18 +4,21 @@
 //! durable session/media-open preparation. It performs no capture, playback,
 //! model, provider, or network work and never starts Recording.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 pub use open_scribe_domain::{
     Command, Fixture, Presentation, SessionSnapshot, TimerBehavior, TransitionError, announcement,
 };
 pub use open_scribe_store::{
-    AuthorizeMediaOpenRequest, FirstSampleEvidence, FirstSampleReceipt, InterruptSessionRequest,
-    MediaOpenAuthorization, MediaOpenEvidence, MediaOpenReceipt, MediaSourceKind,
-    PrepareSessionRequest, PreparedSessionReceipt, RecordingStartedEvidence,
-    RecoveredPlayableSession, RequiredSourcePlanEvidence, RuntimeLibrarySnapshot,
-    RuntimeSessionSnapshot, RuntimeSourceSnapshot, SealSegmentReceipt, SealedSegmentEvidence,
-    SessionInterruptionEvidence, SessionInterruptionReason, SessionOrigin, StoreError,
+    AuthorizeMediaOpenRequest, FirstSampleEvidence, FirstSampleReceipt, ImportMediaRequest,
+    ImportedMediaEvidence, ImportedPlaybackLease, InterruptSessionRequest, MediaOpenAuthorization,
+    MediaOpenEvidence, MediaOpenReceipt, MediaSourceKind, PrepareSessionRequest,
+    PreparedSessionReceipt, RecordingStartedEvidence, RecoveredPlayableSession,
+    RequiredSourcePlanEvidence, RuntimeLibrarySnapshot, RuntimePlayableMediaAvailability,
+    RuntimePlayableMediaSnapshot, RuntimeSessionSnapshot, RuntimeSourceSnapshot,
+    SealSegmentReceipt, SealedSegmentEvidence, SessionInterruptionEvidence,
+    SessionInterruptionReason, SessionOrigin, SourceFailureEvidence, SourceFailureReason,
+    SourceFailureRequest, StoreError,
 };
 
 pub struct CoarseMediaOpenReceipt {
@@ -169,10 +172,50 @@ impl RecordingPreparationController {
             .interrupt_session(InterruptSessionRequest { session_id, reason })
     }
 
+    pub fn record_source_failure(
+        &mut self,
+        session_id: open_scribe_types::SessionId,
+        source_kind: MediaSourceKind,
+        reason: SourceFailureReason,
+    ) -> Result<SourceFailureEvidence, StoreError> {
+        self.store.record_source_failure(SourceFailureRequest {
+            session_id,
+            source_kind,
+            reason,
+        })
+    }
+
     pub fn recover_playable_sessions(
         &mut self,
     ) -> Result<Vec<RecoveredPlayableSession>, StoreError> {
         self.store.recover_playable_sessions()
+    }
+
+    pub fn import_recoverable_caf(
+        &mut self,
+        title: String,
+        source_path: PathBuf,
+    ) -> Result<ImportedMediaEvidence, StoreError> {
+        self.store
+            .import_recoverable_caf(ImportMediaRequest { title, source_path })
+    }
+
+    pub fn lease_imported_playback(
+        &self,
+        session_id: open_scribe_types::SessionId,
+    ) -> Result<ImportedPlaybackLease, StoreError> {
+        self.store.lease_imported_playback(&session_id)
+    }
+
+    pub fn lease_recovered_playback(
+        &self,
+        session_id: open_scribe_types::SessionId,
+        source_id: String,
+        track_id: String,
+        segment_id: String,
+    ) -> Result<ImportedPlaybackLease, StoreError> {
+        self.store
+            .lease_recovered_playback(&session_id, &source_id, &track_id, &segment_id)
     }
 
     pub fn runtime_library_snapshot(&self) -> Result<RuntimeLibrarySnapshot, StoreError> {
@@ -230,6 +273,11 @@ pub const fn status_snapshot() -> CoreStatus {
     }
 }
 
+/// Rust-owned compile-time capability registry embedded into native release
+/// artifacts. Preparation compares these checked bytes with the public claim
+/// manifest without compiling or executing code.
+pub const RUNTIME_CAPABILITY_MANIFEST_JSON: &str = include_str!("../runtime-capabilities.v1.json");
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -263,5 +311,27 @@ mod tests {
         assert_eq!(status.persistence, "Durable local audio and recovery");
         assert_eq!(status.capture, "Development microphone + system audio");
         assert_eq!(status.intelligence, "Not implemented");
+    }
+
+    #[test]
+    fn runtime_capability_registry_is_unique_and_fail_closed() {
+        let manifest: serde_json::Value =
+            serde_json::from_str(RUNTIME_CAPABILITY_MANIFEST_JSON).unwrap();
+        let capabilities = manifest["capabilities"].as_array().unwrap();
+        let mut ids = capabilities
+            .iter()
+            .map(|capability| capability["id"].as_str().unwrap())
+            .collect::<Vec<_>>();
+        ids.sort_unstable();
+        ids.dedup();
+
+        assert_eq!(ids.len(), capabilities.len());
+        assert_eq!(manifest["schema"], "open-scribe.capabilities/v1");
+        assert!(capabilities.iter().any(|capability| {
+            capability["id"] == "local-transcription" && capability["maturity"] == "Unavailable"
+        }));
+        assert!(capabilities.iter().any(|capability| {
+            capability["id"] == "optional-intelligence" && capability["maturity"] == "Unavailable"
+        }));
     }
 }

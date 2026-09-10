@@ -1,6 +1,26 @@
 import Foundation
 import OSLog
 
+struct CaptureSourceHealthTelemetryRecord: Equatable, Sendable {
+  let observation: MicrophoneSourceHealthObservation
+  let rustSourceState: String
+  let visibleState: String
+
+  var privacySafeMessage: String {
+    [
+      "source=microphone",
+      "generation=\(observation.identity.writerGeneration)",
+      "sequence=\(observation.sequence)",
+      "event=\(observation.event.rawValue)",
+      "callbacks=\(observation.callbackCount)",
+      "written_frames=\(observation.successfullyWrittenFrameCount)",
+      "last_progress_uptime_ns=\(observation.lastProgressMonotonicNanoseconds)",
+      "rust_state=\(rustSourceState)",
+      "visible_state=\(visibleState)",
+    ].joined(separator: " ")
+  }
+}
+
 enum AppTelemetry {
   private static let subsystem = Bundle.main.bundleIdentifier ?? "app.open-scribe.dev"
   private static let scenes = Logger(subsystem: subsystem, category: "Scenes")
@@ -33,6 +53,10 @@ enum AppTelemetry {
 
   static func captureProof(stage: String, detail: String) {
     capture.info("stage=\(stage, privacy: .public) detail=\(detail, privacy: .public)")
+  }
+
+  static func captureSourceHealth(_ record: CaptureSourceHealthTelemetryRecord) {
+    capture.info("\(record.privacySafeMessage, privacy: .public)")
   }
 
   static func recoveryProof(stage: String, detail: String) {

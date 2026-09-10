@@ -23,11 +23,13 @@ private final class RecordingPreparationFake: NativeRecordingPreparation, @unche
   private(set) var sealedSegmentCount = 0
   private(set) var recordingConfirmCount = 0
   private(set) var interruptionReasons: [NativeSessionInterruptionReason] = []
+  private(set) var failedSources: [NativeMediaSourceKind] = []
   private var authorizedSourceCount = 0
   var authorizeError: Error?
   var firstSampleDurable = true
   var interruptionError: Error?
   var interruptionEvidenceIsDurable = true
+  var sourceFailureEvidenceIsDurable = true
   var sealError: Error?
 
   init(requiredSources: [NativeMediaSourceKind] = [.microphone]) {
@@ -162,6 +164,25 @@ private final class RecordingPreparationFake: NativeRecordingPreparation, @unche
       lastJournalSequence: 5
     )
   }
+
+  override func recordSourceFailure(
+    sessionId: String,
+    sourceKind: NativeMediaSourceKind,
+    reason: NativeSourceFailureReason
+  ) throws -> NativeSourceFailureEvidence {
+    failedSources.append(sourceKind)
+    return NativeSourceFailureEvidence(
+      sessionId: sessionId,
+      sourceKind: sourceKind,
+      reason: reason,
+      journalDurable: sourceFailureEvidenceIsDurable,
+      sourceFailed: sourceFailureEvidenceIsDurable,
+      sessionDegraded: sourceFailureEvidenceIsDurable,
+      sessionInterrupted: false,
+      recordingContinues: sourceFailureEvidenceIsDurable,
+      lastJournalSequence: 7
+    )
+  }
 }
 
 private final class SystemAudioCaptureFake: SystemAudioCapturing, @unchecked Sendable {
@@ -170,6 +191,7 @@ private final class SystemAudioCaptureFake: SystemAudioCapturing, @unchecked Sen
   var lastHostTime: UInt64? = 53_000
   var startError: Error?
   var stopError: Error?
+  var stopGate: SystemAudioStopGate?
   private(set) var stopCount = 0
 
   func start(
@@ -185,6 +207,9 @@ private final class SystemAudioCaptureFake: SystemAudioCapturing, @unchecked Sen
 
   func stop() async throws -> UInt64? {
     stopCount += 1
+    if let stopGate {
+      await stopGate.wait()
+    }
     if let stopError {
       throw stopError
     }
@@ -197,6 +222,27 @@ private final class SystemAudioCaptureFake: SystemAudioCapturing, @unchecked Sen
 
   func emitFailure(_ error: SystemAudioCaptureAdapterError) {
     failureHandler?(error)
+  }
+}
+
+private actor SystemAudioStopGate {
+  nonisolated let entered = XCTestExpectation(description: "System audio stop suspended")
+  private var waiters: [CheckedContinuation<Void, Never>] = []
+  private var released = false
+
+  func wait() async {
+    guard !released else { return }
+    await withCheckedContinuation { continuation in
+      waiters.append(continuation)
+      if waiters.count == 1 { entered.fulfill() }
+    }
+  }
+
+  func release() {
+    released = true
+    let pending = waiters
+    waiters = []
+    pending.forEach { $0.resume() }
   }
 }
 
@@ -256,6 +302,7 @@ private final class SegmentWriterFake: ManagedSegmentWriting, @unchecked Sendabl
 
 private final class MicrophoneCaptureFake: MicrophoneCapturing, @unchecked Sendable {
   private var firstSampleHandler: MicrophoneFirstSampleHandler?
+  private var healthHandler: MicrophoneHealthHandler?
   private var failureHandler: MicrophoneFailureHandler?
   var lastHostTime: UInt64? = 52_000
   var startError: Error?
@@ -263,12 +310,14 @@ private final class MicrophoneCaptureFake: MicrophoneCapturing, @unchecked Senda
 
   func start(
     onFirstSample: @escaping MicrophoneFirstSampleHandler,
+    onObservation: @escaping MicrophoneHealthHandler,
     onFailure: @escaping MicrophoneFailureHandler
   ) throws {
     if let startError {
       throw startError
     }
     firstSampleHandler = onFirstSample
+    healthHandler = onObservation
     failureHandler = onFailure
   }
 
@@ -283,6 +332,10 @@ private final class MicrophoneCaptureFake: MicrophoneCapturing, @unchecked Senda
 
   func emitFailure(_ error: MicrophoneCaptureAdapterError) {
     failureHandler?(error)
+  }
+
+  func emitObservation(_ observation: MicrophoneSourceHealthObservation) {
+    healthHandler?(observation)
   }
 }
 
@@ -305,6 +358,21 @@ private final class InvocationCounter: @unchecked Sendable {
 
   var value: Int {
     lock.withLock { count }
+  }
+}
+
+private final class CaptureHealthTelemetryBox: @unchecked Sendable {
+  private let lock = NSLock()
+  private var records: [CaptureSourceHealthTelemetryRecord] = []
+
+  func append(_ record: CaptureSourceHealthTelemetryRecord) {
+    lock.withLock {
+      records.append(record)
+    }
+  }
+
+  func snapshot() -> [CaptureSourceHealthTelemetryRecord] {
+    lock.withLock { records }
   }
 }
 
@@ -393,20 +461,222 @@ final class LiveMicrophoneRecordingControllerTests: XCTestCase {
     XCTAssertEqual(systemAudio.stopCount, 1)
   }
 
-  func testSystemAudioFailureInterruptsTheSharedSessionAndStopsBothSources() async {
+  func testSystemAudioFailureAfterRecordingSealsOnlyThatSourceAndKeepsMicrophoneCapturing()
+    async throws
+  {
     let preparation = RecordingPreparationFake(requiredSources: [.microphone, .systemAudio])
+    let writers = SegmentWriterMap()
     let microphone = MicrophoneCaptureFake()
     let systemAudio = SystemAudioCaptureFake()
     let controller = LiveMicrophoneRecordingController(
       permission: AuthorizedMicrophonePermission(),
       preparationFactory: { preparation },
-      writerFactory: { SegmentWriterFake(authorization: $0) },
+      writerFactory: { authorization in
+        let writer = SegmentWriterFake(authorization: authorization)
+        writers.store(writer)
+        return writer
+      },
       captureFactory: { _ in microphone },
       requiredSources: [.microphone, .systemAudio],
       systemCaptureFactory: { _ in systemAudio }
     )
 
     await controller.start()
+    let microphoneWriter = try XCTUnwrap(writers.writer(for: .microphone))
+    let systemWriter = try XCTUnwrap(writers.writer(for: .systemAudio))
+    microphone.emitFirstSample(
+      try microphoneWriter.firstSampleReceipt(hostTime: 42_000, frameCount: 480)
+    )
+    systemAudio.emitFirstSample(
+      try systemWriter.firstSampleReceipt(hostTime: 43_000, frameCount: 480)
+    )
+    for _ in 0..<10 where controller.phase != .capturing {
+      await Task.yield()
+    }
+    XCTAssertEqual(controller.phase, .capturing)
+
+    systemAudio.emitFailure(.writerFailed)
+    for _ in 0..<10 where preparation.failedSources.isEmpty {
+      await Task.yield()
+    }
+
+    XCTAssertEqual(controller.phase, .capturing)
+    XCTAssertEqual(controller.failureCode, "system-audio-writerFailed")
+    XCTAssertEqual(preparation.failedSources, [.systemAudio])
+    XCTAssertTrue(preparation.interruptionReasons.isEmpty)
+    XCTAssertEqual(preparation.sealedSegmentCount, 1)
+    XCTAssertEqual(microphone.stopCount, 0)
+    XCTAssertEqual(systemAudio.stopCount, 1)
+
+    systemAudio.emitFailure(.writerFailed)
+    for _ in 0..<10 {
+      await Task.yield()
+    }
+
+    XCTAssertEqual(controller.phase, .capturing)
+    XCTAssertEqual(preparation.failedSources, [.systemAudio])
+    XCTAssertTrue(preparation.interruptionReasons.isEmpty)
+    XCTAssertEqual(preparation.sealedSegmentCount, 1)
+    XCTAssertEqual(microphone.stopCount, 0)
+    XCTAssertEqual(systemAudio.stopCount, 1)
+
+    await controller.stop()
+
+    XCTAssertEqual(controller.phase, .saved)
+    XCTAssertEqual(preparation.sealedSegmentCount, 2)
+    XCTAssertEqual(microphone.stopCount, 1)
+    XCTAssertEqual(systemAudio.stopCount, 1)
+    XCTAssertEqual(controller.savedPaths.count, 2)
+  }
+
+  func testStopWaitsForSuspendedSystemAudioRetirement() async throws {
+    try await checkSuspendedSourceRetirement(requestStop: true)
+  }
+
+  func testSecondSourceFailureWaitsForSuspendedSystemAudioRetirement() async throws {
+    try await checkSuspendedSourceRetirement(requestStop: false)
+  }
+
+  private func checkSuspendedSourceRetirement(requestStop: Bool) async throws {
+    let preparation = RecordingPreparationFake(requiredSources: [.microphone, .systemAudio])
+    let writers = SegmentWriterMap()
+    let microphone = MicrophoneCaptureFake()
+    let systemAudio = SystemAudioCaptureFake()
+    let gate = SystemAudioStopGate()
+    systemAudio.stopGate = gate
+    let controller = LiveMicrophoneRecordingController(
+      permission: AuthorizedMicrophonePermission(),
+      preparationFactory: { preparation },
+      writerFactory: { authorization in
+        let writer = SegmentWriterFake(authorization: authorization)
+        writers.store(writer)
+        return writer
+      },
+      captureFactory: { _ in microphone },
+      requiredSources: [.microphone, .systemAudio],
+      systemCaptureFactory: { _ in systemAudio }
+    )
+    await controller.start()
+    let microphoneWriter = try XCTUnwrap(writers.writer(for: .microphone))
+    let systemWriter = try XCTUnwrap(writers.writer(for: .systemAudio))
+    microphone.emitFirstSample(
+      try microphoneWriter.firstSampleReceipt(hostTime: 42_000, frameCount: 480)
+    )
+    systemAudio.emitFirstSample(
+      try systemWriter.firstSampleReceipt(hostTime: 43_000, frameCount: 480)
+    )
+    for _ in 0..<100 where controller.phase != .capturing {
+      await Task.yield()
+    }
+    XCTAssertEqual(controller.phase, .capturing)
+    systemAudio.emitFailure(.writerFailed)
+    await fulfillment(of: [gate.entered], timeout: 3)
+
+    let stopTask: Task<Void, Never>?
+    if requestStop {
+      stopTask = Task { @MainActor in await controller.stop() }
+    } else {
+      stopTask = nil
+      microphone.emitFailure(.writerFailed)
+    }
+    for _ in 0..<20 { await Task.yield() }
+    XCTAssertEqual(systemAudio.stopCount, 1)
+    XCTAssertEqual(microphone.stopCount, 0)
+    XCTAssertEqual(preparation.sealedSegmentCount, 0)
+
+    await gate.release()
+    await stopTask?.value
+    for _ in 0..<100 where controller.phase == .capturing || controller.phase == .stopping {
+      await Task.yield()
+    }
+    XCTAssertEqual(controller.phase, requestStop ? .saved : .failed)
+    XCTAssertEqual(systemAudio.stopCount, 1)
+    XCTAssertEqual(microphone.stopCount, 1)
+    XCTAssertEqual(preparation.failedSources, [.systemAudio])
+    XCTAssertEqual(preparation.sealedSegmentCount, requestStop ? 2 : 1)
+    XCTAssertEqual(preparation.interruptionReasons, requestStop ? [] : [.captureFailed])
+    XCTAssertTrue(controller.canStart)
+  }
+
+  func testFailureOfLastContinuingSourceInterruptsTheDegradedSession() async throws {
+    let preparation = RecordingPreparationFake(requiredSources: [.microphone, .systemAudio])
+    let writers = SegmentWriterMap()
+    let microphone = MicrophoneCaptureFake()
+    let systemAudio = SystemAudioCaptureFake()
+    let controller = LiveMicrophoneRecordingController(
+      permission: AuthorizedMicrophonePermission(),
+      preparationFactory: { preparation },
+      writerFactory: { authorization in
+        let writer = SegmentWriterFake(authorization: authorization)
+        writers.store(writer)
+        return writer
+      },
+      captureFactory: { _ in microphone },
+      requiredSources: [.microphone, .systemAudio],
+      systemCaptureFactory: { _ in systemAudio }
+    )
+
+    await controller.start()
+    let microphoneWriter = try XCTUnwrap(writers.writer(for: .microphone))
+    let systemWriter = try XCTUnwrap(writers.writer(for: .systemAudio))
+    microphone.emitFirstSample(
+      try microphoneWriter.firstSampleReceipt(hostTime: 42_000, frameCount: 480)
+    )
+    systemAudio.emitFirstSample(
+      try systemWriter.firstSampleReceipt(hostTime: 43_000, frameCount: 480)
+    )
+    for _ in 0..<10 where controller.phase != .capturing {
+      await Task.yield()
+    }
+
+    systemAudio.emitFailure(.writerFailed)
+    for _ in 0..<10 where preparation.failedSources.isEmpty {
+      await Task.yield()
+    }
+    microphone.emitFailure(.writerFailed)
+    for _ in 0..<10 where controller.phase != .failed {
+      await Task.yield()
+    }
+
+    XCTAssertEqual(controller.phase, .failed)
+    XCTAssertEqual(preparation.failedSources, [.systemAudio])
+    XCTAssertEqual(preparation.interruptionReasons, [.captureFailed])
+    XCTAssertEqual(microphone.stopCount, 1)
+    XCTAssertEqual(systemAudio.stopCount, 1)
+  }
+
+  func testInvalidSourceFailureEvidenceFallsBackToFullInterruption() async throws {
+    let preparation = RecordingPreparationFake(requiredSources: [.microphone, .systemAudio])
+    preparation.sourceFailureEvidenceIsDurable = false
+    let writers = SegmentWriterMap()
+    let microphone = MicrophoneCaptureFake()
+    let systemAudio = SystemAudioCaptureFake()
+    let controller = LiveMicrophoneRecordingController(
+      permission: AuthorizedMicrophonePermission(),
+      preparationFactory: { preparation },
+      writerFactory: { authorization in
+        let writer = SegmentWriterFake(authorization: authorization)
+        writers.store(writer)
+        return writer
+      },
+      captureFactory: { _ in microphone },
+      requiredSources: [.microphone, .systemAudio],
+      systemCaptureFactory: { _ in systemAudio }
+    )
+
+    await controller.start()
+    let microphoneWriter = try XCTUnwrap(writers.writer(for: .microphone))
+    let systemWriter = try XCTUnwrap(writers.writer(for: .systemAudio))
+    microphone.emitFirstSample(
+      try microphoneWriter.firstSampleReceipt(hostTime: 42_000, frameCount: 480)
+    )
+    systemAudio.emitFirstSample(
+      try systemWriter.firstSampleReceipt(hostTime: 43_000, frameCount: 480)
+    )
+    for _ in 0..<10 where controller.phase != .capturing {
+      await Task.yield()
+    }
+
     systemAudio.emitFailure(.writerFailed)
     for _ in 0..<10 where controller.phase != .failed {
       await Task.yield()
@@ -414,6 +684,10 @@ final class LiveMicrophoneRecordingControllerTests: XCTestCase {
 
     XCTAssertEqual(controller.phase, .failed)
     XCTAssertEqual(controller.failureCode, "system-audio-writerFailed")
+    XCTAssertEqual(
+      controller.errorMessage,
+      "The failed source was sealed, but continued recording could not be confirmed. Rust did not confirm degraded source-failure evidence."
+    )
     XCTAssertEqual(preparation.interruptionReasons, [.captureFailed])
     XCTAssertEqual(microphone.stopCount, 1)
     XCTAssertEqual(systemAudio.stopCount, 1)
@@ -517,6 +791,223 @@ final class LiveMicrophoneRecordingControllerTests: XCTestCase {
     await controller.stop()
     XCTAssertEqual(controller.phase, .saved)
     XCTAssertTrue(preparation.sealed)
+  }
+
+  func testCurrentGenerationRouteInterruptionDurablyFailsOnlyTheMicrophone() async throws {
+    let preparation = RecordingPreparationFake(requiredSources: [.microphone, .systemAudio])
+    let writers = SegmentWriterMap()
+    let microphone = MicrophoneCaptureFake()
+    let systemAudio = SystemAudioCaptureFake()
+    let telemetry = CaptureHealthTelemetryBox()
+    let controller = LiveMicrophoneRecordingController(
+      permission: AuthorizedMicrophonePermission(),
+      preparationFactory: { preparation },
+      writerFactory: { authorization in
+        let writer = SegmentWriterFake(authorization: authorization)
+        writers.store(writer)
+        return writer
+      },
+      captureFactory: { _ in microphone },
+      requiredSources: [.microphone, .systemAudio],
+      systemCaptureFactory: { _ in systemAudio },
+      captureHealthTelemetry: { telemetry.append($0) }
+    )
+    await controller.start()
+    let microphoneWriter = try XCTUnwrap(writers.writer(for: .microphone))
+    let systemWriter = try XCTUnwrap(writers.writer(for: .systemAudio))
+    let authorization = microphoneWriter.authorization
+    let identity = MicrophoneCaptureIdentity(authorization: authorization)
+    microphone.emitFirstSample(
+      try microphoneWriter.firstSampleReceipt(hostTime: 42_000, frameCount: 480)
+    )
+    systemAudio.emitFirstSample(
+      try systemWriter.firstSampleReceipt(hostTime: 43_000, frameCount: 480)
+    )
+    for _ in 0..<10 where controller.phase != .capturing {
+      await Task.yield()
+    }
+    XCTAssertEqual(controller.phase, .capturing)
+
+    microphone.emitObservation(
+      MicrophoneSourceHealthObservation(
+        identity: identity,
+        sequence: 1,
+        event: .routeInterrupted,
+        callbackCount: 4,
+        successfullyWrittenFrameCount: 128,
+        lastProgressMonotonicNanoseconds: 1_000
+      )
+    )
+    for _ in 0..<20 where preparation.failedSources.isEmpty {
+      await Task.yield()
+    }
+
+    XCTAssertEqual(controller.phase, .capturing)
+    XCTAssertEqual(controller.microphoneSourceHealth?.event, .routeInterrupted)
+    XCTAssertEqual(controller.statusText, "Recording continues with remaining audio")
+    XCTAssertEqual(preparation.failedSources, [.microphone])
+    XCTAssertTrue(preparation.interruptionReasons.isEmpty)
+    XCTAssertEqual(preparation.sealedSegmentCount, 1)
+    XCTAssertEqual(microphone.stopCount, 1)
+    XCTAssertEqual(systemAudio.stopCount, 0)
+
+    microphone.emitObservation(
+      MicrophoneSourceHealthObservation(
+        identity: identity,
+        sequence: 2,
+        event: .routeInterrupted,
+        callbackCount: 5,
+        successfullyWrittenFrameCount: 192,
+        lastProgressMonotonicNanoseconds: 2_000
+      )
+    )
+    for _ in 0..<10 {
+      await Task.yield()
+    }
+
+    XCTAssertEqual(controller.phase, .capturing)
+    XCTAssertEqual(preparation.failedSources, [.microphone])
+    XCTAssertEqual(preparation.sealedSegmentCount, 1)
+    XCTAssertEqual(microphone.stopCount, 1)
+    XCTAssertEqual(systemAudio.stopCount, 0)
+    XCTAssertEqual(telemetry.snapshot().map(\.observation.event), [.routeInterrupted])
+
+    microphone.emitFailure(.writerFailed)
+    for _ in 0..<10 {
+      await Task.yield()
+    }
+
+    XCTAssertEqual(controller.phase, .capturing)
+    XCTAssertEqual(preparation.failedSources, [.microphone])
+    XCTAssertTrue(preparation.interruptionReasons.isEmpty)
+    XCTAssertEqual(preparation.sealedSegmentCount, 1)
+    XCTAssertEqual(microphone.stopCount, 1)
+    XCTAssertEqual(systemAudio.stopCount, 0)
+
+    await controller.stop()
+    XCTAssertEqual(controller.phase, .saved)
+    XCTAssertEqual(preparation.sealedSegmentCount, 2)
+    XCTAssertEqual(systemAudio.stopCount, 1)
+  }
+
+  func testMicrophoneFailureThenObservationIsIdempotentForCurrentAuthorization() async throws {
+    let preparation = RecordingPreparationFake(requiredSources: [.microphone, .systemAudio])
+    let writers = SegmentWriterMap()
+    let microphone = MicrophoneCaptureFake()
+    let systemAudio = SystemAudioCaptureFake()
+    let telemetry = CaptureHealthTelemetryBox()
+    let controller = LiveMicrophoneRecordingController(
+      permission: AuthorizedMicrophonePermission(),
+      preparationFactory: { preparation },
+      writerFactory: { authorization in
+        let writer = SegmentWriterFake(authorization: authorization)
+        writers.store(writer)
+        return writer
+      },
+      captureFactory: { _ in microphone },
+      requiredSources: [.microphone, .systemAudio],
+      systemCaptureFactory: { _ in systemAudio },
+      captureHealthTelemetry: { telemetry.append($0) }
+    )
+    await controller.start()
+    let microphoneWriter = try XCTUnwrap(writers.writer(for: .microphone))
+    let systemWriter = try XCTUnwrap(writers.writer(for: .systemAudio))
+    let identity = MicrophoneCaptureIdentity(authorization: microphoneWriter.authorization)
+    microphone.emitFirstSample(
+      try microphoneWriter.firstSampleReceipt(hostTime: 42_000, frameCount: 480)
+    )
+    systemAudio.emitFirstSample(
+      try systemWriter.firstSampleReceipt(hostTime: 43_000, frameCount: 480)
+    )
+    for _ in 0..<10 where controller.phase != .capturing {
+      await Task.yield()
+    }
+
+    microphone.emitFailure(.writerFailed)
+    for _ in 0..<20 where preparation.failedSources.isEmpty {
+      await Task.yield()
+    }
+    microphone.emitObservation(
+      MicrophoneSourceHealthObservation(
+        identity: identity,
+        sequence: 1,
+        event: .routeInterrupted,
+        callbackCount: 4,
+        successfullyWrittenFrameCount: 128,
+        lastProgressMonotonicNanoseconds: 1_000
+      )
+    )
+    for _ in 0..<10 {
+      await Task.yield()
+    }
+
+    XCTAssertEqual(controller.phase, .capturing)
+    XCTAssertEqual(preparation.failedSources, [.microphone])
+    XCTAssertTrue(preparation.interruptionReasons.isEmpty)
+    XCTAssertEqual(preparation.sealedSegmentCount, 1)
+    XCTAssertEqual(microphone.stopCount, 1)
+    XCTAssertEqual(systemAudio.stopCount, 0)
+    XCTAssertNil(controller.microphoneSourceHealth)
+    XCTAssertTrue(telemetry.snapshot().isEmpty)
+  }
+
+  func testStaleGenerationAndStoppedCaptureCannotMutateHealthOrTelemetry() async throws {
+    let preparation = RecordingPreparationFake()
+    let writerHolder = SegmentWriterHolder()
+    let capture = MicrophoneCaptureFake()
+    let telemetry = CaptureHealthTelemetryBox()
+    let controller = LiveMicrophoneRecordingController(
+      permission: AuthorizedMicrophonePermission(),
+      preparationFactory: { preparation },
+      writerFactory: { authorization in
+        let writer = SegmentWriterFake(authorization: authorization)
+        writerHolder.store(writer)
+        return writer
+      },
+      captureFactory: { _ in capture },
+      captureHealthTelemetry: { telemetry.append($0) }
+    )
+    await controller.start()
+    let authorization = try XCTUnwrap(writerHolder.writer?.authorization)
+    let staleIdentity = MicrophoneCaptureIdentity(
+      sessionId: authorization.sessionId,
+      trackId: authorization.trackId,
+      writerGeneration: authorization.writerGeneration + 1
+    )
+    let staleObservation = MicrophoneSourceHealthObservation(
+      identity: staleIdentity,
+      sequence: 1,
+      event: .routeInterrupted,
+      callbackCount: 1,
+      successfullyWrittenFrameCount: 0,
+      lastProgressMonotonicNanoseconds: 1_000
+    )
+
+    capture.emitObservation(staleObservation)
+    for _ in 0..<10 {
+      await Task.yield()
+    }
+
+    XCTAssertNil(controller.microphoneSourceHealth)
+    XCTAssertTrue(telemetry.snapshot().isEmpty)
+
+    await controller.stop()
+    capture.emitObservation(
+      MicrophoneSourceHealthObservation(
+        identity: MicrophoneCaptureIdentity(authorization: authorization),
+        sequence: 2,
+        event: .routeRecovered,
+        callbackCount: 2,
+        successfullyWrittenFrameCount: 64,
+        lastProgressMonotonicNanoseconds: 2_000
+      )
+    )
+    for _ in 0..<10 {
+      await Task.yield()
+    }
+
+    XCTAssertNil(controller.microphoneSourceHealth)
+    XCTAssertTrue(telemetry.snapshot().isEmpty)
   }
 
   func testDeniedPermissionFailsBeforePreparationAndCanRetryAfterAuthorization() async {

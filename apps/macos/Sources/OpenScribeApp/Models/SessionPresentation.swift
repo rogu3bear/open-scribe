@@ -11,6 +11,12 @@ struct RuntimeSourcePresentation: Equatable, Sendable {
     lifecycle = native.lifecycle
   }
 
+  init(kind: NativeMediaSourceKind, name: String, lifecycle: String) {
+    self.kind = kind
+    self.name = name
+    self.lifecycle = lifecycle
+  }
+
   var stateText: String {
     switch lifecycle {
     case "required": "Waiting"
@@ -32,6 +38,73 @@ struct RuntimeSourcePresentation: Equatable, Sendable {
   }
 }
 
+struct RuntimePlayableMediaPresentation: Equatable, Sendable {
+  let sourceDisplayName: String
+  let availability: String
+  let durationNanoseconds: UInt64
+  let sampleCount: UInt64
+  let byteLength: UInt64
+
+  init(native: NativeRuntimePlayableMediaSnapshot) {
+    sourceDisplayName = native.sourceDisplayName
+    availability = native.availability
+    durationNanoseconds = native.durationNanoseconds
+    sampleCount = native.sampleCount
+    byteLength = native.byteLength
+  }
+
+  var isPlayable: Bool {
+    availability == "available" && sampleCount > 0 && byteLength > 0
+  }
+
+  var durationText: String {
+    guard durationNanoseconds >= 1_000_000_000 else { return "Less than 1 second" }
+    let elapsedSeconds = durationNanoseconds / 1_000_000_000
+    let hours = elapsedSeconds / 3_600
+    let minutes = (elapsedSeconds % 3_600) / 60
+    let seconds = elapsedSeconds % 60
+    return String(format: "%02llu:%02llu:%02llu", hours, minutes, seconds)
+  }
+
+  var statusText: String {
+    switch availability {
+    case "available": "Ready to play"
+    case "unavailable": "Audio unavailable"
+    case "corrupt": "Audio appears corrupt"
+    default: "Playback unavailable"
+    }
+  }
+}
+
+struct RecoveredTrackPresentation: Identifiable {
+  let playableSession: NativeRecoveredPlayableSession
+
+  var source: RuntimeSourcePresentation {
+    RuntimeSourcePresentation(
+      kind: playableSession.sourceKind,
+      name: playableSession.sourceDisplayName,
+      lifecycle: "sealed"
+    )
+  }
+
+  var id: String { playableSession.segmentId }
+
+  var durationText: String {
+    let totalMilliseconds = playableSession.durationNanoseconds / 1_000_000
+    let hours = totalMilliseconds / 3_600_000
+    let minutes = (totalMilliseconds % 3_600_000) / 60_000
+    let seconds = (totalMilliseconds % 60_000) / 1_000
+    let milliseconds = totalMilliseconds % 1_000
+    return String(
+      format: "%02llu:%02llu:%02llu.%03llu",
+      hours,
+      minutes,
+      seconds,
+      milliseconds
+    )
+  }
+}
+
 struct RuntimeSessionPresentation: Equatable, Sendable, Identifiable {
   let sessionId: String
   let title: String
@@ -43,6 +116,7 @@ struct RuntimeSessionPresentation: Equatable, Sendable, Identifiable {
   let interruptionReason: String?
   let recovered: Bool
   let sources: [RuntimeSourcePresentation]
+  let playableMedia: RuntimePlayableMediaPresentation?
 
   init(native: NativeRuntimeSessionSnapshot) {
     sessionId = native.sessionId
@@ -55,20 +129,39 @@ struct RuntimeSessionPresentation: Equatable, Sendable, Identifiable {
     interruptionReason = native.interruptionReason
     recovered = native.recovered
     sources = native.sources.map(RuntimeSourcePresentation.init(native:))
+    playableMedia = native.playableMedia.map(RuntimePlayableMediaPresentation.init(native:))
   }
 
   var id: String { sessionId }
 
   var isRecording: Bool {
-    lifecycle == "recording" && journalDurable && mediaFilesOpen
+    lifecycle == "recording" && health == "healthy" && journalDurable && mediaFilesOpen
+  }
+
+  var isDegradedRecording: Bool {
+    lifecycle == "recording" && health == "degraded"
   }
 
   var needsAttention: Bool {
     lifecycle == "interrupted" || health == "degraded"
   }
 
+  func recoveredTracks(
+    from playableSessions: [NativeRecoveredPlayableSession]
+  ) -> [RecoveredTrackPresentation] {
+    guard recovered, playableMedia == nil else { return [] }
+
+    return
+      playableSessions
+      .filter { $0.sessionId == sessionId }
+      .map { RecoveredTrackPresentation(playableSession: $0) }
+  }
+
   var statusText: String {
-    switch lifecycle {
+    if recovered && needsAttention { return "Recovered partial recording" }
+    if isDegradedRecording { return "Recording — degraded" }
+    if let playableMedia { return playableMedia.statusText }
+    return switch lifecycle {
     case "preparing": "Preparing durable recording…"
     case "recording": isRecording ? "Recording" : "Confirming recording…"
     case "paused": "Paused"
@@ -99,6 +192,7 @@ struct RuntimeSessionPresentation: Equatable, Sendable, Identifiable {
   }
 
   var recoveryText: String {
+    if recovered && needsAttention { return "Recovered partial recording" }
     if recovered { return "Recovered" }
     if lifecycle == "interrupted" { return "Recovery required" }
     if lifecycle == "ready_for_review" { return "Ready for review" }

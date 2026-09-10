@@ -1462,6 +1462,7 @@ dependencies = [
  "open-scribe-models",
  "open-scribe-store",
  "open-scribe-types",
+ "serde_json",
 ]
 
 [[package]]

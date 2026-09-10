@@ -241,6 +241,22 @@ typedef void (*UniffiForeignFutureCompleteVoid)(uint64_t,
                                                 UniffiForeignFutureResultVoid);
 
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_FN_CLONE_NATIVEIMPORTEDPLAYBACKLEASE
+#define UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_FN_CLONE_NATIVEIMPORTEDPLAYBACKLEASE
+uint64_t uniffi_open_scribe_uniffi_fn_clone_nativeimportedplaybacklease(
+    uint64_t handle, RustCallStatus *_Nonnull out_status);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_FN_FREE_NATIVEIMPORTEDPLAYBACKLEASE
+#define UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_FN_FREE_NATIVEIMPORTEDPLAYBACKLEASE
+void uniffi_open_scribe_uniffi_fn_free_nativeimportedplaybacklease(
+    uint64_t handle, RustCallStatus *_Nonnull out_status);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_FN_METHOD_NATIVEIMPORTEDPLAYBACKLEASE_PLAYBACK_PATH
+#define UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_FN_METHOD_NATIVEIMPORTEDPLAYBACKLEASE_PLAYBACK_PATH
+RustBuffer
+uniffi_open_scribe_uniffi_fn_method_nativeimportedplaybacklease_playback_path(
+    uint64_t ptr, RustCallStatus *_Nonnull out_status);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_FN_CLONE_NATIVERECORDINGPREPARATION
 #define UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_FN_CLONE_NATIVERECORDINGPREPARATION
 uint64_t uniffi_open_scribe_uniffi_fn_clone_nativerecordingpreparation(
@@ -282,11 +298,32 @@ RustBuffer
 uniffi_open_scribe_uniffi_fn_method_nativerecordingpreparation_confirm_recording(
     uint64_t ptr, RustBuffer session_id, RustCallStatus *_Nonnull out_status);
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_FN_METHOD_NATIVERECORDINGPREPARATION_IMPORT_RECOVERABLE_CAF
+#define UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_FN_METHOD_NATIVERECORDINGPREPARATION_IMPORT_RECOVERABLE_CAF
+RustBuffer
+uniffi_open_scribe_uniffi_fn_method_nativerecordingpreparation_import_recoverable_caf(
+    uint64_t ptr, RustBuffer title, RustBuffer source_path,
+    RustCallStatus *_Nonnull out_status);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_FN_METHOD_NATIVERECORDINGPREPARATION_INTERRUPT_SESSION
 #define UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_FN_METHOD_NATIVERECORDINGPREPARATION_INTERRUPT_SESSION
 RustBuffer
 uniffi_open_scribe_uniffi_fn_method_nativerecordingpreparation_interrupt_session(
     uint64_t ptr, RustBuffer session_id, RustBuffer reason,
+    RustCallStatus *_Nonnull out_status);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_FN_METHOD_NATIVERECORDINGPREPARATION_LEASE_IMPORTED_PLAYBACK
+#define UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_FN_METHOD_NATIVERECORDINGPREPARATION_LEASE_IMPORTED_PLAYBACK
+uint64_t
+uniffi_open_scribe_uniffi_fn_method_nativerecordingpreparation_lease_imported_playback(
+    uint64_t ptr, RustBuffer session_id, RustCallStatus *_Nonnull out_status);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_FN_METHOD_NATIVERECORDINGPREPARATION_LEASE_RECOVERED_PLAYBACK
+#define UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_FN_METHOD_NATIVERECORDINGPREPARATION_LEASE_RECOVERED_PLAYBACK
+uint64_t
+uniffi_open_scribe_uniffi_fn_method_nativerecordingpreparation_lease_recovered_playback(
+    uint64_t ptr, RustBuffer session_id, RustBuffer source_id,
+    RustBuffer track_id, RustBuffer segment_id,
     RustCallStatus *_Nonnull out_status);
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_FN_METHOD_NATIVERECORDINGPREPARATION_PREPARE_SESSION
@@ -301,6 +338,13 @@ RustBuffer
 uniffi_open_scribe_uniffi_fn_method_nativerecordingpreparation_prepare_session_with_required_sources(
     uint64_t ptr, RustBuffer title, RustBuffer required_sources,
     RustCallStatus *_Nonnull out_status);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_FN_METHOD_NATIVERECORDINGPREPARATION_RECORD_SOURCE_FAILURE
+#define UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_FN_METHOD_NATIVERECORDINGPREPARATION_RECORD_SOURCE_FAILURE
+RustBuffer
+uniffi_open_scribe_uniffi_fn_method_nativerecordingpreparation_record_source_failure(
+    uint64_t ptr, RustBuffer session_id, RustBuffer source_kind,
+    RustBuffer reason, RustCallStatus *_Nonnull out_status);
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_FN_METHOD_NATIVERECORDINGPREPARATION_RECOVER_PLAYABLE_SESSIONS
 #define UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_FN_METHOD_NATIVERECORDINGPREPARATION_RECOVER_PLAYABLE_SESSIONS
@@ -620,6 +664,14 @@ uint16_t uniffi_open_scribe_uniffi_checksum_func_native_status(void
 
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_CHECKSUM_METHOD_NATIVEIMPORTEDPLAYBACKLEASE_PLAYBACK_PATH
+#define UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_CHECKSUM_METHOD_NATIVEIMPORTEDPLAYBACKLEASE_PLAYBACK_PATH
+uint16_t
+uniffi_open_scribe_uniffi_checksum_method_nativeimportedplaybacklease_playback_path(
+    void
+
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_CHECKSUM_METHOD_NATIVERECORDINGPREPARATION_ACCEPT_FIRST_SAMPLE
 #define UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_CHECKSUM_METHOD_NATIVERECORDINGPREPARATION_ACCEPT_FIRST_SAMPLE
 uint16_t
@@ -652,10 +704,34 @@ uniffi_open_scribe_uniffi_checksum_method_nativerecordingpreparation_confirm_rec
 
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_CHECKSUM_METHOD_NATIVERECORDINGPREPARATION_IMPORT_RECOVERABLE_CAF
+#define UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_CHECKSUM_METHOD_NATIVERECORDINGPREPARATION_IMPORT_RECOVERABLE_CAF
+uint16_t
+uniffi_open_scribe_uniffi_checksum_method_nativerecordingpreparation_import_recoverable_caf(
+    void
+
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_CHECKSUM_METHOD_NATIVERECORDINGPREPARATION_INTERRUPT_SESSION
 #define UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_CHECKSUM_METHOD_NATIVERECORDINGPREPARATION_INTERRUPT_SESSION
 uint16_t
 uniffi_open_scribe_uniffi_checksum_method_nativerecordingpreparation_interrupt_session(
+    void
+
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_CHECKSUM_METHOD_NATIVERECORDINGPREPARATION_LEASE_IMPORTED_PLAYBACK
+#define UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_CHECKSUM_METHOD_NATIVERECORDINGPREPARATION_LEASE_IMPORTED_PLAYBACK
+uint16_t
+uniffi_open_scribe_uniffi_checksum_method_nativerecordingpreparation_lease_imported_playback(
+    void
+
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_CHECKSUM_METHOD_NATIVERECORDINGPREPARATION_LEASE_RECOVERED_PLAYBACK
+#define UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_CHECKSUM_METHOD_NATIVERECORDINGPREPARATION_LEASE_RECOVERED_PLAYBACK
+uint16_t
+uniffi_open_scribe_uniffi_checksum_method_nativerecordingpreparation_lease_recovered_playback(
     void
 
 );
@@ -672,6 +748,14 @@ uniffi_open_scribe_uniffi_checksum_method_nativerecordingpreparation_prepare_ses
 #define UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_CHECKSUM_METHOD_NATIVERECORDINGPREPARATION_PREPARE_SESSION_WITH_REQUIRED_SOURCES
 uint16_t
 uniffi_open_scribe_uniffi_checksum_method_nativerecordingpreparation_prepare_session_with_required_sources(
+    void
+
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_CHECKSUM_METHOD_NATIVERECORDINGPREPARATION_RECORD_SOURCE_FAILURE
+#define UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_CHECKSUM_METHOD_NATIVERECORDINGPREPARATION_RECORD_SOURCE_FAILURE
+uint16_t
+uniffi_open_scribe_uniffi_checksum_method_nativerecordingpreparation_record_source_failure(
     void
 
 );

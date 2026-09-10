@@ -4,16 +4,19 @@ import SwiftUI
 struct MenuBarContent: View {
   @Environment(\.openWindow) private var openWindow
   @ObservedObject var store: RuntimeLibraryStore
+  @ObservedObject var importedMediaAuthority: ImportedMediaAuthorityAdapter
   @ObservedObject var liveRecording: LiveMicrophoneRecordingController
   @ObservedObject var recoveredSessions: RecoveredSessionController
 
   @MainActor
   init(
     store: RuntimeLibraryStore,
+    importedMediaAuthority: ImportedMediaAuthorityAdapter,
     liveRecording: LiveMicrophoneRecordingController? = nil,
     recoveredSessions: RecoveredSessionController? = nil
   ) {
     self.store = store
+    self.importedMediaAuthority = importedMediaAuthority
     self.liveRecording = liveRecording ?? LiveMicrophoneRecordingController()
     self.recoveredSessions =
       recoveredSessions ?? RecoveredSessionController(managedRoot: nil)
@@ -58,6 +61,7 @@ struct MenuBarContent: View {
           store.refresh()
         }
       }
+      .disabled(!recordActionEnabled)
       .keyboardShortcut("r", modifiers: [.command, .shift])
     }
     if liveRecording.canStop {
@@ -74,13 +78,22 @@ struct MenuBarContent: View {
       Label("Recovered conversation", systemImage: "waveform.badge.checkmark")
       Text("Playable local audio")
         .foregroundStyle(.secondary)
-      if recoveredSessions.playingSessionId == recovered.sessionId {
-        Button("Stop Recovered Audio") {
-          recoveredSessions.stopPlayback()
-        }
-      } else {
+      let playbackAction = PlaybackControlAction.resolve(
+        isPending: recoveredSessions.pendingRecoveredMediaIdentity != nil,
+        isPlaying: recoveredSessions.playingRecoveredMediaIdentity != nil
+      )
+      if playbackAction == .play {
         Button("Play Recovered Audio") {
           recoveredSessions.play(recovered)
+        }
+        .disabled(
+          !playbackAction.isEnabled(
+            hasActivePlayback: recoveredSessions.activePlaybackSessionId != nil
+          )
+        )
+      } else {
+        Button("\(playbackAction.title) Recovered Audio") {
+          recoveredSessions.stopPlayback()
         }
       }
     }
@@ -115,6 +128,13 @@ struct MenuBarContent: View {
     .keyboardShortcut("q")
   }
 
+  var recordActionEnabled: Bool {
+    MainWorkspaceActions.canRecord(
+      liveCanStart: liveRecording.canStart,
+      importIsBusy: importedMediaAuthority.isBusy
+    )
+  }
+
   private var pendingStatusText: String {
     switch liveRecording.phase {
     case .requestingPermission, .preparing, .starting: liveRecording.statusText
@@ -139,10 +159,10 @@ struct MenuBarLabel: View {
     )
     Label(presentation.text, systemImage: presentation.symbolName)
       .accessibilityLabel(presentation.accessibilityText)
-    .onAppear {
-      store.refresh()
-      AppTelemetry.runtimeSceneAppeared("menu-bar", session: store.currentSession)
-    }
+      .onAppear {
+        store.refresh()
+        AppTelemetry.runtimeSceneAppeared("menu-bar", session: store.currentSession)
+      }
   }
 
   static func accessibilityStatus(
