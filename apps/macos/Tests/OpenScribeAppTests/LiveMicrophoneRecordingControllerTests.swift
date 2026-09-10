@@ -483,6 +483,18 @@ final class LiveMicrophoneRecordingControllerTests: XCTestCase {
     XCTAssertEqual(microphone.stopCount, 0)
     XCTAssertEqual(systemAudio.stopCount, 1)
 
+    systemAudio.emitFailure(.writerFailed)
+    for _ in 0..<10 {
+      await Task.yield()
+    }
+
+    XCTAssertEqual(controller.phase, .capturing)
+    XCTAssertEqual(preparation.failedSources, [.systemAudio])
+    XCTAssertTrue(preparation.interruptionReasons.isEmpty)
+    XCTAssertEqual(preparation.sealedSegmentCount, 1)
+    XCTAssertEqual(microphone.stopCount, 0)
+    XCTAssertEqual(systemAudio.stopCount, 1)
+
     await controller.stop()
 
     XCTAssertEqual(controller.phase, .saved)
@@ -578,6 +590,10 @@ final class LiveMicrophoneRecordingControllerTests: XCTestCase {
 
     XCTAssertEqual(controller.phase, .failed)
     XCTAssertEqual(controller.failureCode, "system-audio-writerFailed")
+    XCTAssertEqual(
+      controller.errorMessage,
+      "The failed source was sealed, but continued recording could not be confirmed. Rust did not confirm degraded source-failure evidence."
+    )
     XCTAssertEqual(preparation.interruptionReasons, [.captureFailed])
     XCTAssertEqual(microphone.stopCount, 1)
     XCTAssertEqual(systemAudio.stopCount, 1)
@@ -762,10 +778,83 @@ final class LiveMicrophoneRecordingControllerTests: XCTestCase {
     XCTAssertEqual(systemAudio.stopCount, 0)
     XCTAssertEqual(telemetry.snapshot().map(\.observation.event), [.routeInterrupted])
 
+    microphone.emitFailure(.writerFailed)
+    for _ in 0..<10 {
+      await Task.yield()
+    }
+
+    XCTAssertEqual(controller.phase, .capturing)
+    XCTAssertEqual(preparation.failedSources, [.microphone])
+    XCTAssertTrue(preparation.interruptionReasons.isEmpty)
+    XCTAssertEqual(preparation.sealedSegmentCount, 1)
+    XCTAssertEqual(microphone.stopCount, 1)
+    XCTAssertEqual(systemAudio.stopCount, 0)
+
     await controller.stop()
     XCTAssertEqual(controller.phase, .saved)
     XCTAssertEqual(preparation.sealedSegmentCount, 2)
     XCTAssertEqual(systemAudio.stopCount, 1)
+  }
+
+  func testMicrophoneFailureThenObservationIsIdempotentForCurrentAuthorization() async throws {
+    let preparation = RecordingPreparationFake(requiredSources: [.microphone, .systemAudio])
+    let writers = SegmentWriterMap()
+    let microphone = MicrophoneCaptureFake()
+    let systemAudio = SystemAudioCaptureFake()
+    let telemetry = CaptureHealthTelemetryBox()
+    let controller = LiveMicrophoneRecordingController(
+      permission: AuthorizedMicrophonePermission(),
+      preparationFactory: { preparation },
+      writerFactory: { authorization in
+        let writer = SegmentWriterFake(authorization: authorization)
+        writers.store(writer)
+        return writer
+      },
+      captureFactory: { _ in microphone },
+      requiredSources: [.microphone, .systemAudio],
+      systemCaptureFactory: { _ in systemAudio },
+      captureHealthTelemetry: { telemetry.append($0) }
+    )
+    await controller.start()
+    let microphoneWriter = try XCTUnwrap(writers.writer(for: .microphone))
+    let systemWriter = try XCTUnwrap(writers.writer(for: .systemAudio))
+    let identity = MicrophoneCaptureIdentity(authorization: microphoneWriter.authorization)
+    microphone.emitFirstSample(
+      try microphoneWriter.firstSampleReceipt(hostTime: 42_000, frameCount: 480)
+    )
+    systemAudio.emitFirstSample(
+      try systemWriter.firstSampleReceipt(hostTime: 43_000, frameCount: 480)
+    )
+    for _ in 0..<10 where controller.phase != .capturing {
+      await Task.yield()
+    }
+
+    microphone.emitFailure(.writerFailed)
+    for _ in 0..<20 where preparation.failedSources.isEmpty {
+      await Task.yield()
+    }
+    microphone.emitObservation(
+      MicrophoneSourceHealthObservation(
+        identity: identity,
+        sequence: 1,
+        event: .routeInterrupted,
+        callbackCount: 4,
+        successfullyWrittenFrameCount: 128,
+        lastProgressMonotonicNanoseconds: 1_000
+      )
+    )
+    for _ in 0..<10 {
+      await Task.yield()
+    }
+
+    XCTAssertEqual(controller.phase, .capturing)
+    XCTAssertEqual(preparation.failedSources, [.microphone])
+    XCTAssertTrue(preparation.interruptionReasons.isEmpty)
+    XCTAssertEqual(preparation.sealedSegmentCount, 1)
+    XCTAssertEqual(microphone.stopCount, 1)
+    XCTAssertEqual(systemAudio.stopCount, 0)
+    XCTAssertNil(controller.microphoneSourceHealth)
+    XCTAssertTrue(telemetry.snapshot().isEmpty)
   }
 
   func testStaleGenerationAndStoppedCaptureCannotMutateHealthOrTelemetry() async throws {

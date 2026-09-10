@@ -79,6 +79,7 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
   private var systemCapture: SystemAudioCapturing?
   private var sourcesWithFirstSample: Set<NativeMediaSourceKind> = []
   private var failedSources: Set<NativeMediaSourceKind> = []
+  private var sourcesHandlingFailure: Set<NativeMediaSourceKind> = []
   private var activeSessionId: String?
   private var acceptedMicrophoneObservationSequence: UInt64 = 0
 
@@ -180,6 +181,7 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
     writers = [:]
     sourcesWithFirstSample = []
     failedSources = []
+    sourcesHandlingFailure = []
     microphoneSourceHealth = nil
     acceptedMicrophoneObservationSequence = 0
     phase = .requestingPermission
@@ -460,11 +462,17 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
     source: NativeMediaSourceKind? = nil,
     interruptionReason: NativeSessionInterruptionReason
   ) async {
-    if let source, phase == .capturing, !failedSources.contains(source),
-      Set(requiredSources).subtracting(failedSources).count > 1
-    {
-      await degradeCaptureAfterSourceFailure(source: source, message: message, code: code)
-      return
+    if let source {
+      guard writers[source] != nil else { return }
+      guard !failedSources.contains(source), !sourcesHandlingFailure.contains(source) else {
+        return
+      }
+      if phase == .capturing, Set(requiredSources).subtracting(failedSources).count > 1 {
+        sourcesHandlingFailure.insert(source)
+        await degradeCaptureAfterSourceFailure(source: source, message: message, code: code)
+        sourcesHandlingFailure.remove(source)
+        return
+      }
     }
     await fail(message, code: code, interruptionReason: interruptionReason)
   }
@@ -478,6 +486,7 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
       await fail(message, code: code, interruptionReason: .captureFailed)
       return
     }
+    var sourceWasSealed = false
     do {
       let finalSampleHostTime: UInt64?
       switch source {
@@ -498,6 +507,7 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
       guard sealed.segmentSealed, !sealed.recordingStarted else {
         throw LiveMicrophoneRecordingError.invalidSegmentSeal
       }
+      sourceWasSealed = true
       let failure = try preparation.recordSourceFailure(
         sessionId: activeSessionId,
         sourceKind: source,
@@ -514,8 +524,12 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
       failureCode = code
       phase = .capturing
     } catch {
+      let failureContext =
+        sourceWasSealed
+        ? "The failed source was sealed, but continued recording could not be confirmed."
+        : "The failed source could not be sealed safely."
       await fail(
-        "The failed source could not be sealed safely. \(error.localizedDescription)",
+        "\(failureContext) \(error.localizedDescription)",
         code: code,
         interruptionReason: .captureFailed
       )
@@ -586,6 +600,7 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
     systemCapture = nil
     sourcesWithFirstSample = []
     failedSources = []
+    sourcesHandlingFailure = []
     microphoneSourceHealth = nil
     acceptedMicrophoneObservationSequence = 0
     activeSessionId = nil
