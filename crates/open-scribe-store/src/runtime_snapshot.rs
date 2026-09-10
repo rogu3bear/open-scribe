@@ -169,12 +169,18 @@ impl SessionStore {
         ) in sessions
         {
             let sources = Self::runtime_source_snapshots(&transaction, &session_id, &lifecycle)?;
-            let playable_media = self.runtime_playable_media_snapshot(
-                &transaction,
-                &session_id,
-                &origin,
-                &lifecycle,
-            )?;
+            // Recovered tracks have their own validated playback authority. The
+            // ordinary saved-audio query deliberately excludes them.
+            let playable_media = if recovered {
+                None
+            } else {
+                self.runtime_playable_media_snapshot(
+                    &transaction,
+                    &session_id,
+                    &origin,
+                    &lifecycle,
+                )?
+            };
             let interruption_reason = interruption_payload
                 .as_deref()
                 .map(serde_json::from_str::<Value>)

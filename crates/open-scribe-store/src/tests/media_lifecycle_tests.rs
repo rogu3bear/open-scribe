@@ -1173,6 +1173,8 @@ fn forced_exit_recovery_preserves_caf_and_converges_to_ready_for_review() {
     assert_eq!(healthy.health, "healthy");
     assert!(healthy.interruption_reason.is_none());
     assert_eq!(healthy.elapsed_seconds, 1);
+    assert!(healthy.recovered);
+    assert!(healthy.playable_media.is_none());
     assert_eq!(
         reopened
             .connection
