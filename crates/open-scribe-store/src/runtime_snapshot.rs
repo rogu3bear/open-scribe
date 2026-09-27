@@ -48,6 +48,7 @@ pub struct RuntimeSessionSnapshot {
     pub media_files_open: bool,
     pub interruption_reason: Option<SessionInterruptionReason>,
     pub recovered: bool,
+    pub has_capture_timeline: bool,
     pub sources: Vec<RuntimeSourceSnapshot>,
     pub playable_media: Option<RuntimePlayableMediaSnapshot>,
 }
@@ -112,7 +113,7 @@ impl SessionStore {
                          WHERE interrupted.session_id = sessions.id
                            AND interrupted.event_kind = 'session_interrupted'
                          ORDER BY interrupted.sequence DESC LIMIT 1),
-                        (SELECT MAX(segments.sample_count)
+                        (SELECT CAST(MAX(segments.mapped_start_ns / 1000000000.0 * 48000 + segments.sample_count) AS INTEGER)
                          FROM segments
                          WHERE segments.session_id = sessions.id
                            AND segments.lifecycle = 'sealed'
@@ -123,7 +124,7 @@ impl SessionStore {
                         EXISTS(
                           SELECT 1 FROM recovery_runs
                           WHERE recovery_runs.session_id = sessions.id
-                            AND recovery_runs.disposition = 'playable_media_recovered'
+                            AND recovery_runs.disposition IN ('playable_media_recovered', 'timeline_recovered')
                         )
                  FROM sessions
                  WHERE sessions.lifecycle != 'deleted'
@@ -171,7 +172,11 @@ impl SessionStore {
             let sources = Self::runtime_source_snapshots(&transaction, &session_id, &lifecycle)?;
             // Recovered tracks have their own validated playback authority. The
             // ordinary saved-audio query deliberately excludes them.
-            let playable_media = if recovered {
+            let has_capture_timeline: bool = transaction.query_row(
+                "SELECT EXISTS(SELECT 1 FROM session_events WHERE session_id = ?1 AND event_kind = 'capture_clock_anchored')",
+                [&session_id], |row| row.get(0),
+            )?;
+            let playable_media = if recovered || has_capture_timeline {
                 None
             } else {
                 self.runtime_playable_media_snapshot(
@@ -195,11 +200,11 @@ impl SessionStore {
             } else {
                 health
             };
-            let elapsed_seconds = playable_media
+            let mut elapsed_seconds = playable_media
                 .as_ref()
                 .map(|media| media.duration_nanoseconds / 1_000_000_000)
                 .or_else(|| {
-                    recovered
+                    (lifecycle == "ready_for_review")
                         .then_some(recovered_sample_count)
                         .flatten()
                         .map(|sample_count| {
@@ -220,6 +225,21 @@ impl SessionStore {
                             / 1_000
                     })
                 });
+            if matches!(lifecycle.as_str(), "paused" | "recording" | "preparing") {
+                let mut boundary = transaction.prepare("SELECT event_kind, session_nanoseconds, wall_time_ms FROM session_events WHERE session_id = ?1 AND event_kind IN ('capture_paused', 'capture_resumed') ORDER BY sequence DESC LIMIT 1")?;
+                let mut rows = boundary.query([&session_id])?;
+                if let Some(row) = rows.next()? {
+                    let kind: String = row.get(0)?;
+                    let position: i64 = row.get(1)?;
+                    let wall: i64 = row.get(2)?;
+                    let advancing = if lifecycle == "recording" && kind == "capture_resumed" {
+                        now_milliseconds.saturating_sub(wall).max(0) / 1000
+                    } else {
+                        0
+                    };
+                    elapsed_seconds = (position.max(0) / 1_000_000_000 + advancing) as u64;
+                }
+            }
             let snapshot = RuntimeSessionSnapshot {
                 session_id: SessionId(session_id),
                 title,
@@ -230,6 +250,7 @@ impl SessionStore {
                 media_files_open,
                 interruption_reason,
                 recovered,
+                has_capture_timeline,
                 sources,
                 playable_media,
             };
@@ -263,7 +284,7 @@ impl SessionStore {
                       (SELECT sources.display_name FROM sources
                        WHERE sources.session_id = required.session_id
                          AND sources.kind = required.kind
-                       ORDER BY sources.id LIMIT 1),
+                       ORDER BY sources.id DESC LIMIT 1),
                       CASE required.kind
                         WHEN 'microphone' THEN 'Mac microphone'
                         WHEN 'application_audio' THEN 'Selected application audio'

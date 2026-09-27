@@ -389,6 +389,17 @@ impl SessionStore {
         track_id: &str,
         segment_id: &str,
     ) -> Result<ImportedPlaybackLease, StoreError> {
+        self.lease_capture_playback(session_id, source_id, track_id, segment_id, false)
+    }
+
+    pub fn lease_capture_playback(
+        &self,
+        session_id: &SessionId,
+        source_id: &str,
+        track_id: &str,
+        segment_id: &str,
+        allow_saved: bool,
+    ) -> Result<ImportedPlaybackLease, StoreError> {
         let row = self
             .connection
             .query_row(
@@ -408,7 +419,7 @@ impl SessionStore {
                AND segments.seal_state = 'sealed'
                AND segments.recovery_state IN ('recovered', 'not_required')
                AND segments.media_format = 'caf-pcm-s16le'
-               AND EXISTS (
+               AND (?5 = 1 OR (EXISTS (
                    SELECT 1 FROM session_events recovery_events
                    WHERE recovery_events.session_id = sessions.id
                      AND recovery_events.event_kind = 'playable_media_recovered'
@@ -417,8 +428,8 @@ impl SessionStore {
                    SELECT 1 FROM recovery_runs
                    WHERE recovery_runs.session_id = sessions.id
                      AND recovery_runs.disposition = 'playable_media_recovered'
-               )",
-                params![&session_id.0, source_id, track_id, segment_id],
+               )))",
+                params![&session_id.0, source_id, track_id, segment_id, allow_saved],
                 |row| {
                     Ok((
                         row.get::<_, String>(0)?,

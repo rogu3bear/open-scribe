@@ -10,15 +10,15 @@ pub use open_scribe_domain::{
     Command, Fixture, Presentation, SessionSnapshot, TimerBehavior, TransitionError, announcement,
 };
 pub use open_scribe_store::{
-    AuthorizeMediaOpenRequest, FirstSampleEvidence, FirstSampleReceipt, ImportMediaRequest,
-    ImportedMediaEvidence, ImportedPlaybackLease, InterruptSessionRequest, MediaOpenAuthorization,
-    MediaOpenEvidence, MediaOpenReceipt, MediaSourceKind, PrepareSessionRequest,
-    PreparedSessionReceipt, RecordingStartedEvidence, RecoveredPlayableSession,
-    RequiredSourcePlanEvidence, RuntimeLibrarySnapshot, RuntimePlayableMediaAvailability,
-    RuntimePlayableMediaSnapshot, RuntimeSessionSnapshot, RuntimeSourceSnapshot,
-    SealSegmentReceipt, SealedSegmentEvidence, SessionInterruptionEvidence,
-    SessionInterruptionReason, SessionOrigin, SourceFailureEvidence, SourceFailureReason,
-    SourceFailureRequest, StoreError,
+    AuthorizeMediaOpenRequest, CaptureClock, FirstSampleEvidence, FirstSampleReceipt,
+    ImportMediaRequest, ImportedMediaEvidence, ImportedPlaybackLease, InterruptSessionRequest,
+    MediaOpenAuthorization, MediaOpenEvidence, MediaOpenReceipt, MediaSourceKind,
+    PrepareSessionRequest, PreparedSessionReceipt, RecorderAction, RecorderDetail, RecorderEvent,
+    RecordingStartedEvidence, RecoveredPlayableSession, RequiredSourcePlanEvidence,
+    RuntimeLibrarySnapshot, RuntimePlayableMediaAvailability, RuntimePlayableMediaSnapshot,
+    RuntimeSessionSnapshot, RuntimeSourceSnapshot, SealSegmentReceipt, SealedSegmentEvidence,
+    SessionInterruptionEvidence, SessionInterruptionReason, SessionOrigin, SourceFailureEvidence,
+    SourceFailureReason, SourceFailureRequest, StoreError, TimelineSegment,
 };
 
 pub struct CoarseMediaOpenReceipt {
@@ -61,6 +61,55 @@ pub struct RecordingPreparationController {
 }
 
 impl RecordingPreparationController {
+    pub fn recorder_action(
+        &mut self,
+        session: open_scribe_types::SessionId,
+        action: RecorderAction,
+    ) -> Result<RecorderDetail, StoreError> {
+        self.store.recorder_action(session, action)
+    }
+
+    pub fn recorder_detail(
+        &self,
+        session: open_scribe_types::SessionId,
+    ) -> Result<RecorderDetail, StoreError> {
+        self.store.recorder_detail(&session)
+    }
+    pub fn anchor_capture_clock(
+        &mut self,
+        session_id: open_scribe_types::SessionId,
+        clock: CaptureClock,
+    ) -> Result<(), StoreError> {
+        self.store.anchor_capture_clock(session_id, clock)
+    }
+
+    pub fn authorize_next_segment(
+        &mut self,
+        session_id: open_scribe_types::SessionId,
+        previous: String,
+    ) -> Result<MediaOpenAuthorization, StoreError> {
+        self.store.authorize_next_segment(session_id, previous)
+    }
+
+    pub fn playback_timeline(
+        &self,
+        session_id: open_scribe_types::SessionId,
+    ) -> Result<Vec<TimelineSegment>, StoreError> {
+        self.store.playback_timeline(&session_id)
+    }
+
+    pub fn lease_timeline_segment(
+        &self,
+        segment: &TimelineSegment,
+    ) -> Result<ImportedPlaybackLease, StoreError> {
+        self.store.lease_capture_playback(
+            &segment.session_id,
+            &segment.source_id,
+            &segment.track_id,
+            &segment.segment_id,
+            true,
+        )
+    }
     pub fn open(managed_root: impl AsRef<Path>) -> Result<Self, StoreError> {
         Ok(Self {
             store: open_scribe_store::SessionStore::open(managed_root)?,

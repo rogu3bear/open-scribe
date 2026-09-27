@@ -25,8 +25,14 @@ use uuid::Uuid;
 
 mod conversation_identity;
 mod import;
+mod media_recovery;
+mod recorder;
+pub use recorder::{RecorderAction, RecorderDetail, RecorderEvent};
 mod runtime_snapshot;
+mod segment_gaps;
 mod source_failure;
+mod timeline;
+pub use timeline::{CaptureClock, TimelineSegment};
 
 use conversation_identity::validate_request;
 pub use conversation_identity::{PrepareSessionRequest, PreparedSessionReceipt, SessionOrigin};
@@ -808,6 +814,7 @@ impl SessionStore {
         &mut self,
     ) -> Result<Vec<RecoveredPlayableSession>, StoreError> {
         self.recover_preparations()?;
+        self.recover_unstarted_successors()?;
         let candidates = {
             let mut statement = self.connection.prepare(
                 "SELECT sessions.id, sources.id, tracks.id, segments.id,
@@ -818,7 +825,7 @@ impl SessionStore {
                  JOIN segments ON segments.session_id = sessions.id
                               AND segments.track_id = tracks.id
                  WHERE sessions.lifecycle IN (
-                           'preparing', 'recording', 'interrupted', 'ready_for_review'
+                           'preparing', 'recording', 'paused', 'finalizing', 'interrupted', 'ready_for_review'
                        )
                    AND segments.lifecycle = 'capturing'
                  ORDER BY sessions.id, segments.sequence",
@@ -917,7 +924,7 @@ impl SessionStore {
                 _ => return Err(StoreError::IntegrityMismatch("session journal changed")),
             };
             let (mut playable_source_kinds, _sealed_companion_handles) =
-                self.validate_sealed_recovery_companions(&session_id, &records)?;
+                self.validate_sealed_recovery_companions(&session_id, &records, true)?;
             for (payload, _) in &plans {
                 let source_id = payload_string(payload, "source_id")?;
                 let source_kind: String = self.connection.query_row(
@@ -978,6 +985,7 @@ impl SessionStore {
         &self,
         session_id: &str,
         records: &[JournalRecord],
+        retain_handles: bool,
     ) -> Result<(BTreeSet<String>, Vec<ValidatedMediaFile>), StoreError> {
         let rows = {
             let mut statement = self.connection.prepare(
@@ -987,14 +995,12 @@ impl SessionStore {
                         segments.file_device, segments.file_inode,
                         segments.seal_state, segments.open_token,
                         segments.writer_generation
-                 FROM required_sources required
-                 JOIN sources ON sources.session_id = required.session_id
-                             AND sources.kind = required.kind
-                 JOIN tracks ON tracks.session_id = required.session_id
+                 FROM sources
+                 JOIN tracks ON tracks.session_id = sources.session_id
                             AND tracks.source_id = sources.id
-                 JOIN segments ON segments.session_id = required.session_id
+                 JOIN segments ON segments.session_id = sources.session_id
                               AND segments.track_id = tracks.id
-                 WHERE required.session_id = ?1
+                 WHERE sources.session_id = ?1
                    AND segments.lifecycle = 'sealed'
                  ORDER BY sources.kind, segments.sequence, segments.id",
             )?;
@@ -1107,7 +1113,9 @@ impl SessionStore {
                 ));
             }
             source_kinds.insert(source_kind);
-            handles.push(validated);
+            if retain_handles {
+                handles.push(validated);
+            }
         }
         Ok((source_kinds, handles))
     }
@@ -1132,7 +1140,7 @@ impl SessionStore {
                    AND EXISTS (
                        SELECT 1 FROM session_events recovery_events
                        WHERE recovery_events.session_id = sessions.id
-                         AND recovery_events.event_kind = 'playable_media_recovered'
+                         AND recovery_events.event_kind IN ('playable_media_recovered', 'timeline_recovered')
                    )
                  GROUP BY sessions.id, segments.id
                  ORDER BY sessions.updated_at_ms DESC, sources.kind,
@@ -1218,6 +1226,7 @@ impl SessionStore {
         request: AuthorizeMediaOpenRequest,
         failure: Option<MediaFailurePoint>,
     ) -> Result<MediaOpenAuthorization, StoreError> {
+        self.require_storage_headroom(&request.session_id.0)?;
         validate_media_request(&request)?;
         let (lifecycle, journal_durable): (String, bool) = self
             .connection
@@ -1253,7 +1262,7 @@ impl SessionStore {
         let existing_kind: bool = self.connection.query_row(
             "SELECT EXISTS(
                 SELECT 1 FROM sources
-                WHERE session_id = ?1 AND kind = ?2
+                WHERE session_id = ?1 AND kind = ?2 AND lifecycle != 'ended'
              )",
             params![request.session_id.0, request.source_kind.as_str()],
             |row| row.get(0),
@@ -1487,14 +1496,12 @@ impl SessionStore {
         }
 
         if stored.lifecycle == "capturing" {
-            let payload: String = self.connection.query_row(
-                "SELECT payload_json FROM session_events
-                 WHERE session_id = ?1 AND event_kind = 'first_sample_captured'
-                 ORDER BY sequence DESC LIMIT 1",
-                [&stored.session_id],
-                |row| row.get(0),
+            let payload = self.segment_event_payload(
+                &stored.session_id,
+                "first_sample_captured",
+                &receipt.segment_id,
+                "first-sample evidence is missing",
             )?;
-            let payload: Value = serde_json::from_str(&payload)?;
             if payload_u64(&payload, "first_sample_host_time")? != receipt.first_sample_host_time
                 || payload_u64(&payload, "first_sample_frame_count")?
                     != receipt.first_sample_frame_count
@@ -1507,7 +1514,10 @@ impl SessionStore {
             return Ok(FirstSampleEvidence {
                 session_id: receipt.session_id,
                 segment_id: receipt.segment_id,
-                first_sample_session_nanoseconds: 0,
+                first_sample_session_nanoseconds: payload_i64(
+                    &payload,
+                    "first_sample_session_nanoseconds",
+                )?,
                 journal_durable: true,
                 media_files_open: true,
                 first_sample_durable: true,
@@ -1527,12 +1537,17 @@ impl SessionStore {
                 [&stored.session_id],
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )?;
-        if session_lifecycle != "preparing" || !journal_durable || !media_files_open {
+        if !matches!(session_lifecycle.as_str(), "preparing" | "recording")
+            || !journal_durable
+            || !media_files_open
+        {
             return Err(StoreError::InvalidState(
                 "session is not ready for first-sample evidence",
             ));
         }
 
+        let mapped_start =
+            self.map_capture_time(&stored.session_id, receipt.first_sample_host_time)?;
         let payload = json!({
             "track_id": stored.track_id,
             "segment_id": receipt.segment_id,
@@ -1541,7 +1556,7 @@ impl SessionStore {
             "relative_path": stored.relative_path,
             "first_sample_host_time": receipt.first_sample_host_time,
             "first_sample_frame_count": receipt.first_sample_frame_count,
-            "first_sample_session_nanoseconds": 0,
+            "first_sample_session_nanoseconds": mapped_start,
             "observed_byte_length": receipt.observed_byte_length,
             "file_device": expected_device,
             "file_inode": expected_inode,
@@ -1559,7 +1574,7 @@ impl SessionStore {
         Ok(FirstSampleEvidence {
             session_id: receipt.session_id,
             segment_id: receipt.segment_id,
-            first_sample_session_nanoseconds: 0,
+            first_sample_session_nanoseconds: mapped_start,
             journal_durable: true,
             media_files_open: true,
             first_sample_durable: true,
@@ -1668,7 +1683,7 @@ impl SessionStore {
             ));
         }
 
-        let payload = json!({
+        let mut payload = json!({
             "source_id": stored.source_id,
             "track_id": stored.track_id,
             "segment_id": receipt.segment_id,
@@ -1682,6 +1697,7 @@ impl SessionStore {
             "file_device": expected_device,
             "file_inode": expected_inode,
         });
+        self.annotate_segment_timing(&stored.session_id, &first_payload, &mut payload)?;
         let journal_record = self.append_session_journal(
             &receipt.session_id.0,
             "segment_sealed",
@@ -1767,7 +1783,11 @@ impl SessionStore {
             event_id: Uuid::now_v7().to_string(),
             session_id: session_id.to_owned(),
             event_kind: event_kind.to_owned(),
-            session_nanoseconds: 0,
+            session_nanoseconds: payload
+                .get("session_nanoseconds")
+                .or_else(|| payload.get("first_sample_session_nanoseconds"))
+                .and_then(Value::as_i64)
+                .unwrap_or(0),
             wall_time_milliseconds: wall_time_milliseconds(),
             relative_path: relative_path.map(str::to_owned),
             payload,
@@ -1835,7 +1855,7 @@ impl SessionStore {
                 lifecycle, original_start, mapped_start_ns, media_format,
                 sample_count, byte_length, digest, seal_state, recovery_state,
                 open_token, writer_generation, file_device, file_inode
-             ) VALUES (?1, ?2, ?3, ?4, 0, ?5, 'opening', NULL, ?6, ?7,
+             ) VALUES (?1, ?2, ?3, ?4, ?10, ?5, 'opening', NULL, ?6, ?7,
                        NULL, NULL, NULL, 'open', 'not_required', ?8, ?9, NULL, NULL)",
             params![
                 segment_id,
@@ -1847,6 +1867,10 @@ impl SessionStore {
                 media_format,
                 open_token,
                 writer_generation as i64,
+                payload
+                    .get("segment_sequence")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(0),
             ],
         )?;
         insert_event_with_id(
@@ -1902,16 +1926,18 @@ impl SessionStore {
             ));
         }
         transaction.execute(
-            "UPDATE sources SET lifecycle = 'open' WHERE session_id = ?1",
-            [session_id],
+            "UPDATE sources SET lifecycle = 'open' WHERE session_id = ?1 AND lifecycle = 'opening'
+             AND id = (SELECT source_id FROM tracks WHERE id = (SELECT track_id FROM segments WHERE id = ?2))",
+            params![session_id, segment_id],
         )?;
         transaction.execute(
-            "UPDATE tracks SET lifecycle = 'open' WHERE session_id = ?1",
-            [session_id],
+            "UPDATE tracks SET lifecycle = 'open' WHERE session_id = ?1 AND lifecycle = 'opening'
+             AND id = (SELECT track_id FROM segments WHERE id = ?2)",
+            params![session_id, segment_id],
         )?;
         transaction.execute(
             "UPDATE required_sources SET lifecycle = 'open'
-             WHERE session_id = ?1
+             WHERE session_id = ?1 AND lifecycle != 'capturing'
                AND kind = (
                  SELECT sources.kind FROM sources
                  JOIN tracks ON tracks.source_id = sources.id
@@ -1977,9 +2003,14 @@ impl SessionStore {
         let changed = transaction.execute(
             "UPDATE segments
              SET lifecycle = 'capturing', original_start = ?2,
-                 mapped_start_ns = 0, sample_count = NULL
+                 mapped_start_ns = ?4, sample_count = NULL
              WHERE id = ?1 AND session_id = ?3 AND lifecycle = 'open'",
-            params![segment_id, first_sample_host_time as i64, session_id],
+            params![
+                segment_id,
+                first_sample_host_time as i64,
+                session_id,
+                payload_i64(payload, "first_sample_session_nanoseconds")?
+            ],
         )?;
         if changed != 1 {
             return Err(StoreError::InvalidState(
@@ -2073,27 +2104,43 @@ impl SessionStore {
                 "segment projection is not awaiting seal evidence",
             ));
         }
-        let source_changed = transaction.execute(
-            "UPDATE sources SET lifecycle = 'sealed'
-             WHERE id = ?1 AND session_id = ?2 AND lifecycle = 'capturing'",
-            params![source_id, session_id],
+        let continuing: bool = transaction.query_row(
+            "SELECT EXISTS(SELECT 1 FROM segments WHERE track_id = ?1 AND lifecycle IN ('opening', 'open', 'capturing'))",
+            [track_id], |row| row.get(0),
         )?;
-        let track_changed = transaction.execute(
-            "UPDATE tracks SET lifecycle = 'sealed'
+        if !continuing {
+            let source_changed = transaction.execute(
+                "UPDATE sources SET lifecycle = 'sealed'
              WHERE id = ?1 AND session_id = ?2 AND lifecycle = 'capturing'",
-            params![track_id, session_id],
-        )?;
-        if source_changed != 1 || track_changed != 1 {
-            return Err(StoreError::InvalidState(
-                "source or track projection is not awaiting seal evidence",
-            ));
-        }
-        transaction.execute(
-            "UPDATE required_sources SET lifecycle = 'sealed'
+                params![source_id, session_id],
+            )?;
+            let track_changed = transaction.execute(
+                "UPDATE tracks SET lifecycle = 'sealed'
+             WHERE id = ?1 AND session_id = ?2 AND lifecycle = 'capturing'",
+                params![track_id, session_id],
+            )?;
+            if source_changed != 1 || track_changed != 1 {
+                return Err(StoreError::InvalidState(
+                    "source or track projection is not awaiting seal evidence",
+                ));
+            }
+            transaction.execute(
+                "UPDATE required_sources SET lifecycle = 'sealed'
              WHERE session_id = ?1
                AND kind = (SELECT kind FROM sources WHERE id = ?2 AND session_id = ?1)",
-            params![session_id, source_id],
-        )?;
+                params![session_id, source_id],
+            )?;
+        }
+        if payload
+            .get("measured_drift_nanoseconds")
+            .and_then(Value::as_i64)
+            .is_some_and(|drift| drift.unsigned_abs() > 50_000_000)
+        {
+            transaction.execute(
+                "UPDATE sessions SET health = 'degraded' WHERE id = ?1",
+                [session_id],
+            )?;
+        }
         transaction.execute(
             "UPDATE sessions
              SET media_files_open = EXISTS(
@@ -2108,7 +2155,7 @@ impl SessionStore {
                     ELSE lifecycle
                  END,
                  updated_at_ms = ?2
-             WHERE id = ?1 AND lifecycle IN ('preparing', 'recording')",
+             WHERE id = ?1 AND lifecycle IN ('preparing', 'recording', 'finalizing')",
             params![session_id, now],
         )?;
         insert_event_with_id(
@@ -2550,7 +2597,7 @@ impl SessionStore {
         {
             let mut statement = self.connection.prepare(
                 "SELECT id, journal_durable FROM sessions
-                 WHERE lifecycle IN ('preparing', 'recording', 'interrupted') ORDER BY id",
+                 WHERE lifecycle IN ('preparing', 'recording', 'paused', 'finalizing', 'interrupted') ORDER BY id",
             )?;
             let rows = statement.query_map([], |row| {
                 Ok((row.get::<_, String>(0)?, row.get::<_, bool>(1)?))
@@ -2631,184 +2678,6 @@ impl SessionStore {
         }
         findings.sort_by(|left, right| left.session_id.0.cmp(&right.session_id.0));
         Ok(findings)
-    }
-
-    fn recover_valid_journal(
-        &mut self,
-        session_id: &str,
-        journal_durable: bool,
-        records: &[JournalRecord],
-    ) -> Result<RecoveryDisposition, StoreError> {
-        let repaired_directory = if journal_durable {
-            false
-        } else {
-            self.repair_directory_projection(session_id, records)?;
-            true
-        };
-        let authorization_record = records
-            .iter()
-            .rev()
-            .find(|record| record.body.event_kind == "segment_open_intent");
-
-        let Some(authorization_record) = authorization_record else {
-            return Ok(if repaired_directory {
-                RecoveryDisposition::ProjectionRepaired
-            } else {
-                RecoveryDisposition::Prepared
-            });
-        };
-        let segment_id = payload_string(&authorization_record.body.payload, "segment_id")?;
-        let opened_record = journal_record_for_segment(records, "segment_opened", segment_id)?;
-        let first_sample_record =
-            journal_record_for_segment(records, "first_sample_captured", segment_id)?;
-        let sealed_record = journal_record_for_segment(records, "segment_sealed", segment_id)?;
-        let projected: bool = self.connection.query_row(
-            "SELECT EXISTS(SELECT 1 FROM segments WHERE id = ?1 AND session_id = ?2)",
-            params![segment_id, session_id],
-            |row| row.get(0),
-        )?;
-        if !projected {
-            self.project_media_authorization(
-                session_id,
-                &authorization_record.body.payload,
-                authorization_record,
-            )?;
-        }
-
-        if let Some(opened_record) = opened_record {
-            let relative_path = payload_string(&opened_record.body.payload, "relative_path")?;
-            let byte_length = payload_u64(&opened_record.body.payload, "initial_byte_length")?;
-            let validated = match self.validate_media_file(
-                session_id,
-                relative_path,
-                MediaLengthRequirement::AtLeast(byte_length),
-                false,
-            ) {
-                Ok(validated) => validated,
-                Err(_) => {
-                    return Ok(classify_media_path(
-                        &self.session_directory(session_id)?.join(relative_path),
-                    ));
-                }
-            };
-            let expected_device = payload_u64(&opened_record.body.payload, "file_device")?;
-            let expected_inode = payload_u64(&opened_record.body.payload, "file_inode")?;
-            if validated.device != expected_device || validated.inode != expected_inode {
-                return Ok(RecoveryDisposition::InvalidMediaFile);
-            }
-            if let Some(sealed_record) = sealed_record {
-                let payload = &sealed_record.body.payload;
-                if payload_string(payload, "segment_id")? != segment_id
-                    || payload_string(payload, "relative_path")? != relative_path
-                    || payload_u64(payload, "file_device")? != expected_device
-                    || payload_u64(payload, "file_inode")? != expected_inode
-                {
-                    return Ok(RecoveryDisposition::IntegrityMismatch);
-                }
-                let final_byte_length = payload_u64(payload, "final_byte_length")?;
-                let sealed = match self.validate_media_file(
-                    session_id,
-                    relative_path,
-                    MediaLengthRequirement::Exact(final_byte_length),
-                    true,
-                ) {
-                    Ok(sealed) => sealed,
-                    Err(_) => return Ok(RecoveryDisposition::InvalidMediaFile),
-                };
-                if sealed.digest_sha256.as_deref()
-                    != Some(payload_string(payload, "digest_sha256")?)
-                {
-                    return Ok(RecoveryDisposition::IntegrityMismatch);
-                }
-                let segment_lifecycle: String = self.connection.query_row(
-                    "SELECT lifecycle FROM segments WHERE id = ?1 AND session_id = ?2",
-                    params![segment_id, session_id],
-                    |row| row.get(0),
-                )?;
-                if segment_lifecycle == "sealed" {
-                    return Ok(RecoveryDisposition::SegmentSealedPrepared);
-                }
-                if segment_lifecycle != "capturing" {
-                    return Ok(RecoveryDisposition::IntegrityMismatch);
-                }
-                self.project_segment_seal(session_id, payload, sealed_record)?;
-                return Ok(RecoveryDisposition::SegmentSealProjectionRepaired);
-            }
-            let media_open: bool = self.connection.query_row(
-                "SELECT media_files_open FROM sessions WHERE id = ?1",
-                [session_id],
-                |row| row.get(0),
-            )?;
-            if !media_open {
-                self.project_media_open(session_id, &opened_record.body.payload, opened_record)?;
-            }
-
-            if let Some(first_sample_record) = first_sample_record {
-                let payload = &first_sample_record.body.payload;
-                if payload_string(payload, "segment_id")? != segment_id
-                    || payload_string(payload, "relative_path")? != relative_path
-                    || payload_u64(payload, "file_device")? != expected_device
-                    || payload_u64(payload, "file_inode")? != expected_inode
-                    || payload_i64(payload, "first_sample_session_nanoseconds")? != 0
-                {
-                    return Ok(RecoveryDisposition::IntegrityMismatch);
-                }
-                let observed_byte_length = payload_u64(payload, "observed_byte_length")?;
-                if self
-                    .validate_media_file(
-                        session_id,
-                        relative_path,
-                        MediaLengthRequirement::AtLeast(observed_byte_length),
-                        false,
-                    )
-                    .is_err()
-                {
-                    return Ok(RecoveryDisposition::InvalidMediaFile);
-                }
-                let segment_lifecycle: String = self.connection.query_row(
-                    "SELECT lifecycle FROM segments WHERE id = ?1 AND session_id = ?2",
-                    params![segment_id, session_id],
-                    |row| row.get(0),
-                )?;
-                if segment_lifecycle == "capturing" {
-                    return Ok(RecoveryDisposition::FirstSamplePrepared);
-                }
-                if segment_lifecycle != "open" {
-                    return Ok(RecoveryDisposition::IntegrityMismatch);
-                }
-                self.project_first_sample(session_id, payload, first_sample_record)?;
-                return Ok(RecoveryDisposition::FirstSampleProjectionRepaired);
-            }
-
-            return Ok(if media_open {
-                RecoveryDisposition::MediaOpenPrepared
-            } else {
-                RecoveryDisposition::MediaOpenProjectionRepaired
-            });
-        }
-
-        let relative_path = payload_string(&authorization_record.body.payload, "relative_path")?;
-        let media_path = self.session_directory(session_id)?.join(relative_path);
-        let metadata = match fs::symlink_metadata(&media_path) {
-            Ok(metadata) => metadata,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                return Ok(RecoveryDisposition::MissingMediaFile);
-            }
-            Err(error) => return Err(error.into()),
-        };
-        if self
-            .validate_media_file(
-                session_id,
-                relative_path,
-                MediaLengthRequirement::Exact(metadata.len()),
-                false,
-            )
-            .is_ok()
-        {
-            Ok(RecoveryDisposition::MediaOpenAwaitingReceipt)
-        } else {
-            Ok(RecoveryDisposition::InvalidMediaFile)
-        }
     }
 
     fn reconcile_interruption(
@@ -3141,7 +3010,7 @@ fn insert_event_with_id(
         "INSERT INTO session_events (
             id, schema_version, session_id, sequence, event_kind,
             session_nanoseconds, wall_time_ms, payload_json, prior_digest, digest
-         ) VALUES (?1, ?2, ?3, ?4, ?5, 0, ?6, ?7, ?8, ?9)",
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?10, ?6, ?7, ?8, ?9)",
         params![
             event_id,
             SCHEMA_VERSION,
@@ -3151,7 +3020,12 @@ fn insert_event_with_id(
             wall_time_ms,
             serde_json::to_string(payload)?,
             prior_digest,
-            digest
+            digest,
+            payload
+                .get("session_nanoseconds")
+                .or_else(|| payload.get("first_sample_session_nanoseconds"))
+                .and_then(Value::as_i64)
+                .unwrap_or(0)
         ],
     )?;
     Ok(())
@@ -3521,7 +3395,8 @@ fn validate_media_receipt_shape(receipt: &MediaOpenReceipt) -> Result<(), StoreE
             "media receipt identity is not a UUID",
         ));
     }
-    if receipt.writer_generation != 1
+    if receipt.writer_generation == 0
+        || receipt.writer_generation > i64::MAX as u64
         || receipt.media_format != MEDIA_FORMAT_CAF_PCM_S16LE
         || receipt.sample_rate_hz != MEDIA_SAMPLE_RATE_HZ
         || receipt.channels != 1
@@ -3544,7 +3419,10 @@ fn validate_first_sample_receipt_shape(receipt: &FirstSampleReceipt) -> Result<(
             "first-sample receipt identity is not a UUID",
         ));
     }
-    if receipt.writer_generation != 1 || !valid_media_relative_path(&receipt.relative_path) {
+    if receipt.writer_generation == 0
+        || receipt.writer_generation > i64::MAX as u64
+        || !valid_media_relative_path(&receipt.relative_path)
+    {
         return Err(StoreError::InvalidRequest(
             "first-sample receipt path or writer generation is unsupported",
         ));
@@ -3572,7 +3450,10 @@ fn validate_seal_receipt_shape(receipt: &SealSegmentReceipt) -> Result<(), Store
             "segment-seal receipt identity is not a UUID",
         ));
     }
-    if receipt.writer_generation != 1 || !valid_media_relative_path(&receipt.relative_path) {
+    if receipt.writer_generation == 0
+        || receipt.writer_generation > i64::MAX as u64
+        || !valid_media_relative_path(&receipt.relative_path)
+    {
         return Err(StoreError::InvalidRequest(
             "segment-seal receipt path or writer generation is unsupported",
         ));
