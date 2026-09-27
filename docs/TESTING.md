@@ -137,3 +137,37 @@ requires explicit capture and audible-playback authority.
 | Working-tree inventory | `git status --short --branch` | Exact local residue | Candidate admission or commit cleanliness |
 
 New gates must fail closed, clean up processes and temporary state they own, print proof and exclusion sets, and bind runtime claims to the exact built artifact.
+
+## September 27, 2026 — Product pause/resume component proof
+
+The foundational recorder's Pause/Resume controls are included in the native
+target and fresh UniFFI bindings. Rust owns the durable boundaries; Pause drains
+both sources (including rotation during drain), seals their CAF segments and
+freezes captured time. Resume opens successor segments in the same session and
+requires a single host-clock boundary plus fresh durable samples from every
+required source before showing Recording. Stop while paused finalizes sealed
+audio without starting either source.
+
+`RecorderPauseResumeTests` uses injected sources and a controlled host clock with
+the real controller, journal/SQLite authority, CAF writers and PCM reader. Five
+tests cover repeated cycles, stale callbacks, 30-second rotation during drain,
+denied resume and explicit retry, paused finalization, interruption on drain or
+resume startup failure, preserved source bytes and captured-time playback.
+The recording component command passed all 63 selected tests:
+
+```bash
+disk-guard run --budget-gb 10 --volume "$PWD" -- bash script/build_and_run.sh --verify-recording
+```
+
+The store's focused timeline tests and `./script/check.sh --scaffold` also passed.
+For a single Cargo cache, use
+`CARGO_TARGET_DIR="$PWD/apps/macos/.build/rust-macos13"` for scaffold/store checks.
+The exact tip, commands, exit codes and logs are retained in
+`~/Documents/Codex/2026-09-27/open-scribe-pause-resume/`.
+
+This moves only the `pause_resume` implementation hold. `M1_COMPLETE` remains
+HOLD, including real dual-source pause/resume qualification. No real capture,
+TCC change, speaker output, long-session synchronization, marker qualification,
+validated mixdown, disk-pressure policy, application-scoped selection or native
+channel-layout fidelity is proved by this component receipt. The September 25
+foundational narrative and its narrower proof boundaries remain unchanged.
