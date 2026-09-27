@@ -117,7 +117,7 @@ impl SessionStore {
                          FROM segments
                          WHERE segments.session_id = sessions.id
                            AND segments.lifecycle = 'sealed'
-                           AND segments.media_format = 'caf-pcm-s16le'
+                           AND segments.media_format IN ('caf-pcm-s16le', 'm4a-alac-or-aac')
                            AND segments.sample_count > 0
                            AND segments.byte_length > 0
                            AND segments.digest IS NOT NULL),
@@ -332,7 +332,8 @@ impl SessionStore {
             let mut statement = connection.prepare(
                 "SELECT sources.display_name, segments.relative_path,
                         segments.sample_count, segments.byte_length, segments.digest,
-                        imports.source_digest, segments.file_device, segments.file_inode
+                        imports.source_digest, segments.file_device, segments.file_inode,
+                        segments.media_format
                  FROM imports
                  JOIN segments ON segments.session_id = imports.session_id
                               AND segments.relative_path = imports.relative_path
@@ -342,7 +343,7 @@ impl SessionStore {
                               AND sources.session_id = tracks.session_id
                  WHERE imports.session_id = ?1
                    AND segments.lifecycle = 'sealed'
-                   AND segments.media_format = 'caf-pcm-s16le'
+                   AND segments.media_format IN ('caf-pcm-s16le', 'm4a-alac-or-aac')
                  ORDER BY segments.sequence",
             )?;
             statement
@@ -352,7 +353,8 @@ impl SessionStore {
             let mut statement = connection.prepare(
                 "SELECT sources.display_name, segments.relative_path,
                         segments.sample_count, segments.byte_length, segments.digest,
-                        segments.digest, segments.file_device, segments.file_inode
+                        segments.digest, segments.file_device, segments.file_inode,
+                        segments.media_format
                  FROM sessions
                  JOIN segments ON segments.session_id = sessions.id
                  JOIN tracks ON tracks.id = segments.track_id
@@ -407,6 +409,7 @@ impl SessionStore {
             import_digest_sha256,
             stored_device,
             stored_inode,
+            media_format,
         ) = &rows[0];
         let sample_count = u64::try_from(*stored_sample_count).unwrap_or(0);
         let byte_length = u64::try_from(*stored_byte_length).unwrap_or(0);
@@ -419,7 +422,11 @@ impl SessionStore {
             sample_count,
             byte_length,
         };
-        if !valid_media_relative_path(relative_path)
+        if !(valid_media_relative_path(relative_path)
+            || (origin == "import"
+                && media_format == "m4a-alac-or-aac"
+                && relative_path.starts_with("audio/")
+                && relative_path.ends_with("/000000-import.m4a")))
             || sample_count == 0
             || byte_length == 0
             || digest_sha256.len() != 64
@@ -437,18 +444,32 @@ impl SessionStore {
             }
             Ok(_) => {}
         }
-        let Ok(validated) = self.validate_media_file(
-            session_id,
-            relative_path,
-            MediaLengthRequirement::Exact(byte_length),
-            true,
-        ) else {
+        let validated = if origin == "import" {
+            // Polling checks sealed identity and length; playback rehashes the full object.
+            self.validate_import_media_file(
+                session_id,
+                relative_path,
+                byte_length,
+                media_format,
+                false,
+            )
+        } else {
+            self.validate_media_file(
+                session_id,
+                relative_path,
+                MediaLengthRequirement::Exact(byte_length),
+                true,
+            )
+        };
+        let Ok(validated) = validated else {
             return Ok(Some(base(RuntimePlayableMediaAvailability::Corrupt)));
         };
         if validated.device != u64::try_from(*stored_device).unwrap_or(0)
             || validated.inode != u64::try_from(*stored_inode).unwrap_or(0)
-            || validated.recoverable_sample_count != Some(sample_count)
-            || validated.digest_sha256.as_deref() != Some(import_digest_sha256.as_str())
+            || (media_format == "caf-pcm-s16le"
+                && validated.recoverable_sample_count != Some(sample_count))
+            || (media_format == "caf-pcm-s16le"
+                && validated.digest_sha256.as_deref() != Some(import_digest_sha256.as_str()))
         {
             return Ok(Some(base(RuntimePlayableMediaAvailability::Corrupt)));
         }
@@ -456,7 +477,7 @@ impl SessionStore {
     }
 }
 
-type PlayableMediaRow = (String, String, i64, i64, String, String, i64, i64);
+type PlayableMediaRow = (String, String, i64, i64, String, String, i64, i64, String);
 
 fn playable_media_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<PlayableMediaRow> {
     Ok((
@@ -468,5 +489,6 @@ fn playable_media_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<PlayableMedia
         row.get(5)?,
         row.get(6)?,
         row.get(7)?,
+        row.get(8)?,
     ))
 }

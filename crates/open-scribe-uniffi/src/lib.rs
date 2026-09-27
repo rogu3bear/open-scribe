@@ -258,6 +258,13 @@ pub struct NativeImportPolicy {
     pub maximum_managed_samples: u64,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct NativeCompressedImportMetadata {
+    pub original: NativeOriginalImportMetadata,
+    pub sample_count: u64,
+    pub digest_sha256: String,
+}
+
 #[uniffi::export]
 pub fn native_import_policy() -> NativeImportPolicy {
     let policy = open_scribe_core::import_policy();
@@ -326,6 +333,7 @@ pub struct NativeImportedPlaybackLease {
 
 enum NativePlaybackLeaseStrategy {
     ImportedSnapshot,
+    ImportedCompressed,
     RecoveredVerifiedChunks,
 }
 
@@ -379,6 +387,12 @@ impl NativeImportedPlaybackLease {
             ),
             NativePlaybackLeaseStrategy::RecoveredVerifiedChunks => format!(
                 "v2;fd={};byte_length={};sha256={};chunk_byte_length=65536",
+                self.lease.raw_file_descriptor(),
+                self.lease.byte_length(),
+                self.lease.digest_sha256(),
+            ),
+            NativePlaybackLeaseStrategy::ImportedCompressed => format!(
+                "v3;fd={};byte_length={};sha256={};chunk_byte_length=65536;format=m4a",
                 self.lease.raw_file_descriptor(),
                 self.lease.byte_length(),
                 self.lease.digest_sha256(),
@@ -769,6 +783,35 @@ impl NativeRecordingPreparation {
         Ok(evidence.into())
     }
 
+    pub fn import_compressed_m4a(
+        &self,
+        title: String,
+        source_path: String,
+        metadata: NativeCompressedImportMetadata,
+    ) -> Result<NativeImportedMediaEvidence, NativeStorageError> {
+        let original = metadata.original;
+        let evidence = self
+            .controller()?
+            .import_compressed_m4a(
+                title,
+                source_path.into(),
+                open_scribe_core::CompressedImportMetadata {
+                    original: open_scribe_core::OriginalImportMetadata {
+                        display_name: original.display_name,
+                        byte_length: original.byte_length,
+                        duration_nanoseconds: original.duration_nanoseconds,
+                        sample_rate_hz: original.sample_rate_hz,
+                        channel_count: original.channel_count,
+                        media_format: original.media_format,
+                    },
+                    sample_count: metadata.sample_count,
+                    digest_sha256: metadata.digest_sha256,
+                },
+            )
+            .map_err(map_storage_error)?;
+        Ok(evidence.into())
+    }
+
     pub fn lease_imported_playback(
         &self,
         session_id: String,
@@ -778,8 +821,12 @@ impl NativeRecordingPreparation {
             .lease_imported_playback(open_scribe_types::SessionId(session_id))
             .map_err(map_storage_error)?;
         Ok(Arc::new(NativeImportedPlaybackLease {
+            strategy: if lease.media_format() == "m4a-alac-or-aac" {
+                NativePlaybackLeaseStrategy::ImportedCompressed
+            } else {
+                NativePlaybackLeaseStrategy::ImportedSnapshot
+            },
             lease,
-            strategy: NativePlaybackLeaseStrategy::ImportedSnapshot,
         }))
     }
 

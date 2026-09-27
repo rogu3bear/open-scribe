@@ -168,7 +168,9 @@ final class SavedAudioPlaybackTests: RecoveredSessionTestCase {
         player: player
       )
 
-      let captured = savedSession(sessionId: "session-captured", availability: availability, absolutePath: nil, sourceDisplayName: "Mac microphone")
+      let captured = savedSession(
+        sessionId: "session-captured", availability: availability, absolutePath: nil,
+        sourceDisplayName: "Mac microphone")
       controller.play(captured)
 
       XCTAssertNil(controller.playingSessionId)
@@ -176,12 +178,16 @@ final class SavedAudioPlaybackTests: RecoveredSessionTestCase {
       XCTAssertNil(player.recoveredReceipt)
       XCTAssertEqual(player.stopCount, 1)
       XCTAssertFalse(leaseRequested.value)
-      XCTAssertEqual(controller.errorMessage, availability == "corrupt" ? "Saved audio appears corrupt and was not opened." : "Saved audio is unavailable and was not opened.")
+      XCTAssertEqual(
+        controller.errorMessage,
+        availability == "corrupt"
+          ? "Saved audio appears corrupt and was not opened."
+          : "Saved audio is unavailable and was not opened.")
       XCTAssertEqual(controller.errorSessionId, captured.sessionId)
     }
   }
 
-  func testCapturedPlaybackOpenFailureUsesNeutralSavedAudioMessaging() {
+  func testCapturedPlaybackOpenFailureUsesNeutralSavedAudioMessaging() async {
     let player = RecoveredAudioPlayerFake()
     let controller = RecoveredSessionController(
       recoveryFactory: { RecoveryPreparationFake() },
@@ -189,11 +195,15 @@ final class SavedAudioPlaybackTests: RecoveredSessionTestCase {
       player: player
     )
 
-    controller.play(savedSession(sessionId: "session-captured", availability: "available", absolutePath: nil, sourceDisplayName: "Mac microphone"))
+    controller.play(
+      savedSession(
+        sessionId: "session-captured", availability: "available", absolutePath: nil,
+        sourceDisplayName: "Mac microphone"))
+    await assertEventually { controller.errorSessionId == "session-captured" }
 
     XCTAssertNil(controller.playingSessionId)
     XCTAssertNil(player.recoveredReceipt)
-    XCTAssertEqual(player.stopCount, 1)
+    XCTAssertEqual(player.stopCount, 2)
     XCTAssertEqual(controller.errorMessage, "Saved audio could not be opened for playback.")
     XCTAssertEqual(controller.errorSessionId, "session-captured")
   }
@@ -720,7 +730,7 @@ final class SavedAudioPlaybackTests: RecoveredSessionTestCase {
     XCTAssertNil(controller.errorMessage)
   }
 
-  func testPlaybackAboveSafeCapReportsTruthWithoutChangingLibrarySession() async {
+  func testLargeMediaRequestsTheAuthoritativeLeaseBeforePlayback() async {
     let player = RecoveredAudioPlayerFake()
     let leaseRequested = SendableFlag()
     let controller = RecoveredSessionController(
@@ -740,14 +750,10 @@ final class SavedAudioPlaybackTests: RecoveredSessionTestCase {
     )
 
     controller.play(captured)
-
-    XCTAssertNil(controller.playingSessionId)
-    XCTAssertNil(player.retainedLease)
-    XCTAssertFalse(leaseRequested.value)
-    XCTAssertEqual(
-      controller.errorMessage,
-      "Saved audio is too large for safe playback on this version of Open Scribe."
-    )
+    await assertEventually { controller.playingSessionId == captured.sessionId }
+    XCTAssertNotNil(player.retainedLease)
+    XCTAssertTrue(leaseRequested.value)
+    XCTAssertNil(controller.errorMessage)
     XCTAssertEqual(captured.playableMedia?.sourceDisplayName, "Mac microphone")
     XCTAssertTrue(captured.playableMedia?.isPlayable == true)
   }

@@ -196,7 +196,7 @@ struct ContentView: View {
     .disabled(!canImport)
     .help(
       canImport
-        ? "Add a supported local PCM CAF or mono M4A recording (up to 256 MiB)"
+        ? "Add local CAF or M4A audio (M4A up to 1 GiB and four hours)"
         : "Wait for the current recording action to finish before importing audio"
     )
   }
@@ -386,15 +386,10 @@ enum PlaybackControlAction: Equatable, Sendable {
 
 enum ImportedPlaybackEligibility {
   static func canPlay(_ media: RuntimePlayableMediaPresentation) -> Bool {
-    media.isPlayable && media.byteLength <= ImportedPlaybackMemoryPolicy.maximumSnapshotByteLength
+    media.isPlayable
   }
 
   static func status(_ media: RuntimePlayableMediaPresentation) -> String {
-    if media.isPlayable
-      && media.byteLength > ImportedPlaybackMemoryPolicy.maximumSnapshotByteLength
-    {
-      return "Too large for safe playback"
-    }
     return media.statusText
   }
 }
@@ -682,7 +677,7 @@ private struct EmptyConversationWorkspace: View {
         .font(.title2.weight(.semibold))
         .accessibilityAddTraits(.isHeader)
       Text(
-        "Record microphone and computer audio, or import a supported local PCM CAF or mono M4A recording. Open Scribe keeps the source on this Mac."
+        "Record microphone and computer audio, or import supported local CAF or M4A audio. Open Scribe keeps the source on this Mac."
       )
       .foregroundStyle(.secondary)
       .multilineTextAlignment(.center)

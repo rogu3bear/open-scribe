@@ -16,6 +16,26 @@ This root will contain the native SwiftUI application, MenuBarExtra, Settings, a
 
 Durable session policy, evidence, persistence, recovery, provider scope, and exports belong in Rust. Frame-rate media and pointer samples must not cross ordinary UniFFI callbacks.
 
+## Local audio import
+
+Import copies user-selected audio into the conversation library without changing
+the original or starting transcription. PCM CAF remains limited to 256 MiB.
+M4A AAC/Apple Lossless imports have a 1 GiB source limit and a four-hour duration
+limit. Compressed preservation supports a single audio track at 48 kHz with one
+or two channels; small mono M4A at other rates uses the existing bounded 48 kHz
+CAF normalization path. Unsupported layouts, rates, formats, or policy excesses
+fail with a visible explanation. Capture must finish before import begins.
+
+Swift probes the selected file and a private staged copy. Rust verifies the
+staged digest, copies and synchronizes managed media, checks its exact bytes,
+then journals and atomically publishes a Ready for Review session. Large M4A
+playback retains an identity-bound descriptor and verifies 64 KiB chunks while
+AudioToolbox decodes stereo buffers; it does not allocate a whole-file PCM or
+anonymous playback snapshot. Library polling checks identity and length;
+playback revalidates the full digest before opening a decoder. Original metadata
+remains separate from the managed media contract. ADR 0007 owns the boundary;
+this slice does not qualify its complete platform or M1 runtime matrix.
+
 ADR 0001 owns the M0 module boundary, macOS 13 floor, development bundle
 identifier, no-entitlement posture, and binding lifecycle. ADR 0004 owns the
 fixture state and presentation contract. ADR 0007 supersedes SwiftPM as the app

@@ -37,8 +37,8 @@ pub use timeline::{CaptureClock, TimelineSegment};
 use conversation_identity::validate_request;
 pub use conversation_identity::{PrepareSessionRequest, PreparedSessionReceipt, SessionOrigin};
 pub use import::{
-    ImportMediaRequest, ImportPolicy, ImportedMediaEvidence, ImportedPlaybackLease,
-    OriginalImportMetadata, import_policy,
+    CompressedImportMetadata, ImportMediaRequest, ImportPolicy, ImportedMediaEvidence,
+    ImportedPlaybackLease, OriginalImportMetadata, import_policy,
 };
 pub use runtime_snapshot::{
     RuntimeLibrarySnapshot, RuntimePlayableMediaAvailability, RuntimePlayableMediaSnapshot,

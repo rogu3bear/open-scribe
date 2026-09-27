@@ -10,16 +10,16 @@ pub use open_scribe_domain::{
     Command, Fixture, Presentation, SessionSnapshot, TimerBehavior, TransitionError, announcement,
 };
 pub use open_scribe_store::{
-    AuthorizeMediaOpenRequest, CaptureClock, FirstSampleEvidence, FirstSampleReceipt,
-    ImportMediaRequest, ImportPolicy, ImportedMediaEvidence, ImportedPlaybackLease,
-    InterruptSessionRequest, MediaOpenAuthorization, MediaOpenEvidence, MediaOpenReceipt,
-    MediaSourceKind, OriginalImportMetadata, PrepareSessionRequest, PreparedSessionReceipt,
-    RecorderAction, RecorderDetail, RecorderEvent, RecordingStartedEvidence,
-    RecoveredPlayableSession, RequiredSourcePlanEvidence, RuntimeLibrarySnapshot,
-    RuntimePlayableMediaAvailability, RuntimePlayableMediaSnapshot, RuntimeSessionSnapshot,
-    RuntimeSourceSnapshot, SealSegmentReceipt, SealedSegmentEvidence, SessionInterruptionEvidence,
-    SessionInterruptionReason, SessionOrigin, SourceFailureEvidence, SourceFailureReason,
-    SourceFailureRequest, StoreError, TimelineSegment, import_policy,
+    AuthorizeMediaOpenRequest, CaptureClock, CompressedImportMetadata, FirstSampleEvidence,
+    FirstSampleReceipt, ImportMediaRequest, ImportPolicy, ImportedMediaEvidence,
+    ImportedPlaybackLease, InterruptSessionRequest, MediaOpenAuthorization, MediaOpenEvidence,
+    MediaOpenReceipt, MediaSourceKind, OriginalImportMetadata, PrepareSessionRequest,
+    PreparedSessionReceipt, RecorderAction, RecorderDetail, RecorderEvent,
+    RecordingStartedEvidence, RecoveredPlayableSession, RequiredSourcePlanEvidence,
+    RuntimeLibrarySnapshot, RuntimePlayableMediaAvailability, RuntimePlayableMediaSnapshot,
+    RuntimeSessionSnapshot, RuntimeSourceSnapshot, SealSegmentReceipt, SealedSegmentEvidence,
+    SessionInterruptionEvidence, SessionInterruptionReason, SessionOrigin, SourceFailureEvidence,
+    SourceFailureReason, SourceFailureRequest, StoreError, TimelineSegment, import_policy,
 };
 
 pub struct CoarseMediaOpenReceipt {
@@ -258,6 +258,16 @@ impl RecordingPreparationController {
     ) -> Result<ImportedMediaEvidence, StoreError> {
         self.store
             .import_normalized_caf(ImportMediaRequest { title, source_path }, original)
+    }
+
+    pub fn import_compressed_m4a(
+        &mut self,
+        title: String,
+        source_path: PathBuf,
+        metadata: CompressedImportMetadata,
+    ) -> Result<ImportedMediaEvidence, StoreError> {
+        self.store
+            .import_compressed_m4a(ImportMediaRequest { title, source_path }, metadata)
     }
 
     pub fn lease_imported_playback(

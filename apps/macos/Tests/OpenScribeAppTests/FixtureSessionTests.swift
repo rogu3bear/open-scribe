@@ -178,7 +178,7 @@ final class FixtureSessionTests: XCTestCase {
     )
   }
 
-  func testImportedPlaybackEligibilityShowsTheHardCapBeforeTheUserPressesPlay() {
+  func testImportedPlaybackEligibilityAllowsVerifiedLargeMedia() {
     func media(byteLength: UInt64) -> RuntimePlayableMediaPresentation {
       RuntimePlayableMediaPresentation(
         native: NativeRuntimePlayableMediaSnapshot(
@@ -197,10 +197,10 @@ final class FixtureSessionTests: XCTestCase {
     XCTAssertEqual(ImportedPlaybackEligibility.status(exactCap), "Ready to play")
 
     let overCap = media(byteLength: 268_435_457)
-    XCTAssertFalse(ImportedPlaybackEligibility.canPlay(overCap))
+    XCTAssertTrue(ImportedPlaybackEligibility.canPlay(overCap))
     XCTAssertEqual(
       ImportedPlaybackEligibility.status(overCap),
-      "Too large for safe playback"
+      "Ready to play"
     )
   }
 

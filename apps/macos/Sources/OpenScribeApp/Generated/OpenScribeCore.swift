@@ -722,6 +722,10 @@ public protocol NativeRecordingPreparationProtocol: AnyObject, Sendable {
 
   func confirmRecording(sessionId: String) throws -> NativeRecordingStartedEvidence
 
+  func importCompressedM4a(
+    title: String, sourcePath: String, metadata: NativeCompressedImportMetadata
+  ) throws -> NativeImportedMediaEvidence
+
   func importNormalizedCaf(
     title: String, normalizedPath: String, original: NativeOriginalImportMetadata
   ) throws -> NativeImportedMediaEvidence
@@ -896,6 +900,21 @@ open class NativeRecordingPreparation: NativeRecordingPreparationProtocol, @unch
         uniffi_open_scribe_uniffi_fn_method_nativerecordingpreparation_confirm_recording(
           self.uniffiCloneHandle(),
           FfiConverterString.lower(sessionId), uniffiCallStatus
+        )
+      })
+  }
+
+  open func importCompressedM4a(
+    title: String, sourcePath: String, metadata: NativeCompressedImportMetadata
+  ) throws -> NativeImportedMediaEvidence {
+    return try FfiConverterTypeNativeImportedMediaEvidence_lift(
+      try rustCallWithError(FfiConverterTypeNativeStorageError_lift) {
+        uniffiCallStatus in
+        uniffi_open_scribe_uniffi_fn_method_nativerecordingpreparation_import_compressed_m4a(
+          self.uniffiCloneHandle(),
+          FfiConverterString.lower(title),
+          FfiConverterString.lower(sourcePath),
+          FfiConverterTypeNativeCompressedImportMetadata_lower(metadata), uniffiCallStatus
         )
       })
   }
@@ -1300,6 +1319,65 @@ public func FfiConverterTypeNativeCommand_lift(_ buf: RustBuffer) throws -> Nati
 #endif
 public func FfiConverterTypeNativeCommand_lower(_ value: NativeCommand) -> RustBuffer {
   return FfiConverterTypeNativeCommand.lower(value)
+}
+
+public struct NativeCompressedImportMetadata: Equatable, Hashable {
+  public let original: NativeOriginalImportMetadata
+  public let sampleCount: UInt64
+  public let digestSha256: String
+
+  // Default memberwise initializers are never public by default, so we
+  // declare one manually.
+  public init(original: NativeOriginalImportMetadata, sampleCount: UInt64, digestSha256: String) {
+    self.original = original
+    self.sampleCount = sampleCount
+    self.digestSha256 = digestSha256
+  }
+
+}
+
+#if compiler(>=6)
+  extension NativeCompressedImportMetadata: Sendable {}
+#endif
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeNativeCompressedImportMetadata: FfiConverterRustBuffer {
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws
+    -> NativeCompressedImportMetadata
+  {
+    return
+      try NativeCompressedImportMetadata(
+        original: FfiConverterTypeNativeOriginalImportMetadata.read(from: &buf),
+        sampleCount: FfiConverterUInt64.read(from: &buf),
+        digestSha256: FfiConverterString.read(from: &buf)
+      )
+  }
+
+  public static func write(_ value: NativeCompressedImportMetadata, into buf: inout [UInt8]) {
+    FfiConverterTypeNativeOriginalImportMetadata.write(value.original, into: &buf)
+    FfiConverterUInt64.write(value.sampleCount, into: &buf)
+    FfiConverterString.write(value.digestSha256, into: &buf)
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeCompressedImportMetadata_lift(_ buf: RustBuffer) throws
+  -> NativeCompressedImportMetadata
+{
+  return try FfiConverterTypeNativeCompressedImportMetadata.lift(buf)
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeCompressedImportMetadata_lower(
+  _ value: NativeCompressedImportMetadata
+) -> RustBuffer {
+  return FfiConverterTypeNativeCompressedImportMetadata.lower(value)
 }
 
 public struct NativeFirstSampleEvidence: Equatable, Hashable {
@@ -4443,6 +4521,11 @@ private let initializationResult: InitializationResult = {
   }
   if uniffi_open_scribe_uniffi_checksum_method_nativerecordingpreparation_confirm_recording()
     != 15718
+  {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_open_scribe_uniffi_checksum_method_nativerecordingpreparation_import_compressed_m4a()
+    != 61882
   {
     return InitializationResult.apiChecksumMismatch
   }

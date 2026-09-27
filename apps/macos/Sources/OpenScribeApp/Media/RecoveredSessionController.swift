@@ -143,6 +143,7 @@ enum ImportedPlaybackAudioFileOperation: String, Equatable, Sendable {
   case readFileDataFormat
   case setClientDataFormat
   case readFrames
+  case seekFrames
 }
 
 struct ImportedPlaybackAudioFormatSummary: Equatable, Sendable {
@@ -321,10 +322,11 @@ struct RecoveredPlaybackDescriptorReceipt: Equatable, Sendable {
   let fileDescriptor: Int32
   let byteLength: UInt64
   let digestSha256: String
+  let fileTypeHint: AudioFileTypeID
 
   init(serialized: String) throws {
     let parts = serialized.split(separator: ";", omittingEmptySubsequences: false)
-    guard parts.first == "v2" else {
+    guard parts.first == "v2" || parts.first == "v3" else {
       throw ImportedPlaybackError.invalidDescriptorReceipt
     }
     var fields: [String: String] = [:]
@@ -336,7 +338,7 @@ struct RecoveredPlaybackDescriptorReceipt: Equatable, Sendable {
       fields[String(pair[0])] = String(pair[1])
     }
     guard
-      fields.count == 4,
+      fields.count == (parts.first == "v3" ? 5 : 4),
       let descriptorText = fields["fd"],
       let descriptor = Int32(descriptorText),
       descriptor >= 0,
@@ -347,13 +349,18 @@ struct RecoveredPlaybackDescriptorReceipt: Equatable, Sendable {
       let digest = fields["sha256"],
       digest.count == 64,
       digest.allSatisfy({ $0.isHexDigit && !$0.isUppercase }),
-      fields["chunk_byte_length"] == String(Self.chunkByteLength)
+      fields["chunk_byte_length"] == String(Self.chunkByteLength),
+      parts.first == "v3" ? fields["format"] == "m4a" : fields["format"] == nil
     else {
       throw ImportedPlaybackError.invalidDescriptorReceipt
     }
     fileDescriptor = descriptor
     self.byteLength = byteLength
     digestSha256 = digest
+    fileTypeHint = parts.first == "v3" ? kAudioFileM4AType : kAudioFileCAFType
+    if parts.first == "v3", byteLength > nativeImportPolicy().maximumSourceBytes {
+      throw ImportedPlaybackError.unsupportedByteLength
+    }
   }
 }
 
@@ -526,14 +533,17 @@ final class VerifiedDescriptorPlaybackSource: CallbackAudioByteSource, @unchecke
       let requested = Int(
         min(RecoveredPlaybackDescriptorReceipt.chunkByteLength, receipt.byteLength - offset)
       )
-      var chunk = Data(count: requested)
-      let count = try chunk.withUnsafeMutableBytes { buffer in
-        try readAt(receipt.fileDescriptor, offset, buffer)
+      let chunkDigest = try autoreleasepool {
+        var chunk = Data(count: requested)
+        let count = try chunk.withUnsafeMutableBytes { buffer in
+          try readAt(receipt.fileDescriptor, offset, buffer)
+        }
+        guard count == requested else { throw ImportedPlaybackError.incompleteSnapshot }
+        fullHasher.update(data: chunk)
+        return Data(SHA256.hash(data: chunk))
       }
-      guard count == requested else { throw ImportedPlaybackError.incompleteSnapshot }
-      fullHasher.update(data: chunk)
-      chunkDigests.append(Data(SHA256.hash(data: chunk)))
-      offset += UInt64(count)
+      chunkDigests.append(chunkDigest)
+      offset += UInt64(requested)
     }
     var trailingByte: UInt8 = 0
     let trailingCount = try withUnsafeMutableBytes(of: &trailingByte) { buffer in
@@ -803,6 +813,7 @@ final class CallbackCAFDecoder: @unchecked Sendable {
 
   init(
     source: any CallbackAudioByteSource,
+    fileTypeHint: AudioFileTypeID = kAudioFileCAFType,
     onClose: @escaping @Sendable () -> Void
   ) throws {
     let context = CallbackAudioFileContext(source: source)
@@ -813,7 +824,7 @@ final class CallbackCAFDecoder: @unchecked Sendable {
       nil,
       callbackAudioFileSize,
       nil,
-      kAudioFileCAFType,
+      fileTypeHint,
       &openedAudioFile
     )
     guard status == noErr, let openedAudioFile else {
@@ -937,6 +948,16 @@ final class CallbackCAFDecoder: @unchecked Sendable {
     return buffer
   }
 
+  func seek(toFrame frame: Int64) throws {
+    guard frame >= 0, let extendedAudioFile else {
+      throw ImportedPlaybackError.unsupportedAudioFormat(.decoderUnavailable)
+    }
+    let status = ExtAudioFileSeek(extendedAudioFile, frame)
+    guard status == noErr else {
+      throw ImportedPlaybackError.audioFile(operation: .seekFrames, status: status)
+    }
+  }
+
   func close() {
     let wasOpen = extendedAudioFile != nil || audioFile != nil
     if let extendedAudioFile {
@@ -980,6 +1001,7 @@ private final class BoundedCallbackPlaybackSession: @unchecked Sendable {
 
   init(
     source: any CallbackAudioByteSource,
+    fileTypeHint: AudioFileTypeID = kAudioFileCAFType,
     kind: CallbackPlaybackKind,
     generation: UUID,
     lifecycle: NativePlaybackLifecycleHooks,
@@ -991,6 +1013,7 @@ private final class BoundedCallbackPlaybackSession: @unchecked Sendable {
     self.termination = termination
     decoder = try CallbackCAFDecoder(
       source: source,
+      fileTypeHint: fileTypeHint,
       onClose: {
         lifecycle.observe(
           kind == .imported
@@ -1184,6 +1207,19 @@ final class RecoveredAudioPlayer: RecoveredAudioPlaying {
     activeGeneration = generation
     generationCell.set(generation)
     do {
+      if serializedReceipt.hasPrefix("v3;") {
+        let receipt = try RecoveredPlaybackDescriptorReceipt(serialized: serializedReceipt)
+        let source = try await StructuredImportedPlaybackCopy.run { isCancelled in
+          try VerifiedDescriptorPlaybackSource.prepare(receipt: receipt, isCancelled: isCancelled)
+        }
+        try Task.checkCancellation()
+        guard activeGeneration == generation else { throw CancellationError() }
+        try beginCallbackPlayback(
+          source: source, fileTypeHint: receipt.fileTypeHint, kind: .imported,
+          retaining: lease, generation: generation
+        )
+        return
+      }
       let receipt = try ImportedPlaybackDescriptorReceipt(serialized: serializedReceipt)
       try ImportedPlaybackMemoryPolicy.validate(receipt)
       let lifecycle = lifecycle
@@ -1232,12 +1268,14 @@ final class RecoveredAudioPlayer: RecoveredAudioPlaying {
 
   private func beginCallbackPlayback(
     source: any CallbackAudioByteSource,
+    fileTypeHint: AudioFileTypeID = kAudioFileCAFType,
     kind: CallbackPlaybackKind,
     retaining lease: AnyObject,
     generation: UUID
   ) throws {
     let playback = try BoundedCallbackPlaybackSession(
       source: source,
+      fileTypeHint: fileTypeHint,
       kind: kind,
       generation: generation,
       lifecycle: lifecycle,
@@ -1601,66 +1639,57 @@ final class RecoveredSessionController: ObservableObject {
       )
       return
     }
-    guard media.byteLength <= ImportedPlaybackMemoryPolicy.maximumSnapshotByteLength else {
-      setPlaybackError(
-        "Saved audio is too large for safe playback on this version of Open Scribe.",
-        sessionId: session.sessionId
-      )
-      return
-    }
-    do {
-      let lease = try importedPlaybackLeaseProvider(session.sessionId)
-      let generation = UUID()
-      activePlaybackGeneration = generation
-      activePlaybackSessionId = session.sessionId
-      playbackTask = Task { [weak self] in
-        guard let self else { return }
-        do {
-          try await self.player.playImported(
-            receipt: lease.playbackPath(),
-            retaining: lease,
-            generation: generation
-          )
-          guard self.activePlaybackGeneration == generation else { return }
-          self.playbackTask = nil
-          self.playingSessionId = session.sessionId
-          self.clearPlaybackError()
-        } catch is CancellationError {
-          guard self.activePlaybackGeneration == generation else { return }
-          self.finishCancelledPlayback(generation: generation)
-        } catch ImportedPlaybackError.unsupportedByteLength {
-          guard self.activePlaybackGeneration == generation else { return }
-          self.player.stop()
-          self.activePlaybackGeneration = nil
-          self.playbackTask = nil
-          self.activePlaybackSessionId = nil
-          self.playingSessionId = nil
-          self.pendingRecoveredMediaIdentity = nil
-          self.playingRecoveredMediaIdentity = nil
-          self.setPlaybackError(
-            "Saved audio is too large for safe playback on this version of Open Scribe.",
-            sessionId: session.sessionId
-          )
-        } catch {
-          guard self.activePlaybackGeneration == generation else { return }
-          self.player.stop()
-          self.activePlaybackGeneration = nil
-          self.playbackTask = nil
-          self.activePlaybackSessionId = nil
-          self.playingSessionId = nil
-          self.pendingRecoveredMediaIdentity = nil
-          self.playingRecoveredMediaIdentity = nil
-          self.setPlaybackError(
-            "Saved audio could not be opened for playback.",
-            sessionId: session.sessionId
-          )
+    let leaseProvider = importedPlaybackLeaseProvider
+    let sessionId = session.sessionId
+    let generation = UUID()
+    activePlaybackGeneration = generation
+    activePlaybackSessionId = session.sessionId
+    playbackTask = Task { [weak self] in
+      guard let self else { return }
+      do {
+        let lease = try await StructuredNativeIO.read {
+          try leaseProvider(sessionId)
         }
+        guard self.activePlaybackGeneration == generation else { return }
+        try await self.player.playImported(
+          receipt: lease.playbackPath(),
+          retaining: lease,
+          generation: generation
+        )
+        guard self.activePlaybackGeneration == generation else { return }
+        self.playbackTask = nil
+        self.playingSessionId = session.sessionId
+        self.clearPlaybackError()
+      } catch is CancellationError {
+        guard self.activePlaybackGeneration == generation else { return }
+        self.finishCancelledPlayback(generation: generation)
+      } catch ImportedPlaybackError.unsupportedByteLength {
+        guard self.activePlaybackGeneration == generation else { return }
+        self.player.stop()
+        self.activePlaybackGeneration = nil
+        self.playbackTask = nil
+        self.activePlaybackSessionId = nil
+        self.playingSessionId = nil
+        self.pendingRecoveredMediaIdentity = nil
+        self.playingRecoveredMediaIdentity = nil
+        self.setPlaybackError(
+          "Saved audio is too large for safe playback on this version of Open Scribe.",
+          sessionId: session.sessionId
+        )
+      } catch {
+        guard self.activePlaybackGeneration == generation else { return }
+        self.player.stop()
+        self.activePlaybackGeneration = nil
+        self.playbackTask = nil
+        self.activePlaybackSessionId = nil
+        self.playingSessionId = nil
+        self.pendingRecoveredMediaIdentity = nil
+        self.playingRecoveredMediaIdentity = nil
+        self.setPlaybackError(
+          "Saved audio could not be opened for playback.",
+          sessionId: session.sessionId
+        )
       }
-    } catch {
-      setPlaybackError(
-        "Saved audio could not be opened for playback.",
-        sessionId: session.sessionId
-      )
     }
   }
 

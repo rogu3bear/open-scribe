@@ -1,4 +1,5 @@
 @preconcurrency import AVFoundation
+import Darwin
 import Foundation
 import XCTest
 
@@ -134,7 +135,7 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
       stopSecurityScope: { _ in },
       importer: { _, _ in
         throw BoundedAudioImportError.sourceTooLarge(
-          actual: 865_280_158,
+          actual: 1_610_612_736,
           maximum: nativeImportPolicy().maximumSourceBytes
         )
       }
@@ -142,9 +143,119 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
     adapter.chooseAndImport()
     await assertEventually { adapter.phase == .failed }
     XCTAssertNil(adapter.importedSessionId)
-    XCTAssertTrue(adapter.statusMessage?.contains("825.2 MiB") == true)
-    XCTAssertTrue(adapter.statusMessage?.contains("256 MiB") == true)
+    XCTAssertTrue(adapter.statusMessage?.contains("1536.0 MiB") == true)
+    XCTAssertTrue(adapter.statusMessage?.contains("1024 MiB") == true)
     XCTAssertTrue(adapter.statusMessage?.contains("Nothing was added") == true)
+  }
+
+  func testStereoLosslessM4AKeepsCompressedBytesAndDecodesAfterReopeningLibrary() async throws {
+    let root = FileManager.default.temporaryDirectory
+      .appendingPathComponent("open-scribe-stereo-import-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let source = root.appendingPathComponent("Stereo memo.m4a")
+    do {
+      let file = try AVAudioFile(
+        forWriting: source,
+        settings: [
+          AVFormatIDKey: kAudioFormatAppleLossless,
+          AVSampleRateKey: 48_000.0,
+          AVNumberOfChannelsKey: 2,
+          AVEncoderBitDepthHintKey: 16,
+        ])
+      let buffer = try XCTUnwrap(
+        AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: 48_000))
+      buffer.frameLength = 48_000
+      let channels = try XCTUnwrap(buffer.floatChannelData)
+      for frame in 0..<48_000 {
+        channels[0][frame] = 0.25
+        channels[1][frame] = -0.125
+      }
+      try file.write(from: buffer)
+    }
+    let original = try Data(contentsOf: source)
+    let managedRoot = root.appendingPathComponent("Library", isDirectory: true)
+    let runtime = RuntimeLibraryStore(managedRoot: managedRoot)
+    let evidence = try runtime.importManagedAudio(title: "Stereo memo", sourceURL: source)
+    XCTAssertTrue(evidence.relativePath.hasSuffix(".m4a"))
+    XCTAssertEqual(evidence.byteLength, UInt64(original.count))
+    XCTAssertEqual(try Data(contentsOf: source), original)
+    let reopened = try NativeRecordingPreparation.open(managedRoot: managedRoot.path)
+    let saved = try XCTUnwrap(try reopened.runtimeLibrarySnapshot().savedSessions.first)
+    XCTAssertEqual(saved.playableMedia?.availability, "available")
+    let lease = try reopened.leaseImportedPlayback(sessionId: evidence.sessionId)
+    XCTAssertTrue(lease.playbackPath().hasPrefix("v3;"))
+    let receipt = try RecoveredPlaybackDescriptorReceipt(serialized: lease.playbackPath())
+    let bytes = try VerifiedDescriptorPlaybackSource.prepare(receipt: receipt)
+    let decoder = try CallbackCAFDecoder(
+      source: bytes, fileTypeHint: receipt.fileTypeHint, onClose: {})
+    defer { decoder.close() }
+    let decoded = try XCTUnwrap(decoder.read(maximumFrames: 4_096))
+    XCTAssertEqual(decoded.format.channelCount, 2)
+    XCTAssertEqual(decoded.floatChannelData?[0][0] ?? 0, 0.25, accuracy: 0.001)
+    XCTAssertEqual(decoded.floatChannelData?[1][0] ?? 0, -0.125, accuracy: 0.001)
+    XCTAssertLessThanOrEqual(VerifiedDescriptorPlaybackSource.maximumBufferedByteCount, 64 * 1024)
+    withExtendedLifetime(lease) {}
+  }
+
+  func testOperatorSelectedLargeM4AImportsAndDecodesBeginningAndEnd() async throws {
+    guard let path = ProcessInfo.processInfo.environment["OPEN_SCRIBE_LARGE_IMPORT_SAMPLE"] else {
+      throw XCTSkip(
+        "Set OPEN_SCRIBE_LARGE_IMPORT_SAMPLE to qualify an operator-selected local file.")
+    }
+    let baselineMemory = peakResidentBytes()
+    let root = FileManager.default.temporaryDirectory
+      .appendingPathComponent("open-scribe-large-import-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let source = URL(fileURLWithPath: path)
+    let (evidence, metadata) = try await StructuredNativeIO.mutation {
+      let prepared = try BoundedAudioImport.prepare(sourceURL: source, policy: nativeImportPolicy())
+      defer { prepared.removeTemporaryCopy() }
+      let metadata = try XCTUnwrap(prepared.compressed)
+      let controller = try NativeRecordingPreparation.open(managedRoot: root.path)
+      let evidence = try controller.importCompressedM4a(
+        title: source.deletingPathExtension().lastPathComponent,
+        sourcePath: prepared.cafURL.path,
+        metadata: metadata
+      )
+      return (evidence, metadata)
+    }
+    XCTAssertGreaterThan(
+      evidence.byteLength, ImportedPlaybackMemoryPolicy.maximumSnapshotByteLength)
+    XCTAssertEqual(evidence.byteLength, metadata.original.byteLength)
+    let controller = try NativeRecordingPreparation.open(managedRoot: root.path)
+    let snapshot = try controller.runtimeLibrarySnapshot()
+    XCTAssertEqual(snapshot.savedSessions.first?.playableMedia?.availability, "available")
+    let lease = try controller.leaseImportedPlayback(sessionId: evidence.sessionId)
+    let receipt = try RecoveredPlaybackDescriptorReceipt(serialized: lease.playbackPath())
+    let bytes = try await StructuredNativeIO.read {
+      try VerifiedDescriptorPlaybackSource.prepare(receipt: receipt)
+    }
+    let decoder = try CallbackCAFDecoder(
+      source: bytes, fileTypeHint: receipt.fileTypeHint, onClose: {})
+    defer { decoder.close() }
+    XCTAssertEqual(
+      try XCTUnwrap(decoder.read(maximumFrames: 4_096)).format.channelCount,
+      metadata.original.channelCount)
+    try decoder.seek(toFrame: Int64(metadata.sampleCount) - 4_096)
+    XCTAssertGreaterThan(try XCTUnwrap(decoder.read(maximumFrames: 4_096)).frameLength, 0)
+    let player = RecoveredAudioPlayer(outputMode: .silent)
+    try await player.playImported(
+      receipt: lease.playbackPath(), retaining: lease, generation: UUID())
+    player.stop()
+    let memoryGrowth = max(0, peakResidentBytes() - baselineMemory)
+    XCTAssertLessThan(
+      memoryGrowth, 256 * 1024 * 1024, "Large import must not retain a whole-file snapshot.")
+    print(
+      "LARGE_IMPORT_GREEN bytes=\(evidence.byteLength) frames=\(metadata.sampleCount) channels=\(metadata.original.channelCount) digest=\(evidence.digestSha256) descriptor_buffer=\(VerifiedDescriptorPlaybackSource.maximumBufferedByteCount) resident_peak_growth=\(memoryGrowth)"
+    )
+    withExtendedLifetime(lease) {}
+  }
+
+  private func peakResidentBytes() -> Int64 {
+    var usage = rusage()
+    XCTAssertEqual(getrusage(RUSAGE_SELF, &usage), 0)
+    return Int64(usage.ru_maxrss)
   }
 
   func testSecurityScopeStaysOpenThroughImportAndClosesAfterSuccess() async {

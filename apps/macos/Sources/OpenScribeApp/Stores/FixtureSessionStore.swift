@@ -47,6 +47,9 @@ final class RuntimeLibraryStore: ObservableObject {
   typealias NormalizedImportProvider =
     @Sendable (String, String, NativeOriginalImportMetadata) throws
     -> NativeImportedMediaEvidence
+  typealias CompressedImportProvider =
+    @Sendable (String, String, NativeCompressedImportMetadata) throws
+    -> NativeImportedMediaEvidence
 
   @Published private(set) var currentSession: RuntimeSessionPresentation?
   @Published private(set) var savedSessions: [RuntimeSessionPresentation] = []
@@ -56,6 +59,7 @@ final class RuntimeLibraryStore: ObservableObject {
   private let snapshotProvider: SnapshotProvider
   nonisolated private let importProvider: ImportProvider?
   nonisolated private let normalizedImportProvider: NormalizedImportProvider?
+  nonisolated private let compressedImportProvider: CompressedImportProvider?
   private var pollingTask: Task<Void, Never>?
   private var refreshTask: Task<Void, Never>?
   private var refreshGeneration: UInt64 = 0
@@ -65,11 +69,13 @@ final class RuntimeLibraryStore: ObservableObject {
     snapshotProvider: @escaping SnapshotProvider,
     importProvider: ImportProvider? = nil,
     normalizedImportProvider: NormalizedImportProvider? = nil,
+    compressedImportProvider: CompressedImportProvider? = nil,
     startsPolling: Bool = true
   ) {
     self.snapshotProvider = snapshotProvider
     self.importProvider = importProvider
     self.normalizedImportProvider = normalizedImportProvider
+    self.compressedImportProvider = compressedImportProvider
     refresh()
     if startsPolling {
       pollingTask = Task { [weak self] in
@@ -106,6 +112,14 @@ final class RuntimeLibraryStore: ObservableObject {
         return try controller.importNormalizedCaf(
           title: title, normalizedPath: normalizedPath, original: original
         )
+      },
+      compressedImportProvider: { title, sourcePath, metadata in
+        guard let controller else {
+          throw RuntimeLibraryStoreError.managedRootUnavailable
+        }
+        return try controller.importCompressedM4a(
+          title: title, sourcePath: sourcePath, metadata: metadata
+        )
       }
     )
   }
@@ -133,6 +147,17 @@ final class RuntimeLibraryStore: ObservableObject {
       sourceURL: sourceURL, policy: nativeImportPolicy()
     )
     defer { prepared.removeTemporaryCopy() }
+    if let compressed = prepared.compressed {
+      guard let compressedImportProvider else {
+        throw RuntimeLibraryStoreError.importUnavailable
+      }
+      let evidence = try compressedImportProvider(title, prepared.cafURL.path, compressed)
+      guard evidence.originalUntouched, evidence.readyForReview else {
+        throw RuntimeLibraryStoreError.importEvidenceRejected
+      }
+      Task { @MainActor [weak self] in self?.refresh() }
+      return evidence
+    }
     guard let original = prepared.original else {
       return try importManagedCaf(title: title, sourceURL: prepared.cafURL)
     }

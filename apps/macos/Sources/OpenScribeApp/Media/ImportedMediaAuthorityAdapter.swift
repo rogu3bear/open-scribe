@@ -114,7 +114,7 @@ final class ImportedMediaAuthorityAdapter: ObservableObject {
     let panel = NSOpenPanel()
     panel.title = "Import Conversation Audio"
     panel.message =
-      "Choose a local PCM CAF or mono M4A file to copy into Open Scribe (up to 256 MiB)."
+      "Choose a local PCM CAF (up to 256 MiB) or 48 kHz AAC/Apple Lossless M4A (up to 1 GiB and four hours)."
     panel.prompt = "Import"
     panel.canChooseFiles = true
     panel.canChooseDirectories = false
@@ -133,21 +133,25 @@ final class ImportedMediaAuthorityAdapter: ObservableObject {
     let maximumMiB = policy.maximumSourceBytes / 1_048_576
     if let failure = error as? BoundedAudioImportError {
       switch failure {
-      case .sourceTooLarge(let actual, _):
+      case .sourceTooLarge(let actual, let maximum):
         let actualMiB = String(format: "%.1f", Double(actual) / 1_048_576)
         return
-          "This file is \(actualMiB) MiB; the import limit is \(maximumMiB) MiB. Choose a smaller file. Nothing was added."
+          "This file is \(actualMiB) MiB; its import limit is \(maximum / 1_048_576) MiB. Choose a smaller file. Nothing was added."
       case .decodedTooLarge:
         return
-          "The decoded audio exceeds the \(maximumMiB) MiB playback limit. Choose a shorter file. Nothing was added."
+          "The decoded audio exceeds the \(policy.maximumManagedBytes / 1_048_576) MiB PCM playback limit. Choose a shorter file. Nothing was added."
       case .durationTooLong:
         return
           "The audio exceeds the four-hour import duration limit. Choose a shorter file. Nothing was added."
       case .unsupportedChannels:
         return
-          "This M4A has multiple channels; this import supports mono audio only. Nothing was added."
+          "This M4A has an unsupported channel layout. Mono and stereo are supported. Nothing was added."
+      case .unsupportedTracks:
+        return
+          "This M4A contains multiple or unreadable audio tracks. Choose a single-track file. Nothing was added."
       case .unsupportedFormat:
-        return "This file is not a supported PCM CAF or mono M4A. Nothing was added."
+        return
+          "This file is not supported. Large or stereo M4A must be 48 kHz AAC or Apple Lossless. Nothing was added."
       case .invalidSource, .decodeFailed:
         return "The selected audio could not be read safely. Nothing was added."
       }
@@ -156,11 +160,11 @@ final class ImportedMediaAuthorityAdapter: ObservableObject {
       switch failure {
       case .ImportSizeLimit:
         return
-          "The audio exceeds the \(maximumMiB) MiB import or playback limit. Nothing was added."
+          "The audio exceeds the \(maximumMiB) MiB M4A or 256 MiB PCM CAF limit. Nothing was added."
       case .ImportDurationLimit:
         return "The audio exceeds the four-hour import duration limit. Nothing was added."
       case .InvalidRequest:
-        return "This file is not a supported mono PCM CAF or M4A. Nothing was added."
+        return "This file is not a supported PCM CAF or 48 kHz mono/stereo M4A. Nothing was added."
       default:
         return "Open Scribe could not save a verified local copy. Nothing was added."
       }
