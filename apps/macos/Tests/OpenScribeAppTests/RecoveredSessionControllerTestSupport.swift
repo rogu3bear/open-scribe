@@ -532,6 +532,7 @@ class RecoveredSessionTestCase: XCTestCase {
         mediaFilesOpen: false,
         interruptionReason: nil,
         recovered: false,
+        hasCaptureTimeline: false,
         sources: [],
         playableMedia: NativeRuntimePlayableMediaSnapshot(
           sourceDisplayName: sourceDisplayName,

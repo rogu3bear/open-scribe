@@ -277,6 +277,7 @@ final class FixtureSessionTests: XCTestCase {
       mediaFilesOpen: true,
       interruptionReason: nil,
       recovered: false,
+      hasCaptureTimeline: false,
       sources: [
         NativeRuntimeSourceSnapshot(
           kind: .microphone,
@@ -301,6 +302,7 @@ final class FixtureSessionTests: XCTestCase {
       mediaFilesOpen: false,
       interruptionReason: nil,
       recovered: true,
+      hasCaptureTimeline: false,
       sources: current.sources.map {
         NativeRuntimeSourceSnapshot(
           kind: $0.kind,
@@ -390,6 +392,7 @@ final class FixtureSessionTests: XCTestCase {
         mediaFilesOpen: true,
         interruptionReason: "capture_failed",
         recovered: false,
+        hasCaptureTimeline: false,
         sources: [
           NativeRuntimeSourceSnapshot(
             kind: .microphone,
@@ -429,6 +432,7 @@ final class FixtureSessionTests: XCTestCase {
         mediaFilesOpen: true,
         interruptionReason: nil,
         recovered: false,
+        hasCaptureTimeline: false,
         sources: [
           NativeRuntimeSourceSnapshot(
             kind: .microphone,
@@ -472,6 +476,7 @@ final class FixtureSessionTests: XCTestCase {
         mediaFilesOpen: false,
         interruptionReason: "capture_failed",
         recovered: true,
+        hasCaptureTimeline: false,
         sources: [
           NativeRuntimeSourceSnapshot(
             kind: .microphone,
@@ -631,6 +636,7 @@ final class FixtureSessionTests: XCTestCase {
         mediaFilesOpen: false,
         interruptionReason: nil,
         recovered: true,
+        hasCaptureTimeline: false,
         sources: [
           NativeRuntimeSourceSnapshot(
             kind: .microphone,
@@ -668,7 +674,7 @@ final class FixtureSessionTests: XCTestCase {
               sessionId: "slow-saved-session", title: "Slow saved meeting",
               lifecycle: "ready_for_review", health: "healthy", elapsedSeconds: 2,
               journalDurable: true, mediaFilesOpen: false, interruptionReason: nil,
-              recovered: true, sources: [], playableMedia: nil
+              recovered: true, hasCaptureTimeline: false, sources: [], playableMedia: nil
             )
           ]
         )
@@ -693,6 +699,7 @@ final class FixtureSessionTests: XCTestCase {
       mediaFilesOpen: true,
       interruptionReason: nil,
       recovered: false,
+      hasCaptureTimeline: false,
       sources: [
         NativeRuntimeSourceSnapshot(
           kind: .microphone,
@@ -712,6 +719,7 @@ final class FixtureSessionTests: XCTestCase {
       mediaFilesOpen: false,
       interruptionReason: nil,
       recovered: false,
+      hasCaptureTimeline: false,
       sources: [
         NativeRuntimeSourceSnapshot(
           kind: .microphone,
@@ -785,6 +793,7 @@ final class FixtureSessionTests: XCTestCase {
         mediaFilesOpen: false,
         interruptionReason: "capture_failed",
         recovered: true,
+        hasCaptureTimeline: false,
         sources: [
           NativeRuntimeSourceSnapshot(
             kind: .microphone,

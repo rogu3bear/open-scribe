@@ -312,6 +312,7 @@ private final class ImportRuntimeFixture: @unchecked Sendable {
         mediaFilesOpen: false,
         interruptionReason: nil,
         recovered: false,
+        hasCaptureTimeline: false,
         sources: [],
         playableMedia: NativeRuntimePlayableMediaSnapshot(
           sourceDisplayName: "customer.caf",
@@ -366,6 +367,7 @@ private final class DelayedImportProjectionFixture: @unchecked Sendable {
       mediaFilesOpen: false,
       interruptionReason: nil,
       recovered: false,
+      hasCaptureTimeline: false,
       sources: [],
       playableMedia: nil
     )
@@ -380,6 +382,7 @@ private final class DelayedImportProjectionFixture: @unchecked Sendable {
         mediaFilesOpen: false,
         interruptionReason: nil,
         recovered: false,
+        hasCaptureTimeline: false,
         sources: [],
         playableMedia: NativeRuntimePlayableMediaSnapshot(
           sourceDisplayName: "customer.caf",

@@ -33,6 +33,21 @@ Run the founding structure gate:
 ./script/check.sh --scaffold
 ```
 
+Verify capture-controller and media-writer behavior with synthetic buffers and
+injected device backends, without live capture or speaker playback:
+
+```bash
+./script/build_and_run.sh --verify-recording
+```
+
+This builds the app and runs recorder component tests. The foundational workflow
+now has [synthetic and short live proof](docs/TESTING.md#foundational-recording-workflow):
+two sources, a Rust-owned shared timeline, 30-second segments, forced termination,
+unchanged recovered media, and shared native playback. It does not close M1.
+`./script/check.sh --m1-complete` names remaining implementation and runtime
+gates, including pause/resume, markers, mixdown, storage-pressure policy,
+application selection, channel-layout fidelity, and the two-hour device run.
+
 Verify the Rust-owned live/library snapshot, fresh bindings, complete unsigned
 native test suite, and exact idle app launch without requesting capture access:
 

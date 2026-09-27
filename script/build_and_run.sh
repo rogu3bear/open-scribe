@@ -13,7 +13,7 @@ mode="run"
 
 for argument in "$@"; do
 	case "$argument" in
-	--verify | --logs | --debug | --telemetry | --m1-live-microphone-proof | --m1-dual-source-runtime-proof | --m1-forced-termination-recovery-proof)
+	--verify | --verify-recording | --logs | --debug | --telemetry | --m1-live-microphone-proof | --m1-dual-source-runtime-proof | --m1-forced-termination-recovery-proof)
 		if [[ "$mode" != "run" ]]; then
 			printf '%s\n' 'Choose exactly one mode.' >&2
 			exit 64
@@ -21,7 +21,7 @@ for argument in "$@"; do
 		mode="$argument"
 		;;
 	*)
-		printf 'usage: %s [--verify|--logs|--debug|--telemetry|--m1-live-microphone-proof|--m1-dual-source-runtime-proof|--m1-forced-termination-recovery-proof]\n' "$0" >&2
+		printf 'usage: %s [--verify|--verify-recording|--logs|--debug|--telemetry|--m1-live-microphone-proof|--m1-dual-source-runtime-proof|--m1-forced-termination-recovery-proof]\n' "$0" >&2
 		exit 64
 		;;
 	esac
@@ -122,7 +122,19 @@ case "$mode" in
 run)
 	launch_app
 	;;
---verify)
+--verify | --verify-recording)
+	test_filters=()
+	if [[ "$mode" == "--verify-recording" ]]; then
+		# These suites use injected capture backends and file buffers, with no
+		# microphone, ScreenCaptureKit stream, or speaker playback.
+		test_filters=(
+			-only-testing:OpenScribeAppTests/TimelineWorkflowTests
+			-only-testing:OpenScribeAppTests/MicrophoneCaptureAdapterTests
+			-only-testing:OpenScribeAppTests/SystemAudioCaptureAdapterTests
+			-only-testing:OpenScribeAppTests/LiveMicrophoneRecordingControllerTests
+			-only-testing:OpenScribeAppTests/MediaOpenProtocolTests
+		)
+	fi
 	xcodebuild \
 		-project "$xcode_project" \
 		-scheme OpenScribeApp \
@@ -133,7 +145,15 @@ run)
 		LIBRARY_SEARCH_PATHS="$(dirname "$rust_library")" \
 		MACOSX_DEPLOYMENT_TARGET=13.0 \
 		CODE_SIGNING_ALLOWED=NO \
+		"${test_filters[@]}" \
 		test
+	if [[ "$mode" == "--verify-recording" ]]; then
+		printf '%s\n' \
+			'RECORDING_COMPONENTS_GREEN' \
+			'proof=fresh_rust_bindings,xcode_app_build,synthetic_capture,writer_drain,source_loss_controller,media_receipts,shared_timeline,segment_rotation,gap_preserving_pcm_playback' \
+			'excludes=real_capture,permissions,audible_output,long_sessions,m1_completion,signing,release'
+		exit 0
+	fi
 	launch_app --m0-proof-settings
 	app_pid="$(<"$pid_file")"
 	verify_app_pid="$app_pid"

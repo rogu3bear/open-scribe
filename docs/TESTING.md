@@ -8,18 +8,106 @@ Characterization tests pin observed behavior before correction. Safety-critical 
 
 Repository and source tests currently cover managed local CAF import, deterministic deduplication and rejection, imported-conversation projection, validated-byte playback leasing, and shared recovered/imported playback failures. Those tests do not prove behavior with real user-selected files, broader media formats, large files, long-running sessions, source-loss recovery, an installed or signed artifact, or public delivery.
 
+### Recorder component check
+
+`./script/build_and_run.sh --verify-recording` rebuilds Rust, verifies generated
+bindings, builds the unsigned Xcode app, and runs the microphone, system-audio,
+recording-controller, media-open, and timeline workflow suites. It uses synthetic buffers and
+injected capture backends; it never starts a live capture stream or a playback
+engine. A successful run emits `RECORDING_COMPONENTS_GREEN`.
+
+The September 25, 2026 run passed 58 tests, including accepted-buffer draining
+before seal, callbacks after detachment, an already-stopped system stream,
+stop during pending startup, stale-session failures, explicit user cancellation,
+and timestamp rejection before writing. These are component results. Real
+source loss, permission revocation, route changes, storage pressure, and
+two-hour synchronization remain unproved. The full M1 completion gate also
+names missing implementation; it remains fail-closed.
+
+### Foundational recording workflow
+
+The current implementation uses a Rust-journaled native host-clock anchor,
+signed segment offsets, 30-second CAF rotation, segment-local recovery, and
+shared-timeline playback. Native conversion state survives rotation. Swift
+keeps audio buffers; Rust accepts only clock and segment boundary receipts.
+Playback keeps two output buffers and acquires file leases as segments are read.
+Unstarted successor segments become explicit recovery gaps; their bytes remain
+untouched. Older captures without a calibrated clock retain individual playback.
+New clock anchors journal playback alignment policy version 1: a negative
+boundary offset may move playback by at most 50 ms to preserve every PCM sample
+exactly once. Original host timestamps and mapped starts remain unchanged;
+the plan exposes the correction and the playback UI displays it. Positive gaps
+remain silence. Correction beyond 50 ms fails closed; this is not long-session
+drift qualification.
+
+After building, run the device-free process proof:
+
+```sh
+bash script/check_foundational_workflow.sh "$PWD/apps/macos/.build/xcode/Build/Products/Debug/OpenScribeApp.app/Contents/MacOS/OpenScribeApp"
+```
+
+On September 25 this emitted `FOUNDATION_SYNTHETIC_GREEN`: two 31-second source
+tracks, each split into 30-second and 1-second files; external SIGKILL while both
+tails were open; four unchanged SHA-256 digests after reopening; and 1,548,000
+rendered frames with four amplitude checks proving source offset and overlap.
+Separate native coverage verifies a source gap renders as silence. Rust's 91
+tests passed, including immutable rational-clock mapping, all three pre-sample
+rotation crash boundaries, repeated recovery, timing-tamper rejection, and
+bounded clock correction preserving all samples and original timestamps.
+The reopened conversation and its shared playback control were visually checked.
+
+Exact tested unsigned app, HEAD `415b221ed266efc263d18659d3c4e110be476df8`
+plus the uncommitted candidate:
+
+- executable SHA-256: `104c2aee43dd1f4de6ec7a721de2ae48e0cd4b8703dc54eeaa5bb27648c79194`
+- debug dylib SHA-256: `52136671440025a77094781c39d12dcc316933ac0e54b62fe053a712ea5385a8`
+- native result: `apps/macos/.build/xcode/Logs/Test/Test-OpenScribeApp-2026.09.25_18-21-27--0400.xcresult`
+
+The same script's explicit `--live` mode passed on that artifact after the user's
+live-audio authorization. Both real sources remained Recording for 35 seconds
+before external SIGKILL. Recovery retained five unchanged CAF digests: microphone
+85 ms, 30 s, and 5.007 s segments; system-audio 30 s and 5.260 s segments. A
+14.667 ms microphone gap remains on the timeline; the next microphone boundary
+has an explicit 6.1945 ms playback clock correction. All 1,697,100 timeline
+frames decoded, then shared native output ran for 1.25 seconds. The reopened
+conversation displayed `Recovered and ready`, both sources `Saved`, and
+`Play all sources together`.
+
+Retained local evidence (audio remains local, outside Git):
+
+- live root: `/var/folders/dw/m_jqw9f925q5y7g0bplhlp000000gn/T/open-scribe-foundation.Z3jCZq`
+- live session: `01a0daa9-57ee-7150-8848-836b86064117`
+- live receipt: `recovery-verified.json`; media digests: `media-before.sha256`, within that root
+- synthetic root: `/var/folders/dw/m_jqw9f925q5y7g0bplhlp000000gn/T/open-scribe-foundation.Mn0IoU`
+- process logs: `/tmp/open-scribe-foundation-verified-{synthetic,live}.log`
+
+`./script/check.sh --scaffold` also passed after these changes, using the existing
+Rust cache under Disk Guard: workspace checks/tests, shared-crate WASM checks,
+doctrine consistency, shell lint, and tracked/untracked diff hygiene. Its log is
+`/tmp/open-scribe-foundation-scaffold.log`. Native component results remain a
+separate 58-test proof; scaffold success does not expand the live acceptance.
+
+The earlier live attempt preserved its media but rejected a 6.1975 ms overlap
+under the previous strict policy. Its evidence remains in the sibling
+`open-scribe-foundation.vET4bA` directory; it is not a passing playback receipt.
+
+This short proof does not establish perceptual audio quality, permission/source/
+route failure handling, two-hour drift, pause/resume, native channel-layout
+fidelity, mixdown, signing, release, or M1 completion. A new live run still
+requires explicit capture and audible-playback authority.
+
 ## Safety Net Map
 
 | Surface | Existing Safety Net | Important Gap | Priority | Owner |
 |---|---|---|---:|---|
 | Rust domain/types | Unit tests and fixture compatibility checks | Migration/backward-compatibility corpus remains small | P1 | Durable-state owner |
-| Rust store/journal | Preparation, media-open, first-sample, sealing, digest, typed interruption, restart classification, strict unclosed-CAF recovery, and projection-repair tests | Required-source completion and long-session recovery remain open | P0 | Durable-state owner |
-| UniFFI boundary | Binding regeneration and coarse evidence-object tests | No live multi-source coordinator contract | P1 | Integration owner |
+| Rust store/journal | Preparation, media-open, first-sample, sealing, digest, typed interruption, segmented dual-source recovery, calibrated timeline, and projection-repair tests | Long-session and source-loss continuation remain unqualified | P0 | Durable-state owner |
+| UniFFI boundary | Fresh bindings, coarse clock/segment receipts, bounded playback leases, and short live dual-source proof | Long-session and failure-matrix qualification remains open | P1 | Integration owner |
 | CAF writer and microphone adapter | Deterministic buffer, failure, race, stop barrier, receipt tests, and one short real-device proof | No route-change, disk-pressure, or long-run proof | P0 | Native runtime owner |
-| Live recording controller | Happy path plus typed interruption reporting and recovered-conversation discovery/native playback | No required-source coordinator, route-loss recovery, or long-run proof | P0 | Native runtime owner |
+| Live recording controller | Required-source coordination, typed interruption, callback/drain races, and short live shared-timeline recovery/playback | Route-loss recovery and long-run proof remain open | P0 | Native runtime owner |
 | Single-instance guard | Exact lock ownership unit test | AppDelegate conflates an existing instance with lock-file I/O failure | P1 | Native shell owner |
 | Menu-bar UI | Build and scene-launch fixture | No UI automation for source selection, durable state transitions, or error recovery | P1 | UX/QA owner |
-| System/application audio | Founding requirements only | No selected-source implementation or proof | P0 | Platform capture owner |
+| System/application audio | All-authorized system audio participates in the short live segmented recovery proof | Application-scoped selection and delivered channel-layout fidelity remain unimplemented | P0 | Platform capture owner |
 | Playback/import/transcription/diarization | Managed local CAF import, deterministic deduplication/rejection, imported-conversation projection, validated-byte playback leasing, and shared recovered/imported playback failure tests | No real-user-file or broader-format runtime proof; large-file, long-session, transcription, diarization, installed/signed-artifact, source-loss, and public-delivery behavior remain unproved | P1 after recorder | Conversation-loop owner |
 | Release | Scaffold/build checks | No signed, notarized, installed, upgrade, rollback, or public-source binding | P1 before release | Release owner |
 
