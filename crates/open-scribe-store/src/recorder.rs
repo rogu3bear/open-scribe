@@ -70,6 +70,14 @@ impl SessionStore {
                     ));
                 }
                 self.map_capture_time(&session.0, host_time)?;
+                let last_sample: i64 = self.connection.query_row(
+                    "SELECT COALESCE(MAX(json_extract(payload_json, '$.final_sample_host_time')), 0)
+                     FROM session_events WHERE session_id = ?1 AND event_kind = 'segment_sealed'",
+                    [&session.0], |row| row.get(0),
+                )?;
+                if i128::from(host_time) < i128::from(last_sample) {
+                    return Err(StoreError::InvalidRequest("pause precedes drained media"));
+                }
                 (
                     "capture_paused",
                     json!({"host_time": host_time, "session_nanoseconds": state.captured_nanoseconds}),
@@ -86,7 +94,13 @@ impl SessionStore {
                 )
             }
             RecorderAction::AnchorResume { host_time } => {
-                if phase != "preparing" {
+                if phase != "preparing"
+                    || self
+                        .latest_capture_boundary(&session.0)?
+                        .as_ref()
+                        .map(|(kind, _)| kind.as_str())
+                        != Some("resume_requested")
+                {
                     return Err(StoreError::InvalidState("resume was not requested"));
                 }
                 let pause = self
@@ -97,6 +111,7 @@ impl SessionStore {
                         "resume host clock precedes pause",
                     ));
                 }
+                self.map_capture_time(&session.0, host_time)?;
                 (
                     "capture_resumed",
                     json!({"host_time": host_time, "session_nanoseconds": payload_i64(&pause, "session_nanoseconds")?}),
@@ -256,6 +271,43 @@ impl SessionStore {
 
     pub(super) fn has_active_segments(&self, session: &str) -> Result<bool, StoreError> {
         Ok(self.connection.query_row("SELECT EXISTS(SELECT 1 FROM segments WHERE session_id = ?1 AND lifecycle IN ('opening', 'open', 'capturing'))", [session], |r| r.get(0))?)
+    }
+
+    fn latest_capture_boundary(
+        &self,
+        session: &str,
+    ) -> Result<Option<(String, Value)>, StoreError> {
+        let mut query = self.connection.prepare(
+            "SELECT event_kind, payload_json FROM session_events WHERE session_id = ?1
+             AND event_kind IN ('capture_paused', 'resume_requested', 'capture_resumed')
+             ORDER BY sequence DESC LIMIT 1",
+        )?;
+        let mut rows = query.query([session])?;
+        rows.next()?
+            .map(|row| -> Result<_, StoreError> {
+                Ok((
+                    row.get(0)?,
+                    serde_json::from_str(&row.get::<_, String>(1)?)?,
+                ))
+            })
+            .transpose()
+    }
+
+    /// Old callbacks and unanchored capture cannot populate a resumed segment.
+    /// Historical segments still map through their original capture interval.
+    pub(super) fn require_resumed_sample(
+        &self,
+        session: &str,
+        host: u64,
+    ) -> Result<(), StoreError> {
+        if let Some((kind, payload)) = self.latest_capture_boundary(session)? {
+            if kind != "capture_resumed" || host < payload_u64(&payload, "host_time")? {
+                return Err(StoreError::InvalidState(
+                    "sample precedes the resume boundary",
+                ));
+            }
+        }
+        Ok(())
     }
 
     pub(super) fn require_storage_headroom(&self, session: &str) -> Result<(), StoreError> {

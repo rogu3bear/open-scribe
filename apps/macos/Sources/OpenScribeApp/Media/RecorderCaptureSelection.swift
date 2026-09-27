@@ -66,8 +66,9 @@ extension RecorderApplicationPicker: SCContentSharingPickerObserver {
   nonisolated func contentSharingPicker(_ picker: SCContentSharingPicker, didCancelFor stream: SCStream?) {}
 
   nonisolated func contentSharingPicker(_ picker: SCContentSharingPicker, didUpdateWith filter: SCContentFilter, for stream: SCStream?) {
+    guard stream == nil else { return }
     Task { @MainActor [weak self] in
-      guard let self, stream == nil else { return }
+      guard let self else { return }
       let application: SCRunningApplication?
       if #available(macOS 15.2, *) { application = filter.includedApplications.first } else { application = nil }
       self.onSelection?(Self.selection(filter: filter, app: application))

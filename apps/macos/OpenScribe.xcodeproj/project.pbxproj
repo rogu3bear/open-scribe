@@ -7,6 +7,9 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		AA0000050000000000000001 /* RecorderCaptureSelection.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000050000000000000011 /* RecorderCaptureSelection.swift */; };
+		AA0000050000000000000002 /* RecorderControls.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000050000000000000012 /* RecorderControls.swift */; };
+		AA0000050000000000000003 /* RecorderPauseResumeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000050000000000000013 /* RecorderPauseResumeTests.swift */; };
 		CA63A3F920D148E6A9BCE201 /* SystemAudioCaptureAdapterTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DA63A3F920D148E6A9BCE201 /* SystemAudioCaptureAdapterTests.swift */; };
 		AB61A3F920D148E6A9BCE304 /* TimelineWorkflowTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC61A3F920D148E6A9BCE304 /* TimelineWorkflowTests.swift */; };
 		1F1D1AD4B3B9F501CC0AB5DF /* FixtureSessionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F5696F23409FC2574DF65AD5 /* FixtureSessionTests.swift */; };
@@ -56,6 +59,9 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		AA0000050000000000000011 /* RecorderCaptureSelection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecorderCaptureSelection.swift; sourceTree = "<group>"; };
+		AA0000050000000000000012 /* RecorderControls.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecorderControls.swift; sourceTree = "<group>"; };
+		AA0000050000000000000013 /* RecorderPauseResumeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecorderPauseResumeTests.swift; sourceTree = "<group>"; };
 		DA63A3F920D148E6A9BCE201 /* SystemAudioCaptureAdapterTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SystemAudioCaptureAdapterTests.swift; sourceTree = "<group>"; };
 		AC61A3F920D148E6A9BCE304 /* TimelineWorkflowTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TimelineWorkflowTests.swift; sourceTree = "<group>"; };
 		32118F0168D462A2AF9207B5 /* OpenScribeApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenScribeApp.swift; sourceTree = "<group>"; };
@@ -158,6 +164,7 @@
 		6A61A3F920D148E6A9BCE201 /* Media */ = {
 			isa = PBXGroup;
 			children = (
+				AA0000050000000000000011 /* RecorderCaptureSelection.swift */,
 				A12A3F920D148E6A9BCE201 /* ImportedMediaAuthorityAdapter.swift */,
 				D263A3F920D148E6A9BCE201 /* LiveMicrophoneRecordingController.swift */,
 				D663A3F920D148E6A9BCE201 /* SystemAudioCaptureAdapter.swift */,
@@ -175,6 +182,7 @@
 		709304684170899F88B322E6 /* OpenScribeAppTests */ = {
 			isa = PBXGroup;
 			children = (
+				AA0000050000000000000013 /* RecorderPauseResumeTests.swift */,
 				A22A3F920D148E6A9BCE201 /* ImportedMediaAuthorityAdapterTests.swift */,
 				F5696F23409FC2574DF65AD5 /* FixtureSessionTests.swift */,
 				D363A3F920D148E6A9BCE201 /* LiveMicrophoneRecordingControllerTests.swift */,
@@ -195,6 +203,7 @@
 		71D5EF4D1A0BA7E04FA1A6D8 /* Views */ = {
 			isa = PBXGroup;
 			children = (
+				AA0000050000000000000012 /* RecorderControls.swift */,
 				FA0F0D94D6B878C1D7BCA3F7 /* CompactLiveView.swift */,
 				C62801D03FDD064235316905 /* ContentView.swift */,
 				8957201D2FE0F213BBA3D310 /* MenuBarContent.swift */,
@@ -317,6 +326,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				AA0000050000000000000003 /* RecorderPauseResumeTests.swift in Sources */,
 				A21A3F920D148E6A9BCE201 /* ImportedMediaAuthorityAdapterTests.swift in Sources */,
 				1F1D1AD4B3B9F501CC0AB5DF /* FixtureSessionTests.swift in Sources */,
 				C363A3F920D148E6A9BCE201 /* LiveMicrophoneRecordingControllerTests.swift in Sources */,
@@ -337,6 +347,8 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				AA0000050000000000000001 /* RecorderCaptureSelection.swift in Sources */,
+				AA0000050000000000000002 /* RecorderControls.swift in Sources */,
 				A11A3F920D148E6A9BCE201 /* ImportedMediaAuthorityAdapter.swift in Sources */,
 				5DB6CB212CE4D1617F1E34D4 /* AccessibilityAnnouncer.swift in Sources */,
 				5AA4F437F283C41AEB8ABF86 /* AppStatus.swift in Sources */,

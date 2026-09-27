@@ -79,6 +79,7 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
   private var requiredSources: [NativeMediaSourceKind]
   private let captureHealthTelemetry: CaptureHealthTelemetry
   private let segmentedCapture: Bool
+  private let hostTime: @Sendable () -> UInt64
   private var selectedSystemCaptureFactory: (@Sendable (ManagedSegmentWriting, RecorderCaptureSelection) async throws -> SystemAudioCapturing)?
   private var storageWatchTask: Task<Void, Never>?
   private var applicationExitObserver: NSObjectProtocol?
@@ -102,6 +103,7 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
     requiredSources: [NativeMediaSourceKind] = [.microphone],
     systemCaptureFactory: SystemCaptureFactory? = nil,
     segmentedCapture: Bool = false,
+    hostTime: @escaping @Sendable () -> UInt64 = { mach_absolute_time() },
     captureHealthTelemetry: @escaping CaptureHealthTelemetry = {
       AppTelemetry.captureSourceHealth($0)
     }
@@ -114,6 +116,7 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
     self.systemCaptureFactory = systemCaptureFactory
     self.captureHealthTelemetry = captureHealthTelemetry
     self.segmentedCapture = segmentedCapture
+    self.hostTime = hostTime
     super.init()
   }
 
@@ -200,6 +203,7 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
     guard resuming ? canResume : canStart else { return }
     let previousWriters = resuming ? writers : [:]
     let previousSession = resuming ? activeSessionId : nil
+    let previousSavedPaths = savedPaths
     let attempt = UUID()
     activeAttempt = attempt
     errorMessage = nil
@@ -219,6 +223,9 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
       if resuming {
         writers = previousWriters
         activeSessionId = previousSession
+        savedPaths = previousSavedPaths
+        savedPath = previousSavedPaths.first
+        activeAttempt = nil
         phase = .paused
         errorMessage = "Microphone access is unavailable. The recording remains paused."
         return
@@ -310,8 +317,8 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
       }
 
       if segmentedCapture {
-        if resuming { _ = try preparation.recorderAction(sessionId: sessionId, action: .anchorResume(hostTime: mach_absolute_time())) }
-        else { try SegmentedCAFWriter.anchor(preparation: preparation, sessionId: sessionId) }
+        if resuming { _ = try preparation.recorderAction(sessionId: sessionId, action: .anchorResume(hostTime: hostTime())) }
+        else { try SegmentedCAFWriter.anchor(preparation: preparation, sessionId: sessionId, hostAnchor: hostTime()) }
       }
       phase = .starting
       if let systemCapture, let audioSource {
@@ -452,7 +459,7 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
       savedPaths = requiredSources.compactMap { writers[$0]?.authorization.absolutePath }
       savedPath = savedPaths.first
       if pausing, let activeSessionId {
-        recorderDetail = try preparation.recorderAction(sessionId: activeSessionId, action: .completePause(hostTime: mach_absolute_time()))
+        recorderDetail = try preparation.recorderAction(sessionId: activeSessionId, action: .completePause(hostTime: hostTime()))
         microphoneCapture = nil
         systemCapture = nil
         activeAttempt = nil

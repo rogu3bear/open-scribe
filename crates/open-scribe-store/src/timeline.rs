@@ -186,7 +186,7 @@ impl SessionStore {
              FROM segments JOIN tracks ON tracks.id = segments.track_id
              JOIN sources ON sources.id = tracks.source_id JOIN sessions ON sessions.id = segments.session_id
              WHERE segments.id = ?1 AND sessions.id = ?2
-               AND ((sessions.lifecycle = 'recording' AND sources.lifecycle = 'capturing' AND segments.lifecycle = 'capturing')
+               AND ((sessions.lifecycle IN ('recording', 'finalizing') AND sources.lifecycle = 'capturing' AND segments.lifecycle = 'capturing')
                  OR (sessions.lifecycle = 'preparing' AND sources.lifecycle = 'sealed' AND segments.lifecycle = 'sealed'
                     AND EXISTS(SELECT 1 FROM session_events WHERE session_id = ?2 AND event_kind = 'resume_requested')))
                AND NOT EXISTS(SELECT 1 FROM segments later WHERE later.track_id = tracks.id AND later.sequence > segments.sequence)",

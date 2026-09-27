@@ -129,6 +129,7 @@ run)
 		# microphone, ScreenCaptureKit stream, or speaker playback.
 		test_filters=(
 			-only-testing:OpenScribeAppTests/TimelineWorkflowTests
+			-only-testing:OpenScribeAppTests/RecorderPauseResumeTests
 			-only-testing:OpenScribeAppTests/MicrophoneCaptureAdapterTests
 			-only-testing:OpenScribeAppTests/SystemAudioCaptureAdapterTests
 			-only-testing:OpenScribeAppTests/LiveMicrophoneRecordingControllerTests
@@ -150,7 +151,7 @@ run)
 	if [[ "$mode" == "--verify-recording" ]]; then
 		printf '%s\n' \
 			'RECORDING_COMPONENTS_GREEN' \
-			'proof=fresh_rust_bindings,xcode_app_build,synthetic_capture,writer_drain,source_loss_controller,media_receipts,shared_timeline,segment_rotation,gap_preserving_pcm_playback' \
+			'proof=fresh_rust_bindings,xcode_app_build,synthetic_capture,writer_drain,source_loss_controller,media_receipts,shared_timeline,segment_rotation,gap_preserving_pcm_playback,product_pause_resume,paused_finalization' \
 			'excludes=real_capture,permissions,audible_output,long_sessions,m1_completion,signing,release'
 		exit 0
 	fi

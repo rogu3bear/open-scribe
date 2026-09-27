@@ -25,13 +25,16 @@ final class SegmentedCAFWriter: ManagedSegmentWriting, @unchecked Sendable {
     self.preparation = preparation
   }
 
-  static func anchor(preparation: NativeRecordingPreparationProtocol, sessionId: String) throws {
+  static func anchor(
+    preparation: NativeRecordingPreparationProtocol, sessionId: String,
+    hostAnchor: UInt64 = mach_absolute_time()
+  ) throws {
     var info = mach_timebase_info_data_t()
     guard mach_timebase_info(&info) == KERN_SUCCESS else {
       throw ManagedCAFWriterError.unsupportedAuthorization
     }
     try preparation.anchorCaptureClock(
-      sessionId: sessionId, hostAnchor: mach_absolute_time(),
+      sessionId: sessionId, hostAnchor: hostAnchor,
       numerator: info.numer, denominator: info.denom
     )
   }

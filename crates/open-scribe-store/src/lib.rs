@@ -762,7 +762,7 @@ impl SessionStore {
                     "repeated interruption changed accepted evidence",
                 ));
             }
-            if matches!(lifecycle.as_str(), "preparing" | "recording") {
+            if matches!(lifecycle.as_str(), "preparing" | "recording" | "finalizing") {
                 self.project_session_interruption(&request.session_id.0, &last.body.payload, last)?;
             } else if lifecycle != "interrupted" {
                 return Err(StoreError::InvalidState(
@@ -783,7 +783,7 @@ impl SessionStore {
                 "session projection has no interruption evidence",
             ));
         }
-        if !matches!(lifecycle.as_str(), "preparing" | "recording") {
+        if !matches!(lifecycle.as_str(), "preparing" | "recording" | "finalizing") {
             return Err(StoreError::InvalidState(
                 "session is not awaiting interruption evidence",
             ));
@@ -1537,8 +1537,10 @@ impl SessionStore {
                 [&stored.session_id],
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )?;
-        if !matches!(session_lifecycle.as_str(), "preparing" | "recording")
-            || !journal_durable
+        if !matches!(
+            session_lifecycle.as_str(),
+            "preparing" | "recording" | "finalizing"
+        ) || !journal_durable
             || !media_files_open
         {
             return Err(StoreError::InvalidState(
@@ -1546,6 +1548,7 @@ impl SessionStore {
             ));
         }
 
+        self.require_resumed_sample(&stored.session_id, receipt.first_sample_host_time)?;
         let mapped_start =
             self.map_capture_time(&stored.session_id, receipt.first_sample_host_time)?;
         let payload = json!({
@@ -2192,7 +2195,7 @@ impl SessionStore {
         let transaction = self.connection.transaction()?;
         let changed = transaction.execute(
             "UPDATE sessions SET lifecycle = 'interrupted', updated_at_ms = ?2
-             WHERE id = ?1 AND lifecycle IN ('preparing', 'recording')",
+             WHERE id = ?1 AND lifecycle IN ('preparing', 'recording', 'finalizing')",
             params![session_id, journal_record.body.wall_time_milliseconds],
         )?;
         if changed != 1 {

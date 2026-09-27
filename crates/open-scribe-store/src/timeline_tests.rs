@@ -41,13 +41,19 @@ fn capture(
     host: u64,
     samples: u64,
 ) -> FirstSampleReceipt {
+    let receipt = write_sample_receipt(a, host, samples);
+    store.accept_first_sample(receipt.clone()).unwrap();
+    receipt
+}
+
+fn write_sample_receipt(a: &MediaOpenAuthorization, host: u64, samples: u64) -> FirstSampleReceipt {
     let mut file = OpenOptions::new()
         .append(true)
         .open(&a.absolute_path)
         .unwrap();
     file.write_all(&vec![0_u8; samples as usize * 2]).unwrap();
     file.sync_all().unwrap();
-    let receipt = FirstSampleReceipt {
+    FirstSampleReceipt {
         session_id: a.session_id.clone(),
         track_id: a.track_id.clone(),
         segment_id: a.segment_id.clone(),
@@ -57,9 +63,7 @@ fn capture(
         first_sample_host_time: host,
         first_sample_frame_count: samples,
         observed_byte_length: file.metadata().unwrap().len(),
-    };
-    store.accept_first_sample(receipt.clone()).unwrap();
-    receipt
+    }
 }
 
 fn seal(store: &mut SessionStore, a: &MediaOpenAuthorization, end: u64, samples: u64) {
@@ -157,6 +161,262 @@ fn recording_pair(store: &mut SessionStore) -> (SessionId, Vec<MediaOpenAuthoriz
     }
     store.confirm_recording(session.clone()).unwrap();
     (session, sources)
+}
+
+fn paused_pair(store: &mut SessionStore) -> (SessionId, Vec<MediaOpenAuthorization>) {
+    let (session, sources) = recording_pair(store);
+    store
+        .recorder_action(session.clone(), RecorderAction::BeginPause)
+        .unwrap();
+    for source in &sources {
+        seal(store, source, 1_000_000_001, 48_000);
+    }
+    store
+        .recorder_action(
+            session.clone(),
+            RecorderAction::CompletePause {
+                host_time: 2_000_000_001,
+            },
+        )
+        .unwrap();
+    (session, sources)
+}
+
+#[test]
+fn resume_requires_one_boundary_before_new_samples() {
+    let temp = TempDir::new().unwrap();
+    let mut store = SessionStore::open(temp.path()).unwrap();
+    let (session, sources) = paused_pair(&mut store);
+    store
+        .recorder_action(session.clone(), RecorderAction::PrepareResume)
+        .unwrap();
+    let successors: Vec<_> = sources
+        .iter()
+        .map(|source| {
+            let next = store
+                .authorize_next_segment(session.clone(), source.segment_id.clone())
+                .unwrap();
+            create_media(&mut store, &next);
+            next
+        })
+        .collect();
+    let mut receipt = write_sample_receipt(&successors[0], 120_000_000_001, 480);
+    assert!(
+        store.accept_first_sample(receipt.clone()).is_err(),
+        "resume must be anchored before capture"
+    );
+    store
+        .recorder_action(
+            session.clone(),
+            RecorderAction::AnchorResume {
+                host_time: 120_000_000_001,
+            },
+        )
+        .unwrap();
+    assert!(
+        store
+            .recorder_action(
+                session.clone(),
+                RecorderAction::AnchorResume {
+                    host_time: 121_000_000_001
+                }
+            )
+            .is_err(),
+        "resume boundary is immutable"
+    );
+    receipt.first_sample_host_time = 119_000_000_001;
+    assert!(
+        store.accept_first_sample(receipt.clone()).is_err(),
+        "old callbacks cannot enter a resumed segment"
+    );
+    receipt.first_sample_host_time = 120_000_000_001;
+    store.accept_first_sample(receipt).unwrap();
+    assert!(
+        store.confirm_recording(session.clone()).is_err(),
+        "each resumed source needs fresh durable samples"
+    );
+    capture(&mut store, &successors[1], 120_000_000_001, 480);
+    store.confirm_recording(session).unwrap();
+}
+
+#[test]
+fn pause_boundary_cannot_precede_drained_media() {
+    let temp = TempDir::new().unwrap();
+    let mut store = SessionStore::open(temp.path()).unwrap();
+    let (session, sources) = recording_pair(&mut store);
+    store
+        .recorder_action(session.clone(), RecorderAction::BeginPause)
+        .unwrap();
+    for source in &sources {
+        seal(&mut store, source, 1_000_000_001, 48_000);
+    }
+    assert!(
+        store
+            .recorder_action(
+                session.clone(),
+                RecorderAction::CompletePause {
+                    host_time: 999_999_999
+                }
+            )
+            .is_err()
+    );
+    assert_eq!(
+        store.recorder_detail(&session).unwrap().lifecycle,
+        "finalizing"
+    );
+    store
+        .recorder_action(
+            session,
+            RecorderAction::CompletePause {
+                host_time: 1_000_000_001,
+            },
+        )
+        .unwrap();
+}
+
+#[test]
+fn pause_failure_can_durably_interrupt_before_all_sources_seal() {
+    let temp = TempDir::new().unwrap();
+    let mut store = SessionStore::open(temp.path()).unwrap();
+    let (session, sources) = recording_pair(&mut store);
+    store
+        .recorder_action(session.clone(), RecorderAction::BeginPause)
+        .unwrap();
+    seal(&mut store, &sources[0], 1_000_000_001, 48_000);
+    let evidence = store
+        .interrupt_session(InterruptSessionRequest {
+            session_id: session.clone(),
+            reason: SessionInterruptionReason::SegmentSealFailed,
+        })
+        .unwrap();
+    assert!(evidence.journal_durable && evidence.session_interrupted);
+    assert_eq!(
+        store.recorder_detail(&session).unwrap().lifecycle,
+        "interrupted"
+    );
+    assert!(
+        store
+            .recorder_action(session.clone(), RecorderAction::PrepareResume)
+            .is_err()
+    );
+    drop(store);
+    let mut reopened = SessionStore::open(temp.path()).unwrap();
+    reopened.recover_playable_sessions().unwrap();
+    assert_eq!(reopened.playback_timeline(&session).unwrap().len(), 2);
+}
+
+#[test]
+fn pause_draining_can_rotate_before_completing_the_boundary() {
+    let temp = TempDir::new().unwrap();
+    let mut store = SessionStore::open(temp.path()).unwrap();
+    let (session, sources) = recording_pair(&mut store);
+    store
+        .recorder_action(session.clone(), RecorderAction::BeginPause)
+        .unwrap();
+    for source in sources {
+        let next = store
+            .authorize_next_segment(session.clone(), source.segment_id.clone())
+            .unwrap();
+        create_media(&mut store, &next);
+        seal(&mut store, &source, 1_000_000_001, 48_000);
+        capture(&mut store, &next, 1_000_000_001, 48_000);
+        seal(&mut store, &next, 2_000_000_001, 48_000);
+    }
+    let paused = store
+        .recorder_action(
+            session.clone(),
+            RecorderAction::CompletePause {
+                host_time: 2_000_000_001,
+            },
+        )
+        .unwrap();
+    assert_eq!(paused.lifecycle, "paused");
+    assert_eq!(paused.captured_nanoseconds, 2_000_000_000);
+    assert!(
+        store
+            .authorize_next_segment(session, String::new())
+            .is_err()
+    );
+}
+
+#[test]
+fn repeated_pause_resume_then_stop_preserves_total_captured_duration() {
+    let temp = TempDir::new().unwrap();
+    let mut store = SessionStore::open(temp.path()).unwrap();
+    let (session, mut sources) = paused_pair(&mut store);
+    for cycle in 1..=2_u64 {
+        store
+            .recorder_action(session.clone(), RecorderAction::PrepareResume)
+            .unwrap();
+        sources = sources
+            .iter()
+            .map(|source| {
+                let next = store
+                    .authorize_next_segment(session.clone(), source.segment_id.clone())
+                    .unwrap();
+                create_media(&mut store, &next);
+                next
+            })
+            .collect();
+        let host = cycle * 120_000_000_000 + 1;
+        store
+            .recorder_action(
+                session.clone(),
+                RecorderAction::AnchorResume { host_time: host },
+            )
+            .unwrap();
+        for source in &sources {
+            capture(&mut store, source, host, 48_000);
+        }
+        store.confirm_recording(session.clone()).unwrap();
+        store
+            .recorder_action(session.clone(), RecorderAction::BeginPause)
+            .unwrap();
+        for source in &sources {
+            seal(&mut store, source, host + 1_000_000_000, 48_000);
+        }
+        store
+            .recorder_action(
+                session.clone(),
+                RecorderAction::CompletePause {
+                    host_time: host + 2_000_000_000,
+                },
+            )
+            .unwrap();
+        let paused = store.recorder_detail(&session).unwrap();
+        assert_eq!(
+            paused.captured_nanoseconds,
+            (cycle as i64 + 1) * 1_000_000_000
+        );
+        assert_eq!(
+            store
+                .runtime_library_snapshot_at(wall_time_milliseconds() + 600_000)
+                .unwrap()
+                .current_session
+                .unwrap()
+                .elapsed_seconds,
+            cycle + 1
+        );
+    }
+    store
+        .recorder_action(session.clone(), RecorderAction::FinishPaused)
+        .unwrap();
+    let snapshot = store.runtime_library_snapshot().unwrap();
+    assert!(snapshot.current_session.is_none());
+    assert_eq!(snapshot.saved_sessions[0].elapsed_seconds, 3);
+    drop(store);
+    let mut store = SessionStore::open(temp.path()).unwrap();
+    store.recover_playable_sessions().unwrap();
+    let plan = store.playback_timeline(&session).unwrap();
+    assert_eq!(plan.len(), 6);
+    for segment in plan {
+        assert_eq!(
+            segment.start_nanoseconds,
+            segment.sequence as i64 * 1_000_000_000
+        );
+        assert_eq!(segment.sample_count, 48_000);
+        assert_eq!(segment.gap_nanoseconds, 0);
+    }
 }
 
 #[test]

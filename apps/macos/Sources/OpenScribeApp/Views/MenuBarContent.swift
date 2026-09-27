@@ -208,6 +208,8 @@ struct MenuBarLabel: View {
       ("Confirming recording", "waveform", "Confirming durable recording")
     case .starting:
       ("Starting microphone + system audio", "waveform", liveStatus)
+    case .pausing, .paused:
+      (liveStatus, "pause.circle", liveStatus)
     case .failed:
       ("Recording needs attention", "exclamationmark.circle", liveStatus)
     case .saved:
