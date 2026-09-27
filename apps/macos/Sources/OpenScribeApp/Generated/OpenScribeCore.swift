@@ -710,9 +710,15 @@ public protocol NativeRecordingPreparationProtocol: AnyObject, Sendable {
 
   func acceptMediaOpen(receipt: NativeMediaOpenReceipt) throws -> NativeMediaOpenEvidence
 
+  func anchorCaptureClock(
+    sessionId: String, hostAnchor: UInt64, numerator: UInt32, denominator: UInt32) throws
+
   func authorizeInitialMedia(
     sessionId: String, sourceKind: NativeMediaSourceKind, sourceDisplayName: String
   ) throws -> NativeMediaOpenAuthorization
+
+  func authorizeNextSegment(sessionId: String, previousSegmentId: String) throws
+    -> NativeMediaOpenAuthorization
 
   func confirmRecording(sessionId: String) throws -> NativeRecordingStartedEvidence
 
@@ -726,6 +732,8 @@ public protocol NativeRecordingPreparationProtocol: AnyObject, Sendable {
   func leaseRecoveredPlayback(
     sessionId: String, sourceId: String, trackId: String, segmentId: String
   ) throws -> NativeImportedPlaybackLease
+
+  func playbackTimeline(sessionId: String) throws -> [NativeTimelineSegment]
 
   func prepareSession(title: String) throws -> NativePreparedSession
 
@@ -828,6 +836,21 @@ open class NativeRecordingPreparation: NativeRecordingPreparationProtocol, @unch
       })
   }
 
+  open func anchorCaptureClock(
+    sessionId: String, hostAnchor: UInt64, numerator: UInt32, denominator: UInt32
+  ) throws {
+    try rustCallWithError(FfiConverterTypeNativeStorageError_lift) {
+      uniffiCallStatus in
+      uniffi_open_scribe_uniffi_fn_method_nativerecordingpreparation_anchor_capture_clock(
+        self.uniffiCloneHandle(),
+        FfiConverterString.lower(sessionId),
+        FfiConverterUInt64.lower(hostAnchor),
+        FfiConverterUInt32.lower(numerator),
+        FfiConverterUInt32.lower(denominator), uniffiCallStatus
+      )
+    }
+  }
+
   open func authorizeInitialMedia(
     sessionId: String, sourceKind: NativeMediaSourceKind, sourceDisplayName: String
   ) throws -> NativeMediaOpenAuthorization {
@@ -839,6 +862,20 @@ open class NativeRecordingPreparation: NativeRecordingPreparationProtocol, @unch
           FfiConverterString.lower(sessionId),
           FfiConverterTypeNativeMediaSourceKind_lower(sourceKind),
           FfiConverterString.lower(sourceDisplayName), uniffiCallStatus
+        )
+      })
+  }
+
+  open func authorizeNextSegment(sessionId: String, previousSegmentId: String) throws
+    -> NativeMediaOpenAuthorization
+  {
+    return try FfiConverterTypeNativeMediaOpenAuthorization_lift(
+      try rustCallWithError(FfiConverterTypeNativeStorageError_lift) {
+        uniffiCallStatus in
+        uniffi_open_scribe_uniffi_fn_method_nativerecordingpreparation_authorize_next_segment(
+          self.uniffiCloneHandle(),
+          FfiConverterString.lower(sessionId),
+          FfiConverterString.lower(previousSegmentId), uniffiCallStatus
         )
       })
   }
@@ -905,6 +942,17 @@ open class NativeRecordingPreparation: NativeRecordingPreparationProtocol, @unch
           FfiConverterString.lower(sourceId),
           FfiConverterString.lower(trackId),
           FfiConverterString.lower(segmentId), uniffiCallStatus
+        )
+      })
+  }
+
+  open func playbackTimeline(sessionId: String) throws -> [NativeTimelineSegment] {
+    return try FfiConverterSequenceTypeNativeTimelineSegment.lift(
+      try rustCallWithError(FfiConverterTypeNativeStorageError_lift) {
+        uniffiCallStatus in
+        uniffi_open_scribe_uniffi_fn_method_nativerecordingpreparation_playback_timeline(
+          self.uniffiCloneHandle(),
+          FfiConverterString.lower(sessionId), uniffiCallStatus
         )
       })
   }
@@ -1025,6 +1073,119 @@ public func FfiConverterTypeNativeRecordingPreparation_lower(_ value: NativeReco
   -> UInt64
 {
   return FfiConverterTypeNativeRecordingPreparation.lower(value)
+}
+
+/// A bounded lease factory. Planning a long recording does not open every CAF
+/// at once; the native decoder holds only the segments it currently reads.
+public protocol NativeTimelineMediaProtocol: AnyObject, Sendable {
+
+  func lease() throws -> NativeImportedPlaybackLease
+
+}
+/// A bounded lease factory. Planning a long recording does not open every CAF
+/// at once; the native decoder holds only the segments it currently reads.
+open class NativeTimelineMedia: NativeTimelineMediaProtocol, @unchecked Sendable {
+  fileprivate let handle: UInt64
+
+  /// Used to instantiate a [FFIObject] without an actual handle, for fakes in tests, mostly.
+  #if swift(>=5.8)
+    @_documentation(visibility: private)
+  #endif
+  public struct NoHandle {
+    public init() {}
+  }
+
+  // TODO: We'd like this to be `private` but for Swifty reasons,
+  // we can't implement `FfiConverter` without making this `required` and we can't
+  // make it `required` without making it `public`.
+  #if swift(>=5.8)
+    @_documentation(visibility: private)
+  #endif
+  required public init(unsafeFromHandle handle: UInt64) {
+    self.handle = handle
+  }
+
+  // This constructor can be used to instantiate a fake object.
+  // - Parameter noHandle: Placeholder value so we can have a constructor separate from the default empty one that may be implemented for classes extending [FFIObject].
+  //
+  // - Warning:
+  //     Any object instantiated with this constructor cannot be passed to an actual Rust-backed object. Since there isn't a backing handle the FFI lower functions will crash.
+  #if swift(>=5.8)
+    @_documentation(visibility: private)
+  #endif
+  public init(noHandle: NoHandle) {
+    self.handle = 0
+  }
+
+  #if swift(>=5.8)
+    @_documentation(visibility: private)
+  #endif
+  public func uniffiCloneHandle() -> UInt64 {
+    return try! rustCall { uniffi_open_scribe_uniffi_fn_clone_nativetimelinemedia(self.handle, $0) }
+  }
+  // No primary constructor declared for this class.
+
+  deinit {
+    if handle == 0 {
+      // Mock objects have handle=0 don't try to free them
+      return
+    }
+
+    try! rustCall { uniffi_open_scribe_uniffi_fn_free_nativetimelinemedia(handle, $0) }
+  }
+
+  open func lease() throws -> NativeImportedPlaybackLease {
+    return try FfiConverterTypeNativeImportedPlaybackLease_lift(
+      try rustCallWithError(FfiConverterTypeNativeStorageError_lift) {
+        uniffiCallStatus in
+        uniffi_open_scribe_uniffi_fn_method_nativetimelinemedia_lease(
+          self.uniffiCloneHandle(), uniffiCallStatus
+        )
+      })
+  }
+
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeNativeTimelineMedia: FfiConverter {
+  typealias FfiType = UInt64
+  typealias SwiftType = NativeTimelineMedia
+
+  public static func lift(_ handle: UInt64) throws -> NativeTimelineMedia {
+    return NativeTimelineMedia(unsafeFromHandle: handle)
+  }
+
+  public static func lower(_ value: NativeTimelineMedia) -> UInt64 {
+    return value.uniffiCloneHandle()
+  }
+
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws
+    -> NativeTimelineMedia
+  {
+    let handle: UInt64 = try readInt(&buf)
+    return try lift(handle)
+  }
+
+  public static func write(_ value: NativeTimelineMedia, into buf: inout [UInt8]) {
+    writeInt(&buf, lower(value))
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeTimelineMedia_lift(_ handle: UInt64) throws -> NativeTimelineMedia
+{
+  return try FfiConverterTypeNativeTimelineMedia.lift(handle)
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeTimelineMedia_lower(_ value: NativeTimelineMedia) -> UInt64 {
+  return FfiConverterTypeNativeTimelineMedia.lower(value)
 }
 
 public struct NativeCommand: Equatable, Hashable {
@@ -1998,6 +2159,7 @@ public struct NativeRuntimeSessionSnapshot: Equatable, Hashable {
   public let mediaFilesOpen: Bool
   public let interruptionReason: String?
   public let recovered: Bool
+  public let hasCaptureTimeline: Bool
   public let sources: [NativeRuntimeSourceSnapshot]
   public let playableMedia: NativeRuntimePlayableMediaSnapshot?
 
@@ -2006,7 +2168,8 @@ public struct NativeRuntimeSessionSnapshot: Equatable, Hashable {
   public init(
     sessionId: String, title: String, lifecycle: String, health: String, elapsedSeconds: UInt64,
     journalDurable: Bool, mediaFilesOpen: Bool, interruptionReason: String?, recovered: Bool,
-    sources: [NativeRuntimeSourceSnapshot], playableMedia: NativeRuntimePlayableMediaSnapshot?
+    hasCaptureTimeline: Bool, sources: [NativeRuntimeSourceSnapshot],
+    playableMedia: NativeRuntimePlayableMediaSnapshot?
   ) {
     self.sessionId = sessionId
     self.title = title
@@ -2017,6 +2180,7 @@ public struct NativeRuntimeSessionSnapshot: Equatable, Hashable {
     self.mediaFilesOpen = mediaFilesOpen
     self.interruptionReason = interruptionReason
     self.recovered = recovered
+    self.hasCaptureTimeline = hasCaptureTimeline
     self.sources = sources
     self.playableMedia = playableMedia
   }
@@ -2045,6 +2209,7 @@ public struct FfiConverterTypeNativeRuntimeSessionSnapshot: FfiConverterRustBuff
         mediaFilesOpen: FfiConverterBool.read(from: &buf),
         interruptionReason: FfiConverterOptionString.read(from: &buf),
         recovered: FfiConverterBool.read(from: &buf),
+        hasCaptureTimeline: FfiConverterBool.read(from: &buf),
         sources: FfiConverterSequenceTypeNativeRuntimeSourceSnapshot.read(from: &buf),
         playableMedia: FfiConverterOptionTypeNativeRuntimePlayableMediaSnapshot.read(from: &buf)
       )
@@ -2060,6 +2225,7 @@ public struct FfiConverterTypeNativeRuntimeSessionSnapshot: FfiConverterRustBuff
     FfiConverterBool.write(value.mediaFilesOpen, into: &buf)
     FfiConverterOptionString.write(value.interruptionReason, into: &buf)
     FfiConverterBool.write(value.recovered, into: &buf)
+    FfiConverterBool.write(value.hasCaptureTimeline, into: &buf)
     FfiConverterSequenceTypeNativeRuntimeSourceSnapshot.write(value.sources, into: &buf)
     FfiConverterOptionTypeNativeRuntimePlayableMediaSnapshot.write(value.playableMedia, into: &buf)
   }
@@ -2749,6 +2915,93 @@ public func FfiConverterTypeNativeStatus_lift(_ buf: RustBuffer) throws -> Nativ
 #endif
 public func FfiConverterTypeNativeStatus_lower(_ value: NativeStatus) -> RustBuffer {
   return FfiConverterTypeNativeStatus.lower(value)
+}
+
+public struct NativeTimelineSegment {
+  public let trackId: String
+  public let segmentId: String
+  public let sequence: UInt64
+  public let startNanoseconds: Int64
+  public let nativeStartNanoseconds: Int64
+  public let clockAdjustmentNanoseconds: Int64
+  public let sampleCount: UInt64
+  public let gapNanoseconds: Int64
+  public let media: NativeTimelineMedia
+
+  // Default memberwise initializers are never public by default, so we
+  // declare one manually.
+  public init(
+    trackId: String, segmentId: String, sequence: UInt64, startNanoseconds: Int64,
+    nativeStartNanoseconds: Int64, clockAdjustmentNanoseconds: Int64, sampleCount: UInt64,
+    gapNanoseconds: Int64, media: NativeTimelineMedia
+  ) {
+    self.trackId = trackId
+    self.segmentId = segmentId
+    self.sequence = sequence
+    self.startNanoseconds = startNanoseconds
+    self.nativeStartNanoseconds = nativeStartNanoseconds
+    self.clockAdjustmentNanoseconds = clockAdjustmentNanoseconds
+    self.sampleCount = sampleCount
+    self.gapNanoseconds = gapNanoseconds
+    self.media = media
+  }
+
+}
+
+#if compiler(>=6)
+  extension NativeTimelineSegment: Sendable {}
+#endif
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeNativeTimelineSegment: FfiConverterRustBuffer {
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws
+    -> NativeTimelineSegment
+  {
+    return
+      try NativeTimelineSegment(
+        trackId: FfiConverterString.read(from: &buf),
+        segmentId: FfiConverterString.read(from: &buf),
+        sequence: FfiConverterUInt64.read(from: &buf),
+        startNanoseconds: FfiConverterInt64.read(from: &buf),
+        nativeStartNanoseconds: FfiConverterInt64.read(from: &buf),
+        clockAdjustmentNanoseconds: FfiConverterInt64.read(from: &buf),
+        sampleCount: FfiConverterUInt64.read(from: &buf),
+        gapNanoseconds: FfiConverterInt64.read(from: &buf),
+        media: FfiConverterTypeNativeTimelineMedia.read(from: &buf)
+      )
+  }
+
+  public static func write(_ value: NativeTimelineSegment, into buf: inout [UInt8]) {
+    FfiConverterString.write(value.trackId, into: &buf)
+    FfiConverterString.write(value.segmentId, into: &buf)
+    FfiConverterUInt64.write(value.sequence, into: &buf)
+    FfiConverterInt64.write(value.startNanoseconds, into: &buf)
+    FfiConverterInt64.write(value.nativeStartNanoseconds, into: &buf)
+    FfiConverterInt64.write(value.clockAdjustmentNanoseconds, into: &buf)
+    FfiConverterUInt64.write(value.sampleCount, into: &buf)
+    FfiConverterInt64.write(value.gapNanoseconds, into: &buf)
+    FfiConverterTypeNativeTimelineMedia.write(value.media, into: &buf)
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeTimelineSegment_lift(_ buf: RustBuffer) throws
+  -> NativeTimelineSegment
+{
+  return try FfiConverterTypeNativeTimelineSegment.lift(buf)
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeTimelineSegment_lower(_ value: NativeTimelineSegment)
+  -> RustBuffer
+{
+  return FfiConverterTypeNativeTimelineSegment.lower(value)
 }
 
 public enum NativeCommandKind: Equatable, Hashable {
@@ -3524,6 +3777,33 @@ private struct FfiConverterSequenceTypeNativeSourceSnapshot: FfiConverterRustBuf
 #if swift(>=5.8)
   @_documentation(visibility: private)
 #endif
+private struct FfiConverterSequenceTypeNativeTimelineSegment: FfiConverterRustBuffer {
+  typealias SwiftType = [NativeTimelineSegment]
+
+  public static func write(_ value: [NativeTimelineSegment], into buf: inout [UInt8]) {
+    let len = Int32(value.count)
+    writeInt(&buf, len)
+    for item in value {
+      FfiConverterTypeNativeTimelineSegment.write(item, into: &buf)
+    }
+  }
+
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws
+    -> [NativeTimelineSegment]
+  {
+    let len: Int32 = try readInt(&buf)
+    var seq = [NativeTimelineSegment]()
+    seq.reserveCapacity(Int(len))
+    for _ in 0..<len {
+      seq.append(try FfiConverterTypeNativeTimelineSegment.read(from: &buf))
+    }
+    return seq
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
 private struct FfiConverterSequenceTypeNativeMediaSourceKind: FfiConverterRustBuffer {
   typealias SwiftType = [NativeMediaSourceKind]
 
@@ -3628,8 +3908,18 @@ private let initializationResult: InitializationResult = {
   {
     return InitializationResult.apiChecksumMismatch
   }
+  if uniffi_open_scribe_uniffi_checksum_method_nativerecordingpreparation_anchor_capture_clock()
+    != 16082
+  {
+    return InitializationResult.apiChecksumMismatch
+  }
   if uniffi_open_scribe_uniffi_checksum_method_nativerecordingpreparation_authorize_initial_media()
     != 62642
+  {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_open_scribe_uniffi_checksum_method_nativerecordingpreparation_authorize_next_segment()
+    != 7431
   {
     return InitializationResult.apiChecksumMismatch
   }
@@ -3658,6 +3948,11 @@ private let initializationResult: InitializationResult = {
   {
     return InitializationResult.apiChecksumMismatch
   }
+  if uniffi_open_scribe_uniffi_checksum_method_nativerecordingpreparation_playback_timeline()
+    != 15651
+  {
+    return InitializationResult.apiChecksumMismatch
+  }
   if uniffi_open_scribe_uniffi_checksum_method_nativerecordingpreparation_prepare_session() != 12714
   {
     return InitializationResult.apiChecksumMismatch
@@ -3683,6 +3978,9 @@ private let initializationResult: InitializationResult = {
     return InitializationResult.apiChecksumMismatch
   }
   if uniffi_open_scribe_uniffi_checksum_method_nativerecordingpreparation_seal_segment() != 47037 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_open_scribe_uniffi_checksum_method_nativetimelinemedia_lease() != 63634 {
     return InitializationResult.apiChecksumMismatch
   }
   if uniffi_open_scribe_uniffi_checksum_constructor_nativerecordingpreparation_open() != 38169 {

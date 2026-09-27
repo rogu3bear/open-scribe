@@ -226,6 +226,7 @@ pub struct NativeRuntimeSessionSnapshot {
     pub media_files_open: bool,
     pub interruption_reason: Option<String>,
     pub recovered: bool,
+    pub has_capture_timeline: bool,
     pub sources: Vec<NativeRuntimeSourceSnapshot>,
     pub playable_media: Option<NativeRuntimePlayableMediaSnapshot>,
 }
@@ -265,7 +266,7 @@ pub enum NativeStorageError {
 
 #[derive(uniffi::Object)]
 pub struct NativeRecordingPreparation {
-    controller: Mutex<open_scribe_core::RecordingPreparationController>,
+    controller: Arc<Mutex<open_scribe_core::RecordingPreparationController>>,
 }
 
 #[derive(uniffi::Object)]
@@ -277,6 +278,43 @@ pub struct NativeImportedPlaybackLease {
 enum NativePlaybackLeaseStrategy {
     ImportedSnapshot,
     RecoveredVerifiedChunks,
+}
+
+#[derive(uniffi::Record)]
+pub struct NativeTimelineSegment {
+    pub track_id: String,
+    pub segment_id: String,
+    pub sequence: u64,
+    pub start_nanoseconds: i64,
+    pub native_start_nanoseconds: i64,
+    pub clock_adjustment_nanoseconds: i64,
+    pub sample_count: u64,
+    pub gap_nanoseconds: i64,
+    pub media: Arc<NativeTimelineMedia>,
+}
+
+/// A bounded lease factory. Planning a long recording does not open every CAF
+/// at once; the native decoder holds only the segments it currently reads.
+#[derive(uniffi::Object)]
+pub struct NativeTimelineMedia {
+    controller: Arc<Mutex<open_scribe_core::RecordingPreparationController>>,
+    segment: open_scribe_core::TimelineSegment,
+}
+
+#[uniffi::export]
+impl NativeTimelineMedia {
+    pub fn lease(&self) -> Result<Arc<NativeImportedPlaybackLease>, NativeStorageError> {
+        let lease = self
+            .controller
+            .lock()
+            .map_err(|_| NativeStorageError::StorageFailure)?
+            .lease_timeline_segment(&self.segment)
+            .map_err(map_storage_error)?;
+        Ok(Arc::new(NativeImportedPlaybackLease {
+            lease,
+            strategy: NativePlaybackLeaseStrategy::RecoveredVerifiedChunks,
+        }))
+    }
 }
 
 #[uniffi::export]
@@ -302,12 +340,84 @@ impl NativeImportedPlaybackLease {
 
 #[uniffi::export]
 impl NativeRecordingPreparation {
+    pub fn anchor_capture_clock(
+        &self,
+        session_id: String,
+        host_anchor: u64,
+        numerator: u32,
+        denominator: u32,
+    ) -> Result<(), NativeStorageError> {
+        self.controller()?
+            .anchor_capture_clock(
+                open_scribe_types::SessionId(session_id),
+                open_scribe_core::CaptureClock {
+                    host_anchor,
+                    numerator,
+                    denominator,
+                },
+            )
+            .map_err(map_storage_error)
+    }
+
+    pub fn authorize_next_segment(
+        &self,
+        session_id: String,
+        previous_segment_id: String,
+    ) -> Result<NativeMediaOpenAuthorization, NativeStorageError> {
+        let a = self
+            .controller()?
+            .authorize_next_segment(
+                open_scribe_types::SessionId(session_id),
+                previous_segment_id,
+            )
+            .map_err(map_storage_error)?;
+        Ok(NativeMediaOpenAuthorization {
+            session_id: a.session_id.0,
+            source_id: a.source_id,
+            track_id: a.track_id,
+            segment_id: a.segment_id,
+            open_token: a.open_token,
+            writer_generation: a.writer_generation,
+            relative_path: a.relative_path,
+            absolute_path: a.absolute_path.to_string_lossy().into_owned(),
+            mapped_start_nanoseconds: a.mapped_start_nanoseconds,
+        })
+    }
+
+    pub fn playback_timeline(
+        &self,
+        session_id: String,
+    ) -> Result<Vec<NativeTimelineSegment>, NativeStorageError> {
+        self.controller()?
+            .playback_timeline(open_scribe_types::SessionId(session_id))
+            .map_err(map_storage_error)
+            .map(|segments| {
+                segments
+                    .into_iter()
+                    .map(|segment| NativeTimelineSegment {
+                        track_id: segment.track_id.clone(),
+                        segment_id: segment.segment_id.clone(),
+                        sequence: segment.sequence,
+                        start_nanoseconds: segment.start_nanoseconds,
+                        native_start_nanoseconds: segment.native_start_nanoseconds,
+                        clock_adjustment_nanoseconds: segment.clock_adjustment_nanoseconds,
+                        sample_count: segment.sample_count,
+                        gap_nanoseconds: segment.gap_nanoseconds,
+                        media: Arc::new(NativeTimelineMedia {
+                            controller: Arc::clone(&self.controller),
+                            segment,
+                        }),
+                    })
+                    .collect()
+            })
+    }
+
     #[uniffi::constructor]
     pub fn open(managed_root: String) -> Result<Arc<Self>, NativeStorageError> {
         let controller = open_scribe_core::RecordingPreparationController::open(managed_root)
             .map_err(map_storage_error)?;
         Ok(Arc::new(Self {
-            controller: Mutex::new(controller),
+            controller: Arc::new(Mutex::new(controller)),
         }))
     }
 
@@ -747,6 +857,7 @@ fn map_runtime_session_snapshot(
             .to_owned()
         }),
         recovered: snapshot.recovered,
+        has_capture_timeline: snapshot.has_capture_timeline,
         sources: snapshot
             .sources
             .into_iter()
@@ -1096,6 +1207,8 @@ const fn permission_name(permission: open_scribe_types::PermissionState) -> &'st
     }
 }
 
+mod recorder;
+pub use recorder::*;
 uniffi::setup_scaffolding!();
 
 #[cfg(test)]
