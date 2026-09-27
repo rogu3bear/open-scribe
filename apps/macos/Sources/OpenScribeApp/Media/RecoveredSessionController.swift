@@ -32,6 +32,12 @@ enum PlaybackTerminationOutcome: Equatable, Sendable {
   case outputRouteChanged
 }
 
+enum PlaybackOutputMode: Equatable, Sendable {
+  case system
+  /// Keeps lifecycle playback running without sending test audio to the system output.
+  case silent
+}
+
 struct PlaybackTermination: Sendable {
   let generation: UUID
   let outcome: PlaybackTerminationOutcome
@@ -782,7 +788,7 @@ private let callbackAudioFileSize: AudioFile_GetSizeProc = { clientData in
   return context.source.callbackByteCount
 }
 
-private final class CallbackCAFDecoder: @unchecked Sendable {
+final class CallbackCAFDecoder: @unchecked Sendable {
   let processingFormat: AVAudioFormat
 
   private let context: CallbackAudioFileContext
@@ -1115,32 +1121,26 @@ enum StructuredImportedPlaybackCopy {
 
 @MainActor
 final class RecoveredAudioPlayer: RecoveredAudioPlaying {
-  private let engine = AVAudioEngine()
-  private let player = AVAudioPlayerNode()
+  private var engine: AVAudioEngine?
+  private var player: AVAudioPlayerNode?
   private var callbackPlayback: BoundedCallbackPlaybackSession?
   private var playbackLease: AnyObject?
   private var activeGeneration: UUID?
   private var terminationHandler: (@Sendable (PlaybackTermination) -> Void)?
   private let lifecycle: NativePlaybackLifecycleHooks
+  private let notificationCenter: NotificationCenter
+  private let outputMode: PlaybackOutputMode
   private let generationCell = PlaybackGenerationCell()
   private var configurationObserver: PlaybackEngineConfigurationObserver?
 
   init(
     lifecycle: NativePlaybackLifecycleHooks = .production,
+    outputMode: PlaybackOutputMode = .system,
     notificationCenter: NotificationCenter = .default
   ) {
     self.lifecycle = lifecycle
-    engine.attach(player)
-    let generationCell = generationCell
-    configurationObserver = PlaybackEngineConfigurationObserver(
-      center: notificationCenter,
-      engine: engine
-    ) { [weak self] in
-      guard let generation = generationCell.snapshot() else { return }
-      Task { @MainActor [weak self] in
-        self?.handleOutputConfigurationChange(generation: generation)
-      }
-    }
+    self.notificationCenter = notificationCenter
+    self.outputMode = outputMode
   }
 
   func playRecovered(
@@ -1249,13 +1249,40 @@ final class RecoveredAudioPlayer: RecoveredAudioPlaying {
         }
       }
     )
+    let (engine, player) = prepareEngineIfNeeded()
     engine.disconnectNodeOutput(player)
     engine.connect(player, to: engine.mainMixerNode, format: playback.processingFormat)
+    if outputMode == .silent {
+      player.volume = 0
+      engine.mainMixerNode.outputVolume = 0
+    }
     try playback.prime(player: player)
     try engine.start()
     player.play()
     callbackPlayback = playback
     playbackLease = lease
+  }
+
+  private func prepareEngineIfNeeded() -> (engine: AVAudioEngine, player: AVAudioPlayerNode) {
+    if let engine, let player {
+      return (engine, player)
+    }
+    let engine = AVAudioEngine()
+    let player = AVAudioPlayerNode()
+    engine.attach(player)
+    self.engine = engine
+    self.player = player
+    let generationCell = generationCell
+    configurationObserver = PlaybackEngineConfigurationObserver(
+      center: notificationCenter,
+      engine: engine
+    ) { [weak self] in
+      guard let generation = generationCell.snapshot() else { return }
+      Task { @MainActor [weak self] in
+        self?.handleOutputConfigurationChange(generation: generation)
+      }
+    }
+    return (engine, player)
   }
 
   private func releasePlaybackResources(generation: UUID? = nil) {
@@ -1265,18 +1292,23 @@ final class RecoveredAudioPlayer: RecoveredAudioPlaying {
     generationCell.set(nil)
     let playback = callbackPlayback
     callbackPlayback = nil
+    let engine = self.engine
+    let player = self.player
     PlaybackTeardownOrder.release(
       deactivateAndDrainImportedPlayback: { playback?.stop() },
       stopPlayer: {
-        player.stop()
+        player?.stop()
         lifecycle.observe(.playerStopped(releasingGeneration))
       },
       stopEngine: {
-        engine.stop()
+        engine?.stop()
         lifecycle.observe(.engineStopped(releasingGeneration))
       }
     )
     playbackLease = nil
+    configurationObserver = nil
+    self.player = nil
+    self.engine = nil
   }
 }
 
@@ -1333,6 +1365,7 @@ final class RecoveredSessionController: ObservableObject {
   @Published private(set) var sessions: [NativeRecoveredPlayableSession] = []
   @Published private(set) var activePlaybackSessionId: String?
   @Published private(set) var playingSessionId: String?
+  @Published private(set) var timelineClockAdjustmentNanoseconds: Int64 = 0
   @Published private(set) var pendingRecoveredMediaIdentity: RecoveredPlaybackMediaIdentity?
   @Published private(set) var playingRecoveredMediaIdentity: RecoveredPlaybackMediaIdentity?
   @Published private(set) var errorMessage: String?
@@ -1343,6 +1376,8 @@ final class RecoveredSessionController: ObservableObject {
   private let importedPlaybackLeaseProvider: ImportedPlaybackLeaseProvider
   private let recoveredPlaybackLeaseProvider: RecoveredPlaybackLeaseProvider
   private let player: RecoveredAudioPlaying
+  private let timelineProvider: (@Sendable (String) throws -> [NativeTimelineSegment])?
+  private let timelinePlayer = TimelineAudioPlayer()
   private let playbackTerminationDecisionObserver: PlaybackTerminationDecisionObserver
   private var playbackTask: Task<Void, Never>?
   private var activePlaybackGeneration: UUID?
@@ -1358,12 +1393,14 @@ final class RecoveredSessionController: ObservableObject {
       throw RecoveredSessionError.managedRootUnavailable
     },
     player: RecoveredAudioPlaying,
+    timelineProvider: (@Sendable (String) throws -> [NativeTimelineSegment])? = nil,
     playbackTerminationDecisionObserver: @escaping PlaybackTerminationDecisionObserver = { _, _ in }
   ) {
     self.recoveryFactory = recoveryFactory
     self.importedPlaybackLeaseProvider = importedPlaybackLeaseProvider
     self.recoveredPlaybackLeaseProvider = recoveredPlaybackLeaseProvider
     self.player = player
+    self.timelineProvider = timelineProvider
     self.playbackTerminationDecisionObserver = playbackTerminationDecisionObserver
     player.setPlaybackTerminationHandler { [weak self] termination in
       Task { @MainActor [weak self] in
@@ -1438,7 +1475,12 @@ final class RecoveredSessionController: ObservableObject {
           segmentId: identity.segmentId
         )
       },
-      player: RecoveredAudioPlayer()
+      player: RecoveredAudioPlayer(),
+      timelineProvider: { sessionId in
+        guard let managedRoot else { throw RecoveredSessionError.managedRootUnavailable }
+        return try NativeRecordingPreparation.open(managedRoot: managedRoot.path)
+          .playbackTimeline(sessionId: sessionId)
+      }
     )
   }
 
@@ -1622,6 +1664,55 @@ final class RecoveredSessionController: ObservableObject {
     }
   }
 
+  func playSynchronized(sessionId: String) {
+    stopPlayback()
+    clearPlaybackError()
+    guard let timelineProvider else {
+      setPlaybackError("Synchronized playback is unavailable.", sessionId: sessionId)
+      return
+    }
+    let generation = UUID()
+    activePlaybackGeneration = generation
+    activePlaybackSessionId = sessionId
+    playbackTask = Task { [weak self] in
+      guard let self else { return }
+      do {
+        let segments = try await StructuredImportedPlaybackCopy.run { isCancelled in
+          if isCancelled() { throw CancellationError() }
+          let result = try timelineProvider(sessionId)
+          if isCancelled() { throw CancellationError() }
+          return result
+        }
+        try Task.checkCancellation()
+        guard self.activePlaybackGeneration == generation else { return }
+        try self.timelinePlayer.play(segments: segments, generation: generation) {
+          [weak self] termination in
+          Task { @MainActor [weak self] in
+            guard let self, self.activePlaybackGeneration == termination.generation else { return }
+            self.stopPlayback(generation: termination.generation)
+            if termination.outcome != .finished {
+              self.setPlaybackError(
+                "Synchronized playback stopped. Check the audio output and try again.",
+                sessionId: sessionId)
+            }
+          }
+        }
+        self.timelineClockAdjustmentNanoseconds =
+          segments.map(\.clockAdjustmentNanoseconds).max() ?? 0
+        self.playingSessionId = sessionId
+        self.playbackTask = nil
+      } catch {
+        guard self.activePlaybackGeneration == generation else { return }
+        self.stopPlayback(generation: generation)
+        if !(error is CancellationError) {
+          self.setPlaybackError(
+            "A synchronized timeline could not be verified. Older recordings may have no shared clock.",
+            sessionId: sessionId)
+        }
+      }
+    }
+  }
+
   func stopPlayback(generation: UUID? = nil) {
     if let generation, activePlaybackGeneration != generation { return }
     if let activePlaybackGeneration {
@@ -1637,6 +1728,8 @@ final class RecoveredSessionController: ObservableObject {
     pendingRecoveredMediaIdentity = nil
     playingRecoveredMediaIdentity = nil
     player.stop()
+    timelinePlayer.stop()
+    timelineClockAdjustmentNanoseconds = 0
     playingSessionId = nil
   }
 

@@ -46,6 +46,13 @@ struct OpenScribeApp: App {
 
   init() {
     let arguments = ProcessInfo.processInfo.arguments
+    let foundationReviewRoot = Self.argumentRoot("--foundation-review-root", from: arguments)
+    let foundationLiveRecoveryRoot = Self.argumentRoot(
+      "--foundation-live-recovery-root", from: arguments)
+    let timelineCaptureRoot = Self.argumentRoot(
+      "--foundation-synthetic-capture-root", from: arguments)
+    let timelineRecoveryRoot = Self.argumentRoot(
+      "--foundation-synthetic-recovery-root", from: arguments)
     let liveProofRoot = Self.argumentRoot("--m1-live-microphone-proof-root", from: arguments)
     let forcedCaptureRoot = Self.argumentRoot(
       "--m1-forced-termination-capture-root",
@@ -55,7 +62,10 @@ struct OpenScribeApp: App {
       "--m1-forced-termination-recovery-root",
       from: arguments
     )
-    let managedRoot = liveProofRoot ?? forcedCaptureRoot ?? forcedRecoveryRoot ?? Self.defaultRoot()
+    let managedRoot =
+      foundationReviewRoot ?? foundationLiveRecoveryRoot ?? timelineCaptureRoot
+      ?? timelineRecoveryRoot ?? liveProofRoot ?? forcedCaptureRoot ?? forcedRecoveryRoot
+      ?? Self.defaultRoot()
     let controller =
       managedRoot.map(LiveMicrophoneRecordingController.init(managedRoot:))
       ?? LiveMicrophoneRecordingController(managedRoot: nil)
@@ -68,7 +78,13 @@ struct OpenScribeApp: App {
     _importedMediaAuthority = StateObject(wrappedValue: importAuthority)
     _liveRecording = StateObject(wrappedValue: controller)
     _recoveredSessions = StateObject(wrappedValue: recovery)
-    if liveProofRoot != nil {
+    if let root = foundationLiveRecoveryRoot {
+      Task { @MainActor in await TimelineRuntimeProof.verifyLive(root: root) }
+    } else if let root = timelineCaptureRoot ?? timelineRecoveryRoot {
+      Task { @MainActor in
+        await TimelineRuntimeProof.run(root: root, captureMode: timelineCaptureRoot != nil)
+      }
+    } else if liveProofRoot != nil {
       Task { @MainActor in
         await Self.runLiveMicrophoneProof(controller: controller)
       }

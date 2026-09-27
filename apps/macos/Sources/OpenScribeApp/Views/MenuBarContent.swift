@@ -55,7 +55,7 @@ struct MenuBarContent: View {
       .foregroundStyle(.secondary)
     }
     if liveRecording.canStart {
-      Button("Record Microphone + System Audio") {
+      Button("Record — \(liveRecording.captureSelection.name)") {
         Task {
           await liveRecording.start()
           store.refresh()
@@ -73,6 +73,7 @@ struct MenuBarContent: View {
       }
       .keyboardShortcut("s", modifiers: [.command, .shift])
     }
+    RecorderControls(recorder: liveRecording, store: store)
     if let recovered = recoveredSessions.sessions.first {
       Divider()
       Label("Recovered conversation", systemImage: "waveform.badge.checkmark")

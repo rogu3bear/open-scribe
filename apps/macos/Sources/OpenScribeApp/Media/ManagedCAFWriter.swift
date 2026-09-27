@@ -9,6 +9,7 @@ enum ManagedCAFWriterError: Error, Equatable {
   case mediaAttributesUnavailable
   case conversionFailed
   case alreadySealed
+  case storagePressure
 }
 
 private final class SingleBufferConverterInput: @unchecked Sendable {
@@ -35,8 +36,15 @@ private final class SingleBufferConverterInput: @unchecked Sendable {
 /// boundary receipts.
 protocol CapturedAudioWriting: AnyObject, Sendable {
   func writeCapturedBuffer(_ input: AVAudioPCMBuffer) throws -> AVAudioFrameCount
+  func writeCapturedBuffer(_ input: AVAudioPCMBuffer, hostTime: UInt64) throws -> AVAudioFrameCount
   func firstSampleReceipt(hostTime: UInt64, frameCount: UInt64) throws
     -> NativeFirstSampleReceipt
+}
+
+extension CapturedAudioWriting {
+  func writeCapturedBuffer(_ input: AVAudioPCMBuffer, hostTime: UInt64) throws -> AVAudioFrameCount {
+    try writeCapturedBuffer(input)
+  }
 }
 
 final class ManagedCAFWriter: CapturedAudioWriting, @unchecked Sendable {
@@ -50,7 +58,7 @@ final class ManagedCAFWriter: CapturedAudioWriting, @unchecked Sendable {
   private var sealedReceipt: NativeSealSegmentReceipt?
 
   init(authorization: NativeMediaOpenAuthorization) throws {
-    guard authorization.writerGeneration == 1 else {
+    guard authorization.writerGeneration > 0 else {
       throw ManagedCAFWriterError.unsupportedAuthorization
     }
 

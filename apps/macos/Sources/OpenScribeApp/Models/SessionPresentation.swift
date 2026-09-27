@@ -115,6 +115,7 @@ struct RuntimeSessionPresentation: Equatable, Sendable, Identifiable {
   let mediaFilesOpen: Bool
   let interruptionReason: String?
   let recovered: Bool
+  let hasCaptureTimeline: Bool
   let sources: [RuntimeSourcePresentation]
   let playableMedia: RuntimePlayableMediaPresentation?
 
@@ -128,6 +129,7 @@ struct RuntimeSessionPresentation: Equatable, Sendable, Identifiable {
     mediaFilesOpen = native.mediaFilesOpen
     interruptionReason = native.interruptionReason
     recovered = native.recovered
+    hasCaptureTimeline = native.hasCaptureTimeline
     sources = native.sources.map(RuntimeSourcePresentation.init(native:))
     playableMedia = native.playableMedia.map(RuntimePlayableMediaPresentation.init(native:))
   }

@@ -38,6 +38,7 @@ struct ContentView: View {
     .toolbar {
       ToolbarItemGroup(placement: .primaryAction) {
         captureButton
+        RecorderControls(recorder: liveRecording, store: store)
         importButton
       }
     }
@@ -495,6 +496,37 @@ private struct ConversationWorkspaceView: View {
         .font(.title2.weight(.semibold))
         .accessibilityAddTraits(.isHeader)
 
+      if session.lifecycle == "ready_for_review", session.hasCaptureTimeline {
+        let active =
+          playbackController.activePlaybackSessionId == session.sessionId
+          && playbackController.pendingRecoveredMediaIdentity == nil
+          && playbackController.playingRecoveredMediaIdentity == nil
+        Button(active ? "Stop synchronized playback" : "Play all sources together") {
+          if active {
+            playbackController.stopPlayback()
+          } else {
+            playbackController.playSynchronized(sessionId: session.sessionId)
+          }
+        }
+        .disabled(playbackController.activePlaybackSessionId != nil && !active)
+        Text("Uses the recorded timeline, including source offsets and gaps.")
+          .font(.caption)
+          .foregroundStyle(.secondary)
+        if active, playbackController.timelineClockAdjustmentNanoseconds > 0 {
+          Text(
+            "Source clock alignment: up to \(Double(playbackController.timelineClockAdjustmentNanoseconds) / 1_000_000, specifier: "%.1f") ms. All recorded samples are preserved."
+          )
+          .font(.caption)
+          .foregroundStyle(.secondary)
+        }
+        if playbackController.errorSessionId == session.sessionId,
+          playbackController.errorRecoveredMediaIdentity == nil,
+          let message = playbackController.errorMessage
+        {
+          Text(message).foregroundStyle(.orange)
+        }
+      }
+
       if let media = session.playableMedia {
         let canPlay = ImportedPlaybackEligibility.canPlay(media)
         let isPlaying = playbackController.playingSessionId == session.sessionId
@@ -555,7 +587,7 @@ private struct ConversationWorkspaceView: View {
             }
           )
         }
-      } else {
+      } else if !session.hasCaptureTimeline {
         Label("No verified playable audio is available.", systemImage: "waveform.slash")
           .foregroundStyle(.secondary)
       }

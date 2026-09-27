@@ -1,7 +1,7 @@
 @preconcurrency import AVFoundation
-@preconcurrency import ScreenCaptureKit
 import CoreMedia
 import Foundation
+@preconcurrency import ScreenCaptureKit
 
 enum SystemAudioCaptureAdapterError: Error, Equatable {
   case noDisplayAvailable
@@ -9,7 +9,23 @@ enum SystemAudioCaptureAdapterError: Error, Equatable {
   case outputRegistrationFailed
   case invalidSampleBuffer
   case writerFailed
+  case streamStopped
+  case userStopped
+  case permissionDenied
 }
+
+/// The same adapter and writer queue are exercised without opening a device in tests.
+protocol SystemAudioStreamControlling: AnyObject {
+  var synchronizationClock: CMClock? { get }
+  func addStreamOutput(
+    _ output: SCStreamOutput, type: SCStreamOutputType, sampleHandlerQueue: DispatchQueue?
+  ) throws
+  func removeStreamOutput(_ output: SCStreamOutput, type: SCStreamOutputType) throws
+  func startCapture() async throws
+  func stopCapture() async throws
+}
+
+extension SCStream: SystemAudioStreamControlling {}
 
 /// ScreenCaptureKit system-audio hot path. The selected display bounds audio
 /// scope to the user's authorized system capture; video output is never added.
@@ -21,20 +37,24 @@ final class SystemAudioCaptureAdapter: NSObject, SCStreamOutput, SCStreamDelegat
   typealias FailureHandler = @Sendable (SystemAudioCaptureAdapterError) -> Void
 
   private let writer: CapturedAudioWriting
-  private var stream: SCStream!
+  private var stream: SystemAudioStreamControlling!
   private let writerQueue = DispatchQueue(
     label: "app.open-scribe.system-audio-writer",
     qos: .userInitiated
   )
   private let stateLock = NSLock()
   private var started = false
+  private var hasStarted = false
+  private var stopping = false
+  private var startTask: Task<Void, Error>?
+  private var stopTask: Task<UInt64?, Error>?
   private var firstSampleReported = false
   private var failureReported = false
   private var lastHostTime: UInt64?
   private var onFirstSample: FirstSampleHandler?
   private var onFailure: FailureHandler?
 
-  private init(writer: CapturedAudioWriting, filter: SCContentFilter) {
+  init(writer: CapturedAudioWriting, filter: SCContentFilter) {
     self.writer = writer
     let configuration = SCStreamConfiguration()
     configuration.width = 2
@@ -47,6 +67,12 @@ final class SystemAudioCaptureAdapter: NSObject, SCStreamOutput, SCStreamDelegat
     configuration.excludesCurrentProcessAudio = true
     super.init()
     stream = SCStream(filter: filter, configuration: configuration, delegate: self)
+  }
+
+  init(writer: CapturedAudioWriting, stream: SystemAudioStreamControlling) {
+    self.writer = writer
+    self.stream = stream
+    super.init()
   }
 
   static func allAuthorizedSystemAudio(writer: CapturedAudioWriting) async throws
@@ -93,7 +119,11 @@ final class SystemAudioCaptureAdapter: NSObject, SCStreamOutput, SCStreamDelegat
     onFirstSample: @escaping FirstSampleHandler,
     onFailure: @escaping FailureHandler
   ) async throws {
-    try beginStart(onFirstSample: onFirstSample, onFailure: onFailure)
+    let task = try beginStart(onFirstSample: onFirstSample, onFailure: onFailure)
+    try await task.value
+  }
+
+  private func startStream() async throws {
     var outputRegistered = false
     do {
       try stream.addStreamOutput(self, type: .audio, sampleHandlerQueue: writerQueue)
@@ -103,24 +133,47 @@ final class SystemAudioCaptureAdapter: NSObject, SCStreamOutput, SCStreamDelegat
       if outputRegistered {
         try? stream.removeStreamOutput(self, type: .audio)
       }
-      resetAfterFailedStart()
+      _ = await drainAndFinishStop()
       throw error
     }
   }
 
   func stop() async throws -> UInt64? {
+    let task = stateLock.withLock { () -> Task<UInt64?, Error> in
+      if let stopTask { return stopTask }
+      stopping = true
+      let task = Task { try await self.stopAndDrain() }
+      stopTask = task
+      return task
+    }
+    return try await task.value
+  }
+
+  private func stopAndDrain() async throws -> UInt64? {
+    let startup = stateLock.withLock { startTask }
+    if let startup {
+      do { try await startup.value } catch { return nil }
+    }
+    guard stateLock.withLock({ started }) else { return nil }
     var firstError: Error?
     do {
       try await stream.stopCapture()
     } catch {
-      firstError = error
+      // A delegate-reported loss can leave the stream already stopped. Detach
+      // output and drain accepted writes before reporting its final sample.
+      let native = error as NSError
+      if native.domain != SCStreamErrorDomain
+        || native.code != SCStreamError.attemptToStopStreamState.rawValue
+      {
+        firstError = error
+      }
     }
     do {
       try stream.removeStreamOutput(self, type: .audio)
     } catch {
       firstError = firstError ?? error
     }
-    let finalHostTime = finishStop()
+    let finalHostTime = await drainAndFinishStop()
     if let firstError {
       throw firstError
     }
@@ -130,26 +183,32 @@ final class SystemAudioCaptureAdapter: NSObject, SCStreamOutput, SCStreamDelegat
   private func beginStart(
     onFirstSample: @escaping FirstSampleHandler,
     onFailure: @escaping FailureHandler
-  ) throws {
+  ) throws -> Task<Void, Error> {
     stateLock.lock()
     defer { stateLock.unlock() }
-    guard !started else {
+    guard !hasStarted, !stopping else {
       throw SystemAudioCaptureAdapterError.alreadyStarted
     }
     started = true
+    hasStarted = true
     firstSampleReported = false
     failureReported = false
     lastHostTime = nil
     self.onFirstSample = onFirstSample
     self.onFailure = onFailure
+    let task = Task { try await self.startStream() }
+    startTask = task
+    return task
   }
 
-  private func resetAfterFailedStart() {
-    stateLock.lock()
-    defer { stateLock.unlock() }
-    started = false
-    onFirstSample = nil
-    onFailure = nil
+  private func drainAndFinishStop() async -> UInt64? {
+    await withCheckedContinuation { continuation in
+      // ScreenCaptureKit delivers on this serial queue. Closing admission here
+      // preserves preceding writes and prevents late callbacks after sealing.
+      writerQueue.async {
+        continuation.resume(returning: self.finishStop())
+      }
+    }
   }
 
   private func finishStop() -> UInt64? {
@@ -166,6 +225,11 @@ final class SystemAudioCaptureAdapter: NSObject, SCStreamOutput, SCStreamDelegat
     didOutputSampleBuffer sampleBuffer: CMSampleBuffer,
     of type: SCStreamOutputType
   ) {
+    consume(sampleBuffer, type: type)
+  }
+
+  func consume(_ sampleBuffer: CMSampleBuffer, type: SCStreamOutputType) {
+    guard stateLock.withLock({ started && !failureReported }) else { return }
     guard type == .audio else { return }
     if let failure = Self.sampleFailure(for: sampleBuffer, type: type) {
       reportFailure(failure)
@@ -203,39 +267,58 @@ final class SystemAudioCaptureAdapter: NSObject, SCStreamOutput, SCStreamDelegat
       return
     }
     pcm.frameLength = AVAudioFrameCount(sampleBuffer.numSamples)
+    guard let synchronizationClock = stream.synchronizationClock,
+      let hostTime = Self.hostTime(
+        from: sampleBuffer.presentationTimeStamp,
+        synchronizationClock: synchronizationClock
+      )
+    else {
+      reportFailure(.invalidSampleBuffer)
+      return
+    }
     do {
-      let written = try writer.writeCapturedBuffer(pcm)
-      guard written > 0 else { return }
-      let presentation = sampleBuffer.presentationTimeStamp
-      guard let synchronizationClock = stream.synchronizationClock,
-        let hostTime = Self.hostTime(
-          from: presentation,
-          synchronizationClock: synchronizationClock
-        )
-      else {
-        reportFailure(.invalidSampleBuffer)
-        return
+      let written = try withExtendedLifetime(retainedBlockBuffer) {
+        try writer.writeCapturedBuffer(pcm, hostTime: hostTime)
       }
+      guard written > 0 else { return }
       stateLock.lock()
       lastHostTime = hostTime
       let shouldReport = !firstSampleReported
       firstSampleReported = true
+      let handler = onFirstSample
       stateLock.unlock()
       if shouldReport {
-        onFirstSample?(try writer.firstSampleReceipt(hostTime: hostTime, frameCount: UInt64(written)))
+        handler?(try writer.firstSampleReceipt(hostTime: hostTime, frameCount: UInt64(written)))
       }
     } catch {
       reportFailure(.writerFailed)
     }
   }
 
-  func stream(_: SCStream, didStopWithError _: Error) {
-    reportFailure(.writerFailed)
+  func stream(_: SCStream, didStopWithError error: Error) {
+    handleStreamStopped(error)
+  }
+
+  func handleStreamStopped(_ error: Error) {
+    let native = error as NSError
+    let failure: SystemAudioCaptureAdapterError
+    if native.domain == SCStreamErrorDomain,
+      native.code == SCStreamError.userStopped.rawValue
+    {
+      failure = .userStopped
+    } else if native.domain == SCStreamErrorDomain,
+      native.code == SCStreamError.userDeclined.rawValue
+    {
+      failure = .permissionDenied
+    } else {
+      failure = .streamStopped
+    }
+    writerQueue.async { self.reportFailure(failure) }
   }
 
   private func reportFailure(_ failure: SystemAudioCaptureAdapterError) {
     stateLock.lock()
-    guard !failureReported else {
+    guard started, !stopping, !failureReported else {
       stateLock.unlock()
       return
     }
