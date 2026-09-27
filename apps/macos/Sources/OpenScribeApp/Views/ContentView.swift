@@ -196,7 +196,7 @@ struct ContentView: View {
     .disabled(!canImport)
     .help(
       canImport
-        ? "Add a supported local CAF recording"
+        ? "Add a supported local PCM CAF or mono M4A recording (up to 256 MiB)"
         : "Wait for the current recording action to finish before importing audio"
     )
   }
@@ -682,7 +682,7 @@ private struct EmptyConversationWorkspace: View {
         .font(.title2.weight(.semibold))
         .accessibilityAddTraits(.isHeader)
       Text(
-        "Record microphone and computer audio, or import a supported local CAF recording. Open Scribe keeps the source on this Mac."
+        "Record microphone and computer audio, or import a supported local PCM CAF or mono M4A recording. Open Scribe keeps the source on this Mac."
       )
       .foregroundStyle(.secondary)
       .multilineTextAlignment(.center)

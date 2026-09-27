@@ -1,3 +1,4 @@
+@preconcurrency import AVFoundation
 import Foundation
 import XCTest
 
@@ -5,6 +6,147 @@ import XCTest
 
 @MainActor
 final class ImportedMediaAuthorityAdapterTests: XCTestCase {
+  func testOversizedM4AIsRejectedBeforeDecodeOrLibraryMutation() throws {
+    let root = FileManager.default.temporaryDirectory
+      .appendingPathComponent("open-scribe-import-bounds-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let source = root.appendingPathComponent("large.m4a")
+    _ = FileManager.default.createFile(atPath: source.path, contents: nil)
+    let handle = try FileHandle(forWritingTo: source)
+    try handle.truncate(atOffset: nativeImportPolicy().maximumSourceBytes + 1)
+    try handle.close()
+
+    XCTAssertThrowsError(
+      try BoundedAudioImport.prepare(sourceURL: source, policy: nativeImportPolicy())
+    ) { error in
+      XCTAssertEqual(
+        error as? BoundedAudioImportError,
+        .sourceTooLarge(
+          actual: nativeImportPolicy().maximumSourceBytes + 1,
+          maximum: nativeImportPolicy().maximumSourceBytes
+        )
+      )
+    }
+    XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: root.path).count, 1)
+  }
+
+  func testCapturePriorityRejectsImportBeforePicker() {
+    var picked = false
+    let adapter = ImportedMediaAuthorityAdapter(
+      picker: {
+        picked = true
+        return nil
+      },
+      canBeginImport: { false },
+      importer: { _, _ in acceptedEvidence() }
+    )
+    adapter.chooseAndImport()
+    XCTAssertFalse(picked)
+    XCTAssertEqual(adapter.phase, .failed)
+    XCTAssertTrue(adapter.statusMessage?.contains("Finish the current recording") == true)
+  }
+
+  func testBoundedMonoM4AImportsAsRecoverableManagedCAFWithoutChangingOriginal() async throws {
+    let root = FileManager.default.temporaryDirectory
+      .appendingPathComponent("open-scribe-import-m4a-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let originalURL = root.appendingPathComponent("Short Voice Memo.m4a")
+    let settings: [String: Any] = [
+      AVFormatIDKey: kAudioFormatMPEG4AAC,
+      AVSampleRateKey: 44_100.0,
+      AVNumberOfChannelsKey: 1,
+      AVEncoderBitRateKey: 64_000,
+    ]
+    do {
+      let file = try AVAudioFile(forWriting: originalURL, settings: settings)
+      let buffer = try XCTUnwrap(
+        AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: 44_100)
+      )
+      let samples = try XCTUnwrap(buffer.floatChannelData?[0])
+      buffer.frameLength = 44_100
+      for frame in 0..<44_100 {
+        samples[frame] = Float(frame % 64) / 128.0
+      }
+      try file.write(from: buffer)
+    }
+    let original = try Data(contentsOf: originalURL)
+    let managedRoot = root.appendingPathComponent("Library", isDirectory: true)
+    let runtime = RuntimeLibraryStore(managedRoot: managedRoot)
+    let adapter = ImportedMediaAuthorityAdapter(
+      picker: { originalURL },
+      startSecurityScope: { _ in true },
+      stopSecurityScope: { _ in },
+      importer: runtime.importManagedAudio
+    )
+    adapter.chooseAndImport()
+    await assertEventually { adapter.phase == .succeeded || adapter.phase == .failed }
+    XCTAssertEqual(adapter.phase, .succeeded, adapter.statusMessage ?? "no import status")
+    XCTAssertEqual(try Data(contentsOf: originalURL), original)
+    await assertEventually { runtime.savedSessions.count == 1 }
+    let saved = try XCTUnwrap(runtime.savedSessions.first)
+    XCTAssertEqual(saved.playableMedia?.sourceDisplayName, "Short Voice Memo.m4a")
+    XCTAssertTrue(saved.playableMedia?.isPlayable == true)
+    let controller = try NativeRecordingPreparation.open(managedRoot: managedRoot.path)
+    XCTAssertNoThrow(try controller.leaseImportedPlayback(sessionId: saved.sessionId))
+    XCTAssertFalse(runtime.isSnapshotStale)
+
+    let policy = nativeImportPolicy()
+    XCTAssertThrowsError(
+      try BoundedAudioImport.prepare(
+        sourceURL: originalURL,
+        policy: NativeImportPolicy(
+          maximumSourceBytes: policy.maximumSourceBytes,
+          maximumManagedBytes: policy.maximumManagedBytes,
+          maximumDurationNanoseconds: 1,
+          maximumManagedSamples: policy.maximumManagedSamples
+        )
+      )
+    ) { error in
+      XCTAssertEqual(
+        error as? BoundedAudioImportError,
+        .durationTooLong(maximumNanoseconds: 1)
+      )
+    }
+    XCTAssertThrowsError(
+      try BoundedAudioImport.prepare(
+        sourceURL: originalURL,
+        policy: NativeImportPolicy(
+          maximumSourceBytes: policy.maximumSourceBytes,
+          maximumManagedBytes: 8_192,
+          maximumDurationNanoseconds: policy.maximumDurationNanoseconds,
+          maximumManagedSamples: policy.maximumManagedSamples
+        )
+      )
+    ) { error in
+      XCTAssertEqual(
+        error as? BoundedAudioImportError,
+        .decodedTooLarge(maximum: 8_192)
+      )
+    }
+  }
+
+  func testSizeFailureExplainsPolicyWithoutAddingASession() async {
+    let adapter = ImportedMediaAuthorityAdapter(
+      picker: { URL(fileURLWithPath: "/tmp/large.m4a") },
+      startSecurityScope: { _ in true },
+      stopSecurityScope: { _ in },
+      importer: { _, _ in
+        throw BoundedAudioImportError.sourceTooLarge(
+          actual: 865_280_158,
+          maximum: nativeImportPolicy().maximumSourceBytes
+        )
+      }
+    )
+    adapter.chooseAndImport()
+    await assertEventually { adapter.phase == .failed }
+    XCTAssertNil(adapter.importedSessionId)
+    XCTAssertTrue(adapter.statusMessage?.contains("825.2 MiB") == true)
+    XCTAssertTrue(adapter.statusMessage?.contains("256 MiB") == true)
+    XCTAssertTrue(adapter.statusMessage?.contains("Nothing was added") == true)
+  }
+
   func testSecurityScopeStaysOpenThroughImportAndClosesAfterSuccess() async {
     let selectedURL = URL(fileURLWithPath: "/tmp/Interview.caf")
     let events = ImportEventRecorder()
@@ -80,7 +222,7 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
     XCTAssertTrue(stopCalled)
     XCTAssertEqual(adapter.phase, .failed)
     XCTAssertNil(adapter.importedSessionId)
-    XCTAssertTrue(adapter.statusMessage?.contains("supported local CAF") == true)
+    XCTAssertTrue(adapter.statusMessage?.contains("could not be imported") == true)
     XCTAssertTrue(adapter.statusMessage?.contains("Nothing was added") == true)
   }
 

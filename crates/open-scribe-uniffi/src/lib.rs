@@ -250,12 +250,61 @@ pub struct NativeImportedMediaEvidence {
     pub ready_for_review: bool,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct NativeImportPolicy {
+    pub maximum_source_bytes: u64,
+    pub maximum_managed_bytes: u64,
+    pub maximum_duration_nanoseconds: u64,
+    pub maximum_managed_samples: u64,
+}
+
+#[uniffi::export]
+pub fn native_import_policy() -> NativeImportPolicy {
+    let policy = open_scribe_core::import_policy();
+    NativeImportPolicy {
+        maximum_source_bytes: policy.maximum_source_bytes,
+        maximum_managed_bytes: policy.maximum_managed_bytes,
+        maximum_duration_nanoseconds: policy.maximum_duration_nanoseconds,
+        maximum_managed_samples: policy.maximum_managed_samples,
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct NativeOriginalImportMetadata {
+    pub display_name: String,
+    pub byte_length: u64,
+    pub duration_nanoseconds: u64,
+    pub sample_rate_hz: u32,
+    pub channel_count: u32,
+    pub media_format: String,
+}
+
+impl From<open_scribe_core::ImportedMediaEvidence> for NativeImportedMediaEvidence {
+    fn from(evidence: open_scribe_core::ImportedMediaEvidence) -> Self {
+        Self {
+            session_id: evidence.session_id.0,
+            relative_path: evidence.relative_path,
+            byte_length: evidence.byte_length,
+            sample_count: evidence.sample_count,
+            digest_sha256: evidence.digest_sha256,
+            journal_version: evidence.journal_version,
+            last_journal_sequence: evidence.last_journal_sequence,
+            original_untouched: evidence.original_untouched,
+            ready_for_review: evidence.ready_for_review,
+        }
+    }
+}
+
 #[derive(Debug, thiserror::Error, uniffi::Error)]
 pub enum NativeStorageError {
     #[error("The storage root is invalid.")]
     InvalidManagedRoot,
     #[error("The preparation request is invalid.")]
     InvalidRequest,
+    #[error("The import exceeds the size limit.")]
+    ImportSizeLimit,
+    #[error("The import exceeds the duration limit.")]
+    ImportDurationLimit,
     #[error("The durable session is not in the required preparation state.")]
     InvalidState,
     #[error("Media or journal evidence does not match Rust authority.")]
@@ -693,17 +742,31 @@ impl NativeRecordingPreparation {
             .controller()?
             .import_recoverable_caf(title, source_path.into())
             .map_err(map_storage_error)?;
-        Ok(NativeImportedMediaEvidence {
-            session_id: evidence.session_id.0,
-            relative_path: evidence.relative_path,
-            byte_length: evidence.byte_length,
-            sample_count: evidence.sample_count,
-            digest_sha256: evidence.digest_sha256,
-            journal_version: evidence.journal_version,
-            last_journal_sequence: evidence.last_journal_sequence,
-            original_untouched: evidence.original_untouched,
-            ready_for_review: evidence.ready_for_review,
-        })
+        Ok(evidence.into())
+    }
+
+    pub fn import_normalized_caf(
+        &self,
+        title: String,
+        normalized_path: String,
+        original: NativeOriginalImportMetadata,
+    ) -> Result<NativeImportedMediaEvidence, NativeStorageError> {
+        let evidence = self
+            .controller()?
+            .import_normalized_caf(
+                title,
+                normalized_path.into(),
+                open_scribe_core::OriginalImportMetadata {
+                    display_name: original.display_name,
+                    byte_length: original.byte_length,
+                    duration_nanoseconds: original.duration_nanoseconds,
+                    sample_rate_hz: original.sample_rate_hz,
+                    channel_count: original.channel_count,
+                    media_format: original.media_format,
+                },
+            )
+            .map_err(map_storage_error)?;
+        Ok(evidence.into())
     }
 
     pub fn lease_imported_playback(
@@ -895,6 +958,10 @@ fn map_storage_error(error: open_scribe_core::StoreError) -> NativeStorageError 
             NativeStorageError::InvalidManagedRoot
         }
         open_scribe_core::StoreError::InvalidRequest(_) => NativeStorageError::InvalidRequest,
+        open_scribe_core::StoreError::ImportSizeLimit => NativeStorageError::ImportSizeLimit,
+        open_scribe_core::StoreError::ImportDurationLimit => {
+            NativeStorageError::ImportDurationLimit
+        }
         open_scribe_core::StoreError::InvalidState(_) => NativeStorageError::InvalidState,
         open_scribe_core::StoreError::IntegrityMismatch(_) => NativeStorageError::IntegrityMismatch,
         open_scribe_core::StoreError::Io(_)

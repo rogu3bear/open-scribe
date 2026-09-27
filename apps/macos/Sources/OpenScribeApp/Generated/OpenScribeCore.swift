@@ -722,6 +722,10 @@ public protocol NativeRecordingPreparationProtocol: AnyObject, Sendable {
 
   func confirmRecording(sessionId: String) throws -> NativeRecordingStartedEvidence
 
+  func importNormalizedCaf(
+    title: String, normalizedPath: String, original: NativeOriginalImportMetadata
+  ) throws -> NativeImportedMediaEvidence
+
   func importRecoverableCaf(title: String, sourcePath: String) throws -> NativeImportedMediaEvidence
 
   func interruptSession(sessionId: String, reason: NativeSessionInterruptionReason) throws
@@ -892,6 +896,21 @@ open class NativeRecordingPreparation: NativeRecordingPreparationProtocol, @unch
         uniffi_open_scribe_uniffi_fn_method_nativerecordingpreparation_confirm_recording(
           self.uniffiCloneHandle(),
           FfiConverterString.lower(sessionId), uniffiCallStatus
+        )
+      })
+  }
+
+  open func importNormalizedCaf(
+    title: String, normalizedPath: String, original: NativeOriginalImportMetadata
+  ) throws -> NativeImportedMediaEvidence {
+    return try FfiConverterTypeNativeImportedMediaEvidence_lift(
+      try rustCallWithError(FfiConverterTypeNativeStorageError_lift) {
+        uniffiCallStatus in
+        uniffi_open_scribe_uniffi_fn_method_nativerecordingpreparation_import_normalized_caf(
+          self.uniffiCloneHandle(),
+          FfiConverterString.lower(title),
+          FfiConverterString.lower(normalizedPath),
+          FfiConverterTypeNativeOriginalImportMetadata_lower(original), uniffiCallStatus
         )
       })
   }
@@ -1453,6 +1472,69 @@ public func FfiConverterTypeNativeFirstSampleReceipt_lower(_ value: NativeFirstS
   return FfiConverterTypeNativeFirstSampleReceipt.lower(value)
 }
 
+public struct NativeImportPolicy: Equatable, Hashable {
+  public let maximumSourceBytes: UInt64
+  public let maximumManagedBytes: UInt64
+  public let maximumDurationNanoseconds: UInt64
+  public let maximumManagedSamples: UInt64
+
+  // Default memberwise initializers are never public by default, so we
+  // declare one manually.
+  public init(
+    maximumSourceBytes: UInt64, maximumManagedBytes: UInt64, maximumDurationNanoseconds: UInt64,
+    maximumManagedSamples: UInt64
+  ) {
+    self.maximumSourceBytes = maximumSourceBytes
+    self.maximumManagedBytes = maximumManagedBytes
+    self.maximumDurationNanoseconds = maximumDurationNanoseconds
+    self.maximumManagedSamples = maximumManagedSamples
+  }
+
+}
+
+#if compiler(>=6)
+  extension NativeImportPolicy: Sendable {}
+#endif
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeNativeImportPolicy: FfiConverterRustBuffer {
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws
+    -> NativeImportPolicy
+  {
+    return
+      try NativeImportPolicy(
+        maximumSourceBytes: FfiConverterUInt64.read(from: &buf),
+        maximumManagedBytes: FfiConverterUInt64.read(from: &buf),
+        maximumDurationNanoseconds: FfiConverterUInt64.read(from: &buf),
+        maximumManagedSamples: FfiConverterUInt64.read(from: &buf)
+      )
+  }
+
+  public static func write(_ value: NativeImportPolicy, into buf: inout [UInt8]) {
+    FfiConverterUInt64.write(value.maximumSourceBytes, into: &buf)
+    FfiConverterUInt64.write(value.maximumManagedBytes, into: &buf)
+    FfiConverterUInt64.write(value.maximumDurationNanoseconds, into: &buf)
+    FfiConverterUInt64.write(value.maximumManagedSamples, into: &buf)
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeImportPolicy_lift(_ buf: RustBuffer) throws -> NativeImportPolicy
+{
+  return try FfiConverterTypeNativeImportPolicy.lift(buf)
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeImportPolicy_lower(_ value: NativeImportPolicy) -> RustBuffer {
+  return FfiConverterTypeNativeImportPolicy.lower(value)
+}
+
 public struct NativeImportedMediaEvidence: Equatable, Hashable {
   public let sessionId: String
   public let relativePath: String
@@ -1777,6 +1859,80 @@ public func FfiConverterTypeNativeMediaOpenReceipt_lower(_ value: NativeMediaOpe
   -> RustBuffer
 {
   return FfiConverterTypeNativeMediaOpenReceipt.lower(value)
+}
+
+public struct NativeOriginalImportMetadata: Equatable, Hashable {
+  public let displayName: String
+  public let byteLength: UInt64
+  public let durationNanoseconds: UInt64
+  public let sampleRateHz: UInt32
+  public let channelCount: UInt32
+  public let mediaFormat: String
+
+  // Default memberwise initializers are never public by default, so we
+  // declare one manually.
+  public init(
+    displayName: String, byteLength: UInt64, durationNanoseconds: UInt64, sampleRateHz: UInt32,
+    channelCount: UInt32, mediaFormat: String
+  ) {
+    self.displayName = displayName
+    self.byteLength = byteLength
+    self.durationNanoseconds = durationNanoseconds
+    self.sampleRateHz = sampleRateHz
+    self.channelCount = channelCount
+    self.mediaFormat = mediaFormat
+  }
+
+}
+
+#if compiler(>=6)
+  extension NativeOriginalImportMetadata: Sendable {}
+#endif
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeNativeOriginalImportMetadata: FfiConverterRustBuffer {
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws
+    -> NativeOriginalImportMetadata
+  {
+    return
+      try NativeOriginalImportMetadata(
+        displayName: FfiConverterString.read(from: &buf),
+        byteLength: FfiConverterUInt64.read(from: &buf),
+        durationNanoseconds: FfiConverterUInt64.read(from: &buf),
+        sampleRateHz: FfiConverterUInt32.read(from: &buf),
+        channelCount: FfiConverterUInt32.read(from: &buf),
+        mediaFormat: FfiConverterString.read(from: &buf)
+      )
+  }
+
+  public static func write(_ value: NativeOriginalImportMetadata, into buf: inout [UInt8]) {
+    FfiConverterString.write(value.displayName, into: &buf)
+    FfiConverterUInt64.write(value.byteLength, into: &buf)
+    FfiConverterUInt64.write(value.durationNanoseconds, into: &buf)
+    FfiConverterUInt32.write(value.sampleRateHz, into: &buf)
+    FfiConverterUInt32.write(value.channelCount, into: &buf)
+    FfiConverterString.write(value.mediaFormat, into: &buf)
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeOriginalImportMetadata_lift(_ buf: RustBuffer) throws
+  -> NativeOriginalImportMetadata
+{
+  return try FfiConverterTypeNativeOriginalImportMetadata.lift(buf)
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeOriginalImportMetadata_lower(
+  _ value: NativeOriginalImportMetadata
+) -> RustBuffer {
+  return FfiConverterTypeNativeOriginalImportMetadata.lower(value)
 }
 
 public struct NativePreparedSession: Equatable, Hashable {
@@ -3783,6 +3939,8 @@ public
 
   case InvalidManagedRoot
   case InvalidRequest
+  case ImportSizeLimit
+  case ImportDurationLimit
   case InvalidState
   case IntegrityMismatch
   case StorageFailure
@@ -3811,9 +3969,11 @@ public struct FfiConverterTypeNativeStorageError: FfiConverterRustBuffer {
 
     case 1: return .InvalidManagedRoot
     case 2: return .InvalidRequest
-    case 3: return .InvalidState
-    case 4: return .IntegrityMismatch
-    case 5: return .StorageFailure
+    case 3: return .ImportSizeLimit
+    case 4: return .ImportDurationLimit
+    case 5: return .InvalidState
+    case 6: return .IntegrityMismatch
+    case 7: return .StorageFailure
 
     default: throw UniffiInternalError.unexpectedEnumCase
     }
@@ -3828,14 +3988,20 @@ public struct FfiConverterTypeNativeStorageError: FfiConverterRustBuffer {
     case .InvalidRequest:
       writeInt(&buf, Int32(2))
 
-    case .InvalidState:
+    case .ImportSizeLimit:
       writeInt(&buf, Int32(3))
 
-    case .IntegrityMismatch:
+    case .ImportDurationLimit:
       writeInt(&buf, Int32(4))
 
-    case .StorageFailure:
+    case .InvalidState:
       writeInt(&buf, Int32(5))
+
+    case .IntegrityMismatch:
+      writeInt(&buf, Int32(6))
+
+    case .StorageFailure:
+      writeInt(&buf, Int32(7))
 
     }
   }
@@ -4197,6 +4363,15 @@ public func nativeFixtureCatalog() -> [NativeSessionSnapshot] {
       )
     })
 }
+public func nativeImportPolicy() -> NativeImportPolicy {
+  return try! FfiConverterTypeNativeImportPolicy_lift(
+    try! rustCall {
+      uniffiCallStatus in
+      uniffi_open_scribe_uniffi_fn_func_native_import_policy(
+        uniffiCallStatus
+      )
+    })
+}
 /// Returns the current M0 capability posture as one coarse query.
 public func nativeStatus() -> NativeStatus {
   return try! FfiConverterTypeNativeStatus_lift(
@@ -4232,6 +4407,9 @@ private let initializationResult: InitializationResult = {
   if uniffi_open_scribe_uniffi_checksum_func_native_fixture_catalog() != 48213 {
     return InitializationResult.apiChecksumMismatch
   }
+  if uniffi_open_scribe_uniffi_checksum_func_native_import_policy() != 25979 {
+    return InitializationResult.apiChecksumMismatch
+  }
   if uniffi_open_scribe_uniffi_checksum_func_native_status() != 55397 {
     return InitializationResult.apiChecksumMismatch
   }
@@ -4265,6 +4443,11 @@ private let initializationResult: InitializationResult = {
   }
   if uniffi_open_scribe_uniffi_checksum_method_nativerecordingpreparation_confirm_recording()
     != 15718
+  {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_open_scribe_uniffi_checksum_method_nativerecordingpreparation_import_normalized_caf()
+    != 13941
   {
     return InitializationResult.apiChecksumMismatch
   }

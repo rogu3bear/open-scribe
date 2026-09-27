@@ -312,6 +312,13 @@ RustBuffer
 uniffi_open_scribe_uniffi_fn_method_nativerecordingpreparation_confirm_recording(
     uint64_t ptr, RustBuffer session_id, RustCallStatus *_Nonnull out_status);
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_FN_METHOD_NATIVERECORDINGPREPARATION_IMPORT_NORMALIZED_CAF
+#define UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_FN_METHOD_NATIVERECORDINGPREPARATION_IMPORT_NORMALIZED_CAF
+RustBuffer
+uniffi_open_scribe_uniffi_fn_method_nativerecordingpreparation_import_normalized_caf(
+    uint64_t ptr, RustBuffer title, RustBuffer normalized_path,
+    RustBuffer original, RustCallStatus *_Nonnull out_status);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_FN_METHOD_NATIVERECORDINGPREPARATION_IMPORT_RECOVERABLE_CAF
 #define UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_FN_METHOD_NATIVERECORDINGPREPARATION_IMPORT_RECOVERABLE_CAF
 RustBuffer
@@ -426,6 +433,13 @@ RustBuffer uniffi_open_scribe_uniffi_fn_func_native_fixture(
 #ifndef UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_FN_FUNC_NATIVE_FIXTURE_CATALOG
 #define UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_FN_FUNC_NATIVE_FIXTURE_CATALOG
 RustBuffer uniffi_open_scribe_uniffi_fn_func_native_fixture_catalog(
+    RustCallStatus *_Nonnull out_status
+
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_FN_FUNC_NATIVE_IMPORT_POLICY
+#define UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_FN_FUNC_NATIVE_IMPORT_POLICY
+RustBuffer uniffi_open_scribe_uniffi_fn_func_native_import_policy(
     RustCallStatus *_Nonnull out_status
 
 );
@@ -706,6 +720,12 @@ uint16_t uniffi_open_scribe_uniffi_checksum_func_native_fixture_catalog(void
 
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_CHECKSUM_FUNC_NATIVE_IMPORT_POLICY
+#define UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_CHECKSUM_FUNC_NATIVE_IMPORT_POLICY
+uint16_t uniffi_open_scribe_uniffi_checksum_func_native_import_policy(void
+
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_CHECKSUM_FUNC_NATIVE_STATUS
 #define UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_CHECKSUM_FUNC_NATIVE_STATUS
 uint16_t uniffi_open_scribe_uniffi_checksum_func_native_status(void
@@ -764,6 +784,14 @@ uniffi_open_scribe_uniffi_checksum_method_nativerecordingpreparation_authorize_n
 #define UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_CHECKSUM_METHOD_NATIVERECORDINGPREPARATION_CONFIRM_RECORDING
 uint16_t
 uniffi_open_scribe_uniffi_checksum_method_nativerecordingpreparation_confirm_recording(
+    void
+
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_CHECKSUM_METHOD_NATIVERECORDINGPREPARATION_IMPORT_NORMALIZED_CAF
+#define UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_CHECKSUM_METHOD_NATIVERECORDINGPREPARATION_IMPORT_NORMALIZED_CAF
+uint16_t
+uniffi_open_scribe_uniffi_checksum_method_nativerecordingpreparation_import_normalized_caf(
     void
 
 );

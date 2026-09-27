@@ -71,9 +71,12 @@ struct OpenScribeApp: App {
       ?? LiveMicrophoneRecordingController(managedRoot: nil)
     let recovery = RecoveredSessionController(managedRoot: managedRoot)
     let runtime = RuntimeLibraryStore(managedRoot: managedRoot)
-    let importAuthority = ImportedMediaAuthorityAdapter { title, sourceURL in
-      try runtime.importManagedCaf(title: title, sourceURL: sourceURL)
-    }
+    let importAuthority = ImportedMediaAuthorityAdapter(
+      canBeginImport: { controller.canStart },
+      importer: { title, sourceURL in
+        try runtime.importManagedAudio(title: title, sourceURL: sourceURL)
+      }
+    )
     _runtimeStore = StateObject(wrappedValue: runtime)
     _importedMediaAuthority = StateObject(wrappedValue: importAuthority)
     _liveRecording = StateObject(wrappedValue: controller)

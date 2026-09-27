@@ -22,6 +22,7 @@ use super::{
 const MAX_IMPORTED_PLAYBACK_SNAPSHOT_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_IMPORT_BYTES: u64 = MAX_IMPORTED_PLAYBACK_SNAPSHOT_BYTES;
 const MAX_IMPORT_SAMPLES: u64 = 4 * 60 * 60 * 48_000;
+const MAX_IMPORT_DURATION_NANOSECONDS: u64 = 4 * 60 * 60 * 1_000_000_000;
 const IMPORT_SOURCE_KIND: &str = "imported_audio";
 const IMPORT_MEDIA_FORMAT: &str = "caf-pcm-s16le";
 const PLAYBACK_SNAPSHOT_PREFIX: &str = ".playback-";
@@ -33,6 +34,36 @@ const PLAYBACK_QUARANTINE_PREFIX: &str = ".playback-recovery-";
 pub struct ImportMediaRequest {
     pub title: String,
     pub source_path: PathBuf,
+}
+
+/// Native-probed details of an original compressed file. The managed CAF remains
+/// independently validated by Rust before any library entry becomes visible.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OriginalImportMetadata {
+    pub display_name: String,
+    pub byte_length: u64,
+    pub duration_nanoseconds: u64,
+    pub sample_rate_hz: u32,
+    pub channel_count: u32,
+    pub media_format: String,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ImportPolicy {
+    pub maximum_source_bytes: u64,
+    pub maximum_managed_bytes: u64,
+    pub maximum_duration_nanoseconds: u64,
+    pub maximum_managed_samples: u64,
+}
+
+#[must_use]
+pub const fn import_policy() -> ImportPolicy {
+    ImportPolicy {
+        maximum_source_bytes: MAX_IMPORT_BYTES,
+        maximum_managed_bytes: MAX_IMPORT_BYTES,
+        maximum_duration_nanoseconds: MAX_IMPORT_DURATION_NANOSECONDS,
+        maximum_managed_samples: MAX_IMPORT_SAMPLES,
+    }
 }
 
 /// Content-free admission evidence for one managed imported conversation.
@@ -114,12 +145,43 @@ impl SessionStore {
         &mut self,
         request: ImportMediaRequest,
     ) -> Result<ImportedMediaEvidence, StoreError> {
-        self.import_recoverable_caf_inner(request, None)
+        self.import_recoverable_caf_inner(request, None, None)
+    }
+
+    pub fn import_normalized_caf(
+        &mut self,
+        request: ImportMediaRequest,
+        original: OriginalImportMetadata,
+    ) -> Result<ImportedMediaEvidence, StoreError> {
+        if original.byte_length > MAX_IMPORT_BYTES {
+            return Err(StoreError::ImportSizeLimit);
+        }
+        if original.duration_nanoseconds > MAX_IMPORT_DURATION_NANOSECONDS {
+            return Err(StoreError::ImportDurationLimit);
+        }
+        if original.display_name.is_empty()
+            || original.display_name.len() > 255
+            || original
+                .display_name
+                .chars()
+                .any(|character| matches!(character, '/' | '\\' | '\0'))
+            || original.media_format != "m4a"
+            || original.byte_length == 0
+            || original.duration_nanoseconds == 0
+            || original.sample_rate_hz == 0
+            || original.channel_count != 1
+        {
+            return Err(StoreError::InvalidRequest(
+                "original import metadata is invalid",
+            ));
+        }
+        self.import_recoverable_caf_inner(request, Some(original), None)
     }
 
     fn import_recoverable_caf_inner(
         &mut self,
         request: ImportMediaRequest,
+        original: Option<OriginalImportMetadata>,
         failure: Option<ImportFailurePoint>,
     ) -> Result<ImportedMediaEvidence, StoreError> {
         validate_request(&PrepareSessionRequest {
@@ -223,7 +285,17 @@ impl SessionStore {
             let payload = json!({
                 "source_id": source_id,
                 "source_kind": IMPORT_SOURCE_KIND,
-                "source_display_name": request.source_path.file_name().and_then(OsStr::to_str).unwrap_or("Imported audio"),
+                "source_display_name": original.as_ref().map_or_else(
+                    || request.source_path.file_name().and_then(OsStr::to_str).unwrap_or("Imported audio"),
+                    |metadata| metadata.display_name.as_str(),
+                ),
+                "original_media": original.as_ref().map(|metadata| json!({
+                    "format": metadata.media_format,
+                    "byte_length": metadata.byte_length,
+                    "duration_nanoseconds": metadata.duration_nanoseconds,
+                    "sample_rate_hz": metadata.sample_rate_hz,
+                    "channel_count": metadata.channel_count,
+                })),
                 "track_id": track_id,
                 "segment_id": segment_id,
                 "staging_relative_path": staging_relative_path,
@@ -1136,14 +1208,20 @@ fn rename_import_entry(track_directory: &OwnedFd) -> Result<(), StoreError> {
 }
 
 fn validate_import_bounds(byte_length: u64, sample_count: u64) -> Result<(), StoreError> {
-    if byte_length < CAF_HEADER.len() as u64 || byte_length > MAX_IMPORT_BYTES {
+    if byte_length > MAX_IMPORT_BYTES {
+        return Err(StoreError::ImportSizeLimit);
+    }
+    if byte_length < CAF_HEADER.len() as u64 {
         return Err(StoreError::InvalidRequest(
-            "import source exceeds the CAF size bounds",
+            "import source is too short to be a CAF",
         ));
     }
-    if sample_count == 0 || sample_count > MAX_IMPORT_SAMPLES {
+    if sample_count > MAX_IMPORT_SAMPLES {
+        return Err(StoreError::ImportDurationLimit);
+    }
+    if sample_count == 0 {
         return Err(StoreError::InvalidRequest(
-            "import source exceeds the CAF duration bounds",
+            "import source contains no audio samples",
         ));
     }
     Ok(())
@@ -1354,6 +1432,76 @@ mod tests {
                 .unwrap(),
             0
         );
+    }
+
+    #[test]
+    fn normalized_import_retains_original_metadata_and_reopens_as_playable_media() {
+        let temp = TempDir::new().unwrap();
+        let caf_path = temp.path().join("normalized.caf");
+        write_recoverable_caf(&caf_path, 960);
+        let original_caf = fs::read(&caf_path).unwrap();
+        let managed_root = temp.path().join("Open Scribe");
+        let mut store = SessionStore::open(&managed_root).unwrap();
+        let evidence = store
+            .import_normalized_caf(
+                ImportMediaRequest {
+                    title: "Voice memo".to_owned(),
+                    source_path: caf_path.clone(),
+                },
+                OriginalImportMetadata {
+                    display_name: "Voice memo.m4a".to_owned(),
+                    byte_length: 8_192,
+                    duration_nanoseconds: 20_000_000,
+                    sample_rate_hz: 44_100,
+                    channel_count: 1,
+                    media_format: "m4a".to_owned(),
+                },
+            )
+            .unwrap();
+        assert_eq!(fs::read(&caf_path).unwrap(), original_caf);
+        let snapshot = store.runtime_library_snapshot().unwrap();
+        assert_eq!(snapshot.saved_sessions.len(), 1);
+        assert_eq!(
+            snapshot.saved_sessions[0]
+                .playable_media
+                .as_ref()
+                .unwrap()
+                .source_display_name,
+            "Voice memo.m4a"
+        );
+        let journal = fs::read_to_string(
+            store
+                .session_directory(&evidence.session_id.0)
+                .unwrap()
+                .join("recovery.jsonl"),
+        )
+        .unwrap();
+        assert!(journal.contains("\"original_media\""));
+        assert!(journal.contains("\"sample_rate_hz\":44100"));
+        drop(store);
+        let reopened = SessionStore::open(managed_root).unwrap();
+        assert!(
+            reopened
+                .lease_imported_playback(&evidence.session_id)
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn import_bounds_have_distinct_size_and_duration_failures() {
+        let policy = import_policy();
+        assert_eq!(
+            policy.maximum_managed_bytes,
+            ImportedPlaybackLease::maximum_snapshot_byte_length()
+        );
+        assert!(matches!(
+            validate_import_bounds(policy.maximum_managed_bytes + 1, 1),
+            Err(StoreError::ImportSizeLimit)
+        ));
+        assert!(matches!(
+            validate_import_bounds(96_068, policy.maximum_managed_samples + 1),
+            Err(StoreError::ImportDurationLimit)
+        ));
     }
 
     #[test]
@@ -1577,6 +1725,7 @@ mod tests {
                         title: "Failed import".to_owned(),
                         source_path,
                     },
+                    None,
                     Some(ImportFailurePoint::PreparationDurable),
                 )
                 .is_err()
@@ -1626,6 +1775,7 @@ mod tests {
                         title: "Cleaned import".to_owned(),
                         source_path: source_path.clone(),
                     },
+                    None,
                     Some(ImportFailurePoint::ManagedCopyComplete),
                 )
                 .is_err()
@@ -1670,6 +1820,7 @@ mod tests {
                     title: "Recovered staged import".to_owned(),
                     source_path,
                 },
+                None,
                 Some(ImportFailurePoint::StagedJournalDurable),
             )
             .unwrap();

@@ -36,7 +36,10 @@ pub use timeline::{CaptureClock, TimelineSegment};
 
 use conversation_identity::validate_request;
 pub use conversation_identity::{PrepareSessionRequest, PreparedSessionReceipt, SessionOrigin};
-pub use import::{ImportMediaRequest, ImportedMediaEvidence, ImportedPlaybackLease};
+pub use import::{
+    ImportMediaRequest, ImportPolicy, ImportedMediaEvidence, ImportedPlaybackLease,
+    OriginalImportMetadata, import_policy,
+};
 pub use runtime_snapshot::{
     RuntimeLibrarySnapshot, RuntimePlayableMediaAvailability, RuntimePlayableMediaSnapshot,
     RuntimeSessionSnapshot, RuntimeSourceSnapshot,
@@ -356,6 +359,8 @@ enum JournalReplacementFailurePoint {
 pub enum StoreError {
     InvalidManagedRoot(&'static str),
     InvalidRequest(&'static str),
+    ImportSizeLimit,
+    ImportDurationLimit,
     InvalidState(&'static str),
     IntegrityMismatch(&'static str),
     Io(std::io::Error),
@@ -370,6 +375,10 @@ impl fmt::Display for StoreError {
         match self {
             Self::InvalidManagedRoot(reason) => write!(formatter, "invalid managed root: {reason}"),
             Self::InvalidRequest(reason) => write!(formatter, "invalid request: {reason}"),
+            Self::ImportSizeLimit => write!(formatter, "import source exceeds the size limit"),
+            Self::ImportDurationLimit => {
+                write!(formatter, "import source exceeds the duration limit")
+            }
             Self::InvalidState(reason) => write!(formatter, "invalid state: {reason}"),
             Self::IntegrityMismatch(reason) => write!(formatter, "integrity mismatch: {reason}"),
             Self::Io(error) => write!(formatter, "storage I/O failed: {error}"),

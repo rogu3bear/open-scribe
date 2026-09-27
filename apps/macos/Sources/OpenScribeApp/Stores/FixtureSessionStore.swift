@@ -44,6 +44,9 @@ enum StructuredNativeIO {
 final class RuntimeLibraryStore: ObservableObject {
   typealias SnapshotProvider = @Sendable () throws -> NativeRuntimeLibrarySnapshot
   typealias ImportProvider = @Sendable (String, String) throws -> NativeImportedMediaEvidence
+  typealias NormalizedImportProvider =
+    @Sendable (String, String, NativeOriginalImportMetadata) throws
+    -> NativeImportedMediaEvidence
 
   @Published private(set) var currentSession: RuntimeSessionPresentation?
   @Published private(set) var savedSessions: [RuntimeSessionPresentation] = []
@@ -52,6 +55,7 @@ final class RuntimeLibraryStore: ObservableObject {
 
   private let snapshotProvider: SnapshotProvider
   nonisolated private let importProvider: ImportProvider?
+  nonisolated private let normalizedImportProvider: NormalizedImportProvider?
   private var pollingTask: Task<Void, Never>?
   private var refreshTask: Task<Void, Never>?
   private var refreshGeneration: UInt64 = 0
@@ -60,10 +64,12 @@ final class RuntimeLibraryStore: ObservableObject {
   init(
     snapshotProvider: @escaping SnapshotProvider,
     importProvider: ImportProvider? = nil,
+    normalizedImportProvider: NormalizedImportProvider? = nil,
     startsPolling: Bool = true
   ) {
     self.snapshotProvider = snapshotProvider
     self.importProvider = importProvider
+    self.normalizedImportProvider = normalizedImportProvider
     refresh()
     if startsPolling {
       pollingTask = Task { [weak self] in
@@ -92,6 +98,14 @@ final class RuntimeLibraryStore: ObservableObject {
           throw RuntimeLibraryStoreError.managedRootUnavailable
         }
         return try controller.importRecoverableCaf(title: title, sourcePath: sourcePath)
+      },
+      normalizedImportProvider: { title, normalizedPath, original in
+        guard let controller else {
+          throw RuntimeLibraryStoreError.managedRootUnavailable
+        }
+        return try controller.importNormalizedCaf(
+          title: title, normalizedPath: normalizedPath, original: original
+        )
       }
     )
   }
@@ -108,6 +122,29 @@ final class RuntimeLibraryStore: ObservableObject {
     }
     refreshGeneration &+= 1
     startRefresh(generation: refreshGeneration)
+  }
+
+  @discardableResult
+  nonisolated func importManagedAudio(
+    title: String,
+    sourceURL: URL
+  ) throws -> NativeImportedMediaEvidence {
+    let prepared = try BoundedAudioImport.prepare(
+      sourceURL: sourceURL, policy: nativeImportPolicy()
+    )
+    defer { prepared.removeTemporaryCopy() }
+    guard let original = prepared.original else {
+      return try importManagedCaf(title: title, sourceURL: prepared.cafURL)
+    }
+    guard let normalizedImportProvider else {
+      throw RuntimeLibraryStoreError.importUnavailable
+    }
+    let evidence = try normalizedImportProvider(title, prepared.cafURL.path, original)
+    guard evidence.originalUntouched, evidence.readyForReview else {
+      throw RuntimeLibraryStoreError.importEvidenceRejected
+    }
+    Task { @MainActor [weak self] in self?.refresh() }
+    return evidence
   }
 
   @discardableResult

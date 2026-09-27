@@ -11,14 +11,15 @@ pub use open_scribe_domain::{
 };
 pub use open_scribe_store::{
     AuthorizeMediaOpenRequest, CaptureClock, FirstSampleEvidence, FirstSampleReceipt,
-    ImportMediaRequest, ImportedMediaEvidence, ImportedPlaybackLease, InterruptSessionRequest,
-    MediaOpenAuthorization, MediaOpenEvidence, MediaOpenReceipt, MediaSourceKind,
-    PrepareSessionRequest, PreparedSessionReceipt, RecorderAction, RecorderDetail, RecorderEvent,
-    RecordingStartedEvidence, RecoveredPlayableSession, RequiredSourcePlanEvidence,
-    RuntimeLibrarySnapshot, RuntimePlayableMediaAvailability, RuntimePlayableMediaSnapshot,
-    RuntimeSessionSnapshot, RuntimeSourceSnapshot, SealSegmentReceipt, SealedSegmentEvidence,
-    SessionInterruptionEvidence, SessionInterruptionReason, SessionOrigin, SourceFailureEvidence,
-    SourceFailureReason, SourceFailureRequest, StoreError, TimelineSegment,
+    ImportMediaRequest, ImportPolicy, ImportedMediaEvidence, ImportedPlaybackLease,
+    InterruptSessionRequest, MediaOpenAuthorization, MediaOpenEvidence, MediaOpenReceipt,
+    MediaSourceKind, OriginalImportMetadata, PrepareSessionRequest, PreparedSessionReceipt,
+    RecorderAction, RecorderDetail, RecorderEvent, RecordingStartedEvidence,
+    RecoveredPlayableSession, RequiredSourcePlanEvidence, RuntimeLibrarySnapshot,
+    RuntimePlayableMediaAvailability, RuntimePlayableMediaSnapshot, RuntimeSessionSnapshot,
+    RuntimeSourceSnapshot, SealSegmentReceipt, SealedSegmentEvidence, SessionInterruptionEvidence,
+    SessionInterruptionReason, SessionOrigin, SourceFailureEvidence, SourceFailureReason,
+    SourceFailureRequest, StoreError, TimelineSegment, import_policy,
 };
 
 pub struct CoarseMediaOpenReceipt {
@@ -247,6 +248,16 @@ impl RecordingPreparationController {
     ) -> Result<ImportedMediaEvidence, StoreError> {
         self.store
             .import_recoverable_caf(ImportMediaRequest { title, source_path })
+    }
+
+    pub fn import_normalized_caf(
+        &mut self,
+        title: String,
+        source_path: PathBuf,
+        original: OriginalImportMetadata,
+    ) -> Result<ImportedMediaEvidence, StoreError> {
+        self.store
+            .import_normalized_caf(ImportMediaRequest { title, source_path }, original)
     }
 
     pub fn lease_imported_playback(
