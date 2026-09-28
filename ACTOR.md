@@ -2,10 +2,10 @@
 
 > **Budget:** 600 words. Record only commands successfully executed in this repository.
 
-## Inspect repository identity
+## Inspect repository state
 
-- Command: `git status --short --branch` and `git worktree list --porcelain`.
-- Stop if: checkout identity or dirty ownership conflicts with the lane.
+- Commands: `git status --short --branch`, `git worktree list --porcelain`, `git diff --check`, `git diff --stat`.
+- Stop if: checkout identity, dirty ownership, whitespace, scope, or generated-artifact residue conflicts with the lane.
 
 ## Inspect workspace packages
 
@@ -17,11 +17,6 @@
 - Command: `./script/check.sh --scaffold`.
 - Expected: exit 0 with `SCAFFOLD_GREEN`.
 - Stop if: runtime is overstated or a boundary fails.
-
-## Inspect final local changes
-
-- Command: `git diff --check`, `git diff --stat`, and `git status --short --branch`.
-- Stop if: whitespace, scope, ownership, or generated-artifact residue is wrong.
 
 ## Validate the Milestone 0 native proof
 
@@ -71,9 +66,9 @@
 - Proof: earlier gates; typed content-free reasons; journal-first interrupted projection; idempotent replay; restart reconciliation; unchanged partial media; coarse bindings; focused Swift failures.
 - Stop if: interruption edits media, recovery is called playable, `Recording` is asserted, or a higher plane is claimed.
 
-## Validate explicit live microphone capture
+## Validate short live dual-source capture
 
-- Command: `./script/check.sh --m1-dual-source-runtime` (`--m1-live-microphone` remains a compatibility alias to the same stronger gate).
+- Command: `./script/check.sh --m1-dual-source-runtime` (alias: `--m1-live-microphone`).
 - Expected: `M1_DUAL_SOURCE_RUNTIME_GREEN` after consent, two real sources, Rust-owned `Recording`, sealing, digests, and playability; proof media is deleted.
 - Does not prove: source loss, degraded continuation, permission revocation, application-scoped selection, long-session synchronization, signing, or release.
 
@@ -84,12 +79,10 @@
 - Proof: microphone plus all-authorized system audio; Rust-owned multi-source `Recording`; external kill; strict atomic two-CAF recovery; persistent playback; independent decode; unchanged SHA-256 for both tracks; idempotence.
 - Stop if: recovery mutates media, promotes invalid media, duplicates a receipt, or asserts `Recording`.
 
-## Validate the recorder component and durable store suite
+## Validate recorder components
 
-- Commands: `CARGO_TARGET_DIR="$PWD/apps/macos/.build/rust-macos13" cargo test --locked -p open-scribe-store`; `disk-guard run --budget-gb 1 --volume "$PWD" -- bash script/build_and_run.sh --verify-recording`; `bash script/check_foundational_workflow.sh "$PWD/apps/macos/.build/xcode/Build/Products/Debug/OpenScribeApp.app/Contents/MacOS/OpenScribeApp"`.
-- Expect: 117 store tests pass; `RECORDING_COMPONENTS_GREEN` across 72 selected tests with fresh bindings; `FOUNDATION_SYNTHETIC_GREEN` with unchanged media digests.
-- Proves: durable store and recovery behavior, the Swift-to-Rust recording components, and the synthetic capture, forced-kill, recovery and PCM workflow. Not real capture, playback, signing, or release.
-- Ran green at tip `3e51b7246fed89ef5747b0c52c40b3d43b5a98aa` on 2026-09-28.
+- Commands: `cargo test --locked -p open-scribe-store`; `./script/build_and_run.sh --verify-recording` (`RECORDING_COMPONENTS_GREEN`); `bash script/check_foundational_workflow.sh <app binary>` (`FOUNDATION_SYNTHETIC_GREEN`, unchanged digests).
+- Excludes: real capture, audible playback, signing, release.
 
 ## Admission rule
 
