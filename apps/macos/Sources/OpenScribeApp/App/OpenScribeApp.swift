@@ -203,6 +203,10 @@ struct OpenScribeApp: App {
   private static func runForcedTerminationRecoveryProof(
     controller: RecoveredSessionController
   ) async {
+    // Launch recovery scans off the main actor; wait for it to publish.
+    for _ in 0..<600 where controller.phase == .scanning {
+      try? await Task.sleep(nanoseconds: 100_000_000)
+    }
     guard let recovered = controller.sessions.first else {
       let stage = controller.phase == .none ? "recovery-empty" : "recovery-failed"
       AppTelemetry.recoveryProof(stage: stage, detail: "no-playable-session")

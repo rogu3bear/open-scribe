@@ -10,6 +10,8 @@ import XCTest
 final class RecoveryPreparationFake: NativeRecordingPreparation, @unchecked Sendable {
   var recovered: [NativeRecoveredPlayableSession] = []
   var recoveryError: Error?
+  private let lock = NSLock()
+  private var mainThreadObservation: Bool?
 
   init() {
     super.init(noHandle: NoHandle())
@@ -19,7 +21,13 @@ final class RecoveryPreparationFake: NativeRecordingPreparation, @unchecked Send
     super.init(unsafeFromHandle: handle)
   }
 
+  /// Whether the last scan ran on the main thread; nil before any scan.
+  var recoveredOnMainThread: Bool? {
+    lock.withLock { mainThreadObservation }
+  }
+
   override func recoverPlayableSessions() throws -> [NativeRecoveredPlayableSession] {
+    lock.withLock { mainThreadObservation = Thread.isMainThread }
     if let recoveryError {
       throw recoveryError
     }

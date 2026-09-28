@@ -1418,6 +1418,8 @@ final class RecoveredSessionController: ObservableObject {
   private let timelinePlayer = TimelineAudioPlayer()
   private let playbackTerminationDecisionObserver: PlaybackTerminationDecisionObserver
   private var playbackTask: Task<Void, Never>?
+  private var recoveryTask: Task<Void, Never>?
+  private var recoveryGeneration: UUID?
   private var activePlaybackGeneration: UUID?
   private var recoveredPlaybackStartupRecords: [UUID: RecoveredPlaybackStartupRecord] = [:]
   private var recoveredPlaybackStartupOrder: [UUID] = []
@@ -1522,14 +1524,39 @@ final class RecoveredSessionController: ObservableObject {
     )
   }
 
+  /// Scans the library off the main actor. `phase` stays `.scanning` until the
+  /// scan publishes; a newer scan supersedes an older one still in flight.
   func recoverOnLaunch() {
     if playingSessionId != nil || activePlaybackGeneration != nil {
       stopPlayback()
     }
     phase = .scanning
     clearPlaybackError()
+    recoveryTask?.cancel()
+    let generation = UUID()
+    recoveryGeneration = generation
+    let recoveryFactory = recoveryFactory
+    recoveryTask = Task { [weak self] in
+      let outcome: Result<[NativeRecoveredPlayableSession], Error>
+      do {
+        outcome = .success(
+          try await StructuredNativeIO.read {
+            try recoveryFactory().recoverPlayableSessions()
+          })
+      } catch {
+        outcome = .failure(error)
+      }
+      guard let self, self.recoveryGeneration == generation else { return }
+      self.recoveryTask = nil
+      self.publishLaunchRecovery(outcome)
+    }
+  }
+
+  private func publishLaunchRecovery(
+    _ outcome: Result<[NativeRecoveredPlayableSession], Error>
+  ) {
     do {
-      let recovered = try recoveryFactory().recoverPlayableSessions()
+      let recovered = try outcome.get()
       guard
         recovered.allSatisfy({
           $0.mediaPreserved && $0.readyForReview && !$0.recordingStarted

@@ -576,7 +576,8 @@ impl SessionStore {
         let row = self
             .connection
             .query_row(
-                "SELECT segments.relative_path, segments.sample_count, segments.byte_length,
+                &format!(
+                    "SELECT segments.relative_path, segments.sample_count, segments.byte_length,
                     segments.digest, segments.file_device, segments.file_inode
              FROM sessions
              JOIN sources ON sources.session_id = sessions.id
@@ -592,16 +593,9 @@ impl SessionStore {
                AND segments.seal_state = 'sealed'
                AND segments.recovery_state IN ('recovered', 'not_required')
                AND segments.media_format = 'caf-pcm-s16le'
-               AND (?5 = 1 OR (EXISTS (
-                   SELECT 1 FROM session_events recovery_events
-                   WHERE recovery_events.session_id = sessions.id
-                     AND recovery_events.event_kind = 'playable_media_recovered'
-               )
-               AND EXISTS (
-                   SELECT 1 FROM recovery_runs
-                   WHERE recovery_runs.session_id = sessions.id
-                     AND recovery_runs.disposition = 'playable_media_recovered'
-               )))",
+               AND (?5 = 1 OR {})",
+                    super::library_recovery::RECOVERED_SESSION_EVIDENCE_SQL
+                ),
                 params![&session_id.0, source_id, track_id, segment_id, allow_saved],
                 |row| {
                     Ok((

@@ -24,7 +24,7 @@ final class RecoveredSessionControllerTests: RecoveredSessionTestCase {
 
     controller.recoverOnLaunch()
 
-    XCTAssertEqual(controller.phase, .available)
+    await assertEventually { controller.phase == .available }
     XCTAssertEqual(controller.sessions.map(\.sessionId), [recovered.sessionId])
     let generation = try XCTUnwrap(controller.play(recovered))
     XCTAssertEqual(
@@ -364,7 +364,7 @@ final class RecoveredSessionControllerTests: RecoveredSessionTestCase {
     XCTAssertNil(controller.playingRecoveredMediaIdentity)
   }
 
-  func testNoRecoveryCandidateRemainsQuietlyEmpty() {
+  func testNoRecoveryCandidateRemainsQuietlyEmpty() async {
     let preparation = RecoveryPreparationFake()
     let controller = RecoveredSessionController(
       recoveryFactory: { preparation },
@@ -373,12 +373,12 @@ final class RecoveredSessionControllerTests: RecoveredSessionTestCase {
 
     controller.recoverOnLaunch()
 
-    XCTAssertEqual(controller.phase, .none)
+    await assertEventually { controller.phase == .none }
     XCTAssertTrue(controller.sessions.isEmpty)
     XCTAssertNil(controller.errorMessage)
   }
 
-  func testUnconfirmedRecoveryNeverBecomesPlayable() {
+  func testUnconfirmedRecoveryNeverBecomesPlayable() async {
     let preparation = RecoveryPreparationFake()
     preparation.recovered = [recoveredSession(mediaPreserved: false)]
     let player = RecoveredAudioPlayerFake()
@@ -389,10 +389,128 @@ final class RecoveredSessionControllerTests: RecoveredSessionTestCase {
 
     controller.recoverOnLaunch()
 
-    XCTAssertEqual(controller.phase, .failed)
+    await assertEventually { controller.phase == .failed }
     XCTAssertTrue(controller.sessions.isEmpty)
     XCTAssertNil(player.recoveredReceipt)
     XCTAssertTrue(controller.errorMessage?.contains("Original files were not changed") == true)
+  }
+
+  /// F15: launch recovery leaves the main actor free. The call returns while the
+  /// phase is still `.scanning`; the scan runs off the main thread and publishes.
+  func testLaunchRecoveryRunsOffTheMainActorAndPublishesWhenDone() async {
+    let preparation = RecoveryPreparationFake()
+    let recovered = recoveredSession()
+    preparation.recovered = [recovered]
+    let controller = RecoveredSessionController(
+      recoveryFactory: { preparation },
+      player: RecoveredAudioPlayerFake()
+    )
+
+    controller.recoverOnLaunch()
+
+    XCTAssertEqual(controller.phase, .scanning, "the call returns before the scan finishes")
+    await assertEventually { controller.phase == .available }
+    XCTAssertEqual(controller.sessions.map(\.sessionId), [recovered.sessionId])
+    XCTAssertEqual(preparation.recoveredOnMainThread, false)
+  }
+
+  /// F4: a recording killed right after both sources reserved and opened a
+  /// successor and sealed their first segment. Relaunch lists two recovered
+  /// segments. The menu bar's "Play Recovered Audio" and every segment row go
+  /// through the same lease, which must admit each listed row.
+  func testKilledAfterSuccessorReservationPlaysEveryRecoveredRow() async throws {
+    let root = FileManager.default.temporaryDirectory
+      .appendingPathComponent("open-scribe-recovered-controller-tests", isDirectory: true)
+      .appendingPathComponent(UUID().uuidString.lowercased(), isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let sessionId = try Self.captureKilledAfterSuccessorReservation(root: root)
+
+    let reopened = try NativeRecordingPreparation.open(managedRoot: root.path)
+    let player = RecoveredAudioPlayerFake()
+    let controller = RecoveredSessionController(
+      recoveryFactory: { reopened },
+      recoveredPlaybackLeaseProvider: { identity in
+        try reopened.leaseRecoveredPlayback(
+          sessionId: identity.sessionId,
+          sourceId: identity.sourceId,
+          trackId: identity.trackId,
+          segmentId: identity.segmentId
+        )
+      },
+      player: player,
+      timelineProvider: { try reopened.playbackTimeline(sessionId: $0) }
+    )
+
+    controller.recoverOnLaunch()
+    await assertEventually { controller.phase != .scanning }
+    XCTAssertEqual(controller.phase, .available)
+    XCTAssertNil(controller.errorMessage)
+    let rows = controller.sessions
+    XCTAssertEqual(rows.map(\.sessionId), [sessionId, sessionId])
+    XCTAssertEqual(Set(rows.map(\.sourceKind)), [.microphone, .systemAudio])
+
+    for row in rows {
+      let identity = RecoveredPlaybackMediaIdentity(row)
+      let generation = try XCTUnwrap(controller.play(row))
+      await assertEventually {
+        controller.playbackStartupState(generation: generation, identity: identity) != .pending
+      }
+      XCTAssertEqual(
+        controller.playbackStartupState(generation: generation, identity: identity), .playing)
+      XCTAssertNil(controller.errorMessage)
+      XCTAssertEqual(controller.playingRecoveredMediaIdentity, identity)
+      XCTAssertNotNil(player.recoveredReceipt)
+      controller.stopPlayback()
+    }
+    XCTAssertEqual(try reopened.playbackTimeline(sessionId: sessionId).count, 2)
+  }
+
+  /// Two sources capture one second each; each then reserves and opens its
+  /// successor and seals its first segment. The process ends before any
+  /// successor receives a sample, so the successors become gaps on relaunch.
+  private static func captureKilledAfterSuccessorReservation(root: URL) throws -> String {
+    let preparation = try NativeRecordingPreparation.open(managedRoot: root.path)
+    let session = try preparation.prepareSessionWithRequiredSources(
+      title: "Killed after successor reservation", requiredSources: [.microphone, .systemAudio])
+    var timebase = mach_timebase_info_data_t()
+    guard mach_timebase_info(&timebase) == KERN_SUCCESS else {
+      throw ManagedCAFWriterError.unsupportedAuthorization
+    }
+    let anchor = mach_absolute_time()
+    try preparation.anchorCaptureClock(
+      sessionId: session.sessionId, hostAnchor: anchor,
+      numerator: timebase.numer, denominator: timebase.denom)
+    // Every required source opens before any first sample, as live capture does.
+    var writers: [ManagedCAFWriter] = []
+    for kind in [NativeMediaSourceKind.microphone, .systemAudio] {
+      let authorization = try preparation.authorizeInitialMedia(
+        sessionId: session.sessionId, sourceKind: kind, sourceDisplayName: "Synthetic \(kind)")
+      let writer = try ManagedCAFWriter(authorization: authorization)
+      try writer.writeDeterministicFrames(480)
+      _ = try preparation.acceptMediaOpen(receipt: writer.receipt())
+      writers.append(writer)
+    }
+    for writer in writers {
+      try writer.writeDeterministicFrames(47_520)
+      _ = try preparation.acceptFirstSample(
+        receipt: writer.firstSampleReceipt(
+          hostTime: anchor + AVAudioTime.hostTime(forSeconds: 1), frameCount: 48_000))
+    }
+    _ = try preparation.confirmRecording(sessionId: session.sessionId)
+    var successors: [ManagedCAFWriter] = []
+    for writer in writers {
+      let successor = try preparation.authorizeNextSegment(
+        sessionId: session.sessionId, previousSegmentId: writer.authorization.segmentId)
+      let successorWriter = try ManagedCAFWriter(authorization: successor)
+      try successorWriter.writeDeterministicFrames(480)
+      _ = try preparation.acceptMediaOpen(receipt: successorWriter.receipt())
+      successors.append(successorWriter)
+      _ = try preparation.sealSegment(
+        receipt: writer.sealSegmentReceipt(
+          finalSampleHostTime: anchor + AVAudioTime.hostTime(forSeconds: 2)))
+    }
+    withExtendedLifetime((preparation, writers, successors)) {}
+    return session.sessionId
   }
 
   func testRecoveredIdentityAndBoundErrorPublishOnlyAfterOpenOutcome() async {
