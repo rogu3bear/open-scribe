@@ -194,6 +194,237 @@ final class RecorderPauseResumeTests: XCTestCase {
     XCTAssertEqual(try reopened.playbackTimeline(sessionId: sessionId).count, 2)
   }
 
+  /// F1: the adapter binds its identity when capture starts, but every 30 s
+  /// rotation advances the segment generation. Route loss reported after the
+  /// first rotation must still degrade the microphone instead of being dropped.
+  func testRouteInterruptionAfterRotationDegradesMicrophoneCapture() async throws {
+    let harness = try PauseHarness()
+    defer { harness.removeFiles() }
+    await harness.controller.start()
+    let microphone = try XCTUnwrap(harness.captures.microphones.last)
+    let system = try XCTUnwrap(harness.captures.systems.last)
+    let sessionId = microphone.writer.authorization.sessionId
+    let boundIdentity = MicrophoneCaptureIdentity(authorization: microphone.writer.authorization)
+    try await harness.capture()
+    try microphone.emit(frames: 1_440_000, hostTime: harness.clock.now, value: 8192)
+    XCTAssertEqual(
+      microphone.writer.authorization.writerGeneration, boundIdentity.writerGeneration + 1,
+      "the microphone rotated into its second segment")
+    harness.clock.advance(seconds: 30)
+
+    microphone.observe(.routeInterrupted, identity: boundIdentity, sequence: 1)
+    await settle()
+
+    XCTAssertEqual(harness.controller.phase, .capturing)
+    XCTAssertEqual(harness.controller.microphoneSourceHealth?.event, .routeInterrupted)
+    XCTAssertEqual(harness.controller.failureCode, "capture-route-interrupted")
+    XCTAssertEqual(harness.controller.statusText, "Recording continues with remaining audio")
+    XCTAssertEqual(harness.telemetry.snapshot().map(\.observation.event), [.routeInterrupted])
+    XCTAssertEqual(microphone.stopCount, 1)
+    XCTAssertEqual(system.stopCount, 0)
+    XCTAssertEqual(try harness.preparation.recorderDetail(sessionId: sessionId).lifecycle, "recording")
+
+    await harness.controller.stop()
+    XCTAssertEqual(harness.controller.phase, .saved)
+    XCTAssertEqual(
+      try harness.preparation.recorderDetail(sessionId: sessionId).lifecycle, "ready_for_review")
+    _ = try harness.preparation.recoverPlayableSessions()
+    let plan = try harness.preparation.playbackTimeline(sessionId: sessionId)
+    XCTAssertEqual(plan.count, 3, "two sealed microphone segments and one system segment")
+    XCTAssertEqual(plan.filter { $0.sequence == 1 }.map(\.sampleCount), [48_000])
+  }
+
+  /// F5: after degraded continuation the failed source leaves the required
+  /// set. Resume authorizes only the continuing source and stop finalizes.
+  func testResumeAfterSourceFailureContinuesOnTheRemainingSource() async throws {
+    let harness = try PauseHarness()
+    defer { harness.removeFiles() }
+    await harness.controller.start()
+    let microphone = try XCTUnwrap(harness.captures.microphones.last)
+    let system = try XCTUnwrap(harness.captures.systems.last)
+    let sessionId = microphone.writer.authorization.sessionId
+    try await harness.capture()
+
+    system.fail(.streamStopped)
+    await settle()
+    XCTAssertEqual(harness.controller.phase, .capturing)
+    XCTAssertEqual(harness.controller.statusText, "Recording continues with remaining audio")
+    XCTAssertEqual(system.stopCount, 1)
+
+    await harness.controller.stop(pausing: true)
+    XCTAssertEqual(harness.controller.phase, .paused)
+    XCTAssertEqual(microphone.stopCount, 1)
+    harness.clock.advance(seconds: 600)
+
+    await harness.controller.start(resuming: true)
+    XCTAssertEqual(harness.controller.phase, .starting, harness.controller.errorMessage ?? "")
+    XCTAssertEqual(harness.captures.systems.count, 1, "the failed source is not restarted")
+    XCTAssertEqual(harness.captures.microphones.count, 2)
+    let resumedMicrophone = try XCTUnwrap(harness.captures.microphones.last)
+    try resumedMicrophone.emit(frames: 48_000, hostTime: harness.clock.now, value: 8192)
+    await settle()
+    XCTAssertEqual(harness.controller.phase, .capturing)
+    XCTAssertEqual(harness.controller.statusText, "Recording continues with remaining audio")
+    harness.clock.advance(seconds: 1)
+
+    await harness.controller.stop()
+    XCTAssertEqual(harness.controller.phase, .saved)
+    XCTAssertEqual(
+      try harness.preparation.recorderDetail(sessionId: sessionId).lifecycle, "ready_for_review")
+    _ = try harness.preparation.recoverPlayableSessions()
+    let plan = try harness.preparation.playbackTimeline(sessionId: sessionId)
+    XCTAssertEqual(plan.count, 3, "one system segment plus two microphone segments")
+  }
+
+  /// N1 (F11's stated scenario): a first sample followed at once by a
+  /// host-time gap rotates segment 0 before the main-actor first-sample task
+  /// runs. Startup must still succeed with the receipt on the right segment.
+  func testEarlyRotationBeforeRecordingConfirmationStillStartsCapture() async throws {
+    let harness = try PauseHarness()
+    defer { harness.removeFiles() }
+    await harness.controller.start()
+    let microphone = try XCTUnwrap(harness.captures.microphones.last)
+    let system = try XCTUnwrap(harness.captures.systems.last)
+    let sessionId = microphone.writer.authorization.sessionId
+    let start = harness.clock.now
+    try microphone.emit(frames: 480, hostTime: start, value: 8192)
+    // Before the controller's task can replay the receipt, a gap forces a rotation.
+    try microphone.emit(
+      frames: 480, hostTime: start + AVAudioTime.hostTime(forSeconds: 2), value: 8192)
+    XCTAssertEqual(microphone.writer.authorization.writerGeneration, 2)
+    try system.emit(frames: 480, hostTime: start, value: 16384)
+    await settle()
+    XCTAssertEqual(harness.controller.phase, .capturing, harness.controller.errorMessage ?? "")
+    harness.clock.advance(seconds: 3)
+    await harness.controller.stop()
+    XCTAssertEqual(harness.controller.phase, .saved)
+    XCTAssertEqual(
+      try harness.preparation.recorderDetail(sessionId: sessionId).lifecycle, "ready_for_review")
+    _ = try harness.preparation.recoverPlayableSessions()
+    let plan = try harness.preparation.playbackTimeline(sessionId: sessionId)
+    XCTAssertEqual(plan.count, 3, "two microphone segments around the gap plus one system segment")
+    XCTAssertEqual(plan.filter { $0.sequence == 1 }.map(\.gapNanoseconds), [1_990_000_000])
+  }
+
+  /// F6: a resume that fails its storage-reserve preflight must return to Paused
+  /// with Resume and Stop available and an explanation, and Rust must stay paused.
+  func testResumeBelowStorageReserveReturnsToPausedWithControls() async throws {
+    let harness = try PauseHarness()
+    defer { harness.removeFiles() }
+    try await harness.captureAndPause()
+    let sessionId = try XCTUnwrap(harness.captures.microphones.first).writer.authorization.sessionId
+    let paths = harness.controller.savedPaths
+    XCTAssertEqual(try harness.preparation.recorderDetail(sessionId: sessionId).lifecycle, "paused")
+
+    // Free space falls below the reserve before the resume attempt.
+    harness.storage.set(64 * 1024 * 1024)
+    harness.clock.advance(seconds: 600)
+    await harness.controller.start(resuming: true)
+
+    XCTAssertEqual(harness.controller.phase, .paused)
+    XCTAssertTrue(harness.controller.canResume)
+    XCTAssertTrue(harness.controller.canStop)
+    XCTAssertFalse(harness.controller.canStart)
+    XCTAssertEqual(harness.controller.savedPaths, paths)
+    XCTAssertTrue(
+      harness.controller.errorMessage?.contains("Not enough free space") == true,
+      harness.controller.errorMessage ?? "no message")
+    XCTAssertEqual(harness.captures.microphones.count, 1, "no new span started")
+    XCTAssertEqual(try harness.preparation.recorderDetail(sessionId: sessionId).lifecycle, "paused")
+    XCTAssertFalse(
+      try harness.preparation.recorderDetail(sessionId: sessionId).events.contains {
+        $0.kind == "capture_resumed"
+      })
+
+    // With space restored, the explicit retry resumes and finalizes.
+    harness.storage.set(nil)
+    await harness.controller.start(resuming: true)
+    try await harness.capture()
+    await harness.controller.stop()
+    XCTAssertEqual(harness.controller.phase, .saved)
+    XCTAssertEqual(
+      try harness.preparation.recorderDetail(sessionId: sessionId).lifecycle, "ready_for_review")
+    _ = try harness.preparation.recoverPlayableSessions()
+    XCTAssertEqual(try harness.preparation.playbackTimeline(sessionId: sessionId).count, 4)
+  }
+
+  /// F7: rotation reserves the successor before opening and sealing. A failure at
+  /// any of those steps must abandon the reserved successor durably so the
+  /// remaining source keeps recording and Stop still finalizes; the UI never
+  /// shows Saved before Rust reaches ready_for_review.
+  func testRotationStepFailureDegradesAndStopStillFinalizes() async throws {
+    for step in RotationFailureStep.allCases {
+      let harness = try PauseHarness(rotationInjection: true)
+      defer { harness.removeFiles() }
+      await harness.controller.start()
+      let microphone = try XCTUnwrap(harness.captures.microphones.last)
+      let system = try XCTUnwrap(harness.captures.systems.last)
+      let sessionId = microphone.writer.authorization.sessionId
+      try await harness.capture()
+      XCTAssertEqual(harness.controller.phase, .capturing, "\(step)")
+
+      // Arm the injected failure, then force the microphone to rotate with a
+      // host-time gap. The rotation reserves the successor, then fails.
+      harness.rotationInjector!.arm(step)
+      try microphone.emit(
+        frames: 480, hostTime: harness.clock.now + AVAudioTime.hostTime(forSeconds: 2), value: 8192)
+      await settle()
+
+      XCTAssertEqual(
+        harness.controller.phase, .capturing,
+        "the remaining source keeps recording after \(step): \(harness.controller.errorMessage ?? "")")
+      XCTAssertEqual(harness.controller.statusText, "Recording continues with remaining audio", "\(step)")
+      XCTAssertEqual(microphone.stopCount, 1, "\(step)")
+      XCTAssertEqual(system.stopCount, 0, "\(step)")
+      XCTAssertEqual(
+        try harness.preparation.recorderDetail(sessionId: sessionId).lifecycle, "recording", "\(step)")
+
+      harness.clock.advance(seconds: 1)
+      await harness.controller.stop()
+
+      XCTAssertEqual(harness.controller.phase, .saved, "\(step)")
+      // The degrade left an informational note; the recording still saved.
+      XCTAssertEqual(
+        harness.controller.statusText, "Recording saved", "\(step)")
+      XCTAssertEqual(
+        try harness.preparation.recorderDetail(sessionId: sessionId).lifecycle, "ready_for_review",
+        "\(step)")
+      let saved = try harness.preparation.runtimeLibrarySnapshot().savedSessions.first {
+        $0.sessionId == sessionId
+      }
+      XCTAssertEqual(saved?.mediaFilesOpen, false, "media files are closed after \(step)")
+      _ = try harness.preparation.recoverPlayableSessions()
+      XCTAssertEqual(
+        try harness.preparation.playbackTimeline(sessionId: sessionId).count, 2,
+        "the microphone predecessor and the system segment remain playable after \(step)")
+    }
+  }
+
+  /// F13: the storage probe reports important-usage capacity, which includes
+  /// purgeable APFS space, so the reserve preflight is not tripped while space
+  /// is available. The existing per-source storage seam consumes this number.
+  func testStorageProbeReportsImportantUsageIncludingPurgeableSpace() throws {
+    let root = FileManager.default.temporaryDirectory
+    let reported = try RecorderStorage.availableBytes(at: root.path)
+    // Read the same metric back immediately; free space drifts under concurrent
+    // I/O, so compare within a tolerance rather than for exact equality.
+    let importantUsage = try XCTUnwrap(
+      root.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
+        .volumeAvailableCapacityForImportantUsage)
+    XCTAssertGreaterThan(reported, 0)
+    XCTAssertLessThan(
+      abs(Int64(reported) - importantUsage), 64 * 1024 * 1024,
+      "the probe tracks important-usage capacity (purgeable included), not the plain free size")
+  }
+
+  /// F13: a volume that cannot report capacity is unknown under the reserve
+  /// policy. It surfaces as an error the callers treat conservatively, never as
+  /// unlimited space.
+  func testStorageProbeTreatsAnUnreadableVolumeAsUnknownNotUnlimited() {
+    XCTAssertThrowsError(
+      try RecorderStorage.availableBytes(at: "/does-not-exist-\(UUID().uuidString)/audio"))
+  }
+
   private func settle() async {
     for _ in 0..<30 { await Task.yield() }
   }
@@ -229,6 +460,9 @@ private final class PauseSource: MicrophoneCapturing, SystemAudioCapturing, @unc
   var failStop = false
   private(set) var stopCount = 0
   private var firstHandler: MicrophoneFirstSampleHandler?
+  private var observationHandler: MicrophoneHealthHandler?
+  private var systemFailureHandler: SystemAudioFailureHandler?
+  private var deliverWriteFailure: (@Sendable (Error) -> Void)?
   private var first: NativeFirstSampleReceipt?
   private var lastEnd: UInt64?
   init(writer: ManagedSegmentWriting) { self.writer = writer }
@@ -237,6 +471,18 @@ private final class PauseSource: MicrophoneCapturing, SystemAudioCapturing, @unc
     onObservation: @escaping MicrophoneHealthHandler, onFailure: @escaping MicrophoneFailureHandler
   ) throws {
     firstHandler = onFirstSample
+    observationHandler = onObservation
+    deliverWriteFailure = { _ in onFailure(.writerFailed) }
+  }
+  /// Delivers one health observation the way the production adapter does: with
+  /// the identity it bound when capture started.
+  func observe(
+    _ event: MicrophoneSourceHealthEvent, identity: MicrophoneCaptureIdentity, sequence: UInt64
+  ) {
+    observationHandler?(
+      MicrophoneSourceHealthObservation(
+        identity: identity, sequence: sequence, event: event, callbackCount: sequence,
+        successfullyWrittenFrameCount: 48_000, lastProgressMonotonicNanoseconds: 1_000))
   }
   func start(
     onFirstSample: @escaping SystemAudioFirstSampleHandler,
@@ -244,10 +490,23 @@ private final class PauseSource: MicrophoneCapturing, SystemAudioCapturing, @unc
   ) async throws {
     if failStart { throw PauseSourceError.startup }
     firstHandler = onFirstSample
+    systemFailureHandler = onFailure
+    deliverWriteFailure = { _ in onFailure(.streamStopped) }
   }
+  /// Reports a system-audio stream failure the way the adapter does.
+  func fail(_ error: SystemAudioCaptureAdapterError) { systemFailureHandler?(error) }
   func emit(frames: AVAudioFrameCount, hostTime: UInt64, value: Int16) throws {
-    _ = try writer.writeCapturedBuffer(
-      TimelineRuntimeProof.buffer(frames: frames, value: value), hostTime: hostTime)
+    do {
+      _ = try writer.writeCapturedBuffer(
+        TimelineRuntimeProof.buffer(frames: frames, value: value), hostTime: hostTime)
+    } catch {
+      // A real capture adapter reports a write/rotation failure through its
+      // failure handler rather than crashing the audio thread. Mirror that so
+      // the controller degrades the source instead of the test seeing a throw.
+      guard let deliverWriteFailure else { throw error }
+      deliverWriteFailure(error)
+      return
+    }
     lastEnd = hostTime + AVAudioTime.hostTime(forSeconds: Double(frames) / 48_000)
     if first == nil {
       first = try writer.firstSampleReceipt(hostTime: hostTime, frameCount: UInt64(frames))
@@ -287,6 +546,13 @@ private final class PauseSources: @unchecked Sendable {
   }
 }
 
+private final class PauseTelemetry: @unchecked Sendable {
+  private let lock = NSLock()
+  private var records: [CaptureSourceHealthTelemetryRecord] = []
+  func append(_ record: CaptureSourceHealthTelemetryRecord) { lock.withLock { records.append(record) } }
+  func snapshot() -> [CaptureSourceHealthTelemetryRecord] { lock.withLock { records } }
+}
+
 @MainActor
 private final class PauseHarness {
   let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -294,19 +560,33 @@ private final class PauseHarness {
   let permission = PausePermission()
   let clock = PauseClock()
   let captures = PauseSources()
+  let telemetry = PauseTelemetry()
+  let storage = StorageOverride()
+  let rotationInjector: RotationFailureInjectingPreparation?
   let controller: LiveMicrophoneRecordingController
-  init() throws {
+  init(rotationInjection: Bool = false) throws {
     preparation = try NativeRecordingPreparation.open(managedRoot: root.path)
-    let preparation = preparation
+    let real = preparation
+    let injector = rotationInjection ? RotationFailureInjectingPreparation(base: real) : nil
+    rotationInjector = injector
+    let effective: NativeRecordingPreparationProtocol = injector ?? real
     let captures = captures
     let clock = clock
+    let telemetry = telemetry
+    let storage = storage
     controller = LiveMicrophoneRecordingController(
-      permission: permission, preparationFactory: { preparation },
+      permission: permission, preparationFactory: { effective },
       writerFactory: { try ManagedCAFWriter(authorization: $0) },
       captureFactory: { captures.microphone($0) },
       requiredSources: [.microphone, .systemAudio],
       systemCaptureFactory: { captures.system($0) }, segmentedCapture: true,
-      hostTime: { clock.now }, captureHealthTelemetry: { _ in }
+      hostTime: { clock.now },
+      availableBytes: { try storage.bytes(at: $0) },
+      segmentedSuccessorWriterFactory: { authorization in
+        if let injector { return try injector.makeSuccessor(authorization) }
+        return try ManagedCAFWriter(authorization: authorization)
+      },
+      captureHealthTelemetry: { telemetry.append($0) }
     )
   }
   func capture() async throws {
@@ -323,4 +603,136 @@ private final class PauseHarness {
     XCTAssertEqual(controller.phase, .paused)
   }
   func removeFiles() { try? FileManager.default.removeItem(at: root) }
+}
+
+
+private enum RotationFailureStep: CaseIterable { case writerInit, acceptMediaOpen, seal }
+
+private enum RotationInjectedError: Error { case writerInit, acceptMediaOpen, seal }
+
+/// Overrides free-space reporting for the injected storage probe. Transparent
+/// (real filesystem) until a test sets a value.
+private final class StorageOverride: @unchecked Sendable {
+  private let lock = NSLock()
+  private var value: UInt64?
+  func set(_ bytes: UInt64?) { lock.withLock { value = bytes } }
+  func bytes(at path: String) throws -> UInt64 {
+    if let bytes = lock.withLock({ value }) { return bytes }
+    return try RecorderStorage.availableBytes(at: path)
+  }
+}
+
+/// Forwards every preparation call to a real store, injecting a one-shot failure
+/// at one rotation step so the abandon path can be exercised end to end.
+private final class RotationFailureInjectingPreparation: NativeRecordingPreparationProtocol,
+  @unchecked Sendable
+{
+  private let base: NativeRecordingPreparation
+  private let lock = NSLock()
+  private var armed: RotationFailureStep?
+  init(base: NativeRecordingPreparation) { self.base = base }
+  func arm(_ step: RotationFailureStep) { lock.withLock { armed = step } }
+  private func consume(_ step: RotationFailureStep) -> Bool {
+    lock.withLock {
+      guard armed == step else { return false }
+      armed = nil
+      return true
+    }
+  }
+  func makeSuccessor(_ authorization: NativeMediaOpenAuthorization) throws -> ManagedCAFWriter {
+    if consume(.writerInit) { throw RotationInjectedError.writerInit }
+    return try ManagedCAFWriter(authorization: authorization)
+  }
+  func acceptMediaOpen(receipt: NativeMediaOpenReceipt) throws -> NativeMediaOpenEvidence {
+    if consume(.acceptMediaOpen) { throw RotationInjectedError.acceptMediaOpen }
+    return try base.acceptMediaOpen(receipt: receipt)
+  }
+  func sealSegment(receipt: NativeSealSegmentReceipt) throws -> NativeSealedSegmentEvidence {
+    if consume(.seal) { throw RotationInjectedError.seal }
+    return try base.sealSegment(receipt: receipt)
+  }
+  func acceptFirstSample(receipt: NativeFirstSampleReceipt) throws -> NativeFirstSampleEvidence {
+    try base.acceptFirstSample(receipt: receipt)
+  }
+  func anchorCaptureClock(
+    sessionId: String, hostAnchor: UInt64, numerator: UInt32, denominator: UInt32
+  ) throws {
+    try base.anchorCaptureClock(
+      sessionId: sessionId, hostAnchor: hostAnchor, numerator: numerator, denominator: denominator)
+  }
+  func authorizeInitialMedia(
+    sessionId: String, sourceKind: NativeMediaSourceKind, sourceDisplayName: String
+  ) throws -> NativeMediaOpenAuthorization {
+    try base.authorizeInitialMedia(
+      sessionId: sessionId, sourceKind: sourceKind, sourceDisplayName: sourceDisplayName)
+  }
+  func authorizeNextSegment(sessionId: String, previousSegmentId: String) throws
+    -> NativeMediaOpenAuthorization
+  {
+    try base.authorizeNextSegment(sessionId: sessionId, previousSegmentId: previousSegmentId)
+  }
+  func confirmRecording(sessionId: String) throws -> NativeRecordingStartedEvidence {
+    try base.confirmRecording(sessionId: sessionId)
+  }
+  func importCompressedM4a(
+    title: String, sourcePath: String, metadata: NativeCompressedImportMetadata
+  ) throws -> NativeImportedMediaEvidence {
+    try base.importCompressedM4a(title: title, sourcePath: sourcePath, metadata: metadata)
+  }
+  func importNormalizedCaf(
+    title: String, normalizedPath: String, original: NativeOriginalImportMetadata
+  ) throws -> NativeImportedMediaEvidence {
+    try base.importNormalizedCaf(title: title, normalizedPath: normalizedPath, original: original)
+  }
+  func importRecoverableCaf(title: String, sourcePath: String) throws -> NativeImportedMediaEvidence
+  {
+    try base.importRecoverableCaf(title: title, sourcePath: sourcePath)
+  }
+  func interruptSession(sessionId: String, reason: NativeSessionInterruptionReason) throws
+    -> NativeSessionInterruptionEvidence
+  {
+    try base.interruptSession(sessionId: sessionId, reason: reason)
+  }
+  func leaseImportedPlayback(sessionId: String) throws -> NativeImportedPlaybackLease {
+    try base.leaseImportedPlayback(sessionId: sessionId)
+  }
+  func leaseRecoveredPlayback(
+    sessionId: String, sourceId: String, trackId: String, segmentId: String
+  ) throws -> NativeImportedPlaybackLease {
+    try base.leaseRecoveredPlayback(
+      sessionId: sessionId, sourceId: sourceId, trackId: trackId, segmentId: segmentId)
+  }
+  func playbackTimeline(sessionId: String) throws -> [NativeTimelineSegment] {
+    try base.playbackTimeline(sessionId: sessionId)
+  }
+  func prepareSession(title: String) throws -> NativePreparedSession {
+    try base.prepareSession(title: title)
+  }
+  func prepareSessionWithRequiredSources(
+    title: String, requiredSources: [NativeMediaSourceKind]
+  ) throws -> NativePreparedSession {
+    try base.prepareSessionWithRequiredSources(title: title, requiredSources: requiredSources)
+  }
+  func recordSourceFailure(
+    sessionId: String, sourceKind: NativeMediaSourceKind, reason: NativeSourceFailureReason
+  ) throws -> NativeSourceFailureEvidence {
+    try base.recordSourceFailure(sessionId: sessionId, sourceKind: sourceKind, reason: reason)
+  }
+  func recoverPlayableSessions() throws -> [NativeRecoveredPlayableSession] {
+    try base.recoverPlayableSessions()
+  }
+  func runtimeLibrarySnapshot() throws -> NativeRuntimeLibrarySnapshot {
+    try base.runtimeLibrarySnapshot()
+  }
+  func recorderAction(sessionId: String, action: NativeRecorderAction) throws
+    -> NativeRecorderDetail
+  {
+    try base.recorderAction(sessionId: sessionId, action: action)
+  }
+  func recorderDetail(sessionId: String) throws -> NativeRecorderDetail {
+    try base.recorderDetail(sessionId: sessionId)
+  }
+  func abandonReservedSegment(sessionId: String, segmentId: String) throws {
+    try base.abandonReservedSegment(sessionId: sessionId, segmentId: segmentId)
+  }
 }

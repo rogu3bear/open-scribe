@@ -4,25 +4,44 @@ import Foundation
 
 /// One serial source writer. Conversion state survives file boundaries; only
 /// segment open/first-sample/seal receipts cross the Rust boundary.
+///
+/// Threading: `writeCapturedBuffer` and `rotate` run on the adapter's serial
+/// writer queue. The main actor reads `authorization`, `receipt()`,
+/// `firstSampleReceipt`, and `sealSegmentReceipt` (storage watch, health
+/// observations, stop), so the published segment identity, the accepted
+/// first-sample receipts, and the last written host time live behind
+/// `publishedLock`. Conversion and segment-fill counters stay queue-only.
 final class SegmentedCAFWriter: ManagedSegmentWriting, @unchecked Sendable {
   static let segmentFrames: UInt64 = 30 * 48_000
   private let preparation: NativeRecordingPreparationProtocol
+  private let makeSuccessor: @Sendable (NativeMediaOpenAuthorization) throws -> ManagedCAFWriter
+  private let publishedLock = NSLock()
   private var current: ManagedCAFWriter
+  private var acceptedFirstSamples: [NativeFirstSampleReceipt] = []
+  private var acceptedFirstSampleEvidence: [String: NativeFirstSampleEvidence] = [:]
+  private var lastEndHostTime: UInt64 = 0
   private var converter: AVAudioConverter?
   private let format = AVAudioFormat(
     commonFormat: .pcmFormatInt16, sampleRate: 48_000, channels: 1, interleaved: false
   )!
   private var frames: UInt64 = 0
-  private var firstReceipt: NativeFirstSampleReceipt?
-  private var lastEndHostTime: UInt64 = 0
   private var currentHasFirstSample = false
   private var lastInputFormat: AVAudioFormat?
 
-  var authorization: NativeMediaOpenAuthorization { current.authorization }
+  var authorization: NativeMediaOpenAuthorization {
+    publishedLock.withLock { current.authorization }
+  }
 
-  init(current: ManagedCAFWriter, preparation: NativeRecordingPreparationProtocol) {
+  init(
+    current: ManagedCAFWriter,
+    preparation: NativeRecordingPreparationProtocol,
+    makeSuccessor: @escaping @Sendable (NativeMediaOpenAuthorization) throws -> ManagedCAFWriter = {
+      try ManagedCAFWriter(authorization: $0)
+    }
+  ) {
     self.current = current
     self.preparation = preparation
+    self.makeSuccessor = makeSuccessor
   }
 
   static func anchor(
@@ -39,11 +58,22 @@ final class SegmentedCAFWriter: ManagedSegmentWriting, @unchecked Sendable {
     )
   }
 
-  func receipt() throws -> NativeMediaOpenReceipt { try current.receipt() }
+  func receipt() throws -> NativeMediaOpenReceipt { try currentWriter().receipt() }
 
+  /// The receipt of the segment whose accepted first sample begins at or before
+  /// `hostTime`; a host time before every accepted sample names the first
+  /// segment. Rust accepted every receipt here before it was published, and a
+  /// receipt is never rewritten after a rotation.
   func firstSampleReceipt(hostTime: UInt64, frameCount: UInt64) throws -> NativeFirstSampleReceipt {
-    guard let firstReceipt else { throw ManagedCAFWriterError.mediaAttributesUnavailable }
-    return firstReceipt
+    let receipt = publishedLock.withLock {
+      acceptedFirstSamples.last { $0.firstSampleHostTime <= hostTime } ?? acceptedFirstSamples.first
+    }
+    guard let receipt else { throw ManagedCAFWriterError.mediaAttributesUnavailable }
+    return receipt
+  }
+
+  func acceptedFirstSampleEvidence(segmentId: String) -> NativeFirstSampleEvidence? {
+    publishedLock.withLock { acceptedFirstSampleEvidence[segmentId] }
   }
 
   func writeCapturedBuffer(_ input: AVAudioPCMBuffer) throws -> AVAudioFrameCount {
@@ -56,10 +86,11 @@ final class SegmentedCAFWriter: ManagedSegmentWriting, @unchecked Sendable {
     guard hostTime > 0 else { throw ManagedCAFWriterError.unsupportedAuthorization }
     if frames > 0 {
       let tolerance = AVAudioTime.hostTime(forSeconds: 0.002)
-      if hostTime < lastEndHostTime && lastEndHostTime - hostTime > tolerance {
+      let lastEnd = publishedLock.withLock { lastEndHostTime }
+      if hostTime < lastEnd && lastEnd - hostTime > tolerance {
         throw ManagedCAFWriterError.unsupportedAuthorization
       }
-      if (hostTime > lastEndHostTime && hostTime - lastEndHostTime > tolerance)
+      if (hostTime > lastEnd && hostTime - lastEnd > tolerance)
         || lastInputFormat != input.format
       {
         try rotate()
@@ -71,6 +102,7 @@ final class SegmentedCAFWriter: ManagedSegmentWriting, @unchecked Sendable {
     var offset: AVAudioFrameCount = 0
     while offset < buffer.frameLength {
       if frames == Self.segmentFrames { try rotate() }
+      let writer = currentWriter()
       let count = min(buffer.frameLength - offset, AVAudioFrameCount(Self.segmentFrames - frames))
       guard let piece = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: count),
         let destination = piece.int16ChannelData?[0], let source = buffer.int16ChannelData?[0]
@@ -78,15 +110,19 @@ final class SegmentedCAFWriter: ManagedSegmentWriting, @unchecked Sendable {
       piece.frameLength = count
       destination.update(from: source.advanced(by: Int(offset)), count: Int(count))
       let pieceHost = hostTime + AVAudioTime.hostTime(forSeconds: Double(offset) / 48_000)
-      let written = try current.writeCapturedBuffer(piece)
+      let written = try writer.writeCapturedBuffer(piece)
       frames += UInt64(written)
-      lastEndHostTime = pieceHost + AVAudioTime.hostTime(forSeconds: Double(written) / 48_000)
+      let pieceEnd = pieceHost + AVAudioTime.hostTime(forSeconds: Double(written) / 48_000)
+      publishedLock.withLock { lastEndHostTime = pieceEnd }
       if !currentHasFirstSample {
-        let receipt = try current.firstSampleReceipt(
+        let receipt = try writer.firstSampleReceipt(
           hostTime: pieceHost, frameCount: UInt64(written))
-        _ = try preparation.acceptFirstSample(receipt: receipt)
+        let evidence = try preparation.acceptFirstSample(receipt: receipt)
         currentHasFirstSample = true
-        if firstReceipt == nil { firstReceipt = receipt }
+        publishedLock.withLock {
+          acceptedFirstSamples.append(receipt)
+          acceptedFirstSampleEvidence[receipt.segmentId] = evidence
+        }
       }
       offset += count
     }
@@ -94,10 +130,17 @@ final class SegmentedCAFWriter: ManagedSegmentWriting, @unchecked Sendable {
   }
 
   func sealSegmentReceipt(finalSampleHostTime: UInt64) throws -> NativeSealSegmentReceipt {
-    try current.sealSegmentReceipt(finalSampleHostTime: lastEndHostTime)
+    let (writer, end) = publishedLock.withLock { (current, lastEndHostTime) }
+    return try writer.sealSegmentReceipt(finalSampleHostTime: end)
+  }
+
+  private func currentWriter() -> ManagedCAFWriter {
+    publishedLock.withLock { current }
   }
 
   private func rotate() throws {
+    let predecessor = currentWriter()
+    let authorization = predecessor.authorization
     let storage = try preparation.recorderAction(sessionId: authorization.sessionId,
       action: .observeStorage(availableBytes: RecorderStorage.availableBytes(at: authorization.absolutePath)))
     guard storage.storageLevel != "critical" else { throw ManagedCAFWriterError.storagePressure }
@@ -106,13 +149,24 @@ final class SegmentedCAFWriter: ManagedSegmentWriting, @unchecked Sendable {
     let next = try preparation.authorizeNextSegment(
       sessionId: authorization.sessionId, previousSegmentId: authorization.segmentId
     )
-    let successor = try ManagedCAFWriter(authorization: next)
-    _ = try preparation.acceptMediaOpen(receipt: successor.receipt())
-    let seal = try current.sealSegmentReceipt(finalSampleHostTime: lastEndHostTime)
-    _ = try preparation.sealSegment(receipt: seal)
-    current = successor
-    frames = 0
-    currentHasFirstSample = false
+    do {
+      let successor = try makeSuccessor(next)
+      _ = try preparation.acceptMediaOpen(receipt: successor.receipt())
+      let end = publishedLock.withLock { lastEndHostTime }
+      let seal = try predecessor.sealSegmentReceipt(finalSampleHostTime: end)
+      _ = try preparation.sealSegment(receipt: seal)
+      publishedLock.withLock { current = successor }
+      frames = 0
+      currentHasFirstSample = false
+    } catch {
+      // The successor was reserved but never became a real segment. Abandon it
+      // durably so the predecessor stays the active segment and a later seal can
+      // finalize the session. Rust owns the lifecycle; the original error still
+      // degrades or stops this source.
+      try? preparation.abandonReservedSegment(
+        sessionId: authorization.sessionId, segmentId: next.segmentId)
+      throw error
+    }
   }
 
   private func normalize(_ input: AVAudioPCMBuffer) throws -> AVAudioPCMBuffer {
@@ -166,6 +220,9 @@ extension NativeRecordingPreparationProtocol {
     throw ManagedCAFWriterError.unsupportedAuthorization
   }
   func playbackTimeline(sessionId: String) throws -> [NativeTimelineSegment] {
+    throw ManagedCAFWriterError.unsupportedAuthorization
+  }
+  func abandonReservedSegment(sessionId: String, segmentId: String) throws {
     throw ManagedCAFWriterError.unsupportedAuthorization
   }
 }

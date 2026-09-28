@@ -12,6 +12,13 @@ protocol ManagedSegmentWriting: CapturedAudioWriting {
   var authorization: NativeMediaOpenAuthorization { get }
   func receipt() throws -> NativeMediaOpenReceipt
   func sealSegmentReceipt(finalSampleHostTime: UInt64) throws -> NativeSealSegmentReceipt
+  /// Rust's durable acceptance of `segmentId`'s first sample when this writer
+  /// already submitted it on its own queue; nil when the caller must submit.
+  func acceptedFirstSampleEvidence(segmentId: String) -> NativeFirstSampleEvidence?
+}
+
+extension ManagedSegmentWriting {
+  func acceptedFirstSampleEvidence(segmentId: String) -> NativeFirstSampleEvidence? { nil }
 }
 
 extension ManagedCAFWriter: ManagedSegmentWriting {}
@@ -79,6 +86,9 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
   private var requiredSources: [NativeMediaSourceKind]
   private let captureHealthTelemetry: CaptureHealthTelemetry
   private let segmentedCapture: Bool
+  private let availableBytes: @Sendable (String) throws -> UInt64
+  private let segmentedSuccessorWriterFactory:
+    @Sendable (NativeMediaOpenAuthorization) throws -> ManagedCAFWriter
   private let hostTime: @Sendable () -> UInt64
   private var selectedSystemCaptureFactory: (@Sendable (ManagedSegmentWriting, RecorderCaptureSelection) async throws -> SystemAudioCapturing)?
   private var storageWatchTask: Task<Void, Never>?
@@ -93,6 +103,10 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
   private var sourceFailureTask: Task<Void, Never>?
   private var activeSessionId: String?
   private var activeAttempt: UUID?
+  /// Identity the microphone adapter binds when capture starts. Segment
+  /// generations advance on every rotation, so observations are matched
+  /// against this snapshot, never against the current segment.
+  private var microphoneCaptureIdentity: MicrophoneCaptureIdentity?
   private var acceptedMicrophoneObservationSequence: UInt64 = 0
 
   init(
@@ -104,6 +118,13 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
     systemCaptureFactory: SystemCaptureFactory? = nil,
     segmentedCapture: Bool = false,
     hostTime: @escaping @Sendable () -> UInt64 = { mach_absolute_time() },
+    availableBytes: @escaping @Sendable (String) throws -> UInt64 = {
+      try RecorderStorage.availableBytes(at: $0)
+    },
+    segmentedSuccessorWriterFactory:
+      @escaping @Sendable (NativeMediaOpenAuthorization) throws -> ManagedCAFWriter = {
+        try ManagedCAFWriter(authorization: $0)
+      },
     captureHealthTelemetry: @escaping CaptureHealthTelemetry = {
       AppTelemetry.captureSourceHealth($0)
     }
@@ -117,6 +138,8 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
     self.captureHealthTelemetry = captureHealthTelemetry
     self.segmentedCapture = segmentedCapture
     self.hostTime = hostTime
+    self.availableBytes = availableBytes
+    self.segmentedSuccessorWriterFactory = segmentedSuccessorWriterFactory
     super.init()
   }
 
@@ -213,8 +236,11 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
     activeSessionId = nil
     writers = [:]
     sourcesWithFirstSample = []
-    failedSources = []
+    // A source that failed during degraded continuation stays retired for
+    // every later span of the same session; a fresh session starts clean.
+    failedSources = resuming ? failedSources : []
     microphoneSourceHealth = nil
+    microphoneCaptureIdentity = nil
     acceptedMicrophoneObservationSequence = 0
     phase = .requestingPermission
 
@@ -243,10 +269,33 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
       let sessionId: String
       if let previousSession {
         sessionId = previousSession
-        if let path = previousWriters.values.first?.authorization.absolutePath {
-          recorderDetail = try preparation.recorderAction(sessionId: sessionId, action: .observeStorage(availableBytes: RecorderStorage.availableBytes(at: path)))
+        do {
+          if let path = previousWriters.values.first?.authorization.absolutePath {
+            recorderDetail = try preparation.recorderAction(
+              sessionId: sessionId,
+              action: .observeStorage(availableBytes: self.availableBytes(path)))
+          }
+          _ = try preparation.recorderAction(sessionId: sessionId, action: .prepareResume)
+        } catch {
+          // Resume preparation failed before any source started. Rust never
+          // journaled the resume, so it is still paused; restore the paused
+          // session exactly as a denied permission does and explain why. Resume
+          // and Stop stay available.
+          self.preparation = preparation
+          writers = previousWriters
+          activeSessionId = previousSession
+          savedPaths = previousSavedPaths
+          savedPath = previousSavedPaths.first
+          microphoneCapture = nil
+          systemCapture = nil
+          activeAttempt = nil
+          errorMessage =
+            recorderDetail?.storageLevel == "critical"
+            ? "Not enough free space to resume. The recording is still paused; free space and try again."
+            : "The recording could not resume and remains paused. \(error.localizedDescription)"
+          phase = .paused
+          return
         }
-        _ = try preparation.recorderAction(sessionId: sessionId, action: .prepareResume)
       } else {
         let prepared = try preparation.prepareSessionWithRequiredSources(title: Self.sessionTitle(), requiredSources: requiredSources)
         guard prepared.journalDurable, !prepared.recordingStarted else { throw LiveMicrophoneRecordingError.invalidPreparation }
@@ -257,7 +306,13 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
       }
       self.preparation = preparation
       activeSessionId = sessionId
-      for (index, source) in requiredSources.enumerated() {
+      // Retired sources keep their sealed writer for the saved-path list but
+      // get no successor authorization and no capture in this span.
+      for source in requiredSources where failedSources.contains(source) {
+        if let previous = previousWriters[source] { writers[source] = previous }
+      }
+      let spanSources = requiredSources.filter { !failedSources.contains($0) }
+      for (index, source) in spanSources.enumerated() {
         let authorization: NativeMediaOpenAuthorization
         if let previous = previousWriters[source] {
           authorization = try preparation.authorizeNextSegment(sessionId: sessionId, previousSegmentId: previous.authorization.segmentId)
@@ -266,13 +321,13 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
             sourceDisplayName: source == .microphone ? Self.displayName(for: source) : captureSelection.name)
         }
         if segmentedCapture {
-          let storage = try preparation.recorderAction(sessionId: sessionId, action: .observeStorage(availableBytes: RecorderStorage.availableBytes(at: URL(fileURLWithPath: authorization.absolutePath).deletingLastPathComponent().path)))
+          let storage = try preparation.recorderAction(sessionId: sessionId, action: .observeStorage(availableBytes: self.availableBytes(URL(fileURLWithPath: authorization.absolutePath).deletingLastPathComponent().path)))
           guard storage.storageLevel != "critical" else { throw ManagedCAFWriterError.storagePressure }
           recorderDetail = storage
         }
         let writer = try writerFactory(authorization)
         let mediaOpen = try preparation.acceptMediaOpen(receipt: writer.receipt())
-        let allMediaShouldBeOpen = index == requiredSources.count - 1
+        let allMediaShouldBeOpen = index == spanSources.count - 1
         guard mediaOpen.journalDurable,
           mediaOpen.mediaFilesOpen == allMediaShouldBeOpen,
           !mediaOpen.recordingStarted
@@ -283,19 +338,28 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
           guard let nativeWriter = writer as? ManagedCAFWriter else {
             throw LiveMicrophoneRecordingError.invalidMediaOpen
           }
-          writers[source] = SegmentedCAFWriter(current: nativeWriter, preparation: preparation)
+          writers[source] = SegmentedCAFWriter(
+            current: nativeWriter, preparation: preparation,
+            makeSuccessor: segmentedSuccessorWriterFactory)
         } else {
           writers[source] = writer
         }
       }
 
-      guard let microphoneWriter = writers[.microphone] else {
-        throw LiveMicrophoneRecordingError.invalidSourcePlan
+      let microphoneCapture: MicrophoneCapturing?
+      if failedSources.contains(.microphone) {
+        microphoneCapture = nil
+      } else {
+        guard let microphoneWriter = writers[.microphone] else {
+          throw LiveMicrophoneRecordingError.invalidSourcePlan
+        }
+        microphoneCapture = captureFactory(microphoneWriter)
+        microphoneCaptureIdentity = MicrophoneCaptureIdentity(
+          authorization: microphoneWriter.authorization)
       }
-      let microphoneCapture = captureFactory(microphoneWriter)
       self.microphoneCapture = microphoneCapture
 
-      let audioSource = requiredSources.first { $0 != .microphone }
+      let audioSource = spanSources.first { $0 != .microphone }
       if let audioSource {
         guard let systemWriter = writers[audioSource] else {
           throw LiveMicrophoneRecordingError.invalidSourcePlan
@@ -353,7 +417,7 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
           return
         }
       }
-      try microphoneCapture.start(
+      try microphoneCapture?.start(
         onFirstSample: { [weak self] receipt in
           Task { @MainActor [weak self] in
             guard self?.activeSessionId == sessionId else { return }
@@ -466,6 +530,13 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
         phase = .paused
         return
       }
+      if segmentedCapture, let activeSessionId,
+        try preparation.recorderDetail(sessionId: activeSessionId).lifecycle != "ready_for_review"
+      {
+        // Rust has not finalized (for example a reserved successor is still
+        // open). Do not claim Saved; interrupt so recovery owns the outcome.
+        throw LiveMicrophoneRecordingError.invalidSegmentSeal
+      }
       resetActiveSession()
       phase = .saved
     } catch {
@@ -484,15 +555,21 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
     guard phase == .starting else { return }
     guard requiredSources.contains(source), let preparation else { return }
     let evidence: NativeFirstSampleEvidence
-    do {
-      evidence = try preparation.acceptFirstSample(receipt: receipt)
-    } catch {
-      await handleCaptureFailure(
-        error.localizedDescription,
-        code: "first-sample-evidence",
-        interruptionReason: .firstSampleRejected
-      )
-      return
+    if let accepted = writers[source]?.acceptedFirstSampleEvidence(segmentId: receipt.segmentId) {
+      // A segmented writer accepted this receipt on its queue before reporting
+      // it. The segment may have rotated since; the durable evidence stands.
+      evidence = accepted
+    } else {
+      do {
+        evidence = try preparation.acceptFirstSample(receipt: receipt)
+      } catch {
+        await handleCaptureFailure(
+          error.localizedDescription,
+          code: "first-sample-evidence",
+          interruptionReason: .firstSampleRejected
+        )
+        return
+      }
     }
     guard
       evidence.journalDurable, evidence.mediaFilesOpen, evidence.firstSampleDurable,
@@ -506,7 +583,8 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
       return
     }
     sourcesWithFirstSample.insert(source)
-    guard sourcesWithFirstSample == Set(requiredSources) else { return }
+    let spanSources = Set(requiredSources).subtracting(failedSources)
+    guard sourcesWithFirstSample == spanSources else { return }
     let recording: NativeRecordingStartedEvidence
     do {
       recording = try preparation.confirmRecording(sessionId: receipt.sessionId)
@@ -519,8 +597,8 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
       return
     }
     guard recording.journalDurable, recording.mediaFilesOpen, recording.recordingStarted,
-      Set(recording.requiredSources) == Set(requiredSources),
-      Set(recording.activeSources) == Set(requiredSources)
+      Set(recording.requiredSources) == spanSources,
+      Set(recording.activeSources) == spanSources
     else {
       await handleCaptureFailure(
         LiveMicrophoneRecordingError.invalidRecordingAuthority.localizedDescription,
@@ -538,12 +616,11 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
   ) async {
     guard phase == .starting || phase == .capturing,
       let activeSessionId,
-      let writer = writers[.microphone]
+      writers[.microphone] != nil,
+      let boundIdentity = microphoneCaptureIdentity
     else { return }
-    let authorization = writer.authorization
     guard observation.identity.sessionId == activeSessionId,
-      observation.identity.trackId == authorization.trackId,
-      observation.identity.writerGeneration == authorization.writerGeneration,
+      observation.identity == boundIdentity,
       observation.sequence > acceptedMicrophoneObservationSequence
     else { return }
     guard !failedSources.contains(.microphone) else { return }
@@ -738,6 +815,7 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
     sourcesWithFirstSample = []
     failedSources = []
     microphoneSourceHealth = nil
+    microphoneCaptureIdentity = nil
     acceptedMicrophoneObservationSequence = 0
     activeSessionId = nil
     activeAttempt = nil
@@ -753,6 +831,8 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
       }
       captureSelection = selection
       requiredSources = [.microphone] + (selection.kind.map { [$0] } ?? [])
+      // A new scope is a new plan for the next span; only a retired microphone stays retired.
+      failedSources = failedSources.intersection([.microphone])
       errorMessage = nil
     } catch { errorMessage = "The source change could not be made durable. The previous selection is retained." }
   }
@@ -779,7 +859,7 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
           let sessionId = self.activeSessionId, let path = self.writers.values.first?.authorization.absolutePath else { return }
         do {
           let detail = try preparation.recorderAction(sessionId: sessionId,
-            action: .observeStorage(availableBytes: RecorderStorage.availableBytes(at: path)))
+            action: .observeStorage(availableBytes: self.availableBytes(path)))
           self.recorderDetail = detail
           if detail.storageLevel == "critical" {
             await self.stop()
