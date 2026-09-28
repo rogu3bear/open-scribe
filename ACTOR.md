@@ -84,6 +84,13 @@
 - Proof: microphone plus all-authorized system audio; Rust-owned multi-source `Recording`; external kill; strict atomic two-CAF recovery; persistent playback; independent decode; unchanged SHA-256 for both tracks; idempotence.
 - Stop if: recovery mutates media, promotes invalid media, duplicates a receipt, or asserts `Recording`.
 
+## Validate the recorder component and durable store suite
+
+- Commands: `CARGO_TARGET_DIR="$PWD/apps/macos/.build/rust-macos13" cargo test --locked -p open-scribe-store`; `disk-guard run --budget-gb 1 --volume "$PWD" -- bash script/build_and_run.sh --verify-recording`; `bash script/check_foundational_workflow.sh "$PWD/apps/macos/.build/xcode/Build/Products/Debug/OpenScribeApp.app/Contents/MacOS/OpenScribeApp"`.
+- Expect: 117 store tests pass; `RECORDING_COMPONENTS_GREEN` across 72 selected tests with fresh bindings; `FOUNDATION_SYNTHETIC_GREEN` with unchanged media digests.
+- Proves: durable store and recovery behavior, the Swift-to-Rust recording components, and the synthetic capture, forced-kill, recovery and PCM workflow. Not real capture, playback, signing, or release.
+- Ran green at tip `3e51b7246fed89ef5747b0c52c40b3d43b5a98aa` on 2026-09-28.
+
 ## Admission rule
 
 Release readiness: `./script/release.sh prepare <semver>`; a hold names exact blockers and performs no publication.
