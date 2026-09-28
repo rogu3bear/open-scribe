@@ -102,6 +102,27 @@ impl SessionStore {
         self.project_clock(&session.0, &record)
     }
 
+    /// Source kinds with capture evidence: at least one segment reached a first
+    /// sample. Required-source rows are a plan for one capture span; a kind
+    /// planned for a span that never captured (a scope selected while paused,
+    /// a source retired before its first sample) imposes no playback
+    /// requirement. Every evidenced kind must still validate completely.
+    pub(super) fn evidenced_source_kinds(
+        &self,
+        session: &str,
+    ) -> Result<BTreeSet<String>, StoreError> {
+        let mut query = self.connection.prepare(
+            "SELECT DISTINCT sources.kind FROM segments
+             JOIN tracks ON tracks.id = segments.track_id
+             JOIN sources ON sources.id = tracks.source_id
+             WHERE segments.session_id = ?1 AND segments.original_start IS NOT NULL",
+        )?;
+        let kinds = query
+            .query_map([session], |row| row.get::<_, String>(0))?
+            .collect::<Result<BTreeSet<_>, _>>()?;
+        Ok(kinds)
+    }
+
     pub(super) fn capture_clock(&self, session: &str) -> Result<Option<CaptureClock>, StoreError> {
         let mut query = self.connection.prepare(
             "SELECT payload_json FROM session_events WHERE session_id = ?1 AND event_kind = 'capture_clock_anchored'"
@@ -170,6 +191,10 @@ impl SessionStore {
 
     /// Reserve one successor before sealing its predecessor. A reservation is
     /// not capture evidence; recovery preserves an empty/missing successor as a gap.
+    /// A capturing source may rotate before Recording is confirmed: a timestamp
+    /// discontinuity or format change on an early buffer seals like any other
+    /// (ADR 0005 segment rules), and the session stays `preparing` until every
+    /// required source has durable first-sample evidence.
     pub fn authorize_next_segment(
         &mut self,
         session: SessionId,
@@ -186,7 +211,7 @@ impl SessionStore {
              FROM segments JOIN tracks ON tracks.id = segments.track_id
              JOIN sources ON sources.id = tracks.source_id JOIN sessions ON sessions.id = segments.session_id
              WHERE segments.id = ?1 AND sessions.id = ?2
-               AND ((sessions.lifecycle IN ('recording', 'finalizing') AND sources.lifecycle = 'capturing' AND segments.lifecycle = 'capturing')
+               AND ((sessions.lifecycle IN ('preparing', 'recording', 'finalizing') AND sources.lifecycle = 'capturing' AND segments.lifecycle = 'capturing')
                  OR (sessions.lifecycle = 'preparing' AND sources.lifecycle = 'sealed' AND segments.lifecycle = 'sealed'
                     AND EXISTS(SELECT 1 FROM session_events WHERE session_id = ?2 AND event_kind = 'resume_requested')))
                AND NOT EXISTS(SELECT 1 FROM segments later WHERE later.track_id = tracks.id AND later.sequence > segments.sequence)",
@@ -251,6 +276,109 @@ impl SessionStore {
         })
     }
 
+    /// Durably abandons a reserved-but-unopened successor segment during live
+    /// rotation. A rotation reserves and opens the successor before sealing the
+    /// predecessor; if a later step fails, this records an explicit gap for the
+    /// successor so the predecessor stays the active segment and a later seal can
+    /// still finalize the session. The segment must be the latest in its track,
+    /// hold no first sample, and belong to a still-capturing source. Idempotent:
+    /// a segment already gapped returns success without a second event.
+    pub fn abandon_reserved_segment(
+        &mut self,
+        session: SessionId,
+        segment: String,
+    ) -> Result<(), StoreError> {
+        let (lifecycle, track_id, relative_path, original_start): (
+            String,
+            String,
+            String,
+            Option<i64>,
+        ) = self
+            .connection
+            .query_row(
+                "SELECT lifecycle, track_id, relative_path, original_start
+                 FROM segments WHERE id = ?1 AND session_id = ?2",
+                params![segment, session.0],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .map_err(|error| match error {
+                rusqlite::Error::QueryReturnedNoRows => {
+                    StoreError::InvalidState("abandoned segment does not exist")
+                }
+                other => StoreError::Sqlite(other),
+            })?;
+        if lifecycle == "gap" {
+            return Ok(());
+        }
+        let abandonable: bool = self.connection.query_row(
+            "SELECT EXISTS(
+               SELECT 1 FROM segments
+               JOIN tracks ON tracks.id = segments.track_id
+               JOIN sources ON sources.id = tracks.source_id
+               JOIN sessions ON sessions.id = segments.session_id
+               WHERE segments.id = ?1 AND segments.session_id = ?2
+                 AND segments.lifecycle IN ('opening', 'open')
+                 AND segments.original_start IS NULL
+                 AND sources.lifecycle = 'capturing'
+                 AND sessions.lifecycle IN ('recording', 'finalizing')
+                 AND NOT EXISTS(
+                     SELECT 1 FROM segments later
+                     WHERE later.track_id = segments.track_id
+                       AND later.sequence > segments.sequence))",
+            params![segment, session.0],
+            |row| row.get(0),
+        )?;
+        if original_start.is_some() || !abandonable {
+            return Err(StoreError::InvalidState(
+                "segment is not an abandonable reserved successor",
+            ));
+        }
+        let record = self.append_session_journal(
+            &session.0,
+            "segment_capture_gap",
+            Some(&relative_path),
+            json!({
+                "segment_id": segment, "track_id": track_id, "relative_path": relative_path,
+                "reason": "reserved_successor_abandoned", "media_preserved": true,
+            }),
+        )?;
+        let (sequence, prior) = next_database_event(&self.connection, &session.0)?;
+        let digest = event_digest(
+            &session.0,
+            sequence,
+            "segment_capture_gap",
+            &record.body.payload,
+            prior.as_deref(),
+        )?;
+        let now = wall_time_milliseconds();
+        let tx = self.connection.transaction()?;
+        tx.execute(
+            "UPDATE segments SET lifecycle = 'gap', recovery_state = 'gap'
+             WHERE id = ?1 AND session_id = ?2",
+            params![segment, session.0],
+        )?;
+        tx.execute(
+            "UPDATE sessions SET media_files_open = EXISTS(
+                 SELECT 1 FROM segments
+                 WHERE session_id = ?1 AND lifecycle IN ('opening', 'open', 'capturing')
+             ), updated_at_ms = ?2 WHERE id = ?1",
+            params![session.0, now],
+        )?;
+        insert_event_with_id(
+            &tx,
+            &record.body.event_id,
+            &session.0,
+            sequence,
+            "segment_capture_gap",
+            record.body.wall_time_milliseconds,
+            &record.body.payload,
+            prior.as_deref(),
+            &digest,
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
     /// A shared, signed timeline. Gaps are preserved rather than concatenated away.
     /// Consumers must also obtain validated media leases before scheduling output.
     pub fn playback_timeline(
@@ -298,9 +426,9 @@ impl SessionStore {
             ));
         }
         if self
-            .required_source_kinds(&session.0)?
+            .evidenced_source_kinds(&session.0)?
             .iter()
-            .any(|kind| !sources.contains(kind.as_str()))
+            .any(|kind| !sources.contains(kind))
         {
             return Err(StoreError::InvalidState(
                 "timeline is missing a required source",

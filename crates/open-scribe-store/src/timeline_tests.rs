@@ -1,6 +1,15 @@
 use super::*;
 use tempfile::TempDir;
 
+#[path = "reserved_successor_tests.rs"]
+mod reserved_successor_tests;
+
+#[path = "playable_recovery_tests.rs"]
+mod playable_recovery_tests;
+
+#[path = "library_recovery_tests.rs"]
+mod library_recovery_tests;
+
 fn create_media(store: &mut SessionStore, a: &MediaOpenAuthorization) {
     let mut file = OpenOptions::new()
         .write(true)
@@ -788,4 +797,334 @@ fn dual_segment_crash_recovery_retains_offsets_samples_and_media_bytes() {
         )
         .unwrap();
     assert!(store.playback_timeline(&session).is_err());
+}
+
+fn journal_records(store: &SessionStore, session: &SessionId) -> Vec<JournalRecord> {
+    match validate_journal(
+        &store
+            .session_directory(&session.0)
+            .unwrap()
+            .join(JOURNAL_NAME),
+        &session.0,
+    )
+    .unwrap()
+    {
+        JournalValidation::Valid(records) => records,
+        _ => panic!("journal is not valid"),
+    }
+}
+
+fn select_application_scope(store: &mut SessionStore, session: &SessionId) {
+    store
+        .recorder_action(
+            session.clone(),
+            RecorderAction::SelectAudio {
+                kind: Some(MediaSourceKind::ApplicationAudio),
+                identity: "com.example.app:42".into(),
+                display_name: "Example".into(),
+            },
+        )
+        .unwrap();
+}
+
+/// F3: a scope selected while paused is a plan for the next span, not a
+/// requirement over media that was already captured.
+#[test]
+fn source_scope_change_while_paused_keeps_the_captured_span_playable() {
+    let temp = TempDir::new().unwrap();
+    let mut store = SessionStore::open(temp.path()).unwrap();
+    let (session, _) = paused_pair(&mut store);
+    select_application_scope(&mut store, &session);
+    store
+        .recorder_action(session.clone(), RecorderAction::FinishPaused)
+        .unwrap();
+    assert_eq!(
+        store.recorder_detail(&session).unwrap().lifecycle,
+        "ready_for_review"
+    );
+    let plan = store.playback_timeline(&session).unwrap();
+    assert_eq!(plan.len(), 2, "the pre-pause span plays");
+    assert!(plan.iter().all(|s| s.sample_count == 48_000));
+    let selected = journal_records(&store, &session)
+        .into_iter()
+        .find(|r| r.body.event_kind == "source_scope_selected")
+        .expect("scope change is journaled");
+    assert_eq!(
+        selected.body.payload["ended"],
+        json!(["system_audio"]),
+        "the retired source is journaled as ended"
+    );
+    assert_eq!(
+        selected.body.payload["added"],
+        json!(["application_audio"]),
+        "the new source is journaled as added"
+    );
+}
+
+/// F3: quitting while paused with a pending scope change must still finalize
+/// on relaunch instead of being skipped on every launch.
+#[test]
+fn paused_session_with_pending_scope_change_finalizes_on_relaunch() {
+    let temp = TempDir::new().unwrap();
+    let mut store = SessionStore::open(temp.path()).unwrap();
+    let (session, _) = paused_pair(&mut store);
+    select_application_scope(&mut store, &session);
+    drop(store);
+    let mut store = SessionStore::open(temp.path()).unwrap();
+    store.recover_playable_sessions().unwrap();
+    assert_eq!(
+        store.recorder_detail(&session).unwrap().lifecycle,
+        "ready_for_review"
+    );
+    assert_eq!(store.playback_timeline(&session).unwrap().len(), 2);
+    store.recover_playable_sessions().unwrap();
+    assert_eq!(store.playback_timeline(&session).unwrap().len(), 2);
+}
+
+/// F5: a source that failed during Recording leaves the required set for later
+/// spans. Resume authorizes only the continuing source and Recording resumes.
+#[test]
+fn resume_after_source_failure_continues_on_the_remaining_source() {
+    let temp = TempDir::new().unwrap();
+    let mut store = SessionStore::open(temp.path()).unwrap();
+    let (session, sources) = recording_pair(&mut store);
+    let (microphone, system) = (&sources[0], &sources[1]);
+    seal(&mut store, system, 1_000_000_001, 48_000);
+    let failure = store
+        .record_source_failure(SourceFailureRequest {
+            session_id: session.clone(),
+            source_kind: MediaSourceKind::SystemAudio,
+            reason: SourceFailureReason::CaptureFailed,
+        })
+        .unwrap();
+    assert!(failure.recording_continues);
+    store
+        .recorder_action(session.clone(), RecorderAction::BeginPause)
+        .unwrap();
+    seal(&mut store, microphone, 1_000_000_001, 48_000);
+    store
+        .recorder_action(
+            session.clone(),
+            RecorderAction::CompletePause {
+                host_time: 2_000_000_001,
+            },
+        )
+        .unwrap();
+    store
+        .recorder_action(session.clone(), RecorderAction::PrepareResume)
+        .unwrap();
+    assert!(
+        store
+            .authorize_next_segment(session.clone(), system.segment_id.clone())
+            .is_err(),
+        "a failed source gets no successor"
+    );
+    let next = store
+        .authorize_next_segment(session.clone(), microphone.segment_id.clone())
+        .unwrap();
+    create_media(&mut store, &next);
+    store
+        .recorder_action(
+            session.clone(),
+            RecorderAction::AnchorResume {
+                host_time: 120_000_000_001,
+            },
+        )
+        .unwrap();
+    capture(&mut store, &next, 120_000_000_001, 48_000);
+    let recording = store.confirm_recording(session.clone()).unwrap();
+    assert_eq!(
+        recording.required_sources,
+        vec![MediaSourceKind::Microphone]
+    );
+    assert_eq!(recording.active_sources, vec![MediaSourceKind::Microphone]);
+    seal(&mut store, &next, 121_000_000_001, 48_000);
+    assert_eq!(
+        store.recorder_detail(&session).unwrap().lifecycle,
+        "ready_for_review"
+    );
+    let plan = store.playback_timeline(&session).unwrap();
+    assert_eq!(plan.len(), 3);
+    assert_eq!(
+        plan.iter().filter(|s| s.track_id == next.track_id).count(),
+        2
+    );
+}
+
+/// F9: a source first authorized on resume starts at sequence 0. Dying before
+/// its first sample must leave a gap, not an open segment that blocks finalize.
+#[test]
+fn unstarted_resumed_source_at_sequence_zero_becomes_a_gap_and_finalizes() {
+    let temp = TempDir::new().unwrap();
+    let mut store = SessionStore::open(temp.path()).unwrap();
+    let (session, sources) = paused_pair(&mut store);
+    select_application_scope(&mut store, &session);
+    store
+        .recorder_action(session.clone(), RecorderAction::PrepareResume)
+        .unwrap();
+    let microphone_next = store
+        .authorize_next_segment(session.clone(), sources[0].segment_id.clone())
+        .unwrap();
+    create_media(&mut store, &microphone_next);
+    let application = store
+        .authorize_media_open(AuthorizeMediaOpenRequest {
+            session_id: session.clone(),
+            source_kind: MediaSourceKind::ApplicationAudio,
+            source_display_name: "Example".into(),
+        })
+        .unwrap();
+    assert_eq!(
+        application.relative_path,
+        format!("audio/{}/000000-0.caf", application.track_id)
+    );
+    drop(store);
+    let mut store = SessionStore::open(temp.path()).unwrap();
+    store.recover_playable_sessions().unwrap();
+    let lifecycle = |store: &SessionStore, id: &str| -> String {
+        store
+            .connection
+            .query_row("SELECT lifecycle FROM segments WHERE id = ?1", [id], |r| {
+                r.get(0)
+            })
+            .unwrap()
+    };
+    assert_eq!(lifecycle(&store, &application.segment_id), "gap");
+    assert_eq!(lifecycle(&store, &microphone_next.segment_id), "gap");
+    assert_eq!(
+        store.recorder_detail(&session).unwrap().lifecycle,
+        "ready_for_review"
+    );
+    assert_eq!(store.playback_timeline(&session).unwrap().len(), 2);
+    store.recover_playable_sessions().unwrap();
+    assert_eq!(lifecycle(&store, &application.segment_id), "gap");
+}
+
+/// N1 (from the F11 check): a timestamp discontinuity before Recording is
+/// confirmed must rotate like any other, not fail the start. The successor
+/// belongs to a capturing source of a preparing session.
+#[test]
+fn early_rotation_before_recording_confirmation_is_admitted() {
+    let temp = TempDir::new().unwrap();
+    let mut store = SessionStore::open(temp.path()).unwrap();
+    let session = store
+        .prepare_session_with_required_sources(
+            PrepareSessionRequest {
+                title: "Early rotation".into(),
+                origin: SessionOrigin::Capture,
+            },
+            vec![MediaSourceKind::Microphone, MediaSourceKind::SystemAudio],
+        )
+        .unwrap()
+        .session_id;
+    store
+        .anchor_capture_clock(
+            session.clone(),
+            CaptureClock {
+                host_anchor: 1,
+                numerator: 1,
+                denominator: 1,
+            },
+        )
+        .unwrap();
+    let sources: Vec<_> = [MediaSourceKind::Microphone, MediaSourceKind::SystemAudio]
+        .into_iter()
+        .map(|kind| {
+            let a = store
+                .authorize_media_open(AuthorizeMediaOpenRequest {
+                    session_id: session.clone(),
+                    source_kind: kind,
+                    source_display_name: kind.as_str().into(),
+                })
+                .unwrap();
+            create_media(&mut store, &a);
+            a
+        })
+        .collect();
+    capture(&mut store, &sources[0], 1, 480);
+    let next = store
+        .authorize_next_segment(session.clone(), sources[0].segment_id.clone())
+        .expect("a capturing source may rotate before Recording is confirmed");
+    create_media(&mut store, &next);
+    seal(&mut store, &sources[0], 10_000_001, 480);
+    capture(&mut store, &next, 2_000_000_001, 480);
+    capture(&mut store, &sources[1], 2_000_000_001, 480);
+    let recording = store.confirm_recording(session.clone()).unwrap();
+    assert_eq!(recording.active_sources, recording.required_sources);
+    seal(&mut store, &next, 2_010_000_001, 480);
+    seal(&mut store, &sources[1], 2_010_000_001, 480);
+    assert_eq!(
+        store.recorder_detail(&session).unwrap().lifecycle,
+        "ready_for_review"
+    );
+    let plan = store.playback_timeline(&session).unwrap();
+    assert_eq!(plan.len(), 3);
+    assert_eq!(
+        plan.iter()
+            .filter(|s| s.track_id == next.track_id)
+            .map(|s| s.sequence)
+            .collect::<Vec<_>>(),
+        vec![0, 1]
+    );
+}
+
+/// N1: dying after an early rotation but before Recording is confirmed
+/// still recovers every captured segment on relaunch.
+#[test]
+fn crash_after_early_rotation_before_recording_recovers_all_media() {
+    let temp = TempDir::new().unwrap();
+    let mut store = SessionStore::open(temp.path()).unwrap();
+    let session = store
+        .prepare_session_with_required_sources(
+            PrepareSessionRequest {
+                title: "Early rotation crash".into(),
+                origin: SessionOrigin::Capture,
+            },
+            vec![MediaSourceKind::Microphone, MediaSourceKind::SystemAudio],
+        )
+        .unwrap()
+        .session_id;
+    store
+        .anchor_capture_clock(
+            session.clone(),
+            CaptureClock {
+                host_anchor: 1,
+                numerator: 1,
+                denominator: 1,
+            },
+        )
+        .unwrap();
+    let sources: Vec<_> = [MediaSourceKind::Microphone, MediaSourceKind::SystemAudio]
+        .into_iter()
+        .map(|kind| {
+            let a = store
+                .authorize_media_open(AuthorizeMediaOpenRequest {
+                    session_id: session.clone(),
+                    source_kind: kind,
+                    source_display_name: kind.as_str().into(),
+                })
+                .unwrap();
+            create_media(&mut store, &a);
+            a
+        })
+        .collect();
+    capture(&mut store, &sources[0], 1, 480);
+    let next = store
+        .authorize_next_segment(session.clone(), sources[0].segment_id.clone())
+        .unwrap();
+    create_media(&mut store, &next);
+    seal(&mut store, &sources[0], 10_000_001, 480);
+    capture(&mut store, &next, 2_000_000_001, 480);
+    capture(&mut store, &sources[1], 2_000_000_001, 480);
+    drop(store);
+    let mut store = SessionStore::open(temp.path()).unwrap();
+    let recovered = store.recover_playable_sessions().unwrap();
+    assert_eq!(
+        recovered.iter().filter(|r| r.session_id == session).count(),
+        3
+    );
+    assert_eq!(
+        store.recorder_detail(&session).unwrap().lifecycle,
+        "ready_for_review"
+    );
+    assert_eq!(store.playback_timeline(&session).unwrap().len(), 3);
 }

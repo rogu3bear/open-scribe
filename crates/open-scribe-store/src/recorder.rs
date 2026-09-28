@@ -167,9 +167,22 @@ impl SessionStore {
                 {
                     return Err(StoreError::InvalidRequest("invalid selected audio scope"));
                 }
+                // A scope change is never identity-continuous: every planned
+                // non-microphone source ends and the selected kind, if any, is
+                // added for the next span (ADR 0005, source and failure behavior).
+                let ended: Vec<String> = {
+                    let mut query = self.connection.prepare(
+                        "SELECT kind FROM required_sources
+                         WHERE session_id = ?1 AND kind != 'microphone' ORDER BY kind",
+                    )?;
+                    query
+                        .query_map([&session.0], |row| row.get::<_, String>(0))?
+                        .collect::<Result<_, _>>()?
+                };
+                let added: Vec<&str> = kind.map(MediaSourceKind::as_str).into_iter().collect();
                 (
                     "source_scope_selected",
-                    json!({"audio_kind": kind.map(MediaSourceKind::as_str), "identity": identity, "label": display_name, "session_nanoseconds": state.captured_nanoseconds}),
+                    json!({"audio_kind": kind.map(MediaSourceKind::as_str), "identity": identity, "label": display_name, "session_nanoseconds": state.captured_nanoseconds, "ended": ended, "added": added}),
                 )
             }
             RecorderAction::ObserveStorage { available_bytes } => {
@@ -300,12 +313,12 @@ impl SessionStore {
         session: &str,
         host: u64,
     ) -> Result<(), StoreError> {
-        if let Some((kind, payload)) = self.latest_capture_boundary(session)? {
-            if kind != "capture_resumed" || host < payload_u64(&payload, "host_time")? {
-                return Err(StoreError::InvalidState(
-                    "sample precedes the resume boundary",
-                ));
-            }
+        if let Some((kind, payload)) = self.latest_capture_boundary(session)?
+            && (kind != "capture_resumed" || host < payload_u64(&payload, "host_time")?)
+        {
+            return Err(StoreError::InvalidState(
+                "sample precedes the resume boundary",
+            ));
         }
         Ok(())
     }
@@ -367,7 +380,12 @@ impl SessionStore {
                     | "storage_observed"
             )
         }) {
-            self.project_recorder_event(session, record, false)?;
+            // Replay projects the event without moving the lifecycle: the row
+            // already holds whatever later actions produced. The one exception
+            // is a finished pause, which nothing can follow, so its lifecycle
+            // effect is replayed exactly as the live action applied it.
+            let apply_lifecycle = record.body.event_kind == "paused_session_finalized";
+            self.project_recorder_event(session, record, apply_lifecycle)?;
         }
         Ok(())
     }
@@ -410,7 +428,8 @@ impl SessionStore {
             tx.execute("INSERT OR IGNORE INTO markers(id, schema_version, session_id, session_nanoseconds, label) VALUES(?1, ?2, ?3, ?4, ?5)", params![payload_string(p, "marker_id")?, SCHEMA_VERSION, session, payload_i64(p, "session_nanoseconds")?, payload_string(p, "label")?])?;
         }
         if kind == "source_scope_selected" {
-            tx.execute("UPDATE sources SET lifecycle = 'ended' WHERE session_id = ?1 AND kind != 'microphone'", [session])?;
+            // A failed source is already retired; its failure evidence stays projected.
+            tx.execute("UPDATE sources SET lifecycle = 'ended' WHERE session_id = ?1 AND kind != 'microphone' AND lifecycle != 'failed'", [session])?;
             tx.execute(
                 "DELETE FROM required_sources WHERE session_id = ?1 AND kind != 'microphone'",
                 [session],
