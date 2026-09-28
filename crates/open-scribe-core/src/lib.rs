@@ -99,6 +99,14 @@ impl RecordingPreparationController {
         self.store.playback_timeline(&session_id)
     }
 
+    pub fn abandon_reserved_segment(
+        &mut self,
+        session_id: open_scribe_types::SessionId,
+        segment_id: String,
+    ) -> Result<(), StoreError> {
+        self.store.abandon_reserved_segment(session_id, segment_id)
+    }
+
     pub fn lease_timeline_segment(
         &self,
         segment: &TimelineSegment,

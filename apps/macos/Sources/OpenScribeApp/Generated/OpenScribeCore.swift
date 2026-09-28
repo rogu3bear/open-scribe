@@ -706,6 +706,8 @@ public func FfiConverterTypeNativeImportedPlaybackLease_lower(_ value: NativeImp
 
 public protocol NativeRecordingPreparationProtocol: AnyObject, Sendable {
 
+  func abandonReservedSegment(sessionId: String, segmentId: String) throws
+
   func acceptFirstSample(receipt: NativeFirstSampleReceipt) throws -> NativeFirstSampleEvidence
 
   func acceptMediaOpen(receipt: NativeMediaOpenReceipt) throws -> NativeMediaOpenEvidence
@@ -824,6 +826,17 @@ open class NativeRecordingPreparation: NativeRecordingPreparationProtocol, @unch
           FfiConverterString.lower(managedRoot), uniffiCallStatus
         )
       })
+  }
+
+  open func abandonReservedSegment(sessionId: String, segmentId: String) throws {
+    try rustCallWithError(FfiConverterTypeNativeStorageError_lift) {
+      uniffiCallStatus in
+      uniffi_open_scribe_uniffi_fn_method_nativerecordingpreparation_abandon_reserved_segment(
+        self.uniffiCloneHandle(),
+        FfiConverterString.lower(sessionId),
+        FfiConverterString.lower(segmentId), uniffiCallStatus
+      )
+    }
   }
 
   open func acceptFirstSample(receipt: NativeFirstSampleReceipt) throws -> NativeFirstSampleEvidence
@@ -4492,6 +4505,11 @@ private let initializationResult: InitializationResult = {
     return InitializationResult.apiChecksumMismatch
   }
   if uniffi_open_scribe_uniffi_checksum_method_nativeimportedplaybacklease_playback_path() != 168 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_open_scribe_uniffi_checksum_method_nativerecordingpreparation_abandon_reserved_segment()
+    != 49019
+  {
     return InitializationResult.apiChecksumMismatch
   }
   if uniffi_open_scribe_uniffi_checksum_method_nativerecordingpreparation_accept_first_sample()

@@ -447,6 +447,16 @@ impl NativeRecordingPreparation {
         })
     }
 
+    pub fn abandon_reserved_segment(
+        &self,
+        session_id: String,
+        segment_id: String,
+    ) -> Result<(), NativeStorageError> {
+        self.controller()?
+            .abandon_reserved_segment(open_scribe_types::SessionId(session_id), segment_id)
+            .map_err(map_storage_error)
+    }
+
     pub fn playback_timeline(
         &self,
         session_id: String,
