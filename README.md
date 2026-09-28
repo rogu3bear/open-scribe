@@ -2,9 +2,9 @@
 
 Open Scribe is a greenfield, open-source macOS conversation instrument intended to record conversations reliably, preserve local evidence, and connect derived meeting memory back to its sources.
 
-> **Repository status: Milestone 0 development proof plus bounded M1 dual-source runtime proof.** Rust durably declares required sources, enters `Recording` only after microphone and all-authorized system audio both have open media and first-sample evidence, recovers the two tracks atomically after forced termination, and supplies the main window and menu bar with one coarse live-and-library snapshot. Deterministic fixtures are test-only; product surfaces now derive timers, source state, interruption/recovery, and saved-session visibility from durable Rust state. An exact unsigned arm64 app has captured, sealed, independently decoded, and recovered both real source tracks, then opened the recovered conversation in native playback. This does not prove source-loss continuation, permission revocation during capture, application-scoped selection, two-hour synchronization, transcription, signing, distribution, or public release.
+> **Repository status: Milestone 0 development proof; M1 remains incomplete.** Current source gives Rust ownership of required-source decisions, lifecycle, shared capture timing, recovery, and the coarse live-and-library snapshot consumed by the native window and menu bar. [Dated runtime evidence](docs/TESTING.md#foundational-recording-workflow) records synthetic and short live dual-source capture, segment rotation, forced termination, unchanged recovered media, and shared native playback on an exact unsigned artifact. Those historical receipts do not qualify a new candidate or prove source-loss continuation, permission revocation, application-scoped selection, two-hour synchronization, transcription, signing, distribution, or public release.
 
-The founding product contract is `docs/product/FOUNDING_PRD.md`. Start with `NORTH_STAR.md`, `ANCHOR.md`, and `AGENTS.md` for the compact operating view.
+The [founding product contract](docs/product/FOUNDING_PRD.md) owns intent. Start with [AGENTS.md](AGENTS.md) for task routing, [ANCHOR.md](ANCHOR.md) for invariants, and [NORTH_STAR.md](NORTH_STAR.md) for purpose.
 
 ## Intended architecture
 
@@ -16,14 +16,14 @@ The founding product contract is `docs/product/FOUNDING_PRD.md`. Start with `NOR
 
 ## Repository map
 
-`
+```text
 apps/macos/                  Native recorder/library shell plus bounded Apple capture adapters
 crates/open-scribe-*/        shared semantics plus native preparation/media integrity evidence
 web/                         stateless Leptos Worker/Assets development foundation
 docs/                        product, architecture, legal, design, model, format, and release truth
 script/                      fail-closed canonical entry points
 .github/                     repository metadata; GitHub Actions is intentionally disabled
-`
+```
 
 ## What can be verified now
 

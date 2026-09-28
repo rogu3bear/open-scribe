@@ -1,10 +1,10 @@
 # Contributing to Open Scribe
 
-Open Scribe is at founding-scaffold stage. The most valuable early contributions preserve clear boundaries rather than adding product behavior before architecture decisions are approved.
+Open Scribe has Milestone 0 development proof and incomplete M1 recorder work. [Dated runtime evidence](docs/TESTING.md#foundational-recording-workflow) names the tested artifact; `script/check_m1_complete.sh` owns the remaining completion gates. Contributions must preserve milestone scope and distinguish current source from historical runtime proof.
 
 ## Before changing anything
 
-1. Read `AGENTS.md`, the founding PRD, `NORTH_STAR.md`, `ANCHOR.md`, and the task-relevant architecture file.
+1. Read [AGENTS.md](AGENTS.md) and [ANCHOR.md](ANCHOR.md), then follow the task-relevant owners. Product or architectural decisions also require the relevant founding PRD clauses and purpose projection.
 2. Confirm the exact branch, worktree, dirty state, and ownership.
 3. State which milestone and authority layer the change belongs to.
 4. Keep `AGENTS.md` and `CLAUDE.md` byte-identical.
