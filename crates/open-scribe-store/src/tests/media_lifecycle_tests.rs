@@ -1462,10 +1462,17 @@ fn changed_sealed_companion_cannot_commit_recovery_readiness() {
         .unwrap();
 
     let mut reopened = SessionStore::open(&root).unwrap();
-    assert!(matches!(
-        reopened.recover_playable_sessions(),
-        Err(StoreError::IntegrityMismatch(_))
-    ));
+    let recovery = reopened.recover_library().unwrap();
+    assert_eq!(
+        recovery
+            .findings
+            .iter()
+            .find(|finding| finding.session_id == session_id)
+            .map(|finding| finding.disposition),
+        Some(RecoveryDisposition::IntegrityMismatch),
+        "the changed companion is the session's own finding"
+    );
+    assert!(recovery.playable.is_empty());
     assert_eq!(
         reopened
             .connection

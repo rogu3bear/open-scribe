@@ -311,22 +311,16 @@ impl SessionStore {
         if failures.is_empty() {
             return Ok(base);
         }
-        let last_failure = failures.last().expect("non-empty source failures");
-        let trailing = &records[last_failure.body.sequence as usize..];
-        if trailing.len() > 1
-            || trailing
-                .first()
-                .is_some_and(|record| record.body.event_kind != "session_interrupted")
-        {
-            return Ok(RecoveryDisposition::IntegrityMismatch);
-        }
-
-        let required_source_count: i64 = self.connection.query_row(
-            "SELECT COUNT(*) FROM required_sources WHERE session_id = ?1",
+        // Recording continues after a projected failure (rotation, pause, resume
+        // on the remaining sources, a scope change, stop), so later records are
+        // ordinary. The plan must still hold a source that did not fail.
+        let continuing_plan: i64 = self.connection.query_row(
+            "SELECT COUNT(*) FROM required_sources
+             WHERE session_id = ?1 AND lifecycle != 'failed'",
             [session_id],
             |row| row.get(0),
         )?;
-        if failures.len() >= usize::try_from(required_source_count).unwrap_or(0) {
+        if continuing_plan == 0 {
             return Ok(RecoveryDisposition::IntegrityMismatch);
         }
 
@@ -338,19 +332,23 @@ impl SessionStore {
             if !seen.insert(source_kind.as_str()) {
                 return Ok(RecoveryDisposition::IntegrityMismatch);
             }
+            // The required row may have been retired by a later scope change.
             let (session_lifecycle, session_health, source_lifecycle, required_lifecycle): (
                 String,
                 String,
                 String,
-                String,
+                Option<String>,
             ) = self.connection.query_row(
                 "SELECT sessions.lifecycle, sessions.health, sources.lifecycle,
                             required.lifecycle
                      FROM sessions
-                     JOIN required_sources required ON required.session_id = sessions.id
                      JOIN sources ON sources.session_id = sessions.id
-                                 AND sources.kind = required.kind
-                     WHERE sessions.id = ?1 AND required.kind = ?2",
+                                 AND sources.kind = ?2
+                     LEFT JOIN required_sources required ON required.session_id = sessions.id
+                                 AND required.kind = ?2
+                     WHERE sessions.id = ?1
+                     ORDER BY sources.lifecycle = 'failed' DESC, sources.id
+                     LIMIT 1",
                 params![session_id, source_kind.as_str()],
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
             )?;
@@ -363,20 +361,30 @@ impl SessionStore {
                 |row| row.get(0),
             )?;
             if event_projected {
-                if !matches!(session_lifecycle.as_str(), "recording" | "interrupted")
-                    || session_health != "degraded"
+                // A projected failure is durable whatever the recorder did next:
+                // the session stays degraded and the source stays failed.
+                if !matches!(
+                    session_lifecycle.as_str(),
+                    "recording" | "finalizing" | "paused" | "preparing" | "interrupted"
+                ) || session_health != "degraded"
                     || source_lifecycle != "failed"
-                    || required_lifecycle != "failed"
                 {
                     return Ok(RecoveryDisposition::IntegrityMismatch);
                 }
                 continue;
             }
+            // An unprojected failure was the last recorder step before exit:
+            // only an interruption may follow it in the journal.
+            let trailing = &records[failure.body.sequence as usize..];
             if index + 1 != failures.len()
                 || unprojected.is_some()
+                || trailing.len() > 1
+                || trailing
+                    .first()
+                    .is_some_and(|record| record.body.event_kind != "session_interrupted")
                 || session_lifecycle != "recording"
                 || source_lifecycle != "sealed"
-                || required_lifecycle != "sealed"
+                || required_lifecycle.as_deref() != Some("sealed")
             {
                 return Ok(RecoveryDisposition::IntegrityMismatch);
             }
