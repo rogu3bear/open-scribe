@@ -17,9 +17,13 @@ cargo check --locked --target wasm32-unknown-unknown \
 	-p open-scribe-domain \
 	-p open-scribe-evidence
 
-if rg -n \
-	'effective_frame|audio_buffer|video_frame|pointer_sample|meter_value|waveform_value|sample_rate' \
-	crates/open-scribe-uniffi/src apps/macos/Sources/OpenScribeApp/Generated/OpenScribeCore.swift; then
+# Imported sessions keep their original media metadata (ADR 0007), so the
+# once-per-import `NativeOriginalImportMetadata.sample_rate_hz` scalar is
+# allowed. Every other match, including any other sample-rate name, still fails.
+if rg -n -o \
+	'effective_frame|audio_buffer|video_frame|pointer_sample|meter_value|waveform_value|sample_rate\w*' \
+	crates/open-scribe-uniffi/src apps/macos/Sources/OpenScribeApp/Generated/OpenScribeCore.swift |
+	rg -v ':sample_rate_hz$'; then
 	printf '%s\n' 'STATE_FIXTURES_RED: frame-rate or media payload vocabulary crossed the coarse UniFFI surface' >&2
 	exit 1
 fi
