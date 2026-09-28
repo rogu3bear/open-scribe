@@ -73,7 +73,7 @@ struct MenuBarContent: View {
       }
       .keyboardShortcut("s", modifiers: [.command, .shift])
     }
-    RecorderControls(recorder: liveRecording, store: store)
+    RecorderControls(recorder: liveRecording, store: store, sourcesPresentation: .menu)
     if let recovered = recoveredSessions.sessions.first {
       Divider()
       Label("Recovered conversation", systemImage: "waveform.badge.checkmark")

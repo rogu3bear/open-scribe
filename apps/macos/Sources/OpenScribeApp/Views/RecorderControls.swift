@@ -1,8 +1,14 @@
 import SwiftUI
 
 struct RecorderControls: View {
+  /// A `.menu`-style `MenuBarExtra` never shows a `.popover`, so the menu bar
+  /// presents Sources as a native submenu instead. The main window keeps the
+  /// popover.
+  enum SourcesPresentation { case popover, menu }
+
   @ObservedObject var recorder: LiveMicrophoneRecordingController
   @ObservedObject var store: RuntimeLibraryStore
+  var sourcesPresentation: SourcesPresentation = .popover
   @StateObject private var picker = RecorderApplicationPicker()
   @State private var showsSources = false
 
@@ -21,27 +27,43 @@ struct RecorderControls: View {
       Button("Add Marker", systemImage: "bookmark") { recorder.addMarker(); store.refresh() }
         .keyboardShortcut("m", modifiers: [.command, .shift])
     }
-    Button("Sources", systemImage: "slider.horizontal.3") { showsSources = true }
-      .disabled(!(recorder.canStart || recorder.canResume))
-      .help("Pause before changing sources. Microphone audio is included.")
-      .popover(isPresented: $showsSources) {
-        VStack(alignment: .leading, spacing: 12) {
-          Text("Recording sources").font(.headline)
-          Text("Microphone + \(recorder.captureSelection.name)")
-          Button("Microphone only") { select(.microphoneOnly) }
-          Button("Microphone + all computer audio") { select(.system) }
-          Button("Choose an application…") {
-            picker.onSelection = { selection in select(selection) }
-            Task { await picker.choose() }
-          }
-          ForEach(picker.applications, id: \.processID) { application in
-            Button(application.applicationName) { Task { await picker.select(application) } }
-          }
-          if let error = picker.errorMessage { Text(error).foregroundStyle(.orange) }
-          Text("Application selection limits computer audio to the chosen app. Changes take effect when you explicitly record or resume.")
-            .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-        }.padding(20).frame(width: 340)
+    let sourcesEnabled = recorder.canStart || recorder.canResume
+    switch sourcesPresentation {
+    case .popover:
+      Button("Sources", systemImage: "slider.horizontal.3") { showsSources = true }
+        .disabled(!sourcesEnabled)
+        .help("Pause before changing sources. Microphone audio is included.")
+        .popover(isPresented: $showsSources) {
+          VStack(alignment: .leading, spacing: 12) {
+            Text("Recording sources").font(.headline)
+            Text("Microphone + \(recorder.captureSelection.name)")
+            sourceButtons
+            if let error = picker.errorMessage { Text(error).foregroundStyle(.orange) }
+            Text("Application selection limits computer audio to the chosen app. Changes take effect when you explicitly record or resume.")
+              .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+          }.padding(20).frame(width: 340)
+        }
+    case .menu:
+      Menu("Sources", systemImage: "slider.horizontal.3") {
+        Text("Microphone + \(recorder.captureSelection.name)")
+        sourceButtons
+        if let error = picker.errorMessage { Text(error) }
       }
+      .disabled(!sourcesEnabled)
+      .help("Pause before changing sources. Microphone audio is included.")
+    }
+  }
+
+  @ViewBuilder private var sourceButtons: some View {
+    Button("Microphone only") { select(.microphoneOnly) }
+    Button("Microphone + all computer audio") { select(.system) }
+    Button("Choose an application…") {
+      picker.onSelection = { selection in select(selection) }
+      Task { await picker.choose() }
+    }
+    ForEach(picker.applications, id: \.processID) { application in
+      Button(application.applicationName) { Task { await picker.select(application) } }
+    }
   }
 
   private func select(_ selection: RecorderCaptureSelection) {
