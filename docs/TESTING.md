@@ -10,13 +10,25 @@ Repository and source tests currently cover managed local CAF and M4A (AAC/Apple
 
 ### Recorder component check
 
-`./script/build_and_run.sh --verify-recording` rebuilds Rust, verifies generated
-bindings, builds the unsigned Xcode app, and runs the microphone, system-audio,
+`./script/check.sh --candidate <absolute-new-record>` is the canonical contributor
+source/build/test entry. It requires committed, clean source, preserves the
+scaffold and web gates, runs clippy with warnings denied, checks the native
+contracts, generates and compares bindings, and builds one unsigned app and test
+bundle with `build-for-testing`. It retains source/native logs and their digests.
+It then runs the complete Swift suite, scene launch, recorder components, and
+synthetic foundational recovery. Device-dependent proofs remain separate.
+
+`./script/build_and_run.sh --verify-recording --candidate <absolute-record>`
+consumes that record with `test-without-building` and runs the microphone, system-audio,
 recording-controller, pause/resume, media-open, and timeline workflow suites. It uses synthetic buffers and
 injected capture backends; it never starts a live capture stream or a playback
 engine. A successful run emits `RECORDING_COMPONENTS_GREEN`.
-It also prints the executable, debug-dylib, and Info.plist SHA-256 digests used for the
-same-artifact comparison below.
+All four consumers validate the record's commit/tree against clean source and
+compare the executable, debug dylib, Info.plist, Rust library, test executable,
+test-run description, and build log against their SHA-256 digests before and
+after execution. They require the matching contributor-check receipt. They
+never repair a mismatch by rebuilding. The receipt prints the record digest,
+commit/tree, and artifact digests for same-candidate comparison.
 
 The September 25, 2026 run passed 58 tests, including accepted-buffer draining
 before seal, callbacks after detachment, an already-stopped system stream,
@@ -45,7 +57,7 @@ drift qualification.
 After building, run the device-free process proof:
 
 ```sh
-bash script/check_foundational_workflow.sh "$PWD/apps/macos/.build/xcode/Build/Products/Debug/OpenScribeApp.app/Contents/MacOS/OpenScribeApp"
+bash script/check_foundational_workflow.sh --candidate "$candidate"
 ```
 
 A green run prints `proof=`/`excludes=` sets, the SHA-256 of the executable,
@@ -136,10 +148,11 @@ requires explicit capture and audible-playback authority.
 | Gate | Command / Receipt | What It Proves | Explicitly Does Not Prove |
 |---|---|---|---|
 | Scaffold | `./script/check.sh --scaffold` | Doctrine and founding scaffold consistency | Product runtime |
+| Contributor candidate | `./script/check.sh --candidate <absolute-new-record>` | One committed source/build/test entry, one app/test build, warning and clippy checks, native and web regressions, synthetic recovery | Live capture, permission matrix, M1 completion, signing, release |
 | Early-M1 candidate | `./script/check.sh --m1-segment-sealing` | Deterministic early-M1 source/build/test chain named by the receipt | Real capture, playable recovery, transcription, signing, or release |
 | Interruption integrity | `./script/check.sh --m1-interruption-state` | Typed content-free post-preparation failure state, journal-before-projection ordering, restart classification/repair, media preservation, fresh bindings, and focused controller behavior | Live audio, forced termination, playable recovery, system audio, `Recording`, transcription, signing, or release |
-| Short live dual-source capture | `./script/check.sh --m1-dual-source-runtime` (`--m1-live-microphone` is an alias) | Explicit microphone and system-audio access, required-source `Recording`, capture, sealing, digests, and playable CAFs on the exact built app | Recovery, source-loss continuation, active revocation, application selection, long sessions, signing, or release |
-| Forced-termination recovery | `./script/check.sh --m1-forced-termination-recovery` | Real dual-source `Recording`, external process kill, atomic two-track recovery, persistent `ready_for_review`, native playback, independent decode, unchanged digests, and idempotent relaunch | Source-loss continuation, active revocation, application selection, long sessions, transcription, signing, or release |
+| Short live dual-source capture | `./script/check.sh --m1-dual-source-runtime --candidate <absolute-record>` (`--m1-live-microphone` is an alias) | Explicit microphone and system-audio access, required-source `Recording`, capture, sealing, digests, and playable CAFs on the recorded app, without rebuilding | Recovery, source-loss continuation, active revocation, application selection, long sessions, signing, or release |
+| Forced-termination recovery | `./script/check.sh --m1-forced-termination-recovery --candidate <absolute-record>` | Real dual-source `Recording`, external process kill, atomic two-track recovery, persistent `ready_for_review`, native playback, independent decode, unchanged digests, and idempotent relaunch on the recorded app, without rebuilding | Source-loss continuation, active revocation, application selection, long sessions, transcription, signing, or release |
 | Release preparation contract | `./script/check.sh --release-prepare` | Semantic input validation, stable unresolved holds, artifact-verifier rejection paths, and read-only exact-source binding | Closed P0s, signed-artifact success, notarization, publication, or release |
 | Diff hygiene | `git diff --check` | Patch whitespace validity | Functional correctness |
 | Working-tree inventory | `git status --short --branch` | Exact local residue | Candidate admission or commit cleanliness |
@@ -231,6 +244,28 @@ playback results are unavailable for this request. The M1 completion gate
 returned exit 1 with `M1_COMPLETE_HOLD`; admission stays HOLD.
 
 New gates must fail closed, clean up processes and temporary state they own, print proof and exclusion sets, and bind runtime claims to the exact built artifact.
+
+## September 29, 2026 — Candidate build infrastructure
+
+The cold web failure was reproduced from base `71fa611` in a new
+`artifacts/build-once/cold-web-before` target. The guarded command was
+`CARGO_TARGET_DIR="$PWD/artifacts/build-once/cold-web-before" disk-guard run --budget-gb 6 --volume "$PWD" -- cargo leptos build --release --project open-scribe-web -vv`.
+It failed at wasm-bindgen's build script with `E0463` for `rustversion`.
+Direct `dlopen` of its existing proc-macro dylib exposed a misaligned LINKEDIT
+string pool. With the workspace release build-dependency strip override, the
+same locked graph built from an empty `cold-web-after` target through
+`disk-guard run --budget-gb 6 --volume "$PWD" -- bash script/build_web.sh`:
+`WEB_BUILD_GREEN`, useful SSR, hydration, hashed assets, Worker bundle, and SSR
+regression test passed. The rebuilt host dylib loaded successfully. Logs are
+`artifacts/build-once/cold-web-{before,after}.log`.
+
+`bash script/check_candidate_record.sh` passed 14 rejection cases, including all
+seven artifact digests, missing/foreign contributor receipts, changed check
+logs, dirty/staged source, another commit, and malformed JSON.
+`bash script/check_native_contracts.sh`, shellcheck, shfmt, and diff hygiene also
+passed. These are build-tool component proofs; candidate-bound app/runtime
+acceptance is recorded separately after a committed-source run. No earlier app
+receipt qualifies the new gate.
 
 ## September 27, 2026 — Product pause/resume component proof
 

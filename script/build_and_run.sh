@@ -10,9 +10,18 @@ xcode_project="$macos_root/OpenScribe.xcodeproj"
 derived_data="$macos_root/.build/xcode"
 rust_target_dir="$macos_root/.build/rust-macos13"
 mode="run"
+candidate_record=""
+# shellcheck source=script/candidate.sh
+source "$script_dir/candidate.sh"
 
-for argument in "$@"; do
+while [[ "$#" -gt 0 ]]; do
+	argument="$1"
 	case "$argument" in
+	--candidate)
+		[[ "$#" -ge 2 && -z "$candidate_record" ]] || candidate_fail 'one candidate record is required'
+		candidate_record="$2"
+		shift
+		;;
 	--verify | --verify-recording | --logs | --debug | --telemetry | --m1-live-microphone-proof | --m1-dual-source-runtime-proof | --m1-forced-termination-recovery-proof)
 		if [[ "$mode" != "run" ]]; then
 			printf '%s\n' 'Choose exactly one mode.' >&2
@@ -21,15 +30,28 @@ for argument in "$@"; do
 		mode="$argument"
 		;;
 	*)
-		printf 'usage: %s [--verify|--verify-recording|--logs|--debug|--telemetry|--m1-live-microphone-proof|--m1-dual-source-runtime-proof|--m1-forced-termination-recovery-proof]\n' "$0" >&2
+		printf 'usage: %s [--verify|--verify-recording|--logs|--debug|--telemetry|--m1-live-microphone-proof|--m1-dual-source-runtime-proof|--m1-forced-termination-recovery-proof] [--candidate /absolute/path/candidate.json]\n' "$0" >&2
 		exit 64
 		;;
 	esac
+	shift
 done
 
 cd "$repo_root"
+case "$mode" in
+--verify-recording | --m1-live-microphone-proof | --m1-dual-source-runtime-proof | --m1-forced-termination-recovery-proof)
+	[[ -n "$candidate_record" ]] || candidate_fail 'this gate requires --candidate /absolute/path/candidate.json; it never rebuilds'
+	;;
+esac
+if [[ -n "$candidate_record" ]]; then
+	candidate_load "$candidate_record"
+	if [[ "$mode" != --verify ]]; then candidate_require_checks; fi
+	if pgrep -x OpenScribeApp >/dev/null; then
+		candidate_fail 'close the existing development app before consuming a candidate'
+	fi
+fi
 mkdir -p "$macos_root/.build"
-bindings_tmp="$(mktemp -d "$macos_root/.build/uniffi.XXXXXX")"
+bindings_tmp=""
 verify_app_pid=""
 proof_root=""
 remove_proof_root="false"
@@ -47,31 +69,34 @@ cleanup() {
 	elif [[ -n "$proof_root" && -d "$proof_root" ]]; then
 		printf 'proof_root_retained=%s\n' "$proof_root" >&2
 	fi
-	rm -rf "$bindings_tmp"
+	if [[ -n "$bindings_tmp" ]]; then rm -rf "$bindings_tmp"; fi
 }
 trap cleanup EXIT
 
-rust_library="$(bash "$script_dir/build_rust_macos.sh" "$rust_target_dir")"
-CARGO_TARGET_DIR="$rust_target_dir" cargo run --locked -p open-scribe-uniffi \
-	--features bindgen \
-	--bin uniffi-bindgen \
-	-- generate \
-	--library "$rust_library" \
-	--language swift \
-	--out-dir "$bindings_tmp"
-xcrun swift-format format --in-place "$bindings_tmp/OpenScribeCore.swift"
-xcrun clang-format -i "$bindings_tmp/OpenScribeFFI.h"
+if [[ -z "$candidate_record" ]]; then
+	bindings_tmp="$(mktemp -d "$macos_root/.build/uniffi.XXXXXX")"
+	rust_library="$(bash "$script_dir/build_rust_macos.sh" "$rust_target_dir")"
+	CARGO_TARGET_DIR="$rust_target_dir" cargo run --locked -p open-scribe-uniffi \
+		--features bindgen \
+		--bin uniffi-bindgen \
+		-- generate \
+		--library "$rust_library" \
+		--language swift \
+		--out-dir "$bindings_tmp"
+	xcrun swift-format format --in-place "$bindings_tmp/OpenScribeCore.swift"
+	xcrun clang-format -i "$bindings_tmp/OpenScribeFFI.h"
 
-cmp "$bindings_tmp/OpenScribeCore.swift" \
-	"$macos_root/Sources/OpenScribeApp/Generated/OpenScribeCore.swift" || {
-	printf '%s\n' 'M0_NATIVE_RED: generated Swift binding is stale' >&2
-	exit 1
-}
-cmp "$bindings_tmp/OpenScribeFFI.h" \
-	"$macos_root/Sources/OpenScribeFFI/include/OpenScribeFFI.h" || {
-	printf '%s\n' 'M0_NATIVE_RED: generated C binding is stale' >&2
-	exit 1
-}
+	cmp "$bindings_tmp/OpenScribeCore.swift" \
+		"$macos_root/Sources/OpenScribeApp/Generated/OpenScribeCore.swift" || {
+		printf '%s\n' 'M0_NATIVE_RED: generated Swift binding is stale' >&2
+		exit 1
+	}
+	cmp "$bindings_tmp/OpenScribeFFI.h" \
+		"$macos_root/Sources/OpenScribeFFI/include/OpenScribeFFI.h" || {
+		printf '%s\n' 'M0_NATIVE_RED: generated C binding is stale' >&2
+		exit 1
+	}
+fi
 
 app_bundle="$derived_data/Build/Products/Debug/OpenScribeApp.app"
 app_binary="$app_bundle/Contents/MacOS/$app_name"
@@ -88,7 +113,7 @@ artifact_digests() {
 	done
 }
 
-if [[ -f "$pid_file" ]]; then
+if [[ -z "$candidate_record" && -f "$pid_file" ]]; then
 	prior_pid="$(<"$pid_file")"
 	if [[ "$prior_pid" =~ ^[0-9]+$ ]]; then
 		prior_command="$(ps -p "$prior_pid" -o comm= 2>/dev/null || true)"
@@ -99,17 +124,19 @@ if [[ -f "$pid_file" ]]; then
 	rm -f "$pid_file"
 fi
 
-xcodebuild \
-	-project "$xcode_project" \
-	-scheme OpenScribeApp \
-	-configuration Debug \
-	-derivedDataPath "$derived_data" \
-	ARCHS=arm64 \
-	ONLY_ACTIVE_ARCH=YES \
-	LIBRARY_SEARCH_PATHS="$(dirname "$rust_library")" \
-	MACOSX_DEPLOYMENT_TARGET=13.0 \
-	CODE_SIGNING_ALLOWED=NO \
-	build
+if [[ -z "$candidate_record" ]]; then
+	xcodebuild \
+		-project "$xcode_project" \
+		-scheme OpenScribeApp \
+		-configuration Debug \
+		-derivedDataPath "$derived_data" \
+		ARCHS=arm64 \
+		ONLY_ACTIVE_ARCH=YES \
+		LIBRARY_SEARCH_PATHS="$(dirname "$rust_library")" \
+		MACOSX_DEPLOYMENT_TARGET=13.0 \
+		CODE_SIGNING_ALLOWED=NO \
+		build
+fi
 
 launch_app() {
 	if [[ "$#" -gt 0 ]]; then
@@ -147,18 +174,26 @@ run)
 			-only-testing:OpenScribeAppTests/MediaOpenProtocolTests
 		)
 	fi
-	xcodebuild \
-		-project "$xcode_project" \
-		-scheme OpenScribeApp \
-		-configuration Debug \
-		-derivedDataPath "$derived_data" \
-		ARCHS=arm64 \
-		ONLY_ACTIVE_ARCH=YES \
-		LIBRARY_SEARCH_PATHS="$(dirname "$rust_library")" \
-		MACOSX_DEPLOYMENT_TARGET=13.0 \
-		CODE_SIGNING_ALLOWED=NO \
-		${test_filters[@]+"${test_filters[@]}"} \
-		test
+	if [[ -n "$candidate_record" ]]; then
+		candidate_assert
+		xcodebuild test-without-building -xctestrun "$xctestrun" \
+			-destination 'platform=macOS,arch=arm64' \
+			${test_filters[@]+"${test_filters[@]}"}
+		candidate_receipt
+	else
+		xcodebuild \
+			-project "$xcode_project" \
+			-scheme OpenScribeApp \
+			-configuration Debug \
+			-derivedDataPath "$derived_data" \
+			ARCHS=arm64 \
+			ONLY_ACTIVE_ARCH=YES \
+			LIBRARY_SEARCH_PATHS="$(dirname "$rust_library")" \
+			MACOSX_DEPLOYMENT_TARGET=13.0 \
+			CODE_SIGNING_ALLOWED=NO \
+			${test_filters[@]+"${test_filters[@]}"} \
+			test
+	fi
 	if [[ "$mode" == "--verify-recording" ]]; then
 		component_app_digests="$(artifact_digests)"
 		printf '%s\n' \
@@ -194,6 +229,7 @@ run)
 		printf '%s\n' 'M0_NATIVE_RED: primary, menu-bar, or settings scene telemetry was not observed' >&2
 		exit 1
 	}
+	if [[ -n "$candidate_record" ]]; then candidate_receipt; fi
 	printf '%s\n' \
 		'NATIVE_FIXTURE_XCODE_GREEN' \
 		'proof=rust_staticlib,uniffi_regeneration,xcode_app_build,xcode_test_host,swift_binding_test,xcode_owned_development_app,exact_process_launch,primary_scene_log,menu_bar_scene_log,settings_scene_log' \
@@ -306,6 +342,8 @@ run)
 		exit 1
 	}
 	rm -f "$proof_root"/decoded-*.wav
+	candidate_require_checks
+	candidate_receipt
 	printf '%s\n' \
 		'M1_DUAL_SOURCE_RUNTIME_GREEN' \
 		"app_bundle=$app_bundle" \
@@ -524,6 +562,8 @@ run)
 		exit 1
 	}
 	rm -f "$proof_root"/recovered-*.wav
+	candidate_require_checks
+	candidate_receipt
 	printf '%s\n' \
 		'M1_FORCED_TERMINATION_RECOVERY_GREEN' \
 		"app_bundle=$app_bundle" \

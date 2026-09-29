@@ -6,9 +6,16 @@ set -euo pipefail
 # The proof root is this run's own temporary state: it is removed after a green
 # run unless --retain is given, and kept for diagnosis after a failure. Roots
 # left by earlier runs are reported, never deleted.
-usage='usage: check_foundational_workflow.sh /absolute/path/to/OpenScribeApp [--synthetic|--live] [--retain]'
-app_binary="${1:?$usage}"
-shift
+script_dir="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
+repo_root="$(CDPATH='' cd -- "$script_dir/.." && pwd -P)"
+cd "$repo_root"
+# shellcheck source=script/candidate.sh
+source "$script_dir/candidate.sh"
+usage='usage: check_foundational_workflow.sh --candidate /absolute/path/candidate.json [--synthetic|--live] [--retain]'
+[[ "$#" -ge 2 && "$1" == --candidate ]] || candidate_fail "$usage"
+candidate_load "$2"
+candidate_require_checks
+shift 2
 mode='--synthetic'
 retain=0
 for argument in "$@"; do
@@ -118,6 +125,8 @@ shasum -a 256 -c "$proof_root/media-before.sha256"
 [[ "$(artifact_digests)" == "$artifacts_before" ]] ||
 	fail_proof 'the app artifact changed during the proof.'
 receipt_digest="$(shasum -a 256 "$proof_root/recovery-verified.json" | cut -d ' ' -f 1)"
+candidate_require_checks
+candidate_receipt
 cat "$proof_root/recovery-verified.json"
 if [[ "$mode" == '--live' ]]; then
 	printf '\n%s\n' 'FOUNDATION_LIVE_GREEN: two real sources, 30-second segments, SIGKILL, unchanged media, shared native playback.'

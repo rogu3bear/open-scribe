@@ -5,33 +5,14 @@ script_dir="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
 repo_root="$(CDPATH='' cd -- "$script_dir/.." && pwd)"
 cd "$repo_root"
 
-"$script_dir/check_m1_interruption_state.sh"
-
-proof_root="$(mktemp -d "$repo_root/apps/macos/.build/m1-forced-recovery-gate.XXXXXX")"
-trap 'rm -rf "$proof_root"' EXIT
-rust_library="$(bash "$script_dir/build_rust_macos.sh" "$proof_root/rust")"
-xcode_log="$proof_root/xcodebuild.log"
-if ! xcodebuild \
-	-project apps/macos/OpenScribe.xcodeproj \
-	-scheme OpenScribeApp \
-	-configuration Debug \
-	-derivedDataPath "$proof_root/xcode" \
-	ARCHS=arm64 \
-	ONLY_ACTIVE_ARCH=YES \
-	LIBRARY_SEARCH_PATHS="$(dirname "$rust_library")" \
-	MACOSX_DEPLOYMENT_TARGET=13.0 \
-	CODE_SIGNING_ALLOWED=NO \
-	test \
-	-only-testing:OpenScribeAppTests/RecoveredSessionControllerTests 2>&1 | tee "$xcode_log"; then
-	printf '%s\n' 'M1_FORCED_TERMINATION_RECOVERY_RED: native recovery controller proof failed' >&2
-	exit 1
-fi
-if rg -n '/Sources/.*warning:' "$xcode_log"; then
-	printf '%s\n' 'M1_FORCED_TERMINATION_RECOVERY_RED: project source emitted a Swift warning' >&2
-	exit 1
-fi
-
-"$script_dir/build_and_run.sh" --m1-forced-termination-recovery-proof
+# Source, clippy, fresh bindings, floor/warning checks and every prerequisite
+# Swift suite now run once in check_candidate.sh. Require its exact receipt.
+# shellcheck source=script/candidate.sh
+source "$script_dir/candidate.sh"
+[[ "$#" == 2 && "$1" == --candidate ]] || candidate_fail 'usage: check_m1_forced_termination_recovery.sh --candidate /absolute/path/candidate.json'
+candidate_load "$2"
+candidate_require_checks
+"$script_dir/build_and_run.sh" --m1-forced-termination-recovery-proof --candidate "$candidate_record"
 
 candidate_base="$(git merge-base HEAD main 2>/dev/null || true)"
 if [[ -z "$candidate_base" || "$candidate_base" == "$(git rev-parse HEAD)" ]]; then
@@ -39,6 +20,7 @@ if [[ -z "$candidate_base" || "$candidate_base" == "$(git rev-parse HEAD)" ]]; t
 fi
 git diff --check "$candidate_base" HEAD
 git diff --check
+candidate_receipt
 
 printf '%s\n' \
 	'M1_FORCED_TERMINATION_RECOVERY_GATE_GREEN' \

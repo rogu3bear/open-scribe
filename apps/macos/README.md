@@ -51,7 +51,7 @@ Data root. Its default mode launches the app; `--verify` runs the Xcode test
 host, binds the exact process, and observes primary/menu-bar/Settings scene logs;
 `--debug`, `--logs`, and `--telemetry` provide LLDB or filtered unified-log
 sessions. `./script/check_m1_xcode_fixture.sh` is the pre-capture UI checkpoint;
-`./script/check.sh --m1-dual-source-runtime` (alias `--m1-live-microphone`)
+`./script/check.sh --m1-dual-source-runtime --candidate <absolute-record>` (alias `--m1-live-microphone`)
 requires explicit consent and is designed to prove a short real-device
 microphone plus system-audio capture through independently decoded and digested
 CAF segments.

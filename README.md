@@ -32,14 +32,19 @@ Run the founding structure gate:
 ./script/check.sh --scaffold
 ```
 
-Verify capture-controller and media-writer behavior with synthetic buffers and
-injected device backends, without live capture or speaker playback:
+Build and qualify one clean, committed contributor candidate (choose a measured
+Disk Guard allowance as described in [Contributing](CONTRIBUTING.md)):
 
 ```bash
-./script/build_and_run.sh --verify-recording
+candidate="$PWD/apps/macos/.build/candidates/$(git rev-parse HEAD)/candidate.json"
+disk-guard run --budget-gb <measured> --volume "$PWD" -- ./script/check.sh --candidate "$candidate"
+./script/check.sh --verify-recording --candidate "$candidate"
 ```
 
-This builds the app and runs recorder component tests. The foundational workflow
+The first command builds one unsigned app and test bundle, runs source and web
+checks, all native tests, and synthetic recovery. The second reruns recorder
+components with `test-without-building` against the recorded artifact. All
+consumers reject source or artifact drift. The foundational workflow
 has [dated proof](docs/TESTING.md#foundational-recording-workflow): a device-free
 synthetic process proof (two sources, a Rust-owned shared timeline, 30-second
 segments, forced termination, unchanged recovered media) whose receipt names
@@ -65,13 +70,13 @@ passed on an older artifact. Their current segmented-capture source has not
 passed on this candidate:
 
 ```bash
-./script/check.sh --m1-dual-source-runtime
+./script/check.sh --m1-dual-source-runtime --candidate "$candidate"
 ```
 
 Run `./script/check.sh --m1-interruption-state` separately for the internal
 journal, binding, failure-path, and media-preservation regression chain. That
 repository gate supports the recorder; it is not the runtime proof. Run
-`./script/check.sh --m1-forced-termination-recovery` for the exact real-device
+`./script/check.sh --m1-forced-termination-recovery --candidate "$candidate"` for the exact real-device
 dual-source capture, external-kill, relaunch, atomic recovery, persistent playback,
 and independent decode receipt. Neither proves source-loss handling, permission
 revocation during capture, application-scoped selection, two-hour operation,

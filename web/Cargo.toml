@@ -61,5 +61,7 @@ browserquery = "defaults"
 bin-target = "open-scribe-web"
 bin-features = ["ssr"]
 bin-default-features = false
+bin-cargo-args = ["--locked"]
 lib-features = ["hydrate"]
 lib-default-features = false
+lib-cargo-args = ["--locked"]

@@ -42,7 +42,7 @@ bun web/scripts/hash_assets.mjs
 # shellcheck source=/dev/null
 source "$repo_root/target/web-asset-hashes.env"
 export OPEN_SCRIBE_WEB_JS_HASH OPEN_SCRIBE_WEB_WASM_HASH OPEN_SCRIBE_WEB_CSS_HASH
-worker-build web --release --features ssr
+worker-build web --release --locked --features ssr
 bun web/scripts/write_worker_shim.mjs
 
 cargo run --locked --release -p open-scribe-web --features ssr \
