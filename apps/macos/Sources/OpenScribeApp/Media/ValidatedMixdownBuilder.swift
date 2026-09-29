@@ -16,16 +16,17 @@ enum ValidatedMixdownBuilder {
 
   static func buildIfNeeded(
     preparation: NativeRecordingPreparationProtocol, sessionId: String,
-    storagePath: String
+    storagePath: String, beforeEncoding: @Sendable () -> Void = {}
   ) throws -> NativeValidatedMixdown {
     try buildLock.withLock {
-      try build(preparation: preparation, sessionId: sessionId, storagePath: storagePath)
+      try build(preparation: preparation, sessionId: sessionId, storagePath: storagePath,
+        beforeEncoding: beforeEncoding)
     }
   }
 
   private static func build(
     preparation: NativeRecordingPreparationProtocol, sessionId: String,
-    storagePath: String
+    storagePath: String, beforeEncoding: @Sendable () -> Void
   ) throws -> NativeValidatedMixdown {
     if let existing = try preparation.validatedMixdown(sessionId: sessionId) {
       return existing
@@ -67,6 +68,7 @@ enum ValidatedMixdownBuilder {
     writer = try AVAudioFile(
       forWriting: outputURL, settings: settings,
       commonFormat: .pcmFormatFloat32, interleaved: false)
+    beforeEncoding()
     var writtenFrames: UInt64 = 0
     var lastStorageCheckFrame: UInt64 = 0
     while let buffer = try reader.read(maximumFrames: 16_384) {

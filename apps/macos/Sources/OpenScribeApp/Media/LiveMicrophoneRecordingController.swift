@@ -95,6 +95,7 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
   private let segmentedSuccessorWriterFactory:
     @Sendable (NativeMediaOpenAuthorization) throws -> ManagedCAFWriter
   private let hostTime: @Sendable () -> UInt64
+  private let proofCheckpoint: @Sendable (RecorderProofPhase, String) -> Void
   private var selectedSystemCaptureFactory: (@Sendable (ManagedSegmentWriting, RecorderCaptureSelection) async throws -> SystemAudioCapturing)?
   private var storageWatchTask: Task<Void, Never>?
   private var applicationExitObserver: NSObjectProtocol?
@@ -131,6 +132,7 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
       @escaping @Sendable (NativeMediaOpenAuthorization) throws -> ManagedCAFWriter = {
         try ManagedCAFWriter(authorization: $0)
       },
+    proofCheckpoint: @escaping @Sendable (RecorderProofPhase, String) -> Void = { _, _ in },
     captureHealthTelemetry: @escaping CaptureHealthTelemetry = {
       AppTelemetry.captureSourceHealth($0)
     }
@@ -145,6 +147,7 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
     self.segmentedCapture = segmentedCapture
     self.hostTime = hostTime
     self.availableBytes = availableBytes
+    self.proofCheckpoint = proofCheckpoint
     self.segmentedSuccessorWriterFactory = segmentedSuccessorWriterFactory
     super.init()
     observeSystemPower()
@@ -331,6 +334,7 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
       }
       self.preparation = preparation
       activeSessionId = sessionId
+      proofCheckpoint(.preparation, sessionId)
       // Retired sources keep their sealed writer for the saved-path list but
       // get no successor authorization and no capture in this span.
       for source in requiredSources where failedSources.contains(source) {
@@ -504,6 +508,7 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
       catch { errorMessage = "The pause could not be made durable."; return }
     }
     phase = pausing ? .pausing : .stopping
+    if let activeSessionId { proofCheckpoint(.stop, activeSessionId) }
     let continuingSources = Set(requiredSources).subtracting(failedSources)
     var finalSampleTimes: [NativeMediaSourceKind: UInt64] = [:]
     if continuingSources.contains(.microphone), let microphoneTime = microphoneCapture?.stop() {
@@ -545,6 +550,7 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
           throw LiveMicrophoneRecordingError.invalidSourcePlan
         }
         let receipt = try writer.sealSegmentReceipt(finalSampleHostTime: finalSampleHostTime)
+        proofCheckpoint(.seal, receipt.sessionId)
         let evidence = try preparation.sealSegment(receipt: receipt)
         guard evidence.segmentSealed, !evidence.recordingStarted else {
           throw LiveMicrophoneRecordingError.invalidSegmentSeal
@@ -640,6 +646,7 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
       return
     }
     phase = .capturing
+    proofCheckpoint(.recording, receipt.sessionId)
     if segmentedCapture { beginStorageWatch() }
   }
 
@@ -768,6 +775,7 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
         throw LiveMicrophoneRecordingError.invalidSourceFailure
       }
       failedSources.insert(source)
+      recorderDetail = try preparation.recorderDetail(sessionId: activeSessionId)
       errorMessage =
         "\(Self.displayName(for: source)) stopped. Remaining audio is still recording. \(message)"
       failureCode = code
@@ -871,12 +879,14 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
     }
     lastSavedSessionId = sessionId
     mixdownStatus = "Source tracks saved; preparing stereo mix…"
+    let proofCheckpoint = proofCheckpoint
     Task.detached(priority: .utility) { [weak self] in
       let verified: Bool
       do {
         _ = try ValidatedMixdownBuilder.buildIfNeeded(
           preparation: preparation, sessionId: sessionId,
-          storagePath: storagePath)
+          storagePath: storagePath,
+          beforeEncoding: { proofCheckpoint(.processing, sessionId) })
         verified = true
       } catch {
         verified = false
@@ -964,22 +974,8 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
     storageWatchTask = Task { [weak self] in
       while !Task.isCancelled {
         do { try await Task.sleep(for: .seconds(2)) } catch { return }
-        guard let self, self.phase == .capturing, let preparation = self.preparation,
-          let sessionId = self.activeSessionId, let path = self.writers.values.first?.authorization.absolutePath else { return }
-        do {
-          let detail = try preparation.recorderAction(sessionId: sessionId,
-            action: .observeStorage(availableBytes: self.availableBytes(path)))
-          self.recorderDetail = detail
-          if detail.storageLevel == "critical" {
-            await self.stop()
-            self.errorMessage = "Recording stopped at the storage reserve. Existing audio is preserved."
-            return
-          }
-        } catch {
-          await self.stop()
-          self.errorMessage = "Storage availability could not be checked. Recording was stopped to preserve audio."
-          return
-        }
+        guard let self, self.phase == .capturing else { return }
+        await self.checkStorage()
       }
     }
     if let applicationExitObserver { NSWorkspace.shared.notificationCenter.removeObserver(applicationExitObserver) }
@@ -991,10 +987,36 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
           application.processIdentifier == processId else { return }
         Task { @MainActor [weak self] in
           guard let self, self.activeAttempt == attempt else { return }
-          await self.handleCaptureFailure("The selected application exited.", code: "application-exited", source: .applicationAudio, interruptionReason: .captureFailed)
+          await self.selectedApplicationExited(processId: application.processIdentifier)
         }
       }
     }
+  }
+
+  /// Both the timer and the injected process proof use the same storage probe
+  /// and Rust policy. Unknown capacity is never treated as unlimited space.
+  func checkStorage() async {
+    guard phase == .capturing, let preparation, let sessionId = activeSessionId,
+      let path = writers.values.first?.authorization.absolutePath else { return }
+    do {
+      recorderDetail = try preparation.recorderAction(sessionId: sessionId,
+        action: .observeStorage(availableBytes: availableBytes(path)))
+      if recorderDetail?.storageLevel == "critical" {
+        await stop()
+        errorMessage = "Recording stopped at the storage reserve. Existing audio is preserved."
+      }
+    } catch {
+      await stop()
+      errorMessage = "Storage availability could not be checked. Recording was stopped to preserve audio."
+    }
+  }
+
+  /// A stale or unrelated application exit cannot change this recording.
+  func selectedApplicationExited(processId: pid_t) async {
+    guard captureSelection.kind == .applicationAudio,
+      captureSelection.processId == processId else { return }
+    await handleCaptureFailure("The selected application exited.", code: "application-exited",
+      source: .applicationAudio, interruptionReason: .captureFailed)
   }
 }
 

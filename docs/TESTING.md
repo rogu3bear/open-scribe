@@ -245,6 +245,87 @@ returned exit 1 with `M1_COMPLETE_HOLD`; admission stays HOLD.
 
 New gates must fail closed, clean up processes and temporary state they own, print proof and exclusion sets, and bind runtime claims to the exact built artifact.
 
+## September 29, 2026 — M1 injected failure harness candidate
+
+Prompt 2 began on clean `2dc46a70a6d92b1894f229eabe3a14234c67a144`.
+No Prompt 1 candidate JSON existed. The requested
+`./script/check.sh --m1-forced-termination-recovery --candidate "$PWD/apps/macos/.build/candidates/m1-closeout/candidate.json"`
+therefore returned `CANDIDATE_RED: supply an absolute path to a regular candidate JSON record`.
+The receipt is `artifacts/m1-automated/forced-recovery-before.log`; this is a
+fail-closed admission result, not recovery proof. No old app was substituted.
+
+The new entry point is
+`./script/check.sh --m1-injected-failures --candidate /absolute/candidate.json`
+with optional `--case CASE`. It consumes the canonical qualified candidate and
+never compiles. Run the complete matrix under
+`disk-guard run --budget-gb 2 --volume "$PWD" -- ...` because its dedicated
+1.5 GiB sparse APFS image may actually fill. The filler rejects the host device
+before writing, stops at ENOSPC or its 2 GiB bound, and removes only its own
+filler after capture stops. The image and source-media evidence are retained;
+the owned mount and child app are cleaned up, including on failure.
+
+The intended cases and markers (all **runtime unqualified** at this source
+checkpoint) are:
+
+| Case | Intended pass marker | Injection boundary |
+| --- | --- | --- |
+| `storage-warning` | `M1_INJECTED_STORAGE_WARNING_GREEN` | Controller storage probe; warning journal and continued capture |
+| `storage-critical` | `M1_INJECTED_STORAGE_CRITICAL_GREEN` | Same probe; reserve policy seals and stops |
+| `storage-exhaustion` | `M1_INJECTED_STORAGE_EXHAUSTION_GREEN` | Actual CAF write on dedicated ENOSPC volume; failure must be journaled before recovery |
+| `microphone-loss` | `M1_INJECTED_MICROPHONE_LOSS_GREEN` | Microphone failure callback; remaining source continues |
+| `system-loss` | `M1_INJECTED_SYSTEM_LOSS_GREEN` | System-audio failure callback |
+| `application-loss` | `M1_INJECTED_APPLICATION_LOSS_GREEN` | Application-audio failure callback |
+| `selected-app-exit` | `M1_INJECTED_SELECTED_APP_EXIT_GREEN` | Production exit handler, with unrelated-PID rejection |
+| `sleep-wake` | `M1_INJECTED_SLEEP_WAKE_GREEN` | Production power-observer entry points; sealed pause, no automatic resume |
+| `kill-preparation` | `M1_INJECTED_KILL_PREPARATION_GREEN` | Durable preparation before media authorization |
+| `kill-recording` | `M1_INJECTED_KILL_RECORDING_GREEN` | Rust-confirmed first samples for both sources |
+| `kill-stop` | `M1_INJECTED_KILL_STOP_GREEN` | Stop entered, before adapter drain |
+| `kill-seal` | `M1_INJECTED_KILL_SEAL_GREEN` | CAF closed, before Rust accepts its seal |
+| `kill-processing` | `M1_INJECTED_KILL_PROCESSING_GREEN` | Derived AAC writer opened, before encoding; sources already sealed |
+
+Each forced checkpoint stops its own process with SIGSTOP; the parent verifies
+the stopped PID and delivers SIGKILL. Relaunch uses production launch recovery
+twice, with source-digest and journal-idempotence checks. Preparation must show
+an interrupted session without claiming audio. Other phases require both
+tracks, preserved pre-event frames, and complete timeline decoding.
+The independent Ruby verifier cross-checks SQLite events with JSONL, checks
+Rust's source digests/lengths, independently decodes CAFs with `afconvert`, and
+checks every PCM sample and stereo channel identity. Case receipts bind the
+candidate-record hash and harness-log hash, and each log includes all candidate
+artifact digests. Native state projections are checked; physical device events,
+rendered accessibility, TCC, audible quality, long sessions, and full ADR 0006
+commit/journal-internal crash coverage are excluded.
+
+Executed source-only checks: `ruby script/check_m1_injected_contract.rb` printed
+`M1_HARNESS_CONTRACT_GREEN cases=10`; candidate-record and native-contract
+checks passed; shellcheck, shfmt, new Swift-file formatting, project plist
+validation, and diff hygiene passed. The contract fixtures reject false
+checkpoints, foreign sessions, false Recording, divergent recovery, missing
+journal evidence, app errors, changed second-recovery journals, redirected
+reports, and host-volume filling. They are verifier tests, not injected app
+receipts. Source also refreshes the recorder event projection after a durable
+source failure; the affected native regression and runtime cases remain due.
+
+Reconciliation of `--m1-complete` remains conservative:
+
+| Existing gate item | Source owner found | Evidence still required before changing its gate entry |
+| --- | --- | --- |
+| `durable_markers` | Rust recorder action and Swift Add Marker | Candidate-bound journal/native marker proof |
+| `validated_mixdown` | Rust mixdown authorization/receipt; `ValidatedMixdownBuilder` | Candidate-bound validated AAC decode and source retention |
+| `disk_pressure_policy` | Rust reserve/warning policy; storage probe/watch/segment boundary | Both probe cases plus actual-volume exhaustion/recovery |
+| `application_scoped_selection` | Platform picker and `SCContentFilter` selection | Actual scope isolation and supported-OS permission/picker matrix; injected exit is insufficient |
+| `native_channel_layout_fidelity` | Mono/stereo CAF writer and stereo timeline | Candidate-bound channel proof plus device-format matrix |
+| source loss / degraded continuation | Production failure callbacks and Rust source retirement | All injected source cases, then physical-source runs |
+| permission revocation / route change | Adapter and permission paths | Actual TCC/device matrix; synthetic callbacks cannot close it |
+| pause/resume / two-hour synchronization | Recorder boundaries and persisted host timeline | Fresh live pause/resume and real two-hour drift at most 100 ms |
+
+No M1 completion item was removed on source inspection. The gate must continue
+to list automated gaps until actual receipts qualify them; two-hour capture
+must not be relabeled a human-only check to make the list shorter. Initial disk
+measurement is `artifacts/m1-automated/before.txt`: target 2,426,940 KiB,
+native `.build` 3,935,704 KiB, task artifacts 2,346,896 KiB. Candidate admission
+and the final disk delta are recorded separately after execution.
+
 ## September 29, 2026 — Candidate build infrastructure
 
 The cold web failure was reproduced from base `71fa611` in a new

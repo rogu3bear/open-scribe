@@ -24,6 +24,7 @@ else
 fi
 source_checks() {
 	"$script_dir/check_candidate_record.sh"
+	ruby "$script_dir/check_m1_injected_contract.rb"
 	"$script_dir/check_scaffold.sh"
 	cargo clippy --locked -p open-scribe-store -p open-scribe-core -p open-scribe-uniffi --all-targets -- -D warnings
 	"$script_dir/check_native_contracts.sh"

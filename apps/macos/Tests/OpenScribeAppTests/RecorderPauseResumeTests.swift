@@ -248,6 +248,8 @@ final class RecorderPauseResumeTests: XCTestCase {
     XCTAssertEqual(harness.controller.microphoneSourceHealth?.event, .routeInterrupted)
     XCTAssertEqual(harness.controller.failureCode, "capture-route-interrupted")
     XCTAssertEqual(harness.controller.statusText, "Recording continues with remaining audio")
+    XCTAssertTrue(harness.controller.recorderDetail?.events.contains { $0.kind == "source_failed" } == true,
+      "the durable failure must reach the native recorder event list")
     XCTAssertEqual(harness.telemetry.snapshot().map(\.observation.event), [.routeInterrupted])
     XCTAssertEqual(microphone.stopCount, 1)
     XCTAssertEqual(system.stopCount, 0)

@@ -46,6 +46,12 @@ struct OpenScribeApp: App {
 
   init() {
     let arguments = ProcessInfo.processInfo.arguments
+    let injectedRoot = Self.argumentRoot("--m1-injected-proof-root", from: arguments)
+    let injectedRecoveryRoot = Self.argumentRoot("--m1-injected-recovery-root", from: arguments)
+    let injectedMediaRoot = Self.argumentRoot("--m1-proof-media-root", from: arguments)
+    let injectedScenario = arguments.firstIndex(of: "--m1-injected-case").flatMap { index in
+      arguments.indices.contains(index + 1) ? arguments[index + 1] : nil
+    } ?? "invalid"
     let foundationReviewRoot = Self.argumentRoot("--foundation-review-root", from: arguments)
     let foundationLiveRecoveryRoot = Self.argumentRoot(
       "--foundation-live-recovery-root", from: arguments)
@@ -63,11 +69,15 @@ struct OpenScribeApp: App {
       from: arguments
     )
     let managedRoot =
-      foundationReviewRoot ?? foundationLiveRecoveryRoot ?? timelineCaptureRoot
+      injectedMediaRoot ?? injectedRoot ?? injectedRecoveryRoot
+      ?? foundationReviewRoot ?? foundationLiveRecoveryRoot ?? timelineCaptureRoot
       ?? timelineRecoveryRoot ?? liveProofRoot ?? forcedCaptureRoot ?? forcedRecoveryRoot
       ?? Self.defaultRoot()
-    let controller =
-      managedRoot.map(LiveMicrophoneRecordingController.init(managedRoot:))
+    let injectedProof = injectedRoot.map {
+      M1FailureRuntimeProof(root: $0, mediaRoot: injectedMediaRoot ?? $0, scenario: injectedScenario)
+    }
+    let controller = injectedProof?.controller
+      ?? managedRoot.map(LiveMicrophoneRecordingController.init(managedRoot:))
       ?? LiveMicrophoneRecordingController(managedRoot: nil)
     let recovery = RecoveredSessionController(managedRoot: managedRoot)
     let runtime = RuntimeLibraryStore(managedRoot: managedRoot)
@@ -81,7 +91,16 @@ struct OpenScribeApp: App {
     _importedMediaAuthority = StateObject(wrappedValue: importAuthority)
     _liveRecording = StateObject(wrappedValue: controller)
     _recoveredSessions = StateObject(wrappedValue: recovery)
-    if let root = foundationLiveRecoveryRoot {
+    if let proof = injectedProof {
+      Task { @MainActor in await proof.run(runtime: runtime) }
+    } else if let root = injectedRecoveryRoot {
+      controller.isLaunchRecoveryPending = { recovery.phase == .scanning }
+      runtime.isLaunchRecoveryPending = { recovery.phase == .scanning }
+      Task { @MainActor in
+        await M1FailureRuntimeProof.recover(root: root, mediaRoot: injectedMediaRoot ?? root,
+          recovery: recovery, runtime: runtime)
+      }
+    } else if let root = foundationLiveRecoveryRoot {
       Task { @MainActor in await TimelineRuntimeProof.verifyLive(root: root) }
     } else if let root = timelineCaptureRoot ?? timelineRecoveryRoot {
       Task { @MainActor in

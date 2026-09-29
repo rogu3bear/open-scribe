@@ -7,6 +7,8 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		AB61A3F920D148E6A9BCE306 /* M1ProofSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC61A3F920D148E6A9BCE306 /* M1ProofSupport.swift */; };
+		AB61A3F920D148E6A9BCE307 /* M1FailureRuntimeProof.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC61A3F920D148E6A9BCE307 /* M1FailureRuntimeProof.swift */; };
 		AA0000050000000000000001 /* RecorderCaptureSelection.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000050000000000000011 /* RecorderCaptureSelection.swift */; };
 		AA0000050000000000000002 /* RecorderControls.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000050000000000000012 /* RecorderControls.swift */; };
 		AA0000050000000000000003 /* RecorderPauseResumeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000050000000000000013 /* RecorderPauseResumeTests.swift */; };
@@ -61,6 +63,8 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		AC61A3F920D148E6A9BCE306 /* M1ProofSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = M1ProofSupport.swift; sourceTree = "<group>"; };
+		AC61A3F920D148E6A9BCE307 /* M1FailureRuntimeProof.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = M1FailureRuntimeProof.swift; sourceTree = "<group>"; };
 		AA0000050000000000000011 /* RecorderCaptureSelection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecorderCaptureSelection.swift; sourceTree = "<group>"; };
 		AA0000050000000000000012 /* RecorderControls.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecorderControls.swift; sourceTree = "<group>"; };
 		AA0000050000000000000013 /* RecorderPauseResumeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecorderPauseResumeTests.swift; sourceTree = "<group>"; };
@@ -178,6 +182,8 @@
 				AC61A3F920D148E6A9BCE301 /* SegmentedCAFWriter.swift */,
 				AC61A3F920D148E6A9BCE302 /* TimelineAudioPlayer.swift */,
 				AC61A3F920D148E6A9BCE303 /* TimelineRuntimeProof.swift */,
+				AC61A3F920D148E6A9BCE306 /* M1ProofSupport.swift */,
+				AC61A3F920D148E6A9BCE307 /* M1FailureRuntimeProof.swift */,
 				AC61A3F920D148E6A9BCE305 /* ValidatedMixdownBuilder.swift */,
 				D061A3F920D148E6A9BCE201 /* MicrophoneCaptureAdapter.swift */,
 				5C61A3F920D148E6A9BCE201 /* MicrophonePermissionAuthority.swift */,
@@ -369,6 +375,8 @@
 				AB61A3F920D148E6A9BCE301 /* SegmentedCAFWriter.swift in Sources */,
 				AB61A3F920D148E6A9BCE302 /* TimelineAudioPlayer.swift in Sources */,
 				AB61A3F920D148E6A9BCE303 /* TimelineRuntimeProof.swift in Sources */,
+				AB61A3F920D148E6A9BCE306 /* M1ProofSupport.swift in Sources */,
+				AB61A3F920D148E6A9BCE307 /* M1FailureRuntimeProof.swift in Sources */,
 				AB61A3F920D148E6A9BCE305 /* ValidatedMixdownBuilder.swift in Sources */,
 				4C61A3F920D148E6A9BCE201 /* MicrophonePermissionAuthority.swift in Sources */,
 				E3B6D8732CBAD3A7D047B7AE /* FixtureSessionStore.swift in Sources */,
