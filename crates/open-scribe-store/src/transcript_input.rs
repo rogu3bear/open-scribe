@@ -16,6 +16,10 @@ use std::os::unix::fs::FileExt;
 /// A positive placement gap larger than one 48 kHz frame starts a new span.
 const SPAN_GAP_NANOSECONDS: i64 = 1_000_000_000 / MEDIA_SAMPLE_RATE_HZ as i64 + 1;
 
+/// One sealed segment placed on the session timeline: source ID, segment ID,
+/// start and preceding gap in nanoseconds, frame count, and channel count.
+type PlacedSegment = (String, String, i64, i64, u64, u16);
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TranscriptionInput {
     pub session_id: SessionId,
@@ -212,7 +216,7 @@ impl SessionStore {
         &self,
         session: &SessionId,
         track_id: &str,
-    ) -> Result<Vec<(String, String, i64, i64, u64, u16)>, StoreError> {
+    ) -> Result<Vec<PlacedSegment>, StoreError> {
         let mut statement = self.connection.prepare(
             "SELECT tracks.source_id, segments.id, segments.sample_count, segments.channels
              FROM segments JOIN tracks ON tracks.id = segments.track_id
