@@ -127,6 +127,35 @@ final class RecorderPauseResumeTests: XCTestCase {
     XCTAssertEqual(try harness.preparation.playbackTimeline(sessionId: sessionId).count, 4)
   }
 
+  func testSystemSleepPausesThroughTheSealedPathAndWakeNeverResumes() async throws {
+    let harness = try PauseHarness()
+    defer { harness.removeFiles() }
+    await harness.controller.start()
+    try await harness.capture()
+    let sessionId = try XCTUnwrap(harness.captures.microphones.first).writer.authorization.sessionId
+
+    await harness.controller.systemWillSleep()
+    XCTAssertEqual(harness.controller.phase, .paused)
+    XCTAssertTrue(harness.controller.canResume)
+    XCTAssertEqual(try XCTUnwrap(harness.captures.microphones.last).stopCount, 1)
+    XCTAssertEqual(try XCTUnwrap(harness.captures.systems.last).stopCount, 1)
+    XCTAssertTrue(harness.controller.errorMessage?.contains("went to sleep") == true)
+
+    harness.clock.advance(seconds: 600)
+    harness.controller.systemDidWake()
+    XCTAssertEqual(harness.controller.phase, .paused, "wake never resumes capture")
+    let kinds = try harness.preparation.recorderDetail(sessionId: sessionId).events.map(\.kind)
+    XCTAssertEqual(
+      kinds.filter { $0.hasPrefix("system_") }, ["system_sleep_observed", "system_wake_observed"])
+    XCTAssertLessThan(
+      try XCTUnwrap(kinds.firstIndex(of: "system_sleep_observed")),
+      try XCTUnwrap(kinds.firstIndex(of: "capture_paused")))
+    XCTAssertEqual(harness.controller.recorderDetail?.events.last?.kind, "system_wake_observed")
+
+    await harness.controller.stop()
+    XCTAssertEqual(harness.controller.phase, .saved)
+  }
+
   func testPauseDrainsAcrossThirtySecondRotation() async throws {
     let harness = try PauseHarness()
     defer { harness.removeFiles() }
@@ -383,9 +412,17 @@ final class RecorderPauseResumeTests: XCTestCase {
       await harness.controller.stop()
 
       XCTAssertEqual(harness.controller.phase, .saved, "\(step)")
-      // The degrade left an informational note; the recording still saved.
-      XCTAssertEqual(
-        harness.controller.statusText, "Recording saved", "\(step)")
+      // The degrade left an informational note; the recording still saved and
+      // the stereo mix settles to a terminal saved status.
+      for _ in 0..<500 where harness.controller.statusText.hasSuffix("…") {
+        try await Task.sleep(nanoseconds: 10_000_000)
+      }
+      XCTAssertTrue(
+        [
+          "Recording saved with verified stereo mix",
+          "Source tracks saved; stereo mix unavailable",
+        ].contains(harness.controller.statusText),
+        "\(step): \(harness.controller.statusText)")
       XCTAssertEqual(
         try harness.preparation.recorderDetail(sessionId: sessionId).lifecycle, "ready_for_review",
         "\(step)")
@@ -398,6 +435,129 @@ final class RecorderPauseResumeTests: XCTestCase {
         try harness.preparation.playbackTimeline(sessionId: sessionId).count, 2,
         "the microphone predecessor and the system segment remain playable after \(step)")
     }
+  }
+
+  /// G8: a rotation sealed the predecessor, then the successor's first sample
+  /// was rejected. The successor never became a real segment, so the failure
+  /// retires only that source; the recording continues and saves.
+  func testFirstSampleFailureAfterRotationDegradesAndStopStillFinalizes() async throws {
+    let harness = try PauseHarness(rotationInjection: true)
+    defer { harness.removeFiles() }
+    await harness.controller.start()
+    let microphone = try XCTUnwrap(harness.captures.microphones.last)
+    let system = try XCTUnwrap(harness.captures.systems.last)
+    let sessionId = microphone.writer.authorization.sessionId
+    try await harness.capture()
+
+    // A host-time gap rotates the microphone; its successor's first sample fails.
+    harness.rotationInjector!.rejectNextFirstSample()
+    try microphone.emit(
+      frames: 480, hostTime: harness.clock.now + AVAudioTime.hostTime(forSeconds: 2), value: 8192)
+    await settle()
+
+    XCTAssertEqual(microphone.writer.authorization.writerGeneration, 2, "the rotation completed")
+    XCTAssertEqual(harness.controller.phase, .capturing, harness.controller.errorMessage ?? "")
+    XCTAssertEqual(harness.controller.statusText, "Recording continues with remaining audio")
+    XCTAssertEqual(microphone.stopCount, 1)
+    XCTAssertEqual(system.stopCount, 0)
+    XCTAssertEqual(
+      try harness.preparation.recorderDetail(sessionId: sessionId).lifecycle, "recording")
+
+    harness.clock.advance(seconds: 1)
+    await harness.controller.stop()
+    XCTAssertEqual(harness.controller.phase, .saved, harness.controller.errorMessage ?? "")
+    XCTAssertEqual(
+      try harness.preparation.recorderDetail(sessionId: sessionId).lifecycle, "ready_for_review")
+    _ = try harness.preparation.recoverPlayableSessions()
+    XCTAssertEqual(
+      try harness.preparation.playbackTimeline(sessionId: sessionId).count, 2,
+      "the sealed microphone predecessor and the system segment stay playable")
+  }
+
+  /// G1: a source that failed while recording can be selected again while
+  /// paused. Resume starts it as a new source instead of interrupting.
+  func testReselectingAFailedSourceWhilePausedResumesItAsANewSource() async throws {
+    let harness = try PauseHarness()
+    defer { harness.removeFiles() }
+    await harness.controller.start()
+    let microphone = try XCTUnwrap(harness.captures.microphones.last)
+    let system = try XCTUnwrap(harness.captures.systems.last)
+    let sessionId = microphone.writer.authorization.sessionId
+    try await harness.capture()
+    system.fail(.streamStopped)
+    await settle()
+    XCTAssertEqual(harness.controller.phase, .capturing)
+    await harness.controller.stop(pausing: true)
+    XCTAssertEqual(harness.controller.phase, .paused)
+    harness.clock.advance(seconds: 60)
+
+    harness.controller.selectCaptureSource(.system)
+    XCTAssertNil(harness.controller.errorMessage)
+    await harness.controller.start(resuming: true)
+    XCTAssertEqual(harness.controller.phase, .starting, harness.controller.errorMessage ?? "")
+    XCTAssertEqual(harness.captures.systems.count, 2, "the reselected source starts again")
+    try XCTUnwrap(harness.captures.microphones.last)
+      .emit(frames: 48_000, hostTime: harness.clock.now, value: 8192)
+    try XCTUnwrap(harness.captures.systems.last)
+      .emit(frames: 48_000, hostTime: harness.clock.now, value: 16384)
+    await settle()
+    XCTAssertEqual(harness.controller.phase, .capturing, harness.controller.errorMessage ?? "")
+    XCTAssertEqual(harness.controller.statusText, "Recording microphone + system audio")
+    harness.clock.advance(seconds: 1)
+
+    await harness.controller.stop()
+    XCTAssertEqual(harness.controller.phase, .saved, harness.controller.errorMessage ?? "")
+    XCTAssertEqual(
+      try harness.preparation.recorderDetail(sessionId: sessionId).lifecycle, "ready_for_review")
+    _ = try harness.preparation.recoverPlayableSessions()
+    XCTAssertEqual(
+      try harness.preparation.playbackTimeline(sessionId: sessionId).count, 4,
+      "both microphone spans, the failed system source, and its replacement")
+  }
+
+  /// G5: after the microphone failed, a microphone-only scope would record
+  /// nothing. Both layers refuse it and the paused session still resumes.
+  func testMicrophoneOnlyIsRefusedAfterTheMicrophoneFailed() async throws {
+    let harness = try PauseHarness()
+    defer { harness.removeFiles() }
+    await harness.controller.start()
+    let microphone = try XCTUnwrap(harness.captures.microphones.last)
+    let sessionId = microphone.writer.authorization.sessionId
+    let boundIdentity = MicrophoneCaptureIdentity(authorization: microphone.writer.authorization)
+    try await harness.capture()
+    microphone.observe(.routeInterrupted, identity: boundIdentity, sequence: 1)
+    await settle()
+    XCTAssertEqual(harness.controller.phase, .capturing)
+    XCTAssertTrue(harness.controller.isMicrophoneRetired)
+    await harness.controller.stop(pausing: true)
+    XCTAssertEqual(harness.controller.phase, .paused)
+    harness.clock.advance(seconds: 60)
+
+    harness.controller.selectCaptureSource(.microphoneOnly)
+    XCTAssertEqual(harness.controller.captureSelection.kind, .systemAudio)
+    XCTAssertTrue(
+      harness.controller.errorMessage?.contains("Microphone only has nothing to record") == true,
+      harness.controller.errorMessage ?? "")
+    XCTAssertThrowsError(
+      try harness.preparation.recorderAction(
+        sessionId: sessionId,
+        action: .selectAudio(kind: nil, identity: "microphone-only", displayName: "Microphone only")),
+      "Rust refuses a scope with no source that can capture")
+
+    harness.permission.currentState = .denied
+    await harness.controller.start(resuming: true)
+    XCTAssertEqual(harness.controller.phase, .starting, harness.controller.errorMessage ?? "")
+    XCTAssertEqual(harness.captures.microphones.count, 1, "the retired microphone stays stopped")
+    XCTAssertEqual(harness.controller.statusText, "Starting the remaining audio…")
+    try XCTUnwrap(harness.captures.systems.last)
+      .emit(frames: 48_000, hostTime: harness.clock.now, value: 16384)
+    await settle()
+    XCTAssertEqual(harness.controller.phase, .capturing, harness.controller.errorMessage ?? "")
+    harness.clock.advance(seconds: 1)
+    await harness.controller.stop()
+    XCTAssertEqual(harness.controller.phase, .saved, harness.controller.errorMessage ?? "")
+    XCTAssertEqual(
+      try harness.preparation.recorderDetail(sessionId: sessionId).lifecycle, "ready_for_review")
   }
 
   /// F13: the storage probe reports important-usage capacity, which includes
@@ -498,7 +658,9 @@ private final class PauseSource: MicrophoneCapturing, SystemAudioCapturing, @unc
   func emit(frames: AVAudioFrameCount, hostTime: UInt64, value: Int16) throws {
     do {
       _ = try writer.writeCapturedBuffer(
-        TimelineRuntimeProof.buffer(frames: frames, value: value), hostTime: hostTime)
+        TimelineRuntimeProof.buffer(
+          frames: frames, value: value, channels: writer.authorization.channels),
+        hostTime: hostTime)
     } catch {
       // A real capture adapter reports a write/rotation failure through its
       // failure handler rather than crashing the audio thread. Mirror that so
@@ -608,7 +770,7 @@ private final class PauseHarness {
 
 private enum RotationFailureStep: CaseIterable { case writerInit, acceptMediaOpen, seal }
 
-private enum RotationInjectedError: Error { case writerInit, acceptMediaOpen, seal }
+private enum RotationInjectedError: Error { case writerInit, acceptMediaOpen, seal, firstSample }
 
 /// Overrides free-space reporting for the injected storage probe. Transparent
 /// (real filesystem) until a test sets a value.
@@ -630,8 +792,12 @@ private final class RotationFailureInjectingPreparation: NativeRecordingPreparat
   private let base: NativeRecordingPreparation
   private let lock = NSLock()
   private var armed: RotationFailureStep?
+  private var rejectsNextFirstSample = false
   init(base: NativeRecordingPreparation) { self.base = base }
   func arm(_ step: RotationFailureStep) { lock.withLock { armed = step } }
+  /// One-shot: the next first sample (a rotated successor's) is rejected after
+  /// the rotation itself completed.
+  func rejectNextFirstSample() { lock.withLock { rejectsNextFirstSample = true } }
   private func consume(_ step: RotationFailureStep) -> Bool {
     lock.withLock {
       guard armed == step else { return false }
@@ -652,7 +818,12 @@ private final class RotationFailureInjectingPreparation: NativeRecordingPreparat
     return try base.sealSegment(receipt: receipt)
   }
   func acceptFirstSample(receipt: NativeFirstSampleReceipt) throws -> NativeFirstSampleEvidence {
-    try base.acceptFirstSample(receipt: receipt)
+    let rejects = lock.withLock {
+      defer { rejectsNextFirstSample = false }
+      return rejectsNextFirstSample
+    }
+    if rejects { throw RotationInjectedError.firstSample }
+    return try base.acceptFirstSample(receipt: receipt)
   }
   func anchorCaptureClock(
     sessionId: String, hostAnchor: UInt64, numerator: UInt32, denominator: UInt32

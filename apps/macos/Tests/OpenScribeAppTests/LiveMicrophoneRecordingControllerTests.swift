@@ -95,6 +95,7 @@ private final class RecordingPreparationFake: NativeRecordingPreparation, @unche
       writerGeneration: 1,
       relativePath: "audio/\(sourceName)/segment-live.caf",
       absolutePath: "/tmp/segment-\(sourceName).caf",
+      channels: sourceKind == .microphone ? 1 : 2,
       mappedStartNanoseconds: 0
     )
   }
@@ -284,6 +285,7 @@ private final class SegmentWriterFake: ManagedSegmentWriting, @unchecked Sendabl
       openToken: authorization.openToken,
       writerGeneration: authorization.writerGeneration,
       relativePath: authorization.relativePath,
+      channels: authorization.channels,
       initialByteLength: 128
     )
   }
@@ -351,6 +353,12 @@ private enum CaptureFakeError: Error {
   case interruptionFailed
   case startFailed
   case sealFailed
+}
+
+/// Stands in for the launch recovery scan's phase.
+@MainActor
+private final class LaunchScanFlag {
+  var pending = true
 }
 
 private final class InvocationCounter: @unchecked Sendable {
@@ -1089,6 +1097,73 @@ final class LiveMicrophoneRecordingControllerTests: XCTestCase {
 
     XCTAssertNil(controller.microphoneSourceHealth)
     XCTAssertTrue(telemetry.snapshot().isEmpty)
+  }
+
+  /// G2: the app holds recording while launch recovery scans the library off
+  /// the main actor. Nothing is prepared or selected until that scan publishes.
+  func testRecordingWaitsWhileLaunchRecoveryIsPending() async {
+    let preparationCalls = InvocationCounter()
+    let controller = LiveMicrophoneRecordingController(
+      permission: AuthorizedMicrophonePermission(),
+      preparationFactory: {
+        preparationCalls.increment()
+        return RecordingPreparationFake()
+      },
+      writerFactory: { SegmentWriterFake(authorization: $0) },
+      captureFactory: { _ in MicrophoneCaptureFake() }
+    )
+    let scan = LaunchScanFlag()
+    controller.isLaunchRecoveryPending = { scan.pending }
+
+    XCTAssertFalse(controller.canStart)
+    XCTAssertEqual(controller.statusText, "Checking recordings from the last session…")
+    await controller.start()
+    controller.selectCaptureSource(.microphoneOnly)
+    XCTAssertEqual(controller.phase, .idle)
+    XCTAssertEqual(controller.captureSelection.kind, .systemAudio)
+    XCTAssertEqual(preparationCalls.value, 0)
+
+    scan.pending = false
+    XCTAssertTrue(controller.canStart)
+    XCTAssertEqual(controller.statusText, "Ready to record microphone + system audio")
+    await controller.start()
+    XCTAssertEqual(controller.phase, .starting)
+    XCTAssertEqual(preparationCalls.value, 1)
+  }
+
+  /// G7: status text names only the audio the selection records; the default
+  /// selection keeps its dual-source wording.
+  func testStatusTextNamesOnlyTheSelectedAudio() async throws {
+    let writerHolder = SegmentWriterHolder()
+    let capture = MicrophoneCaptureFake()
+    let controller = LiveMicrophoneRecordingController(
+      permission: AuthorizedMicrophonePermission(),
+      preparationFactory: { RecordingPreparationFake() },
+      writerFactory: { authorization in
+        let created = SegmentWriterFake(authorization: authorization)
+        writerHolder.store(created)
+        return created
+      },
+      captureFactory: { _ in capture }
+    )
+    XCTAssertEqual(controller.statusText, "Ready to record microphone + system audio")
+    controller.selectCaptureSource(
+      RecorderCaptureSelection(
+        kind: .applicationAudio, identity: "com.example.call:42", name: "Example Call",
+        filter: nil, processId: nil))
+    XCTAssertEqual(controller.statusText, "Ready to record microphone + Example Call")
+
+    controller.selectCaptureSource(.microphoneOnly)
+    XCTAssertEqual(controller.statusText, "Ready to record microphone")
+    await controller.start()
+    XCTAssertEqual(controller.statusText, "Starting microphone…")
+    capture.emitFirstSample(
+      try XCTUnwrap(writerHolder.writer).firstSampleReceipt(hostTime: 42_000, frameCount: 480))
+    for _ in 0..<10 where !controller.isCapturing { await Task.yield() }
+    XCTAssertEqual(controller.phase, .capturing)
+    XCTAssertEqual(controller.statusText, "Recording microphone")
+    await controller.stop()
+    XCTAssertEqual(controller.phase, .saved)
   }
 
   func testDeniedPermissionFailsBeforePreparationAndCanRetryAfterAuthorization() async {

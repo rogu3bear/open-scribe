@@ -34,6 +34,7 @@ pub struct TimelineSegment {
     pub native_start_nanoseconds: i64,
     pub clock_adjustment_nanoseconds: i64,
     pub sample_count: u64,
+    pub channels: u16,
     pub gap_nanoseconds: i64,
 }
 
@@ -206,16 +207,21 @@ impl SessionStore {
                 "rotation requires a calibrated session clock",
             ));
         }
-        let (source_id, source_kind, display, track_id, sequence): (String, String, String, String, i64) = self.connection.query_row(
-            "SELECT sources.id, sources.kind, sources.display_name, tracks.id, segments.sequence
+        // A later segment that is an abandoned, never-captured gap does not
+        // replace its predecessor; the successor is numbered after it.
+        let (source_id, source_kind, display, track_id, sequence, channels): (String, String, String, String, i64, i64) = self.connection.query_row(
+            "SELECT sources.id, sources.kind, sources.display_name, tracks.id,
+                    (SELECT MAX(sequence) FROM segments track_segments WHERE track_segments.track_id = tracks.id),
+                    segments.channels
              FROM segments JOIN tracks ON tracks.id = segments.track_id
              JOIN sources ON sources.id = tracks.source_id JOIN sessions ON sessions.id = segments.session_id
              WHERE segments.id = ?1 AND sessions.id = ?2
                AND ((sessions.lifecycle IN ('preparing', 'recording', 'finalizing') AND sources.lifecycle = 'capturing' AND segments.lifecycle = 'capturing')
                  OR (sessions.lifecycle = 'preparing' AND sources.lifecycle = 'sealed' AND segments.lifecycle = 'sealed'
                     AND EXISTS(SELECT 1 FROM session_events WHERE session_id = ?2 AND event_kind = 'resume_requested')))
-               AND NOT EXISTS(SELECT 1 FROM segments later WHERE later.track_id = tracks.id AND later.sequence > segments.sequence)",
-            params![previous, session.0], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+               AND NOT EXISTS(SELECT 1 FROM segments later WHERE later.track_id = tracks.id AND later.sequence > segments.sequence
+                   AND NOT (later.lifecycle = 'gap' AND later.original_start IS NULL))",
+            params![previous, session.0], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?)),
         ).map_err(|e| match e {
             rusqlite::Error::QueryReturnedNoRows => StoreError::InvalidState("source is not ready for one successor"),
             e => StoreError::Sqlite(e),
@@ -223,6 +229,11 @@ impl SessionStore {
         let sequence = sequence
             .checked_add(1)
             .ok_or(StoreError::InvalidState("segment sequence exhausted"))?;
+        if channels != 1 && channels != 2 {
+            return Err(StoreError::IntegrityMismatch(
+                "invalid source channel layout",
+            ));
+        }
         let generation = u64::try_from(
             sequence
                 .checked_add(1)
@@ -243,7 +254,7 @@ impl SessionStore {
             "track_id": track_id, "segment_id": segment_id, "open_token": open_token,
             "writer_generation": generation, "segment_sequence": sequence,
             "relative_path": relative_path, "media_format": MEDIA_FORMAT_CAF_PCM_S16LE,
-            "sample_rate_hz": MEDIA_SAMPLE_RATE_HZ, "channels": 1, "mapped_start_nanoseconds": 0,
+            "sample_rate_hz": MEDIA_SAMPLE_RATE_HZ, "channels": channels, "mapped_start_nanoseconds": 0,
         });
         let record = self.append_session_journal(
             &session.0,
@@ -271,7 +282,7 @@ impl SessionStore {
             absolute_path,
             media_format: MEDIA_FORMAT_CAF_PCM_S16LE.to_owned(),
             sample_rate_hz: MEDIA_SAMPLE_RATE_HZ,
-            channels: 1,
+            channels: channels as u16,
             mapped_start_nanoseconds: 0,
         })
     }
@@ -357,6 +368,36 @@ impl SessionStore {
              WHERE id = ?1 AND session_id = ?2",
             params![segment, session.0],
         )?;
+        // A successor abandoned after its predecessor sealed leaves the track
+        // with no active segment: the source rests on its sealed media, as a
+        // seal would leave it, so a source failure can retire it.
+        let active: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM segments
+             WHERE track_id = ?1 AND lifecycle IN ('opening', 'open', 'capturing'))",
+            [&track_id],
+            |row| row.get(0),
+        )?;
+        if !active {
+            tx.execute(
+                "UPDATE tracks SET lifecycle = 'sealed'
+                 WHERE id = ?1 AND session_id = ?2 AND lifecycle = 'capturing'",
+                params![track_id, session.0],
+            )?;
+            tx.execute(
+                "UPDATE sources SET lifecycle = 'sealed'
+                 WHERE id = (SELECT source_id FROM tracks WHERE id = ?1)
+                   AND session_id = ?2 AND lifecycle = 'capturing'",
+                params![track_id, session.0],
+            )?;
+            tx.execute(
+                "UPDATE required_sources SET lifecycle = 'sealed'
+                 WHERE session_id = ?1 AND kind = (
+                     SELECT sources.kind FROM sources
+                     JOIN tracks ON tracks.source_id = sources.id
+                     WHERE tracks.id = ?2)",
+                params![session.0, track_id],
+            )?;
+        }
         tx.execute(
             "UPDATE sessions SET media_files_open = EXISTS(
                  SELECT 1 FROM segments
@@ -397,8 +438,7 @@ impl SessionStore {
             JournalValidation::Valid(records) => records,
             _ => return Err(StoreError::IntegrityMismatch("playback journal is invalid")),
         };
-        let (sources, _handles) =
-            self.validate_sealed_recovery_companions(&session.0, &records, false)?;
+        let sources = self.validate_sealed_recovery_companions(&session.0, &records)?;
         let accepted_clock = records
             .iter()
             .find(|r| r.body.event_kind == "capture_clock_anchored")
@@ -436,7 +476,7 @@ impl SessionStore {
         }
         let mut statement = self.connection.prepare(
             "SELECT sources.id, tracks.id, segments.id, segments.sequence, segments.mapped_start_ns,
-                    segments.sample_count, segments.original_start
+                    segments.sample_count, segments.original_start, segments.channels
              FROM sessions JOIN segments ON segments.session_id = sessions.id
              JOIN tracks ON tracks.id = segments.track_id JOIN sources ON sources.id = tracks.source_id
              WHERE sessions.id = ?1 AND sessions.lifecycle = 'ready_for_review' AND segments.lifecycle = 'sealed'
@@ -451,14 +491,16 @@ impl SessionStore {
                 row.get::<_, i64>(4)?,
                 row.get::<_, i64>(5)?,
                 row.get::<_, i64>(6)?,
+                row.get::<_, i64>(7)?,
             ))
         })?;
         let mut ends = BTreeMap::new();
         let mut result = Vec::new();
         for row in rows {
-            let (source_id, track_id, segment_id, sequence, start, samples, host) = row?;
+            let (source_id, track_id, segment_id, sequence, start, samples, host, channels) = row?;
             if samples <= 0
                 || sequence < 0
+                || (channels != 1 && channels != 2)
                 || self.map_resumed_time(&session.0, clock, host as u64)? != start
             {
                 return Err(StoreError::IntegrityMismatch(
@@ -498,6 +540,7 @@ impl SessionStore {
                 native_start_nanoseconds: start,
                 clock_adjustment_nanoseconds: playback_start - start,
                 sample_count: samples as u64,
+                channels: channels as u16,
                 gap_nanoseconds: gap,
             });
         }

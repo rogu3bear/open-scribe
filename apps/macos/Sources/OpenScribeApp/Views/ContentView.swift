@@ -118,7 +118,8 @@ struct ContentView: View {
         } else {
           ConversationWorkspaceView(
             session: selectedSession,
-            playbackController: recoveredSessions
+            playbackController: recoveredSessions,
+            loadRecorderEvents: { (try? liveRecording.detail(sessionId: $0).events) ?? [] }
           )
         }
       } else {
@@ -181,7 +182,7 @@ struct ContentView: View {
           )
         )
         .keyboardShortcut("r", modifiers: [.command, .shift])
-        .help("Record microphone and computer audio")
+        .help("Record \(liveRecording.captureSelection.recordedAudio)")
       }
     }
   }
@@ -197,7 +198,9 @@ struct ContentView: View {
     .help(
       canImport
         ? "Add local CAF or M4A audio (M4A up to 1 GiB and four hours)"
-        : "Wait for the current recording action to finish before importing audio"
+        : liveRecording.isLaunchRecoveryPending()
+          ? "Wait for the check of recordings from the last session to finish before importing audio"
+          : "Wait for the current recording action to finish before importing audio"
     )
   }
 
@@ -227,6 +230,12 @@ struct ContentView: View {
       notices.append(.init(id: "import", message: message, isFailure: true))
     } else if notices.isEmpty, let message = importedMediaAuthority.statusMessage {
       notices.append(.init(id: "import", message: message, isFailure: false))
+    }
+    if notices.isEmpty, liveRecording.phase == .saved,
+      selectedSessionId == liveRecording.lastSavedSessionId,
+      let message = liveRecording.mixdownStatus
+    {
+      notices.append(.init(id: "mixdown", message: message, isFailure: false))
     }
     return notices
   }
@@ -427,6 +436,8 @@ private struct ConversationSidebarRow: View {
 private struct ConversationWorkspaceView: View {
   let session: RuntimeSessionPresentation
   @ObservedObject var playbackController: RecoveredSessionController
+  let loadRecorderEvents: @MainActor (String) -> [NativeRecorderEvent]
+  @State private var recorderEvents: [NativeRecorderEvent] = []
 
   private var recoveredTracks: [RecoveredTrackPresentation] {
     session.recoveredTracks(from: playbackController.sessions)
@@ -443,12 +454,16 @@ private struct ConversationWorkspaceView: View {
         if !session.sources.isEmpty {
           sourceSection
         }
+        RecorderEventList(events: recorderEvents)
       }
       .frame(maxWidth: 760, alignment: .leading)
       .padding(32)
       .frame(maxWidth: .infinity, alignment: .top)
     }
     .navigationTitle(session.title)
+    .task(id: "\(session.sessionId)|\(session.lifecycle)") {
+      recorderEvents = loadRecorderEvents(session.sessionId)
+    }
   }
 
   private var header: some View {
@@ -496,18 +511,31 @@ private struct ConversationWorkspaceView: View {
           playbackController.activePlaybackSessionId == session.sessionId
           && playbackController.pendingRecoveredMediaIdentity == nil
           && playbackController.playingRecoveredMediaIdentity == nil
-        Button(active ? "Stop synchronized playback" : "Play all sources together") {
-          if active {
+        let mixActive = active && playbackController.activeMixdownSessionId == session.sessionId
+        let timelineActive = active && !mixActive
+        Button(mixActive ? "Stop stereo mix" : "Play stereo mix") {
+          if mixActive {
+            playbackController.stopPlayback()
+          } else {
+            playbackController.playMixdown(sessionId: session.sessionId)
+          }
+        }
+        .disabled(active && !mixActive)
+        Text("The mix is made from the saved source tracks and checked before playback.")
+          .font(.caption)
+          .foregroundStyle(.secondary)
+        Button(timelineActive ? "Stop synchronized playback" : "Play all sources together") {
+          if timelineActive {
             playbackController.stopPlayback()
           } else {
             playbackController.playSynchronized(sessionId: session.sessionId)
           }
         }
-        .disabled(playbackController.activePlaybackSessionId != nil && !active)
+        .disabled(playbackController.activePlaybackSessionId != nil && !timelineActive)
         Text("Uses the recorded timeline, including source offsets and gaps.")
           .font(.caption)
           .foregroundStyle(.secondary)
-        if active, playbackController.timelineClockAdjustmentNanoseconds > 0 {
+        if timelineActive, playbackController.timelineClockAdjustmentNanoseconds > 0 {
           Text(
             "Source clock alignment: up to \(Double(playbackController.timelineClockAdjustmentNanoseconds) / 1_000_000, specifier: "%.1f") ms. All recorded samples are preserved."
           )

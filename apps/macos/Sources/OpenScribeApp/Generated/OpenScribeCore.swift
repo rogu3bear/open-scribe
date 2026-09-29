@@ -475,6 +475,22 @@ private final class UniffiHandleMap<T>: @unchecked Sendable {
 #if swift(>=5.8)
   @_documentation(visibility: private)
 #endif
+private struct FfiConverterUInt16: FfiConverterPrimitive {
+  typealias FfiType = UInt16
+  typealias SwiftType = UInt16
+
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> UInt16 {
+    return try lift(readInt(&buf))
+  }
+
+  public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+    writeInt(&buf, lower(value))
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
 private struct FfiConverterUInt32: FfiConverterPrimitive {
   typealias FfiType = UInt32
   typealias SwiftType = UInt32
@@ -712,12 +728,17 @@ public protocol NativeRecordingPreparationProtocol: AnyObject, Sendable {
 
   func acceptMediaOpen(receipt: NativeMediaOpenReceipt) throws -> NativeMediaOpenEvidence
 
+  func acceptMixdown(receipt: NativeMixdownReceipt) throws -> NativeValidatedMixdown
+
   func anchorCaptureClock(
     sessionId: String, hostAnchor: UInt64, numerator: UInt32, denominator: UInt32) throws
 
   func authorizeInitialMedia(
     sessionId: String, sourceKind: NativeMediaSourceKind, sourceDisplayName: String
   ) throws -> NativeMediaOpenAuthorization
+
+  func authorizeMixdown(sessionId: String, availableBytes: UInt64) throws
+    -> NativeMixdownAuthorization
 
   func authorizeNextSegment(sessionId: String, previousSegmentId: String) throws
     -> NativeMediaOpenAuthorization
@@ -743,6 +764,8 @@ public protocol NativeRecordingPreparationProtocol: AnyObject, Sendable {
     sessionId: String, sourceId: String, trackId: String, segmentId: String
   ) throws -> NativeImportedPlaybackLease
 
+  func leaseValidatedMixdown(sessionId: String) throws -> NativeImportedPlaybackLease?
+
   func playbackTimeline(sessionId: String) throws -> [NativeTimelineSegment]
 
   func prepareSession(title: String) throws -> NativePreparedSession
@@ -759,6 +782,8 @@ public protocol NativeRecordingPreparationProtocol: AnyObject, Sendable {
   func runtimeLibrarySnapshot() throws -> NativeRuntimeLibrarySnapshot
 
   func sealSegment(receipt: NativeSealSegmentReceipt) throws -> NativeSealedSegmentEvidence
+
+  func validatedMixdown(sessionId: String) throws -> NativeValidatedMixdown?
 
   func recorderAction(sessionId: String, action: NativeRecorderAction) throws
     -> NativeRecorderDetail
@@ -862,6 +887,17 @@ open class NativeRecordingPreparation: NativeRecordingPreparationProtocol, @unch
       })
   }
 
+  open func acceptMixdown(receipt: NativeMixdownReceipt) throws -> NativeValidatedMixdown {
+    return try FfiConverterTypeNativeValidatedMixdown_lift(
+      try rustCallWithError(FfiConverterTypeNativeStorageError_lift) {
+        uniffiCallStatus in
+        uniffi_open_scribe_uniffi_fn_method_nativerecordingpreparation_accept_mixdown(
+          self.uniffiCloneHandle(),
+          FfiConverterTypeNativeMixdownReceipt_lower(receipt), uniffiCallStatus
+        )
+      })
+  }
+
   open func anchorCaptureClock(
     sessionId: String, hostAnchor: UInt64, numerator: UInt32, denominator: UInt32
   ) throws {
@@ -888,6 +924,20 @@ open class NativeRecordingPreparation: NativeRecordingPreparationProtocol, @unch
           FfiConverterString.lower(sessionId),
           FfiConverterTypeNativeMediaSourceKind_lower(sourceKind),
           FfiConverterString.lower(sourceDisplayName), uniffiCallStatus
+        )
+      })
+  }
+
+  open func authorizeMixdown(sessionId: String, availableBytes: UInt64) throws
+    -> NativeMixdownAuthorization
+  {
+    return try FfiConverterTypeNativeMixdownAuthorization_lift(
+      try rustCallWithError(FfiConverterTypeNativeStorageError_lift) {
+        uniffiCallStatus in
+        uniffi_open_scribe_uniffi_fn_method_nativerecordingpreparation_authorize_mixdown(
+          self.uniffiCloneHandle(),
+          FfiConverterString.lower(sessionId),
+          FfiConverterUInt64.lower(availableBytes), uniffiCallStatus
         )
       })
   }
@@ -1002,6 +1052,17 @@ open class NativeRecordingPreparation: NativeRecordingPreparationProtocol, @unch
       })
   }
 
+  open func leaseValidatedMixdown(sessionId: String) throws -> NativeImportedPlaybackLease? {
+    return try FfiConverterOptionTypeNativeImportedPlaybackLease.lift(
+      try rustCallWithError(FfiConverterTypeNativeStorageError_lift) {
+        uniffiCallStatus in
+        uniffi_open_scribe_uniffi_fn_method_nativerecordingpreparation_lease_validated_mixdown(
+          self.uniffiCloneHandle(),
+          FfiConverterString.lower(sessionId), uniffiCallStatus
+        )
+      })
+  }
+
   open func playbackTimeline(sessionId: String) throws -> [NativeTimelineSegment] {
     return try FfiConverterSequenceTypeNativeTimelineSegment.lift(
       try rustCallWithError(FfiConverterTypeNativeStorageError_lift) {
@@ -1080,6 +1141,17 @@ open class NativeRecordingPreparation: NativeRecordingPreparationProtocol, @unch
         uniffi_open_scribe_uniffi_fn_method_nativerecordingpreparation_seal_segment(
           self.uniffiCloneHandle(),
           FfiConverterTypeNativeSealSegmentReceipt_lower(receipt), uniffiCallStatus
+        )
+      })
+  }
+
+  open func validatedMixdown(sessionId: String) throws -> NativeValidatedMixdown? {
+    return try FfiConverterOptionTypeNativeValidatedMixdown.lift(
+      try rustCallWithError(FfiConverterTypeNativeStorageError_lift) {
+        uniffiCallStatus in
+        uniffi_open_scribe_uniffi_fn_method_nativerecordingpreparation_validated_mixdown(
+          self.uniffiCloneHandle(),
+          FfiConverterString.lower(sessionId), uniffiCallStatus
         )
       })
   }
@@ -1722,13 +1794,14 @@ public struct NativeMediaOpenAuthorization: Equatable, Hashable {
   public let writerGeneration: UInt64
   public let relativePath: String
   public let absolutePath: String
+  public let channels: UInt16
   public let mappedStartNanoseconds: Int64
 
   // Default memberwise initializers are never public by default, so we
   // declare one manually.
   public init(
     sessionId: String, sourceId: String, trackId: String, segmentId: String, openToken: String,
-    writerGeneration: UInt64, relativePath: String, absolutePath: String,
+    writerGeneration: UInt64, relativePath: String, absolutePath: String, channels: UInt16,
     mappedStartNanoseconds: Int64
   ) {
     self.sessionId = sessionId
@@ -1739,6 +1812,7 @@ public struct NativeMediaOpenAuthorization: Equatable, Hashable {
     self.writerGeneration = writerGeneration
     self.relativePath = relativePath
     self.absolutePath = absolutePath
+    self.channels = channels
     self.mappedStartNanoseconds = mappedStartNanoseconds
   }
 
@@ -1765,6 +1839,7 @@ public struct FfiConverterTypeNativeMediaOpenAuthorization: FfiConverterRustBuff
         writerGeneration: FfiConverterUInt64.read(from: &buf),
         relativePath: FfiConverterString.read(from: &buf),
         absolutePath: FfiConverterString.read(from: &buf),
+        channels: FfiConverterUInt16.read(from: &buf),
         mappedStartNanoseconds: FfiConverterInt64.read(from: &buf)
       )
   }
@@ -1778,6 +1853,7 @@ public struct FfiConverterTypeNativeMediaOpenAuthorization: FfiConverterRustBuff
     FfiConverterUInt64.write(value.writerGeneration, into: &buf)
     FfiConverterString.write(value.relativePath, into: &buf)
     FfiConverterString.write(value.absolutePath, into: &buf)
+    FfiConverterUInt16.write(value.channels, into: &buf)
     FfiConverterInt64.write(value.mappedStartNanoseconds, into: &buf)
   }
 }
@@ -1881,13 +1957,14 @@ public struct NativeMediaOpenReceipt: Equatable, Hashable {
   public let openToken: String
   public let writerGeneration: UInt64
   public let relativePath: String
+  public let channels: UInt16
   public let initialByteLength: UInt64
 
   // Default memberwise initializers are never public by default, so we
   // declare one manually.
   public init(
     sessionId: String, trackId: String, segmentId: String, openToken: String,
-    writerGeneration: UInt64, relativePath: String, initialByteLength: UInt64
+    writerGeneration: UInt64, relativePath: String, channels: UInt16, initialByteLength: UInt64
   ) {
     self.sessionId = sessionId
     self.trackId = trackId
@@ -1895,6 +1972,7 @@ public struct NativeMediaOpenReceipt: Equatable, Hashable {
     self.openToken = openToken
     self.writerGeneration = writerGeneration
     self.relativePath = relativePath
+    self.channels = channels
     self.initialByteLength = initialByteLength
   }
 
@@ -1919,6 +1997,7 @@ public struct FfiConverterTypeNativeMediaOpenReceipt: FfiConverterRustBuffer {
         openToken: FfiConverterString.read(from: &buf),
         writerGeneration: FfiConverterUInt64.read(from: &buf),
         relativePath: FfiConverterString.read(from: &buf),
+        channels: FfiConverterUInt16.read(from: &buf),
         initialByteLength: FfiConverterUInt64.read(from: &buf)
       )
   }
@@ -1930,6 +2009,7 @@ public struct FfiConverterTypeNativeMediaOpenReceipt: FfiConverterRustBuffer {
     FfiConverterString.write(value.openToken, into: &buf)
     FfiConverterUInt64.write(value.writerGeneration, into: &buf)
     FfiConverterString.write(value.relativePath, into: &buf)
+    FfiConverterUInt16.write(value.channels, into: &buf)
     FfiConverterUInt64.write(value.initialByteLength, into: &buf)
   }
 }
@@ -1950,6 +2030,161 @@ public func FfiConverterTypeNativeMediaOpenReceipt_lower(_ value: NativeMediaOpe
   -> RustBuffer
 {
   return FfiConverterTypeNativeMediaOpenReceipt.lower(value)
+}
+
+public struct NativeMixdownAuthorization: Equatable, Hashable {
+  public let sessionId: String
+  public let relativePath: String
+  public let absolutePath: String
+  public let expectedFrameCount: UInt64
+  public let sourceDigestSha256: String
+  public let writeFloorBytes: UInt64
+
+  // Default memberwise initializers are never public by default, so we
+  // declare one manually.
+  public init(
+    sessionId: String, relativePath: String, absolutePath: String, expectedFrameCount: UInt64,
+    sourceDigestSha256: String, writeFloorBytes: UInt64
+  ) {
+    self.sessionId = sessionId
+    self.relativePath = relativePath
+    self.absolutePath = absolutePath
+    self.expectedFrameCount = expectedFrameCount
+    self.sourceDigestSha256 = sourceDigestSha256
+    self.writeFloorBytes = writeFloorBytes
+  }
+
+}
+
+#if compiler(>=6)
+  extension NativeMixdownAuthorization: Sendable {}
+#endif
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeNativeMixdownAuthorization: FfiConverterRustBuffer {
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws
+    -> NativeMixdownAuthorization
+  {
+    return
+      try NativeMixdownAuthorization(
+        sessionId: FfiConverterString.read(from: &buf),
+        relativePath: FfiConverterString.read(from: &buf),
+        absolutePath: FfiConverterString.read(from: &buf),
+        expectedFrameCount: FfiConverterUInt64.read(from: &buf),
+        sourceDigestSha256: FfiConverterString.read(from: &buf),
+        writeFloorBytes: FfiConverterUInt64.read(from: &buf)
+      )
+  }
+
+  public static func write(_ value: NativeMixdownAuthorization, into buf: inout [UInt8]) {
+    FfiConverterString.write(value.sessionId, into: &buf)
+    FfiConverterString.write(value.relativePath, into: &buf)
+    FfiConverterString.write(value.absolutePath, into: &buf)
+    FfiConverterUInt64.write(value.expectedFrameCount, into: &buf)
+    FfiConverterString.write(value.sourceDigestSha256, into: &buf)
+    FfiConverterUInt64.write(value.writeFloorBytes, into: &buf)
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeMixdownAuthorization_lift(_ buf: RustBuffer) throws
+  -> NativeMixdownAuthorization
+{
+  return try FfiConverterTypeNativeMixdownAuthorization.lift(buf)
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeMixdownAuthorization_lower(_ value: NativeMixdownAuthorization)
+  -> RustBuffer
+{
+  return FfiConverterTypeNativeMixdownAuthorization.lower(value)
+}
+
+public struct NativeMixdownReceipt: Equatable, Hashable {
+  public let sessionId: String
+  public let relativePath: String
+  public let byteLength: UInt64
+  public let decodedFrameCount: UInt64
+  public let sampleRateHz: UInt32
+  public let channels: UInt16
+  public let codec: String
+  public let boundaryFramesReadable: Bool
+
+  // Default memberwise initializers are never public by default, so we
+  // declare one manually.
+  public init(
+    sessionId: String, relativePath: String, byteLength: UInt64, decodedFrameCount: UInt64,
+    sampleRateHz: UInt32, channels: UInt16, codec: String, boundaryFramesReadable: Bool
+  ) {
+    self.sessionId = sessionId
+    self.relativePath = relativePath
+    self.byteLength = byteLength
+    self.decodedFrameCount = decodedFrameCount
+    self.sampleRateHz = sampleRateHz
+    self.channels = channels
+    self.codec = codec
+    self.boundaryFramesReadable = boundaryFramesReadable
+  }
+
+}
+
+#if compiler(>=6)
+  extension NativeMixdownReceipt: Sendable {}
+#endif
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeNativeMixdownReceipt: FfiConverterRustBuffer {
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws
+    -> NativeMixdownReceipt
+  {
+    return
+      try NativeMixdownReceipt(
+        sessionId: FfiConverterString.read(from: &buf),
+        relativePath: FfiConverterString.read(from: &buf),
+        byteLength: FfiConverterUInt64.read(from: &buf),
+        decodedFrameCount: FfiConverterUInt64.read(from: &buf),
+        sampleRateHz: FfiConverterUInt32.read(from: &buf),
+        channels: FfiConverterUInt16.read(from: &buf),
+        codec: FfiConverterString.read(from: &buf),
+        boundaryFramesReadable: FfiConverterBool.read(from: &buf)
+      )
+  }
+
+  public static func write(_ value: NativeMixdownReceipt, into buf: inout [UInt8]) {
+    FfiConverterString.write(value.sessionId, into: &buf)
+    FfiConverterString.write(value.relativePath, into: &buf)
+    FfiConverterUInt64.write(value.byteLength, into: &buf)
+    FfiConverterUInt64.write(value.decodedFrameCount, into: &buf)
+    FfiConverterUInt32.write(value.sampleRateHz, into: &buf)
+    FfiConverterUInt16.write(value.channels, into: &buf)
+    FfiConverterString.write(value.codec, into: &buf)
+    FfiConverterBool.write(value.boundaryFramesReadable, into: &buf)
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeMixdownReceipt_lift(_ buf: RustBuffer) throws
+  -> NativeMixdownReceipt
+{
+  return try FfiConverterTypeNativeMixdownReceipt.lift(buf)
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeMixdownReceipt_lower(_ value: NativeMixdownReceipt) -> RustBuffer
+{
+  return FfiConverterTypeNativeMixdownReceipt.lower(value)
 }
 
 public struct NativeOriginalImportMetadata: Equatable, Hashable {
@@ -3328,6 +3563,7 @@ public struct NativeTimelineSegment {
   public let nativeStartNanoseconds: Int64
   public let clockAdjustmentNanoseconds: Int64
   public let sampleCount: UInt64
+  public let channels: UInt16
   public let gapNanoseconds: Int64
   public let media: NativeTimelineMedia
 
@@ -3336,7 +3572,7 @@ public struct NativeTimelineSegment {
   public init(
     trackId: String, segmentId: String, sequence: UInt64, startNanoseconds: Int64,
     nativeStartNanoseconds: Int64, clockAdjustmentNanoseconds: Int64, sampleCount: UInt64,
-    gapNanoseconds: Int64, media: NativeTimelineMedia
+    channels: UInt16, gapNanoseconds: Int64, media: NativeTimelineMedia
   ) {
     self.trackId = trackId
     self.segmentId = segmentId
@@ -3345,6 +3581,7 @@ public struct NativeTimelineSegment {
     self.nativeStartNanoseconds = nativeStartNanoseconds
     self.clockAdjustmentNanoseconds = clockAdjustmentNanoseconds
     self.sampleCount = sampleCount
+    self.channels = channels
     self.gapNanoseconds = gapNanoseconds
     self.media = media
   }
@@ -3371,6 +3608,7 @@ public struct FfiConverterTypeNativeTimelineSegment: FfiConverterRustBuffer {
         nativeStartNanoseconds: FfiConverterInt64.read(from: &buf),
         clockAdjustmentNanoseconds: FfiConverterInt64.read(from: &buf),
         sampleCount: FfiConverterUInt64.read(from: &buf),
+        channels: FfiConverterUInt16.read(from: &buf),
         gapNanoseconds: FfiConverterInt64.read(from: &buf),
         media: FfiConverterTypeNativeTimelineMedia.read(from: &buf)
       )
@@ -3384,6 +3622,7 @@ public struct FfiConverterTypeNativeTimelineSegment: FfiConverterRustBuffer {
     FfiConverterInt64.write(value.nativeStartNanoseconds, into: &buf)
     FfiConverterInt64.write(value.clockAdjustmentNanoseconds, into: &buf)
     FfiConverterUInt64.write(value.sampleCount, into: &buf)
+    FfiConverterUInt16.write(value.channels, into: &buf)
     FfiConverterInt64.write(value.gapNanoseconds, into: &buf)
     FfiConverterTypeNativeTimelineMedia.write(value.media, into: &buf)
   }
@@ -3405,6 +3644,84 @@ public func FfiConverterTypeNativeTimelineSegment_lower(_ value: NativeTimelineS
   -> RustBuffer
 {
   return FfiConverterTypeNativeTimelineSegment.lower(value)
+}
+
+public struct NativeValidatedMixdown: Equatable, Hashable {
+  public let sessionId: String
+  public let relativePath: String
+  public let byteLength: UInt64
+  public let decodedFrameCount: UInt64
+  public let expectedFrameCount: UInt64
+  public let digestSha256: String
+  public let sourceDigestSha256: String
+
+  // Default memberwise initializers are never public by default, so we
+  // declare one manually.
+  public init(
+    sessionId: String, relativePath: String, byteLength: UInt64, decodedFrameCount: UInt64,
+    expectedFrameCount: UInt64, digestSha256: String, sourceDigestSha256: String
+  ) {
+    self.sessionId = sessionId
+    self.relativePath = relativePath
+    self.byteLength = byteLength
+    self.decodedFrameCount = decodedFrameCount
+    self.expectedFrameCount = expectedFrameCount
+    self.digestSha256 = digestSha256
+    self.sourceDigestSha256 = sourceDigestSha256
+  }
+
+}
+
+#if compiler(>=6)
+  extension NativeValidatedMixdown: Sendable {}
+#endif
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeNativeValidatedMixdown: FfiConverterRustBuffer {
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws
+    -> NativeValidatedMixdown
+  {
+    return
+      try NativeValidatedMixdown(
+        sessionId: FfiConverterString.read(from: &buf),
+        relativePath: FfiConverterString.read(from: &buf),
+        byteLength: FfiConverterUInt64.read(from: &buf),
+        decodedFrameCount: FfiConverterUInt64.read(from: &buf),
+        expectedFrameCount: FfiConverterUInt64.read(from: &buf),
+        digestSha256: FfiConverterString.read(from: &buf),
+        sourceDigestSha256: FfiConverterString.read(from: &buf)
+      )
+  }
+
+  public static func write(_ value: NativeValidatedMixdown, into buf: inout [UInt8]) {
+    FfiConverterString.write(value.sessionId, into: &buf)
+    FfiConverterString.write(value.relativePath, into: &buf)
+    FfiConverterUInt64.write(value.byteLength, into: &buf)
+    FfiConverterUInt64.write(value.decodedFrameCount, into: &buf)
+    FfiConverterUInt64.write(value.expectedFrameCount, into: &buf)
+    FfiConverterString.write(value.digestSha256, into: &buf)
+    FfiConverterString.write(value.sourceDigestSha256, into: &buf)
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeValidatedMixdown_lift(_ buf: RustBuffer) throws
+  -> NativeValidatedMixdown
+{
+  return try FfiConverterTypeNativeValidatedMixdown.lift(buf)
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeValidatedMixdown_lower(_ value: NativeValidatedMixdown)
+  -> RustBuffer
+{
+  return FfiConverterTypeNativeValidatedMixdown.lower(value)
 }
 
 public enum NativeCommandKind: Equatable, Hashable {
@@ -3706,6 +4023,9 @@ public enum NativeRecorderAction: Equatable, Hashable {
   case observeStorage(
     availableBytes: UInt64
   )
+  case observeSystemPower(
+    hostTime: UInt64, asleep: Bool
+  )
 
 }
 
@@ -3759,6 +4079,12 @@ public struct FfiConverterTypeNativeRecorderAction: FfiConverterRustBuffer {
         availableBytes: try FfiConverterUInt64.read(from: &buf)
       )
 
+    case 9:
+      return .observeSystemPower(
+        hostTime: try FfiConverterUInt64.read(from: &buf),
+        asleep: try FfiConverterBool.read(from: &buf)
+      )
+
     default: throw UniffiInternalError.unexpectedEnumCase
     }
   }
@@ -3797,6 +4123,11 @@ public struct FfiConverterTypeNativeRecorderAction: FfiConverterRustBuffer {
     case .observeStorage(let availableBytes):
       writeInt(&buf, Int32(8))
       FfiConverterUInt64.write(availableBytes, into: &buf)
+
+    case .observeSystemPower(let hostTime, let asleep):
+      writeInt(&buf, Int32(9))
+      FfiConverterUInt64.write(hostTime, into: &buf)
+      FfiConverterBool.write(asleep, into: &buf)
 
     }
   }
@@ -4140,6 +4471,30 @@ private struct FfiConverterOptionString: FfiConverterRustBuffer {
 #if swift(>=5.8)
   @_documentation(visibility: private)
 #endif
+private struct FfiConverterOptionTypeNativeImportedPlaybackLease: FfiConverterRustBuffer {
+  typealias SwiftType = NativeImportedPlaybackLease?
+
+  public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+    guard let value = value else {
+      writeInt(&buf, Int8(0))
+      return
+    }
+    writeInt(&buf, Int8(1))
+    FfiConverterTypeNativeImportedPlaybackLease.write(value, into: &buf)
+  }
+
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+    switch try readInt(&buf) as Int8 {
+    case 0: return nil
+    case 1: return try FfiConverterTypeNativeImportedPlaybackLease.read(from: &buf)
+    default: throw UniffiInternalError.unexpectedOptionalTag
+    }
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
 private struct FfiConverterOptionTypeNativeRuntimePlayableMediaSnapshot: FfiConverterRustBuffer {
   typealias SwiftType = NativeRuntimePlayableMediaSnapshot?
 
@@ -4180,6 +4535,30 @@ private struct FfiConverterOptionTypeNativeRuntimeSessionSnapshot: FfiConverterR
     switch try readInt(&buf) as Int8 {
     case 0: return nil
     case 1: return try FfiConverterTypeNativeRuntimeSessionSnapshot.read(from: &buf)
+    default: throw UniffiInternalError.unexpectedOptionalTag
+    }
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+private struct FfiConverterOptionTypeNativeValidatedMixdown: FfiConverterRustBuffer {
+  typealias SwiftType = NativeValidatedMixdown?
+
+  public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+    guard let value = value else {
+      writeInt(&buf, Int8(0))
+      return
+    }
+    writeInt(&buf, Int8(1))
+    FfiConverterTypeNativeValidatedMixdown.write(value, into: &buf)
+  }
+
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+    switch try readInt(&buf) as Int8 {
+    case 0: return nil
+    case 1: return try FfiConverterTypeNativeValidatedMixdown.read(from: &buf)
     default: throw UniffiInternalError.unexpectedOptionalTag
     }
   }
@@ -4522,6 +4901,10 @@ private let initializationResult: InitializationResult = {
   {
     return InitializationResult.apiChecksumMismatch
   }
+  if uniffi_open_scribe_uniffi_checksum_method_nativerecordingpreparation_accept_mixdown() != 45341
+  {
+    return InitializationResult.apiChecksumMismatch
+  }
   if uniffi_open_scribe_uniffi_checksum_method_nativerecordingpreparation_anchor_capture_clock()
     != 16082
   {
@@ -4529,6 +4912,11 @@ private let initializationResult: InitializationResult = {
   }
   if uniffi_open_scribe_uniffi_checksum_method_nativerecordingpreparation_authorize_initial_media()
     != 62642
+  {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_open_scribe_uniffi_checksum_method_nativerecordingpreparation_authorize_mixdown()
+    != 4250
   {
     return InitializationResult.apiChecksumMismatch
   }
@@ -4572,6 +4960,11 @@ private let initializationResult: InitializationResult = {
   {
     return InitializationResult.apiChecksumMismatch
   }
+  if uniffi_open_scribe_uniffi_checksum_method_nativerecordingpreparation_lease_validated_mixdown()
+    != 21407
+  {
+    return InitializationResult.apiChecksumMismatch
+  }
   if uniffi_open_scribe_uniffi_checksum_method_nativerecordingpreparation_playback_timeline()
     != 15651
   {
@@ -4602,6 +4995,11 @@ private let initializationResult: InitializationResult = {
     return InitializationResult.apiChecksumMismatch
   }
   if uniffi_open_scribe_uniffi_checksum_method_nativerecordingpreparation_seal_segment() != 47037 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_open_scribe_uniffi_checksum_method_nativerecordingpreparation_validated_mixdown()
+    != 3057
+  {
     return InitializationResult.apiChecksumMismatch
   }
   if uniffi_open_scribe_uniffi_checksum_method_nativerecordingpreparation_recorder_action() != 7147

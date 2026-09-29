@@ -56,6 +56,7 @@ struct RecorderControls: View {
 
   @ViewBuilder private var sourceButtons: some View {
     Button("Microphone only") { select(.microphoneOnly) }
+      .disabled(recorder.isMicrophoneRetired)
     Button("Microphone + all computer audio") { select(.system) }
     Button("Choose an application…") {
       picker.onSelection = { selection in select(selection) }
@@ -79,12 +80,14 @@ struct RecorderEventList: View {
     if !events.isEmpty {
       VStack(alignment: .leading, spacing: 8) {
         Text("Markers and recording events").font(.headline)
+          .accessibilityAddTraits(.isHeader)
         ForEach(events, id: \.id) { event in
           HStack(alignment: .firstTextBaseline) {
             Text(String(format: "%02d:%02d", max(0, event.sessionNanoseconds / 1_000_000_000) / 60, max(0, event.sessionNanoseconds / 1_000_000_000) % 60))
               .monospacedDigit().foregroundStyle(.secondary)
             Text(title(event))
           }
+          .accessibilityElement(children: .combine)
         }
       }
     }
@@ -96,6 +99,9 @@ struct RecorderEventList: View {
     case "capture_resumed": "Resumed"
     case "source_scope_selected": "Selected: \(event.label)"
     case "storage_observed": "Storage: \(event.label)"
+    case "source_failed": "\(event.label) stopped"
+    case "system_sleep_observed": "Mac went to sleep"
+    case "system_wake_observed": "Mac woke"
     default: event.kind
     }
   }

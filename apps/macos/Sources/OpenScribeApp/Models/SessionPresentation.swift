@@ -148,6 +148,13 @@ struct RuntimeSessionPresentation: Equatable, Sendable, Identifiable {
     lifecycle == "interrupted" || health == "degraded"
   }
 
+  /// The sources capturing now, joined for speech: only what this session
+  /// records, never a source the selection excluded.
+  var capturingSourcesText: String {
+    let names = sources.filter { $0.lifecycle == "capturing" }.map(\.name)
+    return names.isEmpty ? "audio" : ListFormatter.localizedString(byJoining: names)
+  }
+
   func recoveredTracks(
     from playableSessions: [NativeRecoveredPlayableSession]
   ) -> [RecoveredTrackPresentation] {

@@ -28,6 +28,9 @@ pub(super) const RECOVERED_SESSION_EVIDENCE_SQL: &str = "(EXISTS (
 /// A media file's identity for one launch: device, inode, and byte length.
 pub(super) type MediaIdentity = (u64, u64, u64);
 
+/// One reviewable recovered segment's session and its own validation result.
+pub(super) type RecoveredPlayableRow = (String, Result<RecoveredPlayableSession, StoreError>);
+
 /// Media digests computed by this store. Every full hash is counted. While a
 /// launch recovery pass runs, digests are memoized by file identity so the
 /// replay, the sealed-companion check, and the listing hash each segment once;
@@ -107,6 +110,23 @@ pub(super) fn isolated_disposition(error: StoreError) -> Result<RecoveryDisposit
     }
 }
 
+/// True when every record is one launch recovery itself appends. A recovery pass
+/// cut short (a kill, or an aborting error in a later session) can leave such
+/// records after an interruption; later stages reuse them instead of writing
+/// them again, so they do not make the interruption untrustworthy.
+pub(super) fn recovery_records_only(records: &[JournalRecord]) -> bool {
+    records
+        .iter()
+        .all(|record| match record.body.event_kind.as_str() {
+            "segment_capture_gap" => {
+                record.body.payload.get("reason").and_then(Value::as_str)
+                    == Some("terminated_before_first_sample")
+            }
+            "playable_media_recovered" | "timeline_recovered" => true,
+            _ => false,
+        })
+}
+
 /// Keeps one finding per session. A blocking finding is never downgraded by a
 /// later stage's result.
 fn merge_finding(findings: &mut Vec<RecoveryFinding>, next: RecoveryFinding) {
@@ -149,11 +169,34 @@ impl SessionStore {
         for finding in self.recover_capturing_media(&blocked)? {
             merge_finding(&mut findings, finding);
         }
+        let playable = self.list_recovered_playable(&mut findings)?;
         findings.sort_by(|left, right| left.session_id.0.cmp(&right.session_id.0));
-        Ok(LibraryRecovery {
-            findings,
-            playable: self.recovered_playable_sessions()?,
-        })
+        Ok(LibraryRecovery { findings, playable })
+    }
+
+    /// Lists every reviewable recovered session. A session whose accepted media
+    /// no longer matches its evidence is left out with its own finding; the
+    /// sessions beside it still list and play.
+    fn list_recovered_playable(
+        &self,
+        findings: &mut Vec<RecoveryFinding>,
+    ) -> Result<Vec<RecoveredPlayableSession>, StoreError> {
+        let mut rejected = BTreeMap::<String, RecoveryDisposition>::new();
+        let mut listed = Vec::new();
+        for (session_id, row) in self.recovered_playable_rows()? {
+            match row {
+                Ok(item) => listed.push(item),
+                Err(error) => {
+                    let disposition = isolated_disposition(error)?;
+                    rejected.entry(session_id).or_insert(disposition);
+                }
+            }
+        }
+        for (session_id, disposition) in &rejected {
+            merge_finding(findings, finding(session_id, *disposition));
+        }
+        listed.retain(|item| !rejected.contains_key(&item.session_id.0));
+        Ok(listed)
     }
 
     /// Plans every candidate before mutating one, then durably promotes only
@@ -310,8 +353,8 @@ impl SessionStore {
             JournalValidation::Valid(records) => records,
             _ => return Err(StoreError::IntegrityMismatch("session journal changed")),
         };
-        let (mut playable_source_kinds, _sealed_companion_handles) =
-            self.validate_sealed_recovery_companions(session_id, &records, true)?;
+        let mut playable_source_kinds =
+            self.validate_sealed_recovery_companions(session_id, &records)?;
         for (payload, _) in &plans {
             let source_id = payload_string(payload, "source_id")?;
             let source_kind: String = self.connection.query_row(

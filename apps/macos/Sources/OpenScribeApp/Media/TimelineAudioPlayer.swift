@@ -7,7 +7,7 @@ enum TimelinePlaybackError: Error { case invalidPlan, incompleteSegment }
 /// Rust's leased, validated source files remain authoritative; gaps render as silence.
 final class TimelinePCMReader: @unchecked Sendable {
   static let sampleRate = 48_000.0
-  let format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 1)!
+  let format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 2)!
   let totalFrames: Int64
   private struct Entry {
     let segment: NativeTimelineSegment
@@ -26,7 +26,8 @@ final class TimelinePCMReader: @unchecked Sendable {
     entries = try segments.map { segment in
       let startSeconds = (Double(segment.startNanoseconds) - Double(origin)) / 1_000_000_000
       guard startSeconds.isFinite, startSeconds >= 0, startSeconds < Double(Int64.max / 48_000),
-        segment.sampleCount > 0, segment.sampleCount < UInt64(Int64.max / 2)
+        segment.sampleCount > 0, segment.sampleCount < UInt64(Int64.max / 2),
+        segment.channels == 1 || segment.channels == 2
       else { throw TimelinePlaybackError.invalidPlan }
       let start = Int64((startSeconds * Self.sampleRate).rounded())
       let (end, overflow) = start.addingReportingOverflow(Int64(segment.sampleCount))
@@ -41,10 +42,10 @@ final class TimelinePCMReader: @unchecked Sendable {
     guard position < totalFrames else { return nil }
     let count = AVAudioFrameCount(min(Int64(maximumFrames), totalFrames - position))
     guard count > 0, let output = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: count),
-      let samples = output.floatChannelData?[0]
+      let samples = output.floatChannelData
     else { throw TimelinePlaybackError.invalidPlan }
     output.frameLength = count
-    samples.update(repeating: 0, count: Int(count))
+    for channel in 0..<2 { samples[channel].update(repeating: 0, count: Int(count)) }
     let end = position + Int64(count)
     for index in entries.indices {
       let lower = max(position, entries[index].start)
@@ -61,13 +62,15 @@ final class TimelinePCMReader: @unchecked Sendable {
       }
       guard let decoder = entries[index].decoder,
         decoder.processingFormat.sampleRate == Self.sampleRate,
-        decoder.processingFormat.channelCount == 1,
+        decoder.processingFormat.channelCount == AVAudioChannelCount(entries[index].segment.channels),
         let input = try decoder.read(maximumFrames: AVAudioFrameCount(upper - lower)),
         input.frameLength == AVAudioFrameCount(upper - lower),
-        let source = input.floatChannelData?[0]
+        let source = input.floatChannelData
       else { throw TimelinePlaybackError.incompleteSegment }
       for frame in 0..<Int(input.frameLength) {
-        samples[Int(lower - position) + frame] += source[frame] * gain
+        let destination = Int(lower - position) + frame
+        samples[0][destination] += source[0][frame] * gain
+        samples[1][destination] += source[entries[index].segment.channels == 1 ? 0 : 1][frame] * gain
       }
       if upper == entries[index].end {
         decoder.close()

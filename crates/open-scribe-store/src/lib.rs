@@ -16,7 +16,7 @@ use std::path::{Component, Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use open_scribe_types::SessionId;
-use rusqlite::{Connection, OpenFlags, Transaction, params};
+use rusqlite::{Connection, OpenFlags, Transaction, TransactionBehavior, params};
 use rustix::fs as fd_fs;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -25,9 +25,12 @@ use uuid::Uuid;
 
 mod conversation_identity;
 mod import;
+mod journal_replacement;
 mod library_recovery;
 pub use library_recovery::LibraryRecovery;
 mod media_recovery;
+mod mixdown;
+pub use mixdown::{MixdownAuthorization, MixdownReceipt, ValidatedMixdown};
 mod recorder;
 pub use recorder::{RecorderAction, RecorderDetail, RecorderEvent};
 mod runtime_snapshot;
@@ -48,7 +51,7 @@ pub use runtime_snapshot::{
 };
 pub use source_failure::{SourceFailureEvidence, SourceFailureReason, SourceFailureRequest};
 
-const SCHEMA_VERSION: i64 = 3;
+const SCHEMA_VERSION: i64 = 4;
 const JOURNAL_VERSION: u32 = 1;
 const MAX_TITLE_BYTES: usize = 512;
 const MAX_DISPLAY_NAME_BYTES: usize = 512;
@@ -85,6 +88,13 @@ impl MediaSourceKind {
             _ => Err(StoreError::IntegrityMismatch(
                 "required media source kind is unsupported",
             )),
+        }
+    }
+
+    const fn capture_channels(self) -> u16 {
+        match self {
+            Self::Microphone => 1,
+            Self::ApplicationAudio | Self::SystemAudio => 2,
         }
     }
 }
@@ -447,6 +457,7 @@ struct StoredMediaAuthorization {
     track_id: String,
     relative_path: String,
     media_format: String,
+    channels: u16,
     lifecycle: String,
     open_token: String,
     writer_generation: u64,
@@ -477,6 +488,12 @@ struct ValidatedMediaFile {
     inode: u64,
     digest_sha256: Option<String>,
     recoverable_sample_count: Option<u64>,
+    channels: Option<u16>,
+}
+
+struct CafInspection {
+    channels: u16,
+    sample_count: Option<u64>,
 }
 
 #[derive(Clone, Copy)]
@@ -509,7 +526,7 @@ impl SessionStore {
             | OpenFlags::SQLITE_OPEN_CREATE
             | OpenFlags::SQLITE_OPEN_NO_MUTEX;
         let mut connection = Connection::open_with_flags(database_path, flags)?;
-        configure_connection(&connection)?;
+        configure_connection(&mut connection)?;
         apply_schema(&mut connection)?;
 
         Ok(Self {
@@ -821,12 +838,15 @@ impl SessionStore {
         })
     }
 
+    /// Validates every sealed segment against its accepted evidence and returns
+    /// the source kinds they cover. Each file closes once checked: a long session
+    /// holds more segments than a process may keep open, and every later lease
+    /// re-validates the same evidence.
     fn validate_sealed_recovery_companions(
         &self,
         session_id: &str,
         records: &[JournalRecord],
-        retain_handles: bool,
-    ) -> Result<(BTreeSet<String>, Vec<ValidatedMediaFile>), StoreError> {
+    ) -> Result<BTreeSet<String>, StoreError> {
         let rows = {
             let mut statement = self.connection.prepare(
                 "SELECT sources.kind, sources.id, tracks.id, segments.id,
@@ -834,7 +854,7 @@ impl SessionStore {
                         segments.byte_length, segments.digest,
                         segments.file_device, segments.file_inode,
                         segments.seal_state, segments.open_token,
-                        segments.writer_generation
+                        segments.writer_generation, segments.channels
                  FROM sources
                  JOIN tracks ON tracks.session_id = sources.session_id
                             AND tracks.source_id = sources.id
@@ -859,13 +879,13 @@ impl SessionStore {
                     row.get::<_, String>(10)?,
                     row.get::<_, Option<String>>(11)?,
                     row.get::<_, i64>(12)? as u64,
+                    row.get::<_, i64>(13)? as u16,
                 ))
             })?;
             mapped.collect::<Result<Vec<_>, _>>()?
         };
 
         let mut source_kinds = BTreeSet::new();
-        let mut handles = Vec::new();
         for (
             source_kind,
             source_id,
@@ -880,6 +900,7 @@ impl SessionStore {
             seal_state,
             open_token,
             writer_generation,
+            channels,
         ) in rows
         {
             MediaSourceKind::from_str(&source_kind)?;
@@ -946,6 +967,7 @@ impl SessionStore {
             if validated.device != file_device
                 || validated.inode != file_inode
                 || validated.recoverable_sample_count != Some(sample_count)
+                || validated.channels != Some(channels)
                 || validated.digest_sha256.as_deref() != Some(digest_sha256.as_str())
             {
                 return Err(StoreError::IntegrityMismatch(
@@ -953,21 +975,22 @@ impl SessionStore {
                 ));
             }
             source_kinds.insert(source_kind);
-            if retain_handles {
-                handles.push(validated);
-            }
         }
-        Ok((source_kinds, handles))
+        Ok(source_kinds)
     }
 
-    fn recovered_playable_sessions(&self) -> Result<Vec<RecoveredPlayableSession>, StoreError> {
+    /// Every reviewable recovered segment with its own validation result, so
+    /// launch recovery can set one damaged session aside from the rest.
+    fn recovered_playable_rows(
+        &self,
+    ) -> Result<Vec<library_recovery::RecoveredPlayableRow>, StoreError> {
         let rows = {
             let mut statement = self.connection.prepare(&format!(
                 "SELECT sessions.id, sources.id, tracks.id, sources.kind,
                         sources.display_name, segments.id, segments.relative_path,
                         segments.sample_count, segments.byte_length, segments.digest,
                         segments.file_device, segments.file_inode,
-                        MAX(session_events.sequence)
+                        MAX(session_events.sequence), segments.channels
                  FROM sessions
                  JOIN segments ON segments.session_id = sessions.id
                  JOIN tracks ON tracks.id = segments.track_id
@@ -998,12 +1021,14 @@ impl SessionStore {
                     row.get::<_, i64>(10)? as u64,
                     row.get::<_, i64>(11)? as u64,
                     row.get::<_, i64>(12)? as u64,
+                    row.get::<_, i64>(13)? as u16,
                 ))
             })?;
             mapped.collect::<Result<Vec<_>, _>>()?
         };
 
-        rows.into_iter()
+        Ok(rows
+            .into_iter()
             .map(
                 |(
                     session_id,
@@ -1019,43 +1044,49 @@ impl SessionStore {
                     file_device,
                     file_inode,
                     last_journal_sequence,
+                    channels,
                 )| {
-                    let validated = self.validate_media_file(
-                        &session_id,
-                        &relative_path,
-                        MediaLengthRequirement::Exact(byte_length),
-                        true,
-                    )?;
-                    if validated.device != file_device
-                        || validated.inode != file_inode
-                        || validated.recoverable_sample_count != Some(sample_count)
-                        || validated.digest_sha256.as_deref() != Some(digest_sha256.as_str())
-                    {
-                        return Err(StoreError::IntegrityMismatch(
-                            "recovered playable media changed after acceptance",
-                        ));
-                    }
-                    Ok(RecoveredPlayableSession {
-                        session_id: SessionId(session_id.clone()),
-                        source_id,
-                        track_id,
-                        source_kind: MediaSourceKind::from_str(&source_kind)?,
-                        source_display_name,
-                        segment_id,
-                        relative_path: relative_path.clone(),
-                        sample_count,
-                        duration_nanoseconds: sample_count.saturating_mul(1_000_000_000)
-                            / u64::from(MEDIA_SAMPLE_RATE_HZ),
-                        byte_length,
-                        digest_sha256,
-                        media_preserved: true,
-                        ready_for_review: true,
-                        recording_started: false,
-                        last_journal_sequence,
-                    })
+                    let session = session_id.clone();
+                    let row = (move || -> Result<RecoveredPlayableSession, StoreError> {
+                        let validated = self.validate_media_file(
+                            &session_id,
+                            &relative_path,
+                            MediaLengthRequirement::Exact(byte_length),
+                            true,
+                        )?;
+                        if validated.device != file_device
+                            || validated.inode != file_inode
+                            || validated.recoverable_sample_count != Some(sample_count)
+                            || validated.channels != Some(channels)
+                            || validated.digest_sha256.as_deref() != Some(digest_sha256.as_str())
+                        {
+                            return Err(StoreError::IntegrityMismatch(
+                                "recovered playable media changed after acceptance",
+                            ));
+                        }
+                        Ok(RecoveredPlayableSession {
+                            session_id: SessionId(session_id.clone()),
+                            source_id,
+                            track_id,
+                            source_kind: MediaSourceKind::from_str(&source_kind)?,
+                            source_display_name,
+                            segment_id,
+                            relative_path: relative_path.clone(),
+                            sample_count,
+                            duration_nanoseconds: sample_count.saturating_mul(1_000_000_000)
+                                / u64::from(MEDIA_SAMPLE_RATE_HZ),
+                            byte_length,
+                            digest_sha256,
+                            media_preserved: true,
+                            ready_for_review: true,
+                            recording_started: false,
+                            last_journal_sequence,
+                        })
+                    })();
+                    (session, row)
                 },
             )
-            .collect()
+            .collect())
     }
 
     fn authorize_media_open_inner(
@@ -1086,7 +1117,7 @@ impl SessionStore {
         let required: bool = self.connection.query_row(
             "SELECT EXISTS(
                 SELECT 1 FROM required_sources
-                WHERE session_id = ?1 AND kind = ?2
+                WHERE session_id = ?1 AND kind = ?2 AND lifecycle != 'failed'
              )",
             params![request.session_id.0, request.source_kind.as_str()],
             |row| row.get(0),
@@ -1096,10 +1127,12 @@ impl SessionStore {
                 "media source is not part of the required-source plan",
             ));
         }
+        // Ended and failed sources are terminal: a kind selected again after a
+        // failure is a new source (ADR 0005 source-added; ADR 0007 restoration).
         let existing_kind: bool = self.connection.query_row(
             "SELECT EXISTS(
                 SELECT 1 FROM sources
-                WHERE session_id = ?1 AND kind = ?2 AND lifecycle != 'ended'
+                WHERE session_id = ?1 AND kind = ?2 AND lifecycle NOT IN ('ended', 'failed')
              )",
             params![request.session_id.0, request.source_kind.as_str()],
             |row| row.get(0),
@@ -1115,6 +1148,7 @@ impl SessionStore {
         let segment_id = Uuid::now_v7().to_string();
         let open_token = Uuid::now_v7().to_string();
         let writer_generation = 1_u64;
+        let channels = request.source_kind.capture_channels();
         let relative_path = format!("audio/{track_id}/000000-0.caf");
         let session_directory = self.session_directory(&request.session_id.0)?;
         let audio_directory = self.open_managed_audio_directory(&request.session_id.0)?;
@@ -1155,7 +1189,7 @@ impl SessionStore {
             "relative_path": relative_path,
             "media_format": MEDIA_FORMAT_CAF_PCM_S16LE,
             "sample_rate_hz": MEDIA_SAMPLE_RATE_HZ,
-            "channels": 1,
+            "channels": channels,
             "mapped_start_nanoseconds": 0,
         });
         let journal_record = self.append_session_journal(
@@ -1179,7 +1213,7 @@ impl SessionStore {
             absolute_path,
             media_format: MEDIA_FORMAT_CAF_PCM_S16LE.to_owned(),
             sample_rate_hz: MEDIA_SAMPLE_RATE_HZ,
-            channels: 1,
+            channels,
             mapped_start_nanoseconds: 0,
         })
     }
@@ -1197,6 +1231,7 @@ impl SessionStore {
             || stored.writer_generation != receipt.writer_generation
             || stored.relative_path != receipt.relative_path
             || stored.media_format != receipt.media_format
+            || stored.channels != receipt.channels
         {
             return Err(StoreError::IntegrityMismatch(
                 "writer receipt does not match Rust authorization",
@@ -1230,7 +1265,12 @@ impl SessionStore {
                     }
                     other => other,
                 })?;
-            if validated.device != expected_device || validated.inode != expected_inode {
+            if validated.device != expected_device
+                || validated.inode != expected_inode
+                || validated
+                    .channels
+                    .is_some_and(|channels| channels != stored.channels)
+            {
                 return Err(StoreError::IntegrityMismatch(
                     "accepted media file identity changed",
                 ));
@@ -1256,6 +1296,14 @@ impl SessionStore {
             MediaLengthRequirement::Exact(receipt.initial_byte_length),
             false,
         )?;
+        if validated
+            .channels
+            .is_some_and(|channels| channels != stored.channels)
+        {
+            return Err(StoreError::IntegrityMismatch(
+                "writer media channel layout changed from authorization",
+            ));
+        }
         let payload = json!({
             "track_id": stored.track_id,
             "segment_id": receipt.segment_id,
@@ -1326,7 +1374,12 @@ impl SessionStore {
             MediaLengthRequirement::AtLeast(receipt.observed_byte_length),
             false,
         )?;
-        if validated.device != expected_device || validated.inode != expected_inode {
+        if validated.device != expected_device
+            || validated.inode != expected_inode
+            || validated
+                .channels
+                .is_some_and(|channels| channels != stored.channels)
+        {
             return Err(StoreError::IntegrityMismatch(
                 "accepted media file identity changed",
             ));
@@ -1467,7 +1520,10 @@ impl SessionStore {
             MediaLengthRequirement::Exact(receipt.final_byte_length),
             true,
         )?;
-        if validated.device != expected_device || validated.inode != expected_inode {
+        if validated.device != expected_device
+            || validated.inode != expected_inode
+            || validated.channels != Some(stored.channels)
+        {
             return Err(StoreError::IntegrityMismatch(
                 "accepted media file identity changed",
             ));
@@ -1659,6 +1715,12 @@ impl SessionStore {
         let writer_generation = payload_u64(payload, "writer_generation")?;
         let relative_path = payload_string(payload, "relative_path")?;
         let media_format = payload_string(payload, "media_format")?;
+        let channels = payload_u64(payload, "channels")?;
+        if channels != 1 && channels != 2 {
+            return Err(StoreError::IntegrityMismatch(
+                "unsupported source channel layout",
+            ));
+        }
         let mapped_start_ns = payload_i64(payload, "mapped_start_nanoseconds")?;
         let (event_sequence, prior_digest) = next_database_event(&self.connection, session_id)?;
         let digest = event_digest(
@@ -1695,10 +1757,10 @@ impl SessionStore {
         transaction.execute(
             "INSERT OR IGNORE INTO segments (
                 id, schema_version, session_id, track_id, sequence, relative_path,
-                lifecycle, original_start, mapped_start_ns, media_format,
+                lifecycle, original_start, mapped_start_ns, media_format, channels,
                 sample_count, byte_length, digest, seal_state, recovery_state,
                 open_token, writer_generation, file_device, file_inode
-             ) VALUES (?1, ?2, ?3, ?4, ?10, ?5, 'opening', NULL, ?6, ?7,
+             ) VALUES (?1, ?2, ?3, ?4, ?10, ?5, 'opening', NULL, ?6, ?7, ?11,
                        NULL, NULL, NULL, 'open', 'not_required', ?8, ?9, NULL, NULL)",
             params![
                 segment_id,
@@ -1714,6 +1776,7 @@ impl SessionStore {
                     .get("segment_sequence")
                     .and_then(Value::as_i64)
                     .unwrap_or(0),
+                channels as i64,
             ],
         )?;
         insert_event_with_id(
@@ -2223,7 +2286,7 @@ impl SessionStore {
         self.connection
             .query_row(
                 "SELECT segments.session_id, tracks.source_id, segments.track_id,
-                        segments.relative_path, segments.media_format, segments.lifecycle,
+                        segments.relative_path, segments.media_format, segments.channels, segments.lifecycle,
                         segments.open_token, segments.writer_generation, segments.byte_length,
                         segments.file_device, segments.file_inode
                  FROM segments
@@ -2237,12 +2300,13 @@ impl SessionStore {
                         track_id: row.get(2)?,
                         relative_path: row.get(3)?,
                         media_format: row.get(4)?,
-                        lifecycle: row.get(5)?,
-                        open_token: row.get(6)?,
-                        writer_generation: row.get::<_, i64>(7)? as u64,
-                        byte_length: row.get::<_, Option<i64>>(8)?.map(|value| value as u64),
-                        file_device: row.get::<_, Option<i64>>(9)?.map(|value| value as u64),
-                        file_inode: row.get::<_, Option<i64>>(10)?.map(|value| value as u64),
+                        channels: row.get::<_, i64>(5)? as u16,
+                        lifecycle: row.get(6)?,
+                        open_token: row.get(7)?,
+                        writer_generation: row.get::<_, i64>(8)? as u64,
+                        byte_length: row.get::<_, Option<i64>>(9)?.map(|value| value as u64),
+                        file_device: row.get::<_, Option<i64>>(10)?.map(|value| value as u64),
+                        file_inode: row.get::<_, Option<i64>>(11)?.map(|value| value as u64),
                     })
                 },
             )
@@ -2381,7 +2445,7 @@ impl SessionStore {
             Some(digest)
         };
         file.rewind()?;
-        let recoverable_sample_count = inspect_recoverable_pcm_caf(&mut file, byte_length)?;
+        let inspection = inspect_pcm_caf(&mut file, byte_length)?;
         let post_read_stat = fd_fs::fstat(&file).map_err(|_| {
             StoreError::IntegrityMismatch("sealed media identity could not be revalidated")
         })?;
@@ -2420,7 +2484,8 @@ impl SessionStore {
             device: stat.st_dev as u64,
             inode: stat.st_ino as u64,
             digest_sha256,
-            recoverable_sample_count,
+            recoverable_sample_count: inspection.as_ref().and_then(|value| value.sample_count),
+            channels: inspection.map(|value| value.channels),
         })
     }
 
@@ -2553,7 +2618,11 @@ impl SessionStore {
         if interruptions.is_empty() {
             return Ok(base);
         }
-        if interruptions.len() != 1 || interruptions[0].body.sequence != records.len() as u64 {
+        if interruptions.len() != 1
+            || !library_recovery::recovery_records_only(
+                &records[interruptions[0].body.sequence as usize..],
+            )
+        {
             return Ok(RecoveryDisposition::IntegrityMismatch);
         }
         let interruption = interruptions[0];
@@ -2659,8 +2728,12 @@ impl SessionStore {
     }
 }
 
-fn configure_connection(connection: &Connection) -> Result<(), StoreError> {
+fn configure_connection(connection: &mut Connection) -> Result<(), StoreError> {
     connection.busy_timeout(Duration::from_secs(5))?;
+    // A deferred transaction that reads and then writes fails at once, without
+    // the busy timeout, when another store (a playback lease, the launch scan)
+    // holds the WAL write lock. Taking it at BEGIN lets every writer wait.
+    connection.set_transaction_behavior(TransactionBehavior::Immediate);
     connection.pragma_update(None, "foreign_keys", true)?;
     let journal_mode: String =
         connection.query_row("PRAGMA journal_mode = WAL", [], |row| row.get(0))?;
@@ -2741,6 +2814,7 @@ fn apply_schema(connection: &mut Connection) -> Result<(), StoreError> {
             original_start INTEGER,
             mapped_start_ns INTEGER NOT NULL,
             media_format TEXT NOT NULL,
+            channels INTEGER NOT NULL DEFAULT 1 CHECK (channels IN (1, 2)),
             sample_count INTEGER,
             byte_length INTEGER,
             digest TEXT,
@@ -2806,6 +2880,10 @@ fn apply_schema(connection: &mut Connection) -> Result<(), StoreError> {
         ("writer_generation", "INTEGER NOT NULL DEFAULT 0"),
         ("file_device", "INTEGER"),
         ("file_inode", "INTEGER"),
+        (
+            "channels",
+            "INTEGER NOT NULL DEFAULT 1 CHECK (channels IN (1, 2))",
+        ),
     ] {
         if !segment_columns.contains(name) {
             transaction.execute_batch(&format!(
@@ -2824,6 +2902,10 @@ fn apply_schema(connection: &mut Connection) -> Result<(), StoreError> {
     )?;
     transaction.execute(
         "INSERT OR IGNORE INTO schema_migrations (version, applied_at_ms) VALUES (3, ?1)",
+        [applied_at],
+    )?;
+    transaction.execute(
+        "INSERT OR IGNORE INTO schema_migrations (version, applied_at_ms) VALUES (4, ?1)",
         [applied_at],
     )?;
     transaction.commit()?;
@@ -2939,8 +3021,9 @@ fn atomic_replace_journal_with_record(
             "session journal is not a complete append target",
         ));
     }
-    let temporary_path =
-        session_directory.join(format!(".open-scribe-journal-{}.tmp", Uuid::now_v7()));
+    let temporary_name = format!(".open-scribe-journal-{}.tmp", Uuid::now_v7());
+    let _live = journal_replacement::LiveReplacement::begin(temporary_name.clone());
+    let temporary_path = session_directory.join(&temporary_name);
     let result = (|| {
         let mut temporary = OpenOptions::new()
             .create_new(true)
@@ -2974,10 +3057,7 @@ fn interrupt_journal_replace_if(
     }
 }
 
-fn inspect_recoverable_pcm_caf(
-    file: &mut File,
-    byte_length: u64,
-) -> Result<Option<u64>, StoreError> {
+fn inspect_pcm_caf(file: &mut File, byte_length: u64) -> Result<Option<CafInspection>, StoreError> {
     if byte_length < CAF_HEADER.len() as u64 + 12 {
         return Ok(None);
     }
@@ -2989,7 +3069,7 @@ fn inspect_recoverable_pcm_caf(
     }
 
     let mut offset = CAF_HEADER.len() as u64;
-    let mut descriptor_matches = false;
+    let mut descriptor_channels = None;
     while offset
         .checked_add(12)
         .is_some_and(|value| value <= byte_length)
@@ -3039,17 +3119,23 @@ fn inspect_recoverable_pcm_caf(
                     .try_into()
                     .map_err(|_| StoreError::IntegrityMismatch("CAF sample width is malformed"))?,
             );
-            descriptor_matches = sample_rate == f64::from(MEDIA_SAMPLE_RATE_HZ)
+            let descriptor_matches = sample_rate == f64::from(MEDIA_SAMPLE_RATE_HZ)
                 && &descriptor[8..12] == b"lpcm"
                 && flags == 2
-                && bytes_per_packet == 2
+                && (channels == 1 || channels == 2)
+                // CAF stores LPCM interleaved: one packet is one frame of
+                // 16-bit samples for every channel.
+                && bytes_per_packet == 2 * channels
                 && frames_per_packet == 1
-                && channels == 1
                 && bits_per_channel == 16;
+            descriptor_channels = descriptor_matches.then_some(channels as u16);
         }
 
         if chunk_type == b"data" {
-            if !descriptor_matches || chunk_size < -1 {
+            let Some(channels) = descriptor_channels else {
+                return Ok(None);
+            };
+            if chunk_size < -1 {
                 return Ok(None);
             }
             let chunk_end = if chunk_size == -1 {
@@ -3070,10 +3156,14 @@ fn inspect_recoverable_pcm_caf(
                 return Ok(None);
             }
             let audio_bytes = chunk_end - audio_start;
-            if audio_bytes == 0 || audio_bytes % 2 != 0 {
+            let bytes_per_frame = 2 * u64::from(channels);
+            if audio_bytes % bytes_per_frame != 0 {
                 return Ok(None);
             }
-            return Ok(Some(audio_bytes / 2));
+            return Ok(Some(CafInspection {
+                channels,
+                sample_count: (audio_bytes > 0).then_some(audio_bytes / bytes_per_frame),
+            }));
         }
 
         if chunk_size < 0 {
@@ -3259,7 +3349,7 @@ fn validate_media_receipt_shape(receipt: &MediaOpenReceipt) -> Result<(), StoreE
         || receipt.writer_generation > i64::MAX as u64
         || receipt.media_format != MEDIA_FORMAT_CAF_PCM_S16LE
         || receipt.sample_rate_hz != MEDIA_SAMPLE_RATE_HZ
-        || receipt.channels != 1
+        || (receipt.channels != 1 && receipt.channels != 2)
         || !valid_media_relative_path(&receipt.relative_path)
     {
         return Err(StoreError::InvalidRequest(
@@ -3438,11 +3528,19 @@ fn reconcile_stale_journal_replacements(sessions_root: &Path) -> Result<(), Stor
             else {
                 continue;
             };
-            if Uuid::parse_str(candidate_id).is_err() {
+            if Uuid::parse_str(candidate_id).is_err()
+                || journal_replacement::is_live(&candidate_name)
+            {
                 continue;
             }
             let candidate_path = candidate_entry.path();
-            let candidate_metadata = fs::symlink_metadata(&candidate_path)?;
+            // A replacement that vanished since the listing was renamed or
+            // removed by the append (or sweep) that owned it.
+            let candidate_metadata = match fs::symlink_metadata(&candidate_path) {
+                Ok(metadata) => metadata,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(error.into()),
+            };
             if candidate_metadata.file_type().is_symlink() || !candidate_metadata.is_file() {
                 return Err(StoreError::IntegrityMismatch(
                     "stale journal replacement is not a regular file",
@@ -3466,7 +3564,13 @@ fn reconcile_stale_journal_replacements(sessions_root: &Path) -> Result<(), Stor
         let mut strict_extensions = Vec::new();
         let mut discard = Vec::new();
         for candidate_path in candidates {
-            match validate_journal(&candidate_path, &session_id)? {
+            let validation = match validate_journal(&candidate_path, &session_id) {
+                Err(StoreError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
+                    continue;
+                }
+                other => other?,
+            };
+            match validation {
                 JournalValidation::Valid(candidate)
                     if journal_is_strict_extension(&authoritative, &candidate) =>
                 {
@@ -3499,12 +3603,12 @@ fn reconcile_stale_journal_replacements(sessions_root: &Path) -> Result<(), Stor
 
     for plan in plans {
         if let Some(adoption) = plan.adoption {
-            fs::rename(adoption, &plan.journal_path)?;
+            journal_replacement::ignore_missing(fs::rename(adoption, &plan.journal_path))?;
             sync_directory(&plan.session_directory)?;
         }
         if !plan.discard.is_empty() {
             for candidate in plan.discard {
-                fs::remove_file(candidate)?;
+                journal_replacement::ignore_missing(fs::remove_file(candidate))?;
             }
             sync_directory(&plan.session_directory)?;
         }
@@ -3627,7 +3731,7 @@ mod tests {
     }
 
     #[test]
-    fn schema_v3_applies_required_durability_settings_tables_and_media_columns() {
+    fn schema_v4_applies_required_durability_settings_tables_and_media_columns() {
         let temp = TempDir::new().unwrap();
         let store = open_store(&temp);
 
@@ -3664,7 +3768,7 @@ mod tests {
         }
         assert_eq!(
             database_value(&store, "SELECT MAX(version) FROM schema_migrations"),
-            3
+            4
         );
         let segment_columns: BTreeSet<String> = store
             .connection
@@ -3679,6 +3783,7 @@ mod tests {
             "writer_generation",
             "file_device",
             "file_inode",
+            "channels",
         ] {
             assert!(
                 segment_columns.contains(required),
@@ -3688,13 +3793,51 @@ mod tests {
     }
 
     #[test]
+    fn schema_v4_migrates_prior_mono_segments_without_changing_their_layout() {
+        let temp = TempDir::new().unwrap();
+        let mut store = open_store(&temp);
+        let prepared = store.prepare_session(request()).unwrap();
+        let authorization = store
+            .authorize_media_open(AuthorizeMediaOpenRequest {
+                session_id: prepared.session_id,
+                source_kind: MediaSourceKind::Microphone,
+                source_display_name: "Legacy microphone".to_owned(),
+            })
+            .unwrap();
+        let database_path = store.managed_root().join(DATABASE_NAME);
+        drop(store);
+        let connection = Connection::open(&database_path).unwrap();
+        connection
+            .execute_batch("ALTER TABLE segments DROP COLUMN channels;")
+            .unwrap();
+        connection
+            .execute("DELETE FROM schema_migrations WHERE version = 4", [])
+            .unwrap();
+        drop(connection);
+        let store = SessionStore::open(temp.path().join("Open Scribe")).unwrap();
+        let channels: i64 = store
+            .connection
+            .query_row(
+                "SELECT channels FROM segments WHERE id = ?1",
+                [&authorization.segment_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(channels, 1);
+        assert_eq!(
+            database_value(&store, "SELECT MAX(version) FROM schema_migrations"),
+            4
+        );
+    }
+
+    #[test]
     fn preparation_is_durable_but_never_permits_recording() {
         let temp = TempDir::new().unwrap();
         let mut store = open_store(&temp);
         let receipt = store.prepare_session(request()).unwrap();
 
         assert!(Uuid::parse_str(&receipt.session_id.0).is_ok());
-        assert_eq!(receipt.schema_version, 3);
+        assert_eq!(receipt.schema_version, 4);
         assert_eq!(receipt.journal_version, 1);
         assert!(receipt.journal_durable);
         assert!(receipt.database_projected);

@@ -108,6 +108,7 @@ final class MediaOpenProtocolTests: XCTestCase {
       openToken: UUID().uuidString.lowercased(),
       writerGeneration: valid.writerGeneration,
       relativePath: valid.relativePath,
+      channels: valid.channels,
       initialByteLength: valid.initialByteLength
     )
     XCTAssertThrowsError(try controller.acceptMediaOpen(receipt: stale)) { error in

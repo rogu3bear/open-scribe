@@ -38,7 +38,8 @@ enum TimelineRuntimeProof {
     let values: [Int16] = [8192, 16384]
     for index in writers.indices {
       _ = try writers[index].writeCapturedBuffer(
-        buffer(frames: 480, value: values[index]),
+        buffer(frames: 480, value: values[index], channels: writers[index].authorization.channels,
+          rightValue: index == 1 ? -8192 : nil),
         hostTime: anchor + AVAudioTime.hostTime(forSeconds: starts[index]))
     }
     _ = try preparation.confirmRecording(sessionId: session.sessionId)
@@ -47,7 +48,8 @@ enum TimelineRuntimeProof {
       while written < 31 * 48_000 {
         let count = AVAudioFrameCount(min(48_000, 31 * 48_000 - written))
         _ = try writers[index].writeCapturedBuffer(
-          buffer(frames: count, value: values[index]),
+          buffer(frames: count, value: values[index], channels: writers[index].authorization.channels,
+            rightValue: index == 1 ? -8192 : nil),
           hostTime: anchor
             + AVAudioTime.hostTime(forSeconds: starts[index] + Double(written) / 48_000))
         written += UInt64(count)
@@ -56,15 +58,21 @@ enum TimelineRuntimeProof {
     return Capture(sessionId: session.sessionId, writers: writers, preparation: preparation)
   }
 
-  static func buffer(frames: AVAudioFrameCount, value: Int16) throws -> AVAudioPCMBuffer {
+  static func buffer(
+    frames: AVAudioFrameCount, value: Int16, channels: UInt16 = 1, rightValue: Int16? = nil
+  ) throws -> AVAudioPCMBuffer {
     guard
       let format = AVAudioFormat(
-        commonFormat: .pcmFormatInt16, sampleRate: 48_000, channels: 1, interleaved: false),
+        commonFormat: .pcmFormatInt16, sampleRate: 48_000,
+        channels: AVAudioChannelCount(channels), interleaved: false),
       let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frames),
-      let samples = buffer.int16ChannelData?[0]
+      let samples = buffer.int16ChannelData
     else { throw TimelinePlaybackError.invalidPlan }
     buffer.frameLength = frames
-    samples.update(repeating: value, count: Int(frames))
+    samples[0].update(repeating: value, count: Int(frames))
+    if channels == 2 {
+      samples[1].update(repeating: rightValue ?? value, count: Int(frames))
+    }
     return buffer
   }
 
@@ -81,14 +89,18 @@ enum TimelineRuntimeProof {
     else { throw TimelinePlaybackError.invalidPlan }
     let reader = try TimelinePCMReader(segments: plan)
     defer { reader.close() }
-    let probes: [Int64: Float] = [0: 0, 52_800: 0.125, 62_400: 0.375, 1_540_800: 0.25]
+    let probes: [Int64: (Float, Float)] = [
+      0: (0, 0), 52_800: (0.125, 0.125), 62_400: (0.375, 0),
+      1_540_800: (0.25, -0.125),
+    ]
     var position: Int64 = 0
     var checked = 0
     while let buffer = try reader.read(maximumFrames: 16_384) {
       for (frame, expected) in probes
       where frame >= position && frame < position + Int64(buffer.frameLength) {
-        guard let samples = buffer.floatChannelData?[0],
-          abs(samples[Int(frame - position)] - expected) < 0.0001
+        guard let samples = buffer.floatChannelData,
+          abs(samples[0][Int(frame - position)] - expected.0) < 0.0001,
+          abs(samples[1][Int(frame - position)] - expected.1) < 0.0001
         else {
           throw TimelinePlaybackError.incompleteSegment
         }
@@ -118,8 +130,9 @@ enum TimelineRuntimeProof {
       let tracks = Dictionary(grouping: plan, by: \.trackId)
       guard tracks.count == 2,
         tracks.values.allSatisfy({ segments in
-          segments.count >= 2 && segments.contains { $0.sampleCount == 1_440_000 }
-            && segments.allSatisfy { $0.sampleCount <= 1_440_000 }
+          segments.count >= 2
+            && segments.allSatisfy { $0.sampleCount > 0 && $0.sampleCount <= 1_440_000 }
+            && segments.reduce(0) { $0 + $1.sampleCount } >= 1_440_000
         })
       else { throw TimelinePlaybackError.invalidPlan }
       let drift = plan.filter { $0.sequence > 0 }.map { abs($0.gapNanoseconds) }.max() ?? 0

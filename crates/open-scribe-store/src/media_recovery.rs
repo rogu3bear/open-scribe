@@ -59,6 +59,10 @@ impl SessionStore {
         authorization_record: &JournalRecord,
     ) -> Result<RecoveryDisposition, StoreError> {
         let segment_id = payload_string(&authorization_record.body.payload, "segment_id")?;
+        let channels = payload_u64(&authorization_record.body.payload, "channels")?;
+        if channels != 1 && channels != 2 {
+            return Ok(RecoveryDisposition::IntegrityMismatch);
+        }
         let opened_record = journal_record_for_segment(records, "segment_opened", segment_id)?;
         let first_sample_record =
             journal_record_for_segment(records, "first_sample_captured", segment_id)?;
@@ -94,7 +98,12 @@ impl SessionStore {
             };
             let expected_device = payload_u64(&opened_record.body.payload, "file_device")?;
             let expected_inode = payload_u64(&opened_record.body.payload, "file_inode")?;
-            if validated.device != expected_device || validated.inode != expected_inode {
+            if validated.device != expected_device
+                || validated.inode != expected_inode
+                || validated
+                    .channels
+                    .is_some_and(|actual| actual != channels as u16)
+            {
                 return Ok(RecoveryDisposition::InvalidMediaFile);
             }
             let lifecycle: String = self.connection.query_row(
@@ -127,6 +136,7 @@ impl SessionStore {
                 };
                 if sealed.digest_sha256.as_deref()
                     != Some(payload_string(payload, "digest_sha256")?)
+                    || sealed.channels != Some(channels as u16)
                 {
                     return Ok(RecoveryDisposition::IntegrityMismatch);
                 }
@@ -171,7 +181,11 @@ impl SessionStore {
                         MediaLengthRequirement::AtLeast(observed_byte_length),
                         false,
                     )
-                    .is_err()
+                    .map_or(true, |validated| {
+                        validated
+                            .channels
+                            .is_some_and(|actual| actual != channels as u16)
+                    })
                 {
                     return Ok(RecoveryDisposition::InvalidMediaFile);
                 }
@@ -219,7 +233,11 @@ impl SessionStore {
                 MediaLengthRequirement::Exact(metadata.len()),
                 false,
             )
-            .is_ok()
+            .is_ok_and(|validated| {
+                !validated
+                    .channels
+                    .is_some_and(|actual| actual != channels as u16)
+            })
         {
             Ok(RecoveryDisposition::MediaOpenAwaitingReceipt)
         } else {

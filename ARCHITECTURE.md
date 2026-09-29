@@ -19,8 +19,8 @@ SwiftUI uses Apple adapters; UniFFI connects to Rust. Leptos targets Workers. Sh
 | `open-scribe-domain` | implemented, WASM-safe | transitions and presentation | persistence or capture |
 | `open-scribe-evidence` | placeholder, WASM-safe | evidence IDs and validation semantics | model execution or native storage |
 | `open-scribe-store` | recorder/timeline foundation | session intent, journal, SQLite, clock/segment receipts, recovery, runtime/library projection | buffers, capture, UI-local authority |
-| other native Rust crates | placeholders | later ML and memory | Apple UI or permission UX |
-| `open-scribe-uniffi` | coarse boundary | fixtures, preparation, one-shot media receipts, runtime/library snapshots | state authority or hot-path data |
+| other native Rust crates | `open-scribe-core` facade; rest placeholders | later ML and memory | Apple UI or permission UX |
+| `open-scribe-uniffi` | coarse boundary | fixtures, preparation, segment receipts, recorder controls, timelines, imports, leases, runtime/library snapshots | state authority or hot-path data |
 | `web` | M0 foundation | stateless Leptos SSR | capture, app backend, database, deployment authority |
 | `docs/legal` | present drafts | single legal-text source for future app/site consumers | duplicated edited copies |
 
@@ -34,7 +34,7 @@ SwiftUI uses Apple adapters; UniFFI connects to Rust. Leptos targets Workers. Sh
 4. Rust projects one coarse snapshot to the main window and menu; only that snapshot may let UI report Recording.
 5. Media remains recoverable independently of transcript or ML.
 
-Tests cover required-source planning, all-source `Recording`, CAF writing/sealing, interruption, timeline mapping, and segmented recovery. Runtime gates exercise capture, decode, external kill, unchanged recovery, playback, and idempotence. Short rotation evidence does not prove source-loss continuation, permission revocation, application selection, or long-session synchronization.
+Tests cover required-source planning, all-source `Recording`, CAF writing/sealing, interruption, timeline mapping, and segmented recovery. Runtime gates exercised capture, decode, external kill, unchanged recovery, playback, and idempotence before segmented capture. Short rotation evidence does not prove source-loss continuation, permission revocation, application selection, or long-session synchronization.
 
 ### Derived meeting memory
 
@@ -69,4 +69,4 @@ ADRs 0001–0004 settle M0; 0005–0007 admit M1 implementation; 0008–0017 cov
 
 ## Current validation
 
-`script/check.sh --scaffold` checks structure/WASM; `--state-fixtures` checks snapshots, bindings, native tests, and idle launch. Its `--m1-dual-source-runtime` and `--m1-forced-termination-recovery` gates exercise capture and recovery/playback. `--m1-complete` remains fail-closed. Commands and exclusions belong in `ACTOR.md` and `docs/TESTING.md`; no lower gate proves release.
+`script/check.sh --scaffold` checks structure/WASM; `--state-fixtures` checks snapshots, bindings, native tests, and idle launch. Its `--m1-dual-source-runtime` and `--m1-forced-termination-recovery` gates predate segmented capture and need requalification. `--m1-complete` remains fail-closed. Commands and exclusions belong in `ACTOR.md` and `docs/TESTING.md`; no lower gate proves release.

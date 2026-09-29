@@ -58,7 +58,9 @@ final class ManagedCAFWriter: CapturedAudioWriting, @unchecked Sendable {
   private var sealedReceipt: NativeSealSegmentReceipt?
 
   init(authorization: NativeMediaOpenAuthorization) throws {
-    guard authorization.writerGeneration > 0 else {
+    guard authorization.writerGeneration > 0,
+      authorization.channels == 1 || authorization.channels == 2
+    else {
       throw ManagedCAFWriterError.unsupportedAuthorization
     }
 
@@ -80,7 +82,7 @@ final class ManagedCAFWriter: CapturedAudioWriting, @unchecked Sendable {
     let settings: [String: Any] = [
       AVFormatIDKey: kAudioFormatLinearPCM,
       AVSampleRateKey: 48_000.0,
-      AVNumberOfChannelsKey: 1,
+      AVNumberOfChannelsKey: Int(authorization.channels),
       AVLinearPCMBitDepthKey: 16,
       AVLinearPCMIsFloatKey: false,
       AVLinearPCMIsBigEndianKey: false,
@@ -101,7 +103,7 @@ final class ManagedCAFWriter: CapturedAudioWriting, @unchecked Sendable {
         pcmFormat: file.processingFormat,
         frameCapacity: frameCount
       ),
-      let samples = buffer.int16ChannelData?[0]
+      let samples = buffer.int16ChannelData
     else {
       throw ManagedCAFWriterError.bufferAllocationFailed
     }
@@ -109,7 +111,9 @@ final class ManagedCAFWriter: CapturedAudioWriting, @unchecked Sendable {
     buffer.frameLength = frameCount
     for index in 0..<Int(frameCount) {
       let phase = Int16(index % 256)
-      samples[index] = (phase - 128) * 128
+      for channel in 0..<Int(authorization.channels) {
+        samples[channel][index] = (phase - 128) * 128
+      }
     }
     try file.write(from: buffer)
     finalSampleCount += UInt64(frameCount)
@@ -176,6 +180,7 @@ final class ManagedCAFWriter: CapturedAudioWriting, @unchecked Sendable {
       openToken: authorization.openToken,
       writerGeneration: authorization.writerGeneration,
       relativePath: authorization.relativePath,
+      channels: authorization.channels,
       initialByteLength: byteLength.uint64Value
     )
   }

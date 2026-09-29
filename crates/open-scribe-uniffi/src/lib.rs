@@ -82,6 +82,7 @@ pub struct NativeMediaOpenAuthorization {
     pub writer_generation: u64,
     pub relative_path: String,
     pub absolute_path: String,
+    pub channels: u16,
     pub mapped_start_nanoseconds: i64,
 }
 
@@ -93,6 +94,7 @@ pub struct NativeMediaOpenReceipt {
     pub open_token: String,
     pub writer_generation: u64,
     pub relative_path: String,
+    pub channels: u16,
     pub initial_byte_length: u64,
 }
 
@@ -346,8 +348,42 @@ pub struct NativeTimelineSegment {
     pub native_start_nanoseconds: i64,
     pub clock_adjustment_nanoseconds: i64,
     pub sample_count: u64,
+    pub channels: u16,
     pub gap_nanoseconds: i64,
     pub media: Arc<NativeTimelineMedia>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct NativeMixdownAuthorization {
+    pub session_id: String,
+    pub relative_path: String,
+    pub absolute_path: String,
+    pub expected_frame_count: u64,
+    pub source_digest_sha256: String,
+    pub write_floor_bytes: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct NativeMixdownReceipt {
+    pub session_id: String,
+    pub relative_path: String,
+    pub byte_length: u64,
+    pub decoded_frame_count: u64,
+    pub sample_rate_hz: u32,
+    pub channels: u16,
+    pub codec: String,
+    pub boundary_frames_readable: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct NativeValidatedMixdown {
+    pub session_id: String,
+    pub relative_path: String,
+    pub byte_length: u64,
+    pub decoded_frame_count: u64,
+    pub expected_frame_count: u64,
+    pub digest_sha256: String,
+    pub source_digest_sha256: String,
 }
 
 /// A bounded lease factory. Planning a long recording does not open every CAF
@@ -443,6 +479,7 @@ impl NativeRecordingPreparation {
             writer_generation: a.writer_generation,
             relative_path: a.relative_path,
             absolute_path: a.absolute_path.to_string_lossy().into_owned(),
+            channels: a.channels,
             mapped_start_nanoseconds: a.mapped_start_nanoseconds,
         })
     }
@@ -475,6 +512,7 @@ impl NativeRecordingPreparation {
                         native_start_nanoseconds: segment.native_start_nanoseconds,
                         clock_adjustment_nanoseconds: segment.clock_adjustment_nanoseconds,
                         sample_count: segment.sample_count,
+                        channels: segment.channels,
                         gap_nanoseconds: segment.gap_nanoseconds,
                         media: Arc::new(NativeTimelineMedia {
                             controller: Arc::clone(&self.controller),
@@ -482,6 +520,70 @@ impl NativeRecordingPreparation {
                         }),
                     })
                     .collect()
+            })
+    }
+
+    pub fn authorize_mixdown(
+        &self,
+        session_id: String,
+        available_bytes: u64,
+    ) -> Result<NativeMixdownAuthorization, NativeStorageError> {
+        self.controller()?
+            .authorize_mixdown(open_scribe_types::SessionId(session_id), available_bytes)
+            .map_err(map_storage_error)
+            .map(|value| NativeMixdownAuthorization {
+                session_id: value.session_id.0,
+                relative_path: value.relative_path,
+                absolute_path: value.absolute_path.to_string_lossy().into_owned(),
+                expected_frame_count: value.expected_frame_count,
+                source_digest_sha256: value.source_digest_sha256,
+                write_floor_bytes: value.write_floor_bytes,
+            })
+    }
+
+    pub fn accept_mixdown(
+        &self,
+        receipt: NativeMixdownReceipt,
+    ) -> Result<NativeValidatedMixdown, NativeStorageError> {
+        self.controller()?
+            .accept_mixdown(open_scribe_core::MixdownReceipt {
+                session_id: open_scribe_types::SessionId(receipt.session_id),
+                relative_path: receipt.relative_path,
+                byte_length: receipt.byte_length,
+                decoded_frame_count: receipt.decoded_frame_count,
+                sample_rate_hz: receipt.sample_rate_hz,
+                channels: receipt.channels,
+                codec: receipt.codec,
+                boundary_frames_readable: receipt.boundary_frames_readable,
+            })
+            .map_err(map_storage_error)
+            .map(map_validated_mixdown)
+    }
+
+    pub fn validated_mixdown(
+        &self,
+        session_id: String,
+    ) -> Result<Option<NativeValidatedMixdown>, NativeStorageError> {
+        self.controller()?
+            .validated_mixdown(&open_scribe_types::SessionId(session_id))
+            .map_err(map_storage_error)
+            .map(|value| value.map(map_validated_mixdown))
+    }
+
+    pub fn lease_validated_mixdown(
+        &self,
+        session_id: String,
+    ) -> Result<Option<Arc<NativeImportedPlaybackLease>>, NativeStorageError> {
+        self.controller()?
+            .lease_validated_mixdown(&open_scribe_types::SessionId(session_id))
+            .map_err(map_storage_error)
+            .map(|value| {
+                value.map(|lease| {
+                    Arc::new(NativeImportedPlaybackLease {
+                        lease,
+                        strategy: NativePlaybackLeaseStrategy::ImportedCompressed,
+                    })
+                })
             })
     }
 
@@ -589,6 +691,7 @@ impl NativeRecordingPreparation {
             writer_generation: authorization.writer_generation,
             relative_path: authorization.relative_path,
             absolute_path: authorization.absolute_path.to_string_lossy().into_owned(),
+            channels: authorization.channels,
             mapped_start_nanoseconds: authorization.mapped_start_nanoseconds,
         })
     }
@@ -606,6 +709,7 @@ impl NativeRecordingPreparation {
                 open_token: receipt.open_token,
                 writer_generation: receipt.writer_generation,
                 relative_path: receipt.relative_path,
+                channels: receipt.channels,
                 initial_byte_length: receipt.initial_byte_length,
             })
             .map_err(map_storage_error)?;
@@ -944,6 +1048,18 @@ const fn map_source_failure_reason(
         NativeSourceFailureReason::CaptureFailed => {
             open_scribe_core::SourceFailureReason::CaptureFailed
         }
+    }
+}
+
+fn map_validated_mixdown(value: open_scribe_core::ValidatedMixdown) -> NativeValidatedMixdown {
+    NativeValidatedMixdown {
+        session_id: value.session_id.0,
+        relative_path: value.relative_path,
+        byte_length: value.byte_length,
+        decoded_frame_count: value.decoded_frame_count,
+        expected_frame_count: value.expected_frame_count,
+        digest_sha256: value.digest_sha256,
+        source_digest_sha256: value.source_digest_sha256,
     }
 }
 
@@ -1530,6 +1646,7 @@ mod tests {
                 open_token: authorization.open_token.clone(),
                 writer_generation: authorization.writer_generation,
                 relative_path: authorization.relative_path.clone(),
+                channels: authorization.channels,
                 initial_byte_length: byte_length,
             })
             .unwrap();
@@ -1636,6 +1753,7 @@ mod tests {
                 open_token: authorization.open_token.clone(),
                 writer_generation: authorization.writer_generation,
                 relative_path: authorization.relative_path.clone(),
+                channels: authorization.channels,
                 initial_byte_length,
             })
             .unwrap();

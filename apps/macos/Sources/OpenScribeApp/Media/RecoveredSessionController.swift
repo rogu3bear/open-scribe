@@ -1403,6 +1403,7 @@ final class RecoveredSessionController: ObservableObject {
   @Published private(set) var sessions: [NativeRecoveredPlayableSession] = []
   @Published private(set) var activePlaybackSessionId: String?
   @Published private(set) var playingSessionId: String?
+  @Published private(set) var activeMixdownSessionId: String?
   @Published private(set) var timelineClockAdjustmentNanoseconds: Int64 = 0
   @Published private(set) var pendingRecoveredMediaIdentity: RecoveredPlaybackMediaIdentity?
   @Published private(set) var playingRecoveredMediaIdentity: RecoveredPlaybackMediaIdentity?
@@ -1412,6 +1413,7 @@ final class RecoveredSessionController: ObservableObject {
 
   private let recoveryFactory: RecoveryFactory
   private let importedPlaybackLeaseProvider: ImportedPlaybackLeaseProvider
+  private let mixdownLeaseProvider: ImportedPlaybackLeaseProvider?
   private let recoveredPlaybackLeaseProvider: RecoveredPlaybackLeaseProvider
   private let player: RecoveredAudioPlaying
   private let timelineProvider: (@Sendable (String) throws -> [NativeTimelineSegment])?
@@ -1429,6 +1431,7 @@ final class RecoveredSessionController: ObservableObject {
     importedPlaybackLeaseProvider: @escaping ImportedPlaybackLeaseProvider = { _ in
       throw RecoveredSessionError.managedRootUnavailable
     },
+    mixdownLeaseProvider: ImportedPlaybackLeaseProvider? = nil,
     recoveredPlaybackLeaseProvider: @escaping RecoveredPlaybackLeaseProvider = { _ in
       throw RecoveredSessionError.managedRootUnavailable
     },
@@ -1438,6 +1441,7 @@ final class RecoveredSessionController: ObservableObject {
   ) {
     self.recoveryFactory = recoveryFactory
     self.importedPlaybackLeaseProvider = importedPlaybackLeaseProvider
+    self.mixdownLeaseProvider = mixdownLeaseProvider
     self.recoveredPlaybackLeaseProvider = recoveredPlaybackLeaseProvider
     self.player = player
     self.timelineProvider = timelineProvider
@@ -1464,6 +1468,7 @@ final class RecoveredSessionController: ObservableObject {
         self.playbackTask = nil
         self.activePlaybackSessionId = nil
         self.playingSessionId = nil
+        self.activeMixdownSessionId = nil
         self.pendingRecoveredMediaIdentity = nil
         self.playingRecoveredMediaIdentity = nil
         if termination.outcome != .finished {
@@ -1502,6 +1507,18 @@ final class RecoveredSessionController: ObservableObject {
         }
         let preparation = try NativeRecordingPreparation.open(managedRoot: managedRoot.path)
         return try preparation.leaseImportedPlayback(sessionId: sessionId)
+      },
+      mixdownLeaseProvider: { sessionId in
+        guard let managedRoot else {
+          throw RecoveredSessionError.managedRootUnavailable
+        }
+        let preparation = try NativeRecordingPreparation.open(managedRoot: managedRoot.path)
+        _ = try ValidatedMixdownBuilder.buildIfNeeded(
+          preparation: preparation, sessionId: sessionId, storagePath: managedRoot.path)
+        guard let lease = try preparation.leaseValidatedMixdown(sessionId: sessionId) else {
+          throw TimelinePlaybackError.invalidPlan
+        }
+        return lease
       },
       recoveredPlaybackLeaseProvider: { identity in
         guard let managedRoot else {
@@ -1769,6 +1786,42 @@ final class RecoveredSessionController: ObservableObject {
     }
   }
 
+  func playMixdown(sessionId: String) {
+    stopPlayback()
+    clearPlaybackError()
+    guard let mixdownLeaseProvider else {
+      setPlaybackError("Stereo mix playback is unavailable.", sessionId: sessionId)
+      return
+    }
+    let generation = UUID()
+    activePlaybackGeneration = generation
+    activePlaybackSessionId = sessionId
+    activeMixdownSessionId = sessionId
+    playbackTask = Task { [weak self] in
+      guard let self else { return }
+      do {
+        let lease = try await StructuredNativeIO.mutation {
+          try mixdownLeaseProvider(sessionId)
+        }
+        try Task.checkCancellation()
+        guard self.activePlaybackGeneration == generation else { return }
+        try await self.player.playImported(
+          receipt: lease.playbackPath(), retaining: lease, generation: generation)
+        guard self.activePlaybackGeneration == generation else { return }
+        self.playingSessionId = sessionId
+        self.playbackTask = nil
+      } catch {
+        guard self.activePlaybackGeneration == generation else { return }
+        self.stopPlayback(generation: generation)
+        if !(error is CancellationError) {
+          self.setPlaybackError(
+            "The stereo mix could not be verified. Source tracks remain available below.",
+            sessionId: sessionId)
+        }
+      }
+    }
+  }
+
   func stopPlayback(generation: UUID? = nil) {
     if let generation, activePlaybackGeneration != generation { return }
     if let activePlaybackGeneration {
@@ -1787,6 +1840,7 @@ final class RecoveredSessionController: ObservableObject {
     timelinePlayer.stop()
     timelineClockAdjustmentNanoseconds = 0
     playingSessionId = nil
+    activeMixdownSessionId = nil
   }
 
   private func finishCancelledPlayback(generation: UUID) {
@@ -1797,6 +1851,7 @@ final class RecoveredSessionController: ObservableObject {
     playbackTask = nil
     activePlaybackSessionId = nil
     playingSessionId = nil
+    activeMixdownSessionId = nil
     pendingRecoveredMediaIdentity = nil
     playingRecoveredMediaIdentity = nil
   }

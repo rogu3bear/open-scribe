@@ -118,6 +118,17 @@ fn prepared_first_sample(
     (prepared, authorization, observed_byte_length)
 }
 
+/// A first-sample segment rewritten as the 960-frame PCM CAF that
+/// `seal_receipt` reports, so sealing can validate its channel layout.
+fn prepared_sealable_segment(
+    store: &mut SessionStore,
+) -> (PreparedSessionReceipt, MediaOpenAuthorization, u64) {
+    let (prepared, authorization, _) = prepared_first_sample(store);
+    replace_with_recoverable_pcm_caf(&authorization, 960);
+    let final_byte_length = fs::metadata(&authorization.absolute_path).unwrap().len();
+    (prepared, authorization, final_byte_length)
+}
+
 pub(super) fn prepared_dual_first_samples(
     store: &mut SessionStore,
 ) -> (
@@ -179,15 +190,22 @@ pub(super) fn replace_with_recoverable_pcm_caf(
     file.write_all(&48_000_f64.to_bits().to_be_bytes()).unwrap();
     file.write_all(b"lpcm").unwrap();
     file.write_all(&2_u32.to_be_bytes()).unwrap();
-    file.write_all(&2_u32.to_be_bytes()).unwrap();
+    file.write_all(&(2 * u32::from(authorization.channels)).to_be_bytes())
+        .unwrap();
     file.write_all(&1_u32.to_be_bytes()).unwrap();
-    file.write_all(&1_u32.to_be_bytes()).unwrap();
+    file.write_all(&u32::from(authorization.channels).to_be_bytes())
+        .unwrap();
     file.write_all(&16_u32.to_be_bytes()).unwrap();
     file.write_all(b"data").unwrap();
     file.write_all(&(-1_i64).to_be_bytes()).unwrap();
     file.write_all(&0_u32.to_be_bytes()).unwrap();
-    file.write_all(&vec![0_u8; sample_count as usize * 2])
-        .unwrap();
+    file.write_all(&vec![
+        0_u8;
+        sample_count as usize
+            * 2
+            * usize::from(authorization.channels)
+    ])
+    .unwrap();
     file.sync_all().unwrap();
 }
 
@@ -225,7 +243,7 @@ fn insert_parallel_database_event(
 fn sealed_segment_binds_writer_totals_to_an_independent_digest_without_recording() {
     let temp = TempDir::new().unwrap();
     let mut store = open_store(&temp);
-    let (prepared, authorization, final_byte_length) = prepared_first_sample(&mut store);
+    let (prepared, authorization, final_byte_length) = prepared_sealable_segment(&mut store);
     let receipt = seal_receipt(&authorization, final_byte_length);
 
     let evidence = store.seal_segment(receipt.clone()).unwrap();
@@ -268,12 +286,20 @@ fn sealed_segment_binds_writer_totals_to_an_independent_digest_without_recording
         ("preparing".to_owned(), false)
     );
 
-    let mut changed = receipt;
-    changed.sample_count += 1;
+    let mut changed = receipt.clone();
+    changed.final_sample_host_time += 1;
     assert!(matches!(
         store.seal_segment(changed),
         Err(StoreError::IntegrityMismatch(
             "repeated segment-seal receipt changed accepted evidence"
+        ))
+    ));
+    let mut miscounted = receipt;
+    miscounted.sample_count += 1;
+    assert!(matches!(
+        store.seal_segment(miscounted),
+        Err(StoreError::IntegrityMismatch(
+            "segment-seal sample total does not match the accepted CAF"
         ))
     ));
 }
@@ -316,7 +342,7 @@ fn seal_segment_rejects_a_sample_total_that_disagrees_with_the_caf() {
 fn segment_seal_and_replay_ignore_later_parallel_events() {
     let temp = TempDir::new().unwrap();
     let mut store = open_store(&temp);
-    let (prepared, authorization, final_byte_length) = prepared_first_sample(&mut store);
+    let (prepared, authorization, final_byte_length) = prepared_sealable_segment(&mut store);
     let parallel_segment = Uuid::now_v7().to_string();
     insert_parallel_database_event(
         &mut store,
@@ -383,7 +409,7 @@ fn segment_seal_interruption_recovery_converges_without_recording() {
         let root = temp.path().join("Open Scribe");
         {
             let mut store = SessionStore::open(&root).unwrap();
-            let (_, authorization, final_byte_length) = prepared_first_sample(&mut store);
+            let (_, authorization, final_byte_length) = prepared_sealable_segment(&mut store);
             let error = store
                 .seal_segment_inner(seal_receipt(&authorization, final_byte_length), Some(phase))
                 .unwrap_err();
@@ -417,7 +443,7 @@ fn segment_seal_interruption_recovery_converges_without_recording() {
 fn sealing_one_segment_does_not_close_parallel_projection() {
     let temp = TempDir::new().unwrap();
     let mut store = open_store(&temp);
-    let (prepared, authorization, final_byte_length) = prepared_first_sample(&mut store);
+    let (prepared, authorization, final_byte_length) = prepared_sealable_segment(&mut store);
     let parallel_source = Uuid::now_v7().to_string();
     let parallel_track = Uuid::now_v7().to_string();
     let parallel_segment = Uuid::now_v7().to_string();

@@ -93,7 +93,12 @@ impl SessionStore {
     where
         F: FnOnce(),
     {
-        let transaction = self.connection.unchecked_transaction()?;
+        // One read snapshot; deferred so it never holds the write lock that
+        // store connections otherwise take at BEGIN.
+        let transaction = rusqlite::Transaction::new_unchecked(
+            &self.connection,
+            rusqlite::TransactionBehavior::Deferred,
+        )?;
         let sessions = {
             let mut statement = transaction.prepare(
                 "SELECT sessions.id, sessions.title, sessions.origin, sessions.lifecycle, sessions.health,

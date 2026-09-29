@@ -10,6 +10,15 @@ mod playable_recovery_tests;
 #[path = "library_recovery_tests.rs"]
 mod library_recovery_tests;
 
+#[path = "source_restoration_tests.rs"]
+mod source_restoration_tests;
+
+#[path = "recovery_resilience_tests.rs"]
+mod recovery_resilience_tests;
+
+#[path = "journal_replacement_tests.rs"]
+mod journal_replacement_tests;
+
 fn create_media(store: &mut SessionStore, a: &MediaOpenAuthorization) {
     let mut file = OpenOptions::new()
         .write(true)
@@ -21,7 +30,8 @@ fn create_media(store: &mut SessionStore, a: &MediaOpenAuthorization) {
     file.write_all(&32_i64.to_be_bytes()).unwrap();
     file.write_all(&48_000_f64.to_bits().to_be_bytes()).unwrap();
     file.write_all(b"lpcm").unwrap();
-    for value in [2_u32, 2, 1, 1, 16] {
+    let channels = u32::from(a.channels);
+    for value in [2_u32, 2 * channels, 1, channels, 16] {
         file.write_all(&value.to_be_bytes()).unwrap();
     }
     file.write_all(b"data").unwrap();
@@ -38,7 +48,7 @@ fn create_media(store: &mut SessionStore, a: &MediaOpenAuthorization) {
             relative_path: a.relative_path.clone(),
             media_format: a.media_format.clone(),
             sample_rate_hz: 48_000,
-            channels: 1,
+            channels: a.channels,
             initial_byte_length: file.metadata().unwrap().len(),
         })
         .unwrap();
@@ -60,7 +70,8 @@ fn write_sample_receipt(a: &MediaOpenAuthorization, host: u64, samples: u64) -> 
         .append(true)
         .open(&a.absolute_path)
         .unwrap();
-    file.write_all(&vec![0_u8; samples as usize * 2]).unwrap();
+    file.write_all(&vec![0_u8; samples as usize * 2 * usize::from(a.channels)])
+        .unwrap();
     file.sync_all().unwrap();
     FirstSampleReceipt {
         session_id: a.session_id.clone(),
@@ -165,6 +176,13 @@ fn recording_pair(store: &mut SessionStore) -> (SessionId, Vec<MediaOpenAuthoriz
             a
         })
         .collect();
+    assert_eq!(
+        sources
+            .iter()
+            .map(|source| source.channels)
+            .collect::<Vec<_>>(),
+        vec![1, 2]
+    );
     for a in &sources {
         capture(store, a, 1, 48_000);
     }
@@ -189,6 +207,65 @@ fn paused_pair(store: &mut SessionStore) -> (SessionId, Vec<MediaOpenAuthorizati
         )
         .unwrap();
     (session, sources)
+}
+
+#[test]
+fn derived_mixdown_uses_fresh_capacity_without_changing_saved_recorder_state() {
+    let temp = TempDir::new().unwrap();
+    let mut store = SessionStore::open(temp.path()).unwrap();
+    let (session, sources) = recording_pair(&mut store);
+    for source in &sources {
+        seal(&mut store, source, 1_000_000_001, 48_000);
+    }
+    let before = store.recorder_detail(&session).unwrap();
+    assert_eq!(before.lifecycle, "ready_for_review");
+    assert!(store.authorize_mixdown(session.clone(), 0).is_err());
+    let authorization = store.authorize_mixdown(session.clone(), u64::MAX).unwrap();
+    assert_eq!(authorization.expected_frame_count, 48_000);
+    assert!(authorization.write_floor_bytes > recorder::RESERVE_BYTES);
+    let after = store.recorder_detail(&session).unwrap();
+    assert_eq!(after.lifecycle, before.lifecycle);
+    assert_eq!(after.storage_level, before.storage_level);
+    assert_eq!(after.events, before.events);
+}
+
+#[test]
+fn lost_derived_mixdown_does_not_take_source_playback_with_it() {
+    let temp = TempDir::new().unwrap();
+    let mut store = SessionStore::open(temp.path()).unwrap();
+    let (session, sources) = recording_pair(&mut store);
+    for source in &sources {
+        seal(&mut store, source, 1_000_000_001, 48_000);
+    }
+    let authorization = store.authorize_mixdown(session.clone(), u64::MAX).unwrap();
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&authorization.absolute_path)
+        .unwrap();
+    // The native boundary owns AAC decoding. This fixture exercises the Rust
+    // receipt, file identity, and source fallback after that boundary.
+    file.write_all(&[0, 0, 0, 32]).unwrap();
+    file.write_all(b"ftyp").unwrap();
+    file.write_all(&[0; 24]).unwrap();
+    file.sync_all().unwrap();
+    drop(file);
+    store
+        .accept_mixdown(MixdownReceipt {
+            session_id: session.clone(),
+            relative_path: authorization.relative_path,
+            byte_length: 32,
+            decoded_frame_count: 48_000,
+            sample_rate_hz: 48_000,
+            channels: 2,
+            codec: "aac".into(),
+            boundary_frames_readable: true,
+        })
+        .unwrap();
+    assert!(store.validated_mixdown(&session).unwrap().is_some());
+    fs::remove_file(&authorization.absolute_path).unwrap();
+    assert!(store.validated_mixdown(&session).unwrap().is_none());
+    assert_eq!(store.playback_timeline(&session).unwrap().len(), 2);
 }
 
 #[test]
@@ -1127,4 +1204,135 @@ fn crash_after_early_rotation_before_recording_recovers_all_media() {
         "ready_for_review"
     );
     assert_eq!(store.playback_timeline(&session).unwrap().len(), 3);
+}
+
+/// PRD 11.6: sleep and wake are journaled recorder events at the captured
+/// position. Neither moves the lifecycle; the native recorder pauses capture.
+#[test]
+fn system_sleep_and_wake_are_logged_without_moving_the_lifecycle() {
+    let temp = TempDir::new().unwrap();
+    let mut store = SessionStore::open(temp.path()).unwrap();
+    let (session, sources) = recording_pair(&mut store);
+    let slept = store
+        .recorder_action(
+            session.clone(),
+            RecorderAction::ObserveSystemPower {
+                host_time: 500_000_001,
+                asleep: true,
+            },
+        )
+        .unwrap();
+    assert_eq!(slept.lifecycle, "recording");
+    store
+        .recorder_action(session.clone(), RecorderAction::BeginPause)
+        .unwrap();
+    for source in &sources {
+        seal(&mut store, source, 1_000_000_001, 48_000);
+    }
+    store
+        .recorder_action(
+            session.clone(),
+            RecorderAction::CompletePause {
+                host_time: 2_000_000_001,
+            },
+        )
+        .unwrap();
+    let woke = store
+        .recorder_action(
+            session.clone(),
+            RecorderAction::ObserveSystemPower {
+                host_time: 90_000_000_001,
+                asleep: false,
+            },
+        )
+        .unwrap();
+    assert_eq!(woke.lifecycle, "paused", "wake never resumes capture");
+    drop(store);
+
+    let store = SessionStore::open(temp.path()).unwrap();
+    let power: Vec<_> = store
+        .recorder_detail(&session)
+        .unwrap()
+        .events
+        .into_iter()
+        .filter(|event| event.kind.starts_with("system_"))
+        .map(|event| (event.kind, event.session_nanoseconds))
+        .collect();
+    assert_eq!(
+        power,
+        vec![
+            ("system_sleep_observed".to_owned(), 500_000_000),
+            ("system_wake_observed".to_owned(), 1_000_000_000),
+        ]
+    );
+    assert_eq!(
+        journal_records(&store, &session)
+            .iter()
+            .filter(|record| record.body.event_kind.starts_with("system_"))
+            .count(),
+        2
+    );
+}
+
+#[test]
+fn system_power_is_not_journaled_for_a_finished_session() {
+    let temp = TempDir::new().unwrap();
+    let mut store = SessionStore::open(temp.path()).unwrap();
+    let (session, _) = paused_pair(&mut store);
+    store
+        .recorder_action(session.clone(), RecorderAction::FinishPaused)
+        .unwrap();
+    assert!(matches!(
+        store.recorder_action(
+            session,
+            RecorderAction::ObserveSystemPower {
+                host_time: 3_000_000_001,
+                asleep: true,
+            },
+        ),
+        Err(StoreError::InvalidState(_))
+    ));
+}
+
+/// The CAF header AVAudioFile writes for 16-bit stereo: interleaved, four
+/// bytes per packet, with a `free` chunk before `data`.
+fn avaudiofile_stereo_caf(path: &Path, bytes_per_packet: u32, frames: u64) -> u64 {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(CAF_HEADER);
+    bytes.extend_from_slice(b"desc");
+    bytes.extend_from_slice(&32_i64.to_be_bytes());
+    bytes.extend_from_slice(&48_000_f64.to_bits().to_be_bytes());
+    bytes.extend_from_slice(b"lpcm");
+    for value in [2_u32, bytes_per_packet, 1, 2, 16] {
+        bytes.extend_from_slice(&value.to_be_bytes());
+    }
+    bytes.extend_from_slice(b"free");
+    bytes.extend_from_slice(&16_i64.to_be_bytes());
+    bytes.extend_from_slice(&[0_u8; 16]);
+    bytes.extend_from_slice(b"data");
+    bytes.extend_from_slice(&(4 + frames as i64 * 4).to_be_bytes());
+    bytes.extend_from_slice(&0_u32.to_be_bytes());
+    bytes.extend_from_slice(&vec![0_u8; frames as usize * 4]);
+    fs::write(path, &bytes).unwrap();
+    bytes.len() as u64
+}
+
+#[test]
+fn stereo_caf_inspection_uses_the_interleaved_packet_width() {
+    let temp = TempDir::new().unwrap();
+    let path = temp.path().join("stereo.caf");
+    let length = avaudiofile_stereo_caf(&path, 4, 480);
+    let inspection = inspect_pcm_caf(&mut File::open(&path).unwrap(), length)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        (inspection.channels, inspection.sample_count),
+        (2, Some(480))
+    );
+    let length = avaudiofile_stereo_caf(&path, 2, 480);
+    assert!(
+        inspect_pcm_caf(&mut File::open(&path).unwrap(), length)
+            .unwrap()
+            .is_none()
+    );
 }

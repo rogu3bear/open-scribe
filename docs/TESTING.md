@@ -2,19 +2,21 @@
 
 ## Test Strategy
 
-Open Scribe tests the evidence chain in order: source/configuration, deterministic unit and integration behavior, build, installed/runtime behavior, recovery, signed artifact, and release. A lower plane never proves a higher one. `./script/check.sh --m1-live-microphone` proves ordinary real-device capture/seal/playability; `--m1-forced-termination-recovery` separately proves external-kill relaunch recovery and native playback. `--m1-interruption-state` is a supporting repository-plane regression and cannot substitute for either runtime outcome. Each receipt proves only the inclusions and exclusions it names.
+Open Scribe tests the evidence chain in order: source/configuration, deterministic unit and integration behavior, build, installed/runtime behavior, recovery, signed artifact, and release. A lower plane never proves a higher one. `./script/check.sh --m1-live-microphone` proves ordinary real-device capture/seal/playability; `--m1-forced-termination-recovery` separately proves external-kill relaunch recovery and native playback. Both last passed before segmented capture and need requalification (see [CI Gates](#ci-gates)). `--m1-interruption-state` is a supporting repository-plane regression and cannot substitute for either runtime outcome. Each receipt proves only the inclusions and exclusions it names.
 
 Characterization tests pin observed behavior before correction. Safety-critical invariants—durable media before capture claims, audio survival independent of transcription, required-source truth, and recovery—need tests at the layer that owns the claim plus runtime evidence on an exact artifact.
 
-Repository and source tests currently cover managed local CAF import, deterministic deduplication and rejection, imported-conversation projection, validated-byte playback leasing, and shared recovered/imported playback failures. Those tests do not prove behavior with real user-selected files, broader media formats, large files, long-running sessions, source-loss recovery, an installed or signed artifact, or public delivery.
+Repository and source tests currently cover managed local CAF and M4A (AAC/Apple Lossless) import, deterministic deduplication and rejection, imported-conversation projection, validated-byte playback leasing, and shared recovered/imported playback failures. One dated real-file receipt (September 27, commit `3e51b72`, `~/Documents/Codex/2026-09-27/open-scribe-large-import/RETURN.md`) imported an operator-selected 865 MB stereo 48 kHz Apple Lossless M4A through the normal workflow and passed a 41-test run covering reopen, first- and last-frame decode, silent player startup, and bounded memory. Those tests do not prove other real files or formats, audible or full-duration playback, long-running sessions, source-loss recovery, an installed or signed artifact, or public delivery.
 
 ### Recorder component check
 
 `./script/build_and_run.sh --verify-recording` rebuilds Rust, verifies generated
 bindings, builds the unsigned Xcode app, and runs the microphone, system-audio,
-recording-controller, media-open, and timeline workflow suites. It uses synthetic buffers and
+recording-controller, pause/resume, media-open, and timeline workflow suites. It uses synthetic buffers and
 injected capture backends; it never starts a live capture stream or a playback
 engine. A successful run emits `RECORDING_COMPONENTS_GREEN`.
+It also prints the executable, debug-dylib, and Info.plist SHA-256 digests used for the
+same-artifact comparison below.
 
 The September 25, 2026 run passed 58 tests, including accepted-buffer draining
 before seal, callbacks after detachment, an already-stopped system stream,
@@ -45,6 +47,12 @@ After building, run the device-free process proof:
 ```sh
 bash script/check_foundational_workflow.sh "$PWD/apps/macos/.build/xcode/Build/Products/Debug/OpenScribeApp.app/Contents/MacOS/OpenScribeApp"
 ```
+
+A green run prints `proof=`/`excludes=` sets, the SHA-256 of the executable,
+debug dylib, and Info.plist, the recovery receipt and every media digest, then removes its
+own temporary root unless `--retain` is given. A failed run keeps its root for
+diagnosis. Roots left by earlier runs, including the evidence roots named below,
+are reported and never deleted.
 
 On September 25 this emitted `FOUNDATION_SYNTHETIC_GREEN`: two 31-second source
 tracks, each split into 30-second and 1-second files; external SIGKILL while both
@@ -102,13 +110,13 @@ requires explicit capture and audible-playback authority.
 |---|---|---|---:|---|
 | Rust domain/types | Unit tests and fixture compatibility checks | Migration/backward-compatibility corpus remains small | P1 | Durable-state owner |
 | Rust store/journal | Preparation, media-open, first-sample, sealing, digest, typed interruption, segmented dual-source recovery, calibrated timeline, and projection-repair tests | Long-session and source-loss continuation remain unqualified | P0 | Durable-state owner |
-| UniFFI boundary | Fresh bindings, coarse clock/segment receipts, bounded playback leases, and short live dual-source proof | Long-session and failure-matrix qualification remains open | P1 | Integration owner |
-| CAF writer and microphone adapter | Deterministic buffer, failure, race, stop barrier, receipt tests, and one short real-device proof | No route-change, disk-pressure, or long-run proof | P0 | Native runtime owner |
-| Live recording controller | Required-source coordination, typed interruption, callback/drain races, and short live shared-timeline recovery/playback | Route-loss recovery and long-run proof remain open | P0 | Native runtime owner |
+| UniFFI boundary | Fresh bindings, coarse clock/segment receipts, bounded playback leases, and a dated short live dual-source proof (September 25 artifact) | Long-session and failure-matrix qualification remains open | P1 | Integration owner |
+| CAF writer and microphone adapter | Deterministic buffer, failure, race, stop barrier, receipt tests, and dated short real-device runs (the latest segmented run on the September 25 artifact) | No route-change, disk-pressure, or long-run proof | P0 | Native runtime owner |
+| Live recording controller | Required-source coordination, typed interruption, callback/drain races, pause/resume, degraded continuation, and a dated short live shared-timeline recovery/playback run (September 25 artifact, before pause/resume and the review repairs) | Real route-loss recovery, current-source live requalification, and long-run proof remain open | P0 | Native runtime owner |
 | Single-instance guard | Exact lock ownership unit test | AppDelegate conflates an existing instance with lock-file I/O failure | P1 | Native shell owner |
 | Menu-bar UI | Build and scene-launch fixture | No UI automation for source selection, durable state transitions, or error recovery | P1 | UX/QA owner |
-| System/application audio | All-authorized system audio participates in the short live segmented recovery proof | Application-scoped selection and delivered channel-layout fidelity remain unimplemented | P0 | Platform capture owner |
-| Playback/import/transcription/diarization | Managed local CAF import, deterministic deduplication/rejection, imported-conversation projection, validated-byte playback leasing, and shared recovered/imported playback failure tests | No real-user-file or broader-format runtime proof; large-file, long-session, transcription, diarization, installed/signed-artifact, source-loss, and public-delivery behavior remain unproved | P1 after recorder | Conversation-loop owner |
+| System/application audio | All-authorized system audio participated in the dated short live segmented recovery proof (September 25 artifact) | A single-application picker exists in source but is unqualified, and `--m1-complete` still lists application-scoped selection as missing implementation; channel-layout fidelity (stereo system-audio CAF, Rust channel validation) passes synthetic component tests only and has no live receipt | P0 | Platform capture owner |
+| Playback/import/transcription/diarization | Managed local CAF and M4A import, deterministic deduplication/rejection, imported-conversation projection, validated-byte playback leasing, shared recovered/imported playback failure tests, and one dated real 865 MB M4A import receipt | Other real files and formats, audible or full-duration playback, long-session, transcription, diarization, installed/signed-artifact, source-loss, and public-delivery behavior remain unproved | P1 after recorder | Conversation-loop owner |
 | Release | Scaffold/build checks | No signed, notarized, installed, upgrade, rollback, or public-source binding | P1 before release | Release owner |
 
 ## Characterization Backlog
@@ -135,6 +143,80 @@ requires explicit capture and audible-playback authority.
 | Release preparation contract | `./script/check.sh --release-prepare` | Semantic input validation, stable unresolved holds, artifact-verifier rejection paths, and read-only exact-source binding | Closed P0s, signed-artifact success, notarization, publication, or release |
 | Diff hygiene | `git diff --check` | Patch whitespace validity | Functional correctness |
 | Working-tree inventory | `git status --short --branch` | Exact local residue | Candidate admission or commit cleanliness |
+
+The short live dual-source and forced-termination gates last passed before
+segmented capture. The current gate source accepts multiple sealed CAF segments
+per track, checks their Rust digests against the saved files, and binds output to
+the built app hashes. The forced-termination path now waits through a segmented
+capture span and checks both recovered tails plus unchanged earlier segments.
+These are source changes, not new runtime receipts. Both gates stay RUNTIME HOLD
+until they pass on the same exact app under explicit device authority.
+Compare the executable, debug-dylib, and Info.plist digests printed by the recorder component,
+short live, forced-termination, and foundational workflow runs. A combined
+qualification requires identical digests; a changed build requires fresh runs.
+
+On September 28, after Disk Guard capacity was restored, the recorder candidate
+committed with this entry passed, on one app identity:
+`cargo test --locked -p open-scribe-store` (135 tests),
+`cargo test --locked -p open-scribe-uniffi` (8 tests),
+`bash script/build_and_run.sh --verify-recording` (`RECORDING_COMPONENTS_GREEN`,
+79 tests, fresh bindings, no project Swift warnings), and
+`bash script/check_foundational_workflow.sh <app binary>`
+(`FOUNDATION_SYNTHETIC_GREEN`, recovery receipt `cbd5fc28…2a5e`). App digests:
+executable `104c2aee43dd1f4de6ec7a721de2ae48e0cd4b8703dc54eeaa5bb27648c79194`,
+debug dylib `db1b6ccd74fb9b8652c004b5ae49ac9b0a8669ade231ba85e88760f2b6cd0e8d`,
+Info.plist `c103e34b917098d3964f5992f343fd5f8fd17306642ecafb0e4c23fbaa97acab`.
+
+These runs found and repaired: an import constructor missing its channel field;
+the CAF inspector requiring two bytes per packet, which rejected every stereo
+CAF that AVAudioFile writes (four bytes per packet); Rust and Swift test fixtures
+that wrote non-CAF or mono media into stereo authorizations; and store opens that
+failed with SQLite `database is locked` while an append held the write lock,
+because deferred transactions upgrade without the busy timeout. Store write
+transactions now begin `IMMEDIATE`; the runtime snapshot stays deferred. The
+bindings checked in before this run were stale against the mixdown API.
+These are synthetic and component receipts. They exclude real capture,
+permissions, audible output, source loss, long sessions, and M1 acceptance.
+
+### September 28 — M1 failure and duration matrix request
+
+The requested source-loss, permission-revocation, route/device-change,
+selected-app-exit, sleep/wake, disk-pressure, pause/resume, and two-hour
+dual-source cases remain **RUNTIME HOLD** on this candidate. With about 55 GiB
+free, the host remains below Disk Guard's 100 GB reserve; no current app was
+built or launched for these cases. There are no candidate-bound visible-state, retained
+media, recovery, playback, or drift results to admit. The M1 completion gate
+still returns `M1_COMPLETE_HOLD`.
+
+The acceptance contract remains the founding PRD's event visibility, activity
+log, media preservation, and explicit fallback or stop for device changes; the
+two-hour cross-track drift target is at most 100 ms. Three source gaps found
+before the run are repaired in source and component tests only: system sleep
+journals `system_sleep_observed` and pauses through the sealed-pause path, wake
+journals `system_wake_observed` and never resumes; `source_failed` appears in
+recorder events at the failed source's last sealed sample; and
+`RecorderEventList` is mounted in the live view and saved conversations. None of
+these is a live sleep/wake, source-loss, or accessibility receipt.
+
+### September 28 — Consumer admission request
+
+The deliberate-start-to-library session, interrupted-session readback, and
+local-import readback have not run on this dirty candidate. The September 25
+capture/recovery receipts and September 27 real M4A import receipt remain bound
+to their earlier artifacts. Source connects the main-window Record, Stop and
+Save, and Import Audio actions to the saved-conversation sidebar and playback
+controls, but that path has no current runtime result. No candidate-bound
+keyboard or VoiceOver behavior has been observed. Source declares shortcuts
+for Record, Stop, Pause/Resume, Marker, and Refresh Library, plus an explicit
+live-status accessibility label and combined source-row accessibility
+elements. These declarations are not interaction proof. The macOS 13
+application picker uses `SCShareableContent` and `SCContentFilter` in source;
+the deployment target is 13.0 and the current SDK declares the filter
+initializer from macOS 12.3.
+This host is macOS 27, so no macOS 13 runtime result exists. App digests,
+session and import IDs, saved media digests, interrupted recovery, and library
+playback results are unavailable for this request. The M1 completion gate
+returned exit 1 with `M1_COMPLETE_HOLD`; admission stays HOLD.
 
 New gates must fail closed, clean up processes and temporary state they own, print proof and exclusion sets, and bind runtime claims to the exact built artifact.
 

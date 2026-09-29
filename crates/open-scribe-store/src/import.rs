@@ -14,9 +14,9 @@ use uuid::Uuid;
 use super::{
     CAF_HEADER, JOURNAL_VERSION, JournalRecord, MediaLengthRequirement, PrepareSessionRequest,
     RecoveryDisposition, SCHEMA_VERSION, SessionOrigin, SessionStore, StoreError,
-    ValidatedMediaFile, event_digest, insert_event_with_id, inspect_recoverable_pcm_caf,
-    next_database_event, open_managed_directory, open_managed_directory_at, payload_string,
-    payload_u64, validate_request, wall_time_milliseconds,
+    ValidatedMediaFile, event_digest, insert_event_with_id, inspect_pcm_caf, next_database_event,
+    open_managed_directory, open_managed_directory_at, payload_string, payload_u64,
+    validate_request, wall_time_milliseconds,
 };
 
 const MAX_IMPORTED_PLAYBACK_SNAPSHOT_BYTES: u64 = 256 * 1024 * 1024;
@@ -105,6 +105,19 @@ pub struct ImportedPlaybackLease {
 }
 
 impl ImportedPlaybackLease {
+    pub(super) fn verified_derived_m4a(
+        file: File,
+        byte_length: u64,
+        digest_sha256: String,
+    ) -> Self {
+        Self {
+            file,
+            byte_length,
+            digest_sha256,
+            media_format: COMPRESSED_IMPORT_MEDIA_FORMAT.to_owned(),
+        }
+    }
+
     #[must_use]
     pub fn raw_file_descriptor(&self) -> RawFd {
         self.file.as_raw_fd()
@@ -1581,6 +1594,7 @@ impl SessionStore {
             inode: stat.st_ino as u64,
             digest_sha256: calculate_digest.then(|| format!("{:x}", hasher.finalize())),
             recoverable_sample_count: None,
+            channels: None,
         })
     }
 }
@@ -1620,9 +1634,15 @@ fn validate_import_source(path: &Path) -> Result<ValidatedImportSource, StoreErr
         ));
     }
     file.rewind()?;
-    let sample_count = inspect_recoverable_pcm_caf(&mut file, byte_length)?.ok_or(
-        StoreError::InvalidRequest("import source is not recoverable mono PCM CAF"),
-    )?;
+    let inspection = inspect_pcm_caf(&mut file, byte_length)?.ok_or(StoreError::InvalidRequest(
+        "import source is not recoverable mono PCM CAF",
+    ))?;
+    let sample_count = inspection
+        .sample_count
+        .filter(|_| inspection.channels == 1)
+        .ok_or(StoreError::InvalidRequest(
+            "import source is not recoverable mono PCM CAF",
+        ))?;
     validate_import_bounds(byte_length, sample_count)?;
     file.rewind()?;
     let mut hasher = Sha256::new();

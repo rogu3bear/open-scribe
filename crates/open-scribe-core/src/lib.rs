@@ -13,13 +13,14 @@ pub use open_scribe_store::{
     AuthorizeMediaOpenRequest, CaptureClock, CompressedImportMetadata, FirstSampleEvidence,
     FirstSampleReceipt, ImportMediaRequest, ImportPolicy, ImportedMediaEvidence,
     ImportedPlaybackLease, InterruptSessionRequest, MediaOpenAuthorization, MediaOpenEvidence,
-    MediaOpenReceipt, MediaSourceKind, OriginalImportMetadata, PrepareSessionRequest,
-    PreparedSessionReceipt, RecorderAction, RecorderDetail, RecorderEvent,
-    RecordingStartedEvidence, RecoveredPlayableSession, RequiredSourcePlanEvidence,
-    RuntimeLibrarySnapshot, RuntimePlayableMediaAvailability, RuntimePlayableMediaSnapshot,
-    RuntimeSessionSnapshot, RuntimeSourceSnapshot, SealSegmentReceipt, SealedSegmentEvidence,
-    SessionInterruptionEvidence, SessionInterruptionReason, SessionOrigin, SourceFailureEvidence,
-    SourceFailureReason, SourceFailureRequest, StoreError, TimelineSegment, import_policy,
+    MediaOpenReceipt, MediaSourceKind, MixdownAuthorization, MixdownReceipt,
+    OriginalImportMetadata, PrepareSessionRequest, PreparedSessionReceipt, RecorderAction,
+    RecorderDetail, RecorderEvent, RecordingStartedEvidence, RecoveredPlayableSession,
+    RequiredSourcePlanEvidence, RuntimeLibrarySnapshot, RuntimePlayableMediaAvailability,
+    RuntimePlayableMediaSnapshot, RuntimeSessionSnapshot, RuntimeSourceSnapshot,
+    SealSegmentReceipt, SealedSegmentEvidence, SessionInterruptionEvidence,
+    SessionInterruptionReason, SessionOrigin, SourceFailureEvidence, SourceFailureReason,
+    SourceFailureRequest, StoreError, TimelineSegment, ValidatedMixdown, import_policy,
 };
 
 pub struct CoarseMediaOpenReceipt {
@@ -29,6 +30,7 @@ pub struct CoarseMediaOpenReceipt {
     pub open_token: String,
     pub writer_generation: u64,
     pub relative_path: String,
+    pub channels: u16,
     pub initial_byte_length: u64,
 }
 
@@ -119,6 +121,35 @@ impl RecordingPreparationController {
             true,
         )
     }
+
+    pub fn authorize_mixdown(
+        &mut self,
+        session_id: open_scribe_types::SessionId,
+        available_bytes: u64,
+    ) -> Result<MixdownAuthorization, StoreError> {
+        self.store.authorize_mixdown(session_id, available_bytes)
+    }
+
+    pub fn accept_mixdown(
+        &mut self,
+        receipt: MixdownReceipt,
+    ) -> Result<ValidatedMixdown, StoreError> {
+        self.store.accept_mixdown(receipt)
+    }
+
+    pub fn validated_mixdown(
+        &self,
+        session_id: &open_scribe_types::SessionId,
+    ) -> Result<Option<ValidatedMixdown>, StoreError> {
+        self.store.validated_mixdown(session_id)
+    }
+
+    pub fn lease_validated_mixdown(
+        &self,
+        session_id: &open_scribe_types::SessionId,
+    ) -> Result<Option<ImportedPlaybackLease>, StoreError> {
+        self.store.lease_validated_mixdown(session_id)
+    }
     pub fn open(managed_root: impl AsRef<Path>) -> Result<Self, StoreError> {
         Ok(Self {
             store: open_scribe_store::SessionStore::open(managed_root)?,
@@ -182,7 +213,7 @@ impl RecordingPreparationController {
             relative_path: receipt.relative_path,
             media_format: "caf-pcm-s16le".to_owned(),
             sample_rate_hz: 48_000,
-            channels: 1,
+            channels: receipt.channels,
             initial_byte_length: receipt.initial_byte_length,
         })
     }

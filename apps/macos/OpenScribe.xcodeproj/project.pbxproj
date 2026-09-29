@@ -21,6 +21,7 @@
 		AB61A3F920D148E6A9BCE301 /* SegmentedCAFWriter.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC61A3F920D148E6A9BCE301 /* SegmentedCAFWriter.swift */; };
 		AB61A3F920D148E6A9BCE302 /* TimelineAudioPlayer.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC61A3F920D148E6A9BCE302 /* TimelineAudioPlayer.swift */; };
 		AB61A3F920D148E6A9BCE303 /* TimelineRuntimeProof.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC61A3F920D148E6A9BCE303 /* TimelineRuntimeProof.swift */; };
+		AB61A3F920D148E6A9BCE305 /* ValidatedMixdownBuilder.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC61A3F920D148E6A9BCE305 /* ValidatedMixdownBuilder.swift */; };
 		4B61A3F920D148E6A9BCE201 /* MediaOpenProtocolTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5B61A3F920D148E6A9BCE201 /* MediaOpenProtocolTests.swift */; };
 		4C61A3F920D148E6A9BCE201 /* MicrophonePermissionAuthority.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5C61A3F920D148E6A9BCE201 /* MicrophonePermissionAuthority.swift */; };
 		5AA4F437F283C41AEB8ABF86 /* AppStatus.swift in Sources */ = {isa = PBXBuildFile; fileRef = 41902E24EA44F8922EE152D7 /* AppStatus.swift */; };
@@ -72,6 +73,7 @@
 		AC61A3F920D148E6A9BCE301 /* SegmentedCAFWriter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SegmentedCAFWriter.swift; sourceTree = "<group>"; };
 		AC61A3F920D148E6A9BCE302 /* TimelineAudioPlayer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TimelineAudioPlayer.swift; sourceTree = "<group>"; };
 		AC61A3F920D148E6A9BCE303 /* TimelineRuntimeProof.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TimelineRuntimeProof.swift; sourceTree = "<group>"; };
+		AC61A3F920D148E6A9BCE305 /* ValidatedMixdownBuilder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ValidatedMixdownBuilder.swift; sourceTree = "<group>"; };
 		5B61A3F920D148E6A9BCE201 /* MediaOpenProtocolTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaOpenProtocolTests.swift; sourceTree = "<group>"; };
 		5C61A3F920D148E6A9BCE201 /* MicrophonePermissionAuthority.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MicrophonePermissionAuthority.swift; sourceTree = "<group>"; };
 		6712658CEAD0838E764A5BBF /* AccessibilityAnnouncer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccessibilityAnnouncer.swift; sourceTree = "<group>"; };
@@ -176,6 +178,7 @@
 				AC61A3F920D148E6A9BCE301 /* SegmentedCAFWriter.swift */,
 				AC61A3F920D148E6A9BCE302 /* TimelineAudioPlayer.swift */,
 				AC61A3F920D148E6A9BCE303 /* TimelineRuntimeProof.swift */,
+				AC61A3F920D148E6A9BCE305 /* ValidatedMixdownBuilder.swift */,
 				D061A3F920D148E6A9BCE201 /* MicrophoneCaptureAdapter.swift */,
 				5C61A3F920D148E6A9BCE201 /* MicrophonePermissionAuthority.swift */,
 			);
@@ -366,6 +369,7 @@
 				AB61A3F920D148E6A9BCE301 /* SegmentedCAFWriter.swift in Sources */,
 				AB61A3F920D148E6A9BCE302 /* TimelineAudioPlayer.swift in Sources */,
 				AB61A3F920D148E6A9BCE303 /* TimelineRuntimeProof.swift in Sources */,
+				AB61A3F920D148E6A9BCE305 /* ValidatedMixdownBuilder.swift in Sources */,
 				4C61A3F920D148E6A9BCE201 /* MicrophonePermissionAuthority.swift in Sources */,
 				E3B6D8732CBAD3A7D047B7AE /* FixtureSessionStore.swift in Sources */,
 				5EF7FA04058A5A444EC69D6C /* MenuBarContent.swift in Sources */,

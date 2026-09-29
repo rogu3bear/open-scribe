@@ -21,9 +21,7 @@ final class SegmentedCAFWriter: ManagedSegmentWriting, @unchecked Sendable {
   private var acceptedFirstSampleEvidence: [String: NativeFirstSampleEvidence] = [:]
   private var lastEndHostTime: UInt64 = 0
   private var converter: AVAudioConverter?
-  private let format = AVAudioFormat(
-    commonFormat: .pcmFormatInt16, sampleRate: 48_000, channels: 1, interleaved: false
-  )!
+  private let format: AVAudioFormat
   private var frames: UInt64 = 0
   private var currentHasFirstSample = false
   private var lastInputFormat: AVAudioFormat?
@@ -42,6 +40,10 @@ final class SegmentedCAFWriter: ManagedSegmentWriting, @unchecked Sendable {
     self.current = current
     self.preparation = preparation
     self.makeSuccessor = makeSuccessor
+    format = AVAudioFormat(
+      commonFormat: .pcmFormatInt16, sampleRate: 48_000,
+      channels: AVAudioChannelCount(current.authorization.channels), interleaved: false
+    )!
   }
 
   static func anchor(
@@ -105,10 +107,12 @@ final class SegmentedCAFWriter: ManagedSegmentWriting, @unchecked Sendable {
       let writer = currentWriter()
       let count = min(buffer.frameLength - offset, AVAudioFrameCount(Self.segmentFrames - frames))
       guard let piece = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: count),
-        let destination = piece.int16ChannelData?[0], let source = buffer.int16ChannelData?[0]
+        let destination = piece.int16ChannelData, let source = buffer.int16ChannelData
       else { throw ManagedCAFWriterError.bufferAllocationFailed }
       piece.frameLength = count
-      destination.update(from: source.advanced(by: Int(offset)), count: Int(count))
+      for channel in 0..<Int(format.channelCount) {
+        destination[channel].update(from: source[channel].advanced(by: Int(offset)), count: Int(count))
+      }
       let pieceHost = hostTime + AVAudioTime.hostTime(forSeconds: Double(offset) / 48_000)
       let written = try writer.writeCapturedBuffer(piece)
       frames += UInt64(written)
@@ -170,6 +174,9 @@ final class SegmentedCAFWriter: ManagedSegmentWriting, @unchecked Sendable {
   }
 
   private func normalize(_ input: AVAudioPCMBuffer) throws -> AVAudioPCMBuffer {
+    guard input.format.channelCount == format.channelCount else {
+      throw ManagedCAFWriterError.unsupportedAuthorization
+    }
     if input.format == format { return input }
     if converter?.inputFormat != input.format {
       converter = AVAudioConverter(from: input.format, to: format)

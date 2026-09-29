@@ -25,6 +25,12 @@ pub enum RecorderAction {
     ObserveStorage {
         available_bytes: u64,
     },
+    /// System sleep or wake while a session is open (PRD 11.6). Journaled so
+    /// the activity log shows why capture paused; it never resumes capture.
+    ObserveSystemPower {
+        host_time: u64,
+        asleep: bool,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -45,7 +51,7 @@ pub struct RecorderDetail {
 
 // One persisted policy owner. Reserve is available for sealing/recovery and is
 // never spent opening another source segment under critical pressure.
-const RESERVE_BYTES: u64 = 512 * 1024 * 1024;
+pub(super) const RESERVE_BYTES: u64 = 512 * 1024 * 1024;
 const WARNING_BYTES: u64 = 1024 * 1024 * 1024;
 
 impl SessionStore {
@@ -167,6 +173,19 @@ impl SessionStore {
                 {
                     return Err(StoreError::InvalidRequest("invalid selected audio scope"));
                 }
+                // The next span must hold a source that can still capture; a
+                // retired microphone alone would resume nothing.
+                let microphone_available: bool = self.connection.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM required_sources
+                     WHERE session_id = ?1 AND kind = 'microphone' AND lifecycle != 'failed')",
+                    [&session.0],
+                    |row| row.get(0),
+                )?;
+                if kind.is_none() && !microphone_available {
+                    return Err(StoreError::InvalidState(
+                        "the selected scope has no source that can capture",
+                    ));
+                }
                 // A scope change is never identity-continuous: every planned
                 // non-microphone source ends and the selected kind, if any, is
                 // added for the next span (ADR 0005, source and failure behavior).
@@ -186,8 +205,12 @@ impl SessionStore {
                 )
             }
             RecorderAction::ObserveStorage { available_bytes } => {
-                let sources = self.required_source_kinds(&session.0)?.len() as u64;
-                let preflight_bytes = RESERVE_BYTES + sources * 48_000 * 2 * 300;
+                let five_minute_pcm_bytes: u64 = self
+                    .required_source_kinds(&session.0)?
+                    .into_iter()
+                    .map(|kind| u64::from(kind.capture_channels()) * 48_000 * 2 * 300)
+                    .sum();
+                let preflight_bytes = RESERVE_BYTES + five_minute_pcm_bytes;
                 let critical = available_bytes < RESERVE_BYTES
                     || (matches!(phase, "preparing" | "paused")
                         && available_bytes < preflight_bytes);
@@ -212,6 +235,29 @@ impl SessionStore {
                     json!({"level": level, "available_bytes": available_bytes, "reserve_bytes": RESERVE_BYTES, "warning_bytes": WARNING_BYTES, "preflight_bytes": preflight_bytes, "session_nanoseconds": state.captured_nanoseconds}),
                 )
             }
+            RecorderAction::ObserveSystemPower { host_time, asleep } => {
+                if !matches!(phase, "preparing" | "recording" | "finalizing" | "paused") {
+                    return Err(StoreError::InvalidState(
+                        "power changes are journaled only for an open session",
+                    ));
+                }
+                // The log entry must not depend on the clock: an unmappable
+                // host time falls back to the last sealed position.
+                let position = if phase == "recording" {
+                    self.map_capture_time(&session.0, host_time)
+                        .unwrap_or(state.captured_nanoseconds)
+                } else {
+                    state.captured_nanoseconds
+                };
+                (
+                    if asleep {
+                        "system_sleep_observed"
+                    } else {
+                        "system_wake_observed"
+                    },
+                    json!({"host_time": host_time, "session_nanoseconds": position.max(0)}),
+                )
+            }
         };
         let record = self.append_session_journal(&session.0, kind, None, payload)?;
         self.project_recorder_event(&session.0, &record, true)?;
@@ -226,7 +272,7 @@ impl SessionStore {
         )?;
         let captured_nanoseconds: i64 = self.connection.query_row(
             "SELECT COALESCE(MAX(mapped_start_ns + sample_count * 1000000000 / 48000), 0) FROM segments WHERE session_id = ?1 AND lifecycle = 'sealed'", [&session.0], |r| r.get(0))?;
-        let mut statement = self.connection.prepare("SELECT id, event_kind, session_nanoseconds, payload_json FROM session_events WHERE session_id = ?1 AND event_kind IN ('marker_added', 'capture_paused', 'capture_resumed', 'source_scope_selected', 'storage_observed') ORDER BY sequence")?;
+        let mut statement = self.connection.prepare("SELECT id, event_kind, session_nanoseconds, payload_json FROM session_events WHERE session_id = ?1 AND event_kind IN ('marker_added', 'capture_paused', 'capture_resumed', 'source_scope_selected', 'storage_observed', 'source_failed', 'system_sleep_observed', 'system_wake_observed') ORDER BY sequence")?;
         let events = statement
             .query_map([&session.0], |r| {
                 Ok((
@@ -239,6 +285,9 @@ impl SessionStore {
             .map(|r| {
                 let (id, kind, session_nanoseconds, payload) = r?;
                 let payload: Value = serde_json::from_str(&payload)?;
+                if kind == "source_failed" {
+                    return self.source_failure_event(&session.0, id, &payload);
+                }
                 let label = payload
                     .get("label")
                     .or_else(|| payload.get("level"))
@@ -265,6 +314,37 @@ impl SessionStore {
             captured_nanoseconds,
             storage_level,
             events,
+        })
+    }
+
+    /// A failure journals no capture position; the failed source stopped
+    /// contributing at its last sealed sample.
+    fn source_failure_event(
+        &self,
+        session: &str,
+        id: String,
+        payload: &Value,
+    ) -> Result<RecorderEvent, StoreError> {
+        let source_id = payload_string(payload, "source_id")?;
+        let (display_name, session_nanoseconds): (Option<String>, i64) = self.connection.query_row(
+            "SELECT sources.display_name,
+                    COALESCE(MAX(segments.mapped_start_ns + segments.sample_count * 1000000000 / 48000), 0)
+             FROM sources
+             LEFT JOIN tracks ON tracks.source_id = sources.id
+             LEFT JOIN segments ON segments.track_id = tracks.id AND segments.lifecycle = 'sealed'
+             WHERE sources.session_id = ?1 AND sources.id = ?2",
+            params![session, source_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        let label = match display_name {
+            Some(name) => name,
+            None => payload_string(payload, "source_kind")?.to_owned(),
+        };
+        Ok(RecorderEvent {
+            id,
+            kind: "source_failed".to_owned(),
+            session_nanoseconds,
+            label,
         })
     }
 
@@ -378,6 +458,8 @@ impl SessionStore {
                     | "marker_added"
                     | "source_scope_selected"
                     | "storage_observed"
+                    | "system_sleep_observed"
+                    | "system_wake_observed"
             )
         }) {
             // Replay projects the event without moving the lifecycle: the row

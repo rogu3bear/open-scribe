@@ -22,7 +22,6 @@ crates/open-scribe-*/        shared semantics plus native preparation/media inte
 web/                         stateless Leptos Worker/Assets development foundation
 docs/                        product, architecture, legal, design, model, format, and release truth
 script/                      fail-closed canonical entry points
-.github/                     repository metadata; GitHub Actions is intentionally disabled
 ```
 
 ## What can be verified now
@@ -41,9 +40,12 @@ injected device backends, without live capture or speaker playback:
 ```
 
 This builds the app and runs recorder component tests. The foundational workflow
-now has [synthetic and short live proof](docs/TESTING.md#foundational-recording-workflow):
-two sources, a Rust-owned shared timeline, 30-second segments, forced termination,
-unchanged recovered media, and shared native playback. It does not close M1.
+has [dated proof](docs/TESTING.md#foundational-recording-workflow): a device-free
+synthetic process proof (two sources, a Rust-owned shared timeline, 30-second
+segments, forced termination, unchanged recovered media) whose receipt names
+its exact tip, and one short live run with shared native playback on the
+September 25 artifact, which predates pause/resume and the review repairs. It
+does not close M1.
 `./script/check.sh --m1-complete` names remaining implementation and runtime
 gates, including pause/resume, markers, mixdown, storage-pressure policy,
 application selection, channel-layout fidelity, and the two-hour device run.
@@ -55,9 +57,12 @@ native test suite, and exact idle app launch without requesting capture access:
 ./script/check.sh --state-fixtures
 ```
 
-Verify current real-device microphone plus all-authorized system-audio behavior
+Verify real-device microphone plus all-authorized system-audio behavior
 explicitly; this requests the required access, captures two temporary tracks,
-checks that both CAFs are playable, and deletes the proof media:
+checks each saved CAF segment against Rust's media evidence, and retains the
+proof root for review. This gate and the forced-termination gate below last
+passed on an older artifact. Their current segmented-capture source has not
+passed on this candidate:
 
 ```bash
 ./script/check.sh --m1-dual-source-runtime

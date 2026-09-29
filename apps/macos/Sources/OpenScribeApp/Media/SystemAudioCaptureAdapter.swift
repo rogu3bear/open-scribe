@@ -63,7 +63,7 @@ final class SystemAudioCaptureAdapter: NSObject, SCStreamOutput, SCStreamDelegat
     configuration.queueDepth = 1
     configuration.capturesAudio = true
     configuration.sampleRate = 48_000
-    configuration.channelCount = 1
+    configuration.channelCount = 2
     configuration.excludesCurrentProcessAudio = true
     super.init()
     stream = SCStream(filter: filter, configuration: configuration, delegate: self)
@@ -241,25 +241,41 @@ final class SystemAudioCaptureAdapter: NSObject, SCStreamOutput, SCStreamDelegat
       return
     }
     let format = AVAudioFormat(cmAudioFormatDescription: description)
+    guard format.channelCount > 0, format.channelCount <= 2 else {
+      reportFailure(.invalidSampleBuffer)
+      return
+    }
     var retainedBlockBuffer: CMBlockBuffer?
-    var bufferList = AudioBufferList(
+    let listSize = MemoryLayout<AudioBufferList>.size
+      + (Int(format.channelCount) - 1) * MemoryLayout<AudioBuffer>.stride
+    let storage = UnsafeMutableRawPointer.allocate(
+      byteCount: listSize, alignment: MemoryLayout<AudioBufferList>.alignment)
+    let bufferList = storage.bindMemory(to: AudioBufferList.self, capacity: 1)
+    bufferList.initialize(to: AudioBufferList(
       mNumberBuffers: 1,
-      mBuffers: AudioBuffer(mNumberChannels: 1, mDataByteSize: 0, mData: nil)
-    )
+      mBuffers: AudioBuffer(
+        mNumberChannels: format.isInterleaved ? format.channelCount : 1,
+        mDataByteSize: 0, mData: nil)
+    ))
+    defer {
+      bufferList.deinitialize(count: 1)
+      storage.deallocate()
+    }
+    var neededSize = 0
     let status = CMSampleBufferGetAudioBufferListWithRetainedBlockBuffer(
       sampleBuffer,
-      bufferListSizeNeededOut: nil,
-      bufferListOut: &bufferList,
-      bufferListSize: MemoryLayout<AudioBufferList>.size,
+      bufferListSizeNeededOut: &neededSize,
+      bufferListOut: bufferList,
+      bufferListSize: listSize,
       blockBufferAllocator: kCFAllocatorDefault,
       blockBufferMemoryAllocator: kCFAllocatorDefault,
       flags: 0,
       blockBufferOut: &retainedBlockBuffer
     )
-    guard status == noErr,
+    guard status == noErr, neededSize <= listSize,
       let pcm = AVAudioPCMBuffer(
         pcmFormat: format,
-        bufferListNoCopy: &bufferList,
+        bufferListNoCopy: bufferList,
         deallocator: nil
       )
     else {

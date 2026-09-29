@@ -23,6 +23,10 @@ pub enum NativeRecorderAction {
     ObserveStorage {
         available_bytes: u64,
     },
+    ObserveSystemPower {
+        host_time: u64,
+        asleep: bool,
+    },
 }
 
 #[derive(uniffi::Record)]
@@ -71,6 +75,9 @@ impl From<NativeRecorderAction> for open_scribe_core::RecorderAction {
             },
             NativeRecorderAction::ObserveStorage { available_bytes } => {
                 Self::ObserveStorage { available_bytes }
+            }
+            NativeRecorderAction::ObserveSystemPower { host_time, asleep } => {
+                Self::ObserveSystemPower { host_time, asleep }
             }
         }
     }

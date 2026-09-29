@@ -177,8 +177,7 @@ impl SessionStore {
                 ));
             }
         };
-        let (sources, _handles) =
-            self.validate_sealed_recovery_companions(session, &records, true)?;
+        let sources = self.validate_sealed_recovery_companions(session, &records)?;
         if self
             .evidenced_source_kinds(session)?
             .iter()

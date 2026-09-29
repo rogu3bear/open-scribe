@@ -141,8 +141,9 @@ struct MenuBarContent: View {
     case .requestingPermission, .preparing, .starting: liveRecording.statusText
     case .capturing: "Confirming durable recording…"
     case .stopping: "Securing recording…"
+    case .saved: liveRecording.statusText
     case .failed: "Recording needs attention"
-    default: "Ready to record microphone + system audio"
+    default: liveRecording.readinessText
     }
   }
 }
@@ -194,7 +195,7 @@ struct MenuBarLabel: View {
         return (
           "Recording · \(session.timerText)",
           "record.circle.fill",
-          "Recording microphone and system audio, \(session.timerText)"
+          "Recording \(session.capturingSourcesText), \(session.timerText)"
         )
       }
       return (
@@ -207,13 +208,13 @@ struct MenuBarLabel: View {
     case .capturing:
       ("Confirming recording", "waveform", "Confirming durable recording")
     case .starting:
-      ("Starting microphone + system audio", "waveform", liveStatus)
+      (liveStatus, "waveform", liveStatus)
     case .pausing, .paused:
       (liveStatus, "pause.circle", liveStatus)
     case .failed:
       ("Recording needs attention", "exclamationmark.circle", liveStatus)
     case .saved:
-      ("Conversation audio saved", "waveform.badge.checkmark", liveStatus)
+      (liveStatus, "waveform.badge.checkmark", liveStatus)
     case .requestingPermission, .preparing, .stopping:
       (liveStatus, "waveform", liveStatus)
     case .idle:

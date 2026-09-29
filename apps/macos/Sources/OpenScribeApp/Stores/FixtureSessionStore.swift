@@ -55,6 +55,10 @@ final class RuntimeLibraryStore: ObservableObject {
   @Published private(set) var savedSessions: [RuntimeSessionPresentation] = []
   @Published private(set) var isSnapshotStale = false
   @Published private(set) var errorMessage: String?
+  /// The app sets this while launch recovery scans the library. Capture waits
+  /// for that scan, so a current session read meanwhile is a terminated one
+  /// awaiting recovery and is never presented as live.
+  var isLaunchRecoveryPending: @MainActor () -> Bool = { false }
 
   private let snapshotProvider: SnapshotProvider
   nonisolated private let importProvider: ImportProvider?
@@ -192,6 +196,9 @@ final class RuntimeLibraryStore: ObservableObject {
 
   private func startRefresh(generation: UInt64) {
     let snapshotProvider = snapshotProvider
+    // A snapshot read during the scan may predate its recovery even if the
+    // scan has finished by the time the read returns.
+    let readDuringRecovery = isLaunchRecoveryPending()
     refreshTask = Task { [weak self] in
       let result: Result<NativeRuntimeLibrarySnapshot, Error>
       do {
@@ -200,19 +207,23 @@ final class RuntimeLibraryStore: ObservableObject {
         result = .failure(error)
       }
       guard let self else { return }
-      self.finishRefresh(result, generation: generation)
+      self.finishRefresh(
+        result, generation: generation, readDuringRecovery: readDuringRecovery)
     }
   }
 
   private func finishRefresh(
     _ result: Result<NativeRuntimeLibrarySnapshot, Error>,
-    generation: UInt64
+    generation: UInt64,
+    readDuringRecovery: Bool
   ) {
     refreshTask = nil
     if generation == refreshGeneration {
       switch result {
       case .success(let native):
-        currentSession = native.currentSession.map(RuntimeSessionPresentation.init(native:))
+        currentSession =
+          readDuringRecovery || isLaunchRecoveryPending()
+          ? nil : native.currentSession.map(RuntimeSessionPresentation.init(native:))
         savedSessions = native.savedSessions.map(RuntimeSessionPresentation.init(native:))
         isSnapshotStale = false
         errorMessage = nil

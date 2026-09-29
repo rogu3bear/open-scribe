@@ -18,7 +18,7 @@
 - Expected: exit 0 with `SCAFFOLD_GREEN`.
 - Stop if: runtime is overstated or a boundary fails.
 
-## Validate the Milestone 0 native proof
+## Validate the M0 native proof
 
 - Command: `./script/check.sh --m0-native`.
 - Expected: `M0_NATIVE_GREEN`, then `M0_NATIVE_CHECK_GREEN`.
@@ -35,12 +35,12 @@
 
 - Command: `./script/check.sh --state-fixtures`.
 - Expected: `STATE_FIXTURES_GREEN`.
-- Proof: Rust/UniFFI guards, one shared Rust-owned runtime/library snapshot, WASM checks, fresh bindings, Swift state/accessibility tests, unsigned-app launch, and diff hygiene.
+- Proof: Rust/UniFFI guards, one Rust-owned runtime/library snapshot, WASM checks, fresh bindings, Swift state/accessibility tests, unsigned-app launch, diff hygiene.
 - Stop if: hot-path values cross UniFFI, fixture state reaches product surfaces, Starting becomes durable, or recording truth diverges.
 
 ## Validate durable preparation and media-open
 
-- Commands: `./script/check.sh --m1-storage` for Rust preparation; `./script/check.sh --m1-media-open` for Swift/Rust media-open integration.
+- Commands: `./script/check.sh --m1-storage` (Rust preparation); `./script/check.sh --m1-media-open` (Swift/Rust media-open integration).
 - Expected: the command's named green receipt.
 - Proof: durable schema/journal, interruption/tamper checks, create-new CAF, fresh bindings, Xcode/M0.
 - Stop if: preparation becomes Recording, invalid evidence is repaired, buffers cross UniFFI, or higher proof is claimed.
@@ -57,7 +57,7 @@
 - Command: `./script/check.sh --m1-segment-sealing`.
 - Expected: `M1_SEGMENT_SEALING_GREEN`.
 - Proof: earlier gates; close-before-receipt; Rust identity/length/header/SHA-256; journal-first, segment-local projection; interruption convergence.
-- Stop if: post-seal writes occur, unrelated state closes, writer counters are overstated, Recording is asserted, or a higher plane is claimed.
+- Stop if: post-seal writes occur, unrelated state closes, writer counters overstate, Recording is asserted, or a higher plane is claimed.
 
 ## Validate durable interruption state
 
@@ -66,22 +66,22 @@
 - Proof: earlier gates; typed content-free reasons; journal-first interrupted projection; idempotent replay; restart reconciliation; unchanged partial media; coarse bindings; focused Swift failures.
 - Stop if: interruption edits media, recovery is called playable, `Recording` is asserted, or a higher plane is claimed.
 
-## Validate short live dual-source capture
+## Requalify short live dual-source capture
 
 - Command: `./script/check.sh --m1-dual-source-runtime` (alias: `--m1-live-microphone`).
-- Expected: `M1_DUAL_SOURCE_RUNTIME_GREEN` after consent, two real sources, Rust-owned `Recording`, sealing, digests, and playability; proof media is deleted.
-- Does not prove: source loss, degraded continuation, permission revocation, application-scoped selection, long-session synchronization, signing, or release.
+- Earlier app passed `M1_DUAL_SOURCE_RUNTIME_GREEN`. Current gate source accepts segmented CAFs and retains proof media; no current-app receipt exists.
+- Does not prove: source loss, degraded continuation, permission revocation, application-scoped selection, long-session synchronization, signing, release.
 
-## Validate forced-termination recovery
+## Requalify forced-termination recovery
 
 - Command: `./script/check.sh --m1-forced-termination-recovery`.
 - Expected: `M1_FORCED_TERMINATION_RECOVERY_GATE_GREEN`.
-- Proof: microphone plus all-authorized system audio; Rust-owned multi-source `Recording`; external kill; strict atomic two-CAF recovery; persistent playback; independent decode; unchanged SHA-256 for both tracks; idempotence.
+- Earlier app proved two-source recovery, native playback, unchanged CAF digests, and idempotence. Current gate source requires rotation before kill; no current-app receipt exists.
 - Stop if: recovery mutates media, promotes invalid media, duplicates a receipt, or asserts `Recording`.
 
 ## Validate recorder components
 
-- Commands: `cargo test --locked -p open-scribe-store`; `./script/build_and_run.sh --verify-recording` (`RECORDING_COMPONENTS_GREEN`); `bash script/check_foundational_workflow.sh <app binary>` (`FOUNDATION_SYNTHETIC_GREEN`, unchanged digests).
+- Commands (via `disk-guard run … --`): `cargo test --locked -p open-scribe-store`; `bash script/build_and_run.sh --verify-recording` (`RECORDING_COMPONENTS_GREEN`); `bash script/check_foundational_workflow.sh <app binary>` (`FOUNDATION_SYNTHETIC_GREEN`).
 - Excludes: real capture, audible playback, signing, release.
 
 ## Admission rule

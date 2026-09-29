@@ -13,6 +13,13 @@ struct RecorderCaptureSelection: @unchecked Sendable {
 
   static let system = Self(kind: .systemAudio, identity: "authorized-system-audio", name: "Mac system audio", filter: nil, processId: nil)
   static let microphoneOnly = Self(kind: nil, identity: "microphone-only", name: "Microphone only", filter: nil, processId: nil)
+
+  /// The audio this selection records, as a phrase. The microphone is always
+  /// included; computer audio only when a source is selected.
+  var recordedAudio: String {
+    guard let kind else { return "microphone" }
+    return kind == .systemAudio ? "microphone + system audio" : "microphone + \(name)"
+  }
 }
 
 @MainActor

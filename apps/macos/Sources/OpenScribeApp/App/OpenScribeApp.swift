@@ -96,6 +96,11 @@ struct OpenScribeApp: App {
         await Self.runForcedTerminationCaptureProof(controller: controller)
       }
     } else {
+      // Launch recovery scans the library off the main actor. A recording or
+      // import begun during that scan could be recovered as abandoned, and a
+      // session the scan has not recovered yet is not a live recording.
+      controller.isLaunchRecoveryPending = { recovery.phase == .scanning }
+      runtime.isLaunchRecoveryPending = { recovery.phase == .scanning }
       Task { @MainActor in
         recovery.recoverOnLaunch()
         runtime.refresh()
