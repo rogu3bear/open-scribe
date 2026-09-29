@@ -11,6 +11,9 @@ const CANONICAL_ORIGIN: &str = "https://open-scribe.app";
 const PRIVACY_NOTICE: &str = include_str!("../../docs/legal/privacy.md");
 const TERMS: &str = include_str!("../../docs/legal/terms.md");
 const SECURITY_POLICY: &str = include_str!("../../SECURITY.md");
+/// The checked capability-claim authority (ADR 0015). Capability status on
+/// this site is rendered from it, never restated in page prose.
+const CAPABILITY_MANIFEST: &str = include_str!("../../docs/capabilities/manifest.v1.json");
 
 #[cfg(feature = "ssr")]
 pub fn shell(options: LeptosOptions) -> impl IntoView {
@@ -100,13 +103,13 @@ pub fn HomePage() -> impl IntoView {
         <SiteLayout>
             <main id="main-content">
                 <section class="intro" aria-labelledby="home-title">
-                    <p class="status">"Milestone 0 development foundation"</p>
+                    <p class="status">"Development build — no public release"</p>
                     <h1 id="home-title">"Local evidence for important conversations."</h1>
                     <p class="lede">
                         "Open Scribe is being built for Mac operators who need recoverable conversation records and a clear line between source evidence and derived interpretation."
                     </p>
                     <p class="notice">
-                        "There is no public download or service. Recording, persistence, transcription, signing, and release are not implemented."
+                        "There is no public download or service. Capability status below is generated from the checked capability manifest; development fixtures are not available to users."
                     </p>
                 </section>
                 <section aria-labelledby="principles-title">
@@ -117,8 +120,50 @@ pub fn HomePage() -> impl IntoView {
                         <li>"Source-linked review that does not present model output as fact."</li>
                     </ul>
                 </section>
+                <CapabilityStatus/>
             </main>
         </SiteLayout>
+    }
+}
+
+/// One `(terminology, maturity label)` row per manifest capability, in
+/// manifest order. A malformed manifest renders no claims rather than
+/// inventing them.
+fn capability_rows() -> Vec<(String, &'static str)> {
+    let Ok(manifest) = serde_json::from_str::<serde_json::Value>(CAPABILITY_MANIFEST) else {
+        return Vec::new();
+    };
+    manifest["capabilities"]
+        .as_array()
+        .map(|capabilities| {
+            capabilities
+                .iter()
+                .filter_map(|capability| {
+                    let terminology = capability["terminology"].as_str()?;
+                    let maturity = match capability["maturity"].as_str()? {
+                        "Available" => "Available",
+                        "Fixture" => "Development fixture — not available to users",
+                        _ => "Unavailable",
+                    };
+                    Some((terminology.to_owned(), maturity))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+#[component]
+fn CapabilityStatus() -> impl IntoView {
+    view! {
+        <section aria-labelledby="capabilities-title">
+            <h2 id="capabilities-title">"Current capability status"</h2>
+            <ul class="capabilities">
+                {capability_rows()
+                    .into_iter()
+                    .map(|(terminology, maturity)| view! { <li>{terminology}" — "{maturity}</li> })
+                    .collect_view()}
+            </ul>
+        </section>
     }
 }
 
@@ -129,7 +174,7 @@ fn ProductPage() -> impl IntoView {
 
 #[component]
 fn RecordPage() -> impl IntoView {
-    view! { <IntentPage title="Record mode" summary="Intended behavior: explicit source selection, unmistakable active-state feedback, and recoverable local media. The current development proof does not record media."/> }
+    view! { <IntentPage title="Record mode" summary="Intended behavior: explicit source selection, unmistakable active-state feedback, and recoverable local media. Recording exists only as a development fixture and is not available to users."/> }
 }
 
 #[component]
@@ -302,8 +347,19 @@ mod tests {
             "https://open-scribe.app",
             "/privacy",
             "/download",
+            "Current capability status",
         ] {
             assert!(html.contains(required), "SSR output omitted {required:?}");
+        }
+        assert!(!html.contains("not implemented"));
+        let rows = super::capability_rows();
+        assert_eq!(rows.len(), 8);
+        for (terminology, maturity) in rows {
+            assert!(
+                html.contains(&terminology),
+                "SSR output omitted {terminology:?}"
+            );
+            assert!(html.contains(maturity), "SSR output omitted {maturity:?}");
         }
     }
 }

@@ -1558,6 +1558,7 @@ dependencies = [
  "leptos_axum",
  "leptos_meta",
  "leptos_router",
+ "serde_json",
  "sha2",
  "tower-service",
  "wasm-bindgen",
