@@ -64,6 +64,36 @@ final class TimelineWorkflowTests: XCTestCase {
     withExtendedLifetime(capture) {}
   }
 
+  func testSeekingRendersTheSameSamplesAsReadingFromTheStart() throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let capture = try TimelineRuntimeProof.capture(root: root)
+    _ = try TimelineRuntimeProof.verify(root: root, sessionId: capture.sessionId)
+    let plan = try NativeRecordingPreparation.open(managedRoot: root.path)
+      .playbackTimeline(sessionId: capture.sessionId)
+    let full = try TimelinePCMReader(segments: plan)
+    defer { full.close() }
+    var left: [Float] = []
+    while let buffer = try full.read(maximumFrames: 16_384) {
+      left.append(
+        contentsOf: UnsafeBufferPointer(
+          start: buffer.floatChannelData![0], count: Int(buffer.frameLength)))
+    }
+    // Inside the first segment, inside the second, and just after the start.
+    for seconds in [0.5, 20.0, 31.25] {
+      let frame = Int(seconds * 48_000)
+      let seeked = try TimelinePCMReader(
+        segments: plan, startNanoseconds: Int64(seconds * 1_000_000_000))
+      defer { seeked.close() }
+      let buffer = try XCTUnwrap(try seeked.read(maximumFrames: 4_096))
+      let samples = Array(
+        UnsafeBufferPointer(start: buffer.floatChannelData![0], count: Int(buffer.frameLength)))
+      XCTAssertEqual(samples.count, 4_096)
+      XCTAssertEqual(samples, Array(left[frame..<frame + samples.count]), "seek \(seconds)s")
+    }
+    withExtendedLifetime(capture) {}
+  }
+
   func testSourceDiscontinuityIsARealGapInRecoveredPlayback() throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }

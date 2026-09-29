@@ -9,20 +9,20 @@ use tempfile::TempDir;
 
 use super::*;
 
-const SECOND: i64 = 1_000_000_000;
-const BURSTS_SECONDS: [f64; 3] = [5.0, 25.0, 60.0];
+pub(crate) const SECOND: i64 = 1_000_000_000;
+pub(crate) const BURSTS_SECONDS: [f64; 3] = [5.0, 25.0, 60.0];
 const BURST_LENGTH_SECONDS: f64 = 1.5;
 
 /// Test-only recognizer: reports each sustained tone burst as one segment.
 /// It is deterministic evidence plumbing, never a product capability.
-struct BurstRecognizer {
+pub(crate) struct BurstRecognizer {
     identity: RecognizerIdentity,
     calls: usize,
     fail_on_call: Option<(usize, RecognizerError)>,
 }
 
 impl BurstRecognizer {
-    fn new(model_sha256: &str) -> Self {
+    pub(crate) fn new(model_sha256: &str) -> Self {
         Self {
             identity: RecognizerIdentity {
                 engine: "burst-fixture".into(),
@@ -35,7 +35,7 @@ impl BurstRecognizer {
         }
     }
 
-    fn failing(model_sha256: &str, call: usize, error: RecognizerError) -> Self {
+    pub(crate) fn failing(model_sha256: &str, call: usize, error: RecognizerError) -> Self {
         Self {
             fail_on_call: Some((call, error)),
             ..Self::new(model_sha256)
@@ -99,16 +99,16 @@ fn segment(start_frame: usize, end_frame: usize) -> HypothesisSegment {
     }
 }
 
-struct Imported {
+pub(crate) struct Imported {
     _temp: TempDir,
-    root: PathBuf,
-    store: SessionStore,
-    session: SessionId,
-    track: String,
-    media: PathBuf,
+    pub(crate) root: PathBuf,
+    pub(crate) store: SessionStore,
+    pub(crate) session: SessionId,
+    pub(crate) track: String,
+    pub(crate) media: PathBuf,
 }
 
-fn imported(seconds: u64) -> Imported {
+pub(crate) fn imported(seconds: u64) -> Imported {
     let temp = TempDir::new().unwrap();
     let source = temp.path().join("bursts.caf");
     write_burst_caf(&source, seconds * u64::from(SOURCE_SAMPLE_RATE_HZ));
@@ -173,7 +173,7 @@ fn digest(path: &Path) -> Vec<u8> {
     Sha256::digest(std::fs::read(path).unwrap()).to_vec()
 }
 
-fn run(
+pub(crate) fn run(
     imported: &mut Imported,
     recognizer: &mut BurstRecognizer,
 ) -> Result<TranscriptionOutcome, TranscriptionError> {

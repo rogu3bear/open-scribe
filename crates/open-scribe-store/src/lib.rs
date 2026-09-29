@@ -38,11 +38,19 @@ mod recorder;
 pub use recorder::{RecorderAction, RecorderDetail, RecorderEvent};
 mod runtime_snapshot;
 mod segment_gaps;
+mod session_deletion;
+pub use session_deletion::{SessionDeletionInventory, SessionDeletionReceipt};
 mod source_failure;
 mod timeline;
 pub use timeline::{CaptureClock, TimelineSegment};
 mod transcript_input;
 pub use transcript_input::{InputSegment, InputSpan, SealedTrackReader, TranscriptionInput};
+mod transcript_export;
+pub use transcript_export::{SelectedRevisionProvenance, TranscriptExportContext};
+mod transcript_review;
+pub use transcript_review::{
+    SessionSpeaker, SpeakerLabelOrigin, TranscriptDocumentSegment, TranscriptSearchHit,
+};
 mod transcripts;
 pub use transcripts::{
     PlannedTranscriptChunk, RevisionSegmentInput, TRANSCRIPT_SCHEMA_VERSION, TranscriptChunk,
@@ -220,6 +228,8 @@ pub enum SessionInterruptionReason {
     FirstSampleRejected,
     StopWithoutDurableSample,
     SegmentSealFailed,
+    /// The last capture source lost its operating-system permission.
+    PermissionRevoked,
 }
 
 impl SessionInterruptionReason {
@@ -230,6 +240,7 @@ impl SessionInterruptionReason {
             Self::FirstSampleRejected => "first_sample_rejected",
             Self::StopWithoutDurableSample => "stop_without_durable_sample",
             Self::SegmentSealFailed => "segment_seal_failed",
+            Self::PermissionRevoked => "permission_revoked",
         }
     }
 
@@ -240,6 +251,7 @@ impl SessionInterruptionReason {
             "first_sample_rejected" => Ok(Self::FirstSampleRejected),
             "stop_without_durable_sample" => Ok(Self::StopWithoutDurableSample),
             "segment_seal_failed" => Ok(Self::SegmentSealFailed),
+            "permission_revoked" => Ok(Self::PermissionRevoked),
             _ => Err(StoreError::IntegrityMismatch(
                 "session interruption reason is unsupported",
             )),
@@ -2748,6 +2760,9 @@ fn configure_connection(connection: &mut Connection) -> Result<(), StoreError> {
     // holds the WAL write lock. Taking it at BEGIN lets every writer wait.
     connection.set_transaction_behavior(TransactionBehavior::Immediate);
     connection.pragma_update(None, "foreign_keys", true)?;
+    // Deleted rows are overwritten in place so session deletion leaves no
+    // recoverable text in freed database pages.
+    connection.pragma_update(None, "secure_delete", true)?;
     let journal_mode: String =
         connection.query_row("PRAGMA journal_mode = WAL", [], |row| row.get(0))?;
     if !journal_mode.eq_ignore_ascii_case("wal") {
@@ -2925,6 +2940,16 @@ fn apply_schema(connection: &mut Connection) -> Result<(), StoreError> {
     transaction.execute(
         "INSERT OR IGNORE INTO schema_migrations (version, applied_at_ms) VALUES (?1, ?2)",
         params![transcripts::TRANSCRIPT_MIGRATION_VERSION, applied_at],
+    )?;
+    transcript_review::apply_review_schema(&transaction)?;
+    transaction.execute(
+        "INSERT OR IGNORE INTO schema_migrations (version, applied_at_ms) VALUES (?1, ?2)",
+        params![transcript_review::REVIEW_MIGRATION_VERSION, applied_at],
+    )?;
+    session_deletion::apply_deletion_schema(&transaction)?;
+    transaction.execute(
+        "INSERT OR IGNORE INTO schema_migrations (version, applied_at_ms) VALUES (?1, ?2)",
+        params![session_deletion::DELETION_MIGRATION_VERSION, applied_at],
     )?;
     transaction.commit()?;
     Ok(())
@@ -3758,6 +3783,7 @@ mod tests {
         assert_eq!(journal_mode, "wal");
         assert_eq!(database_value(&store, "PRAGMA synchronous"), 2);
         assert_eq!(database_value(&store, "PRAGMA foreign_keys"), 1);
+        assert_eq!(database_value(&store, "PRAGMA secure_delete"), 1);
 
         let names: BTreeSet<String> = store
             .connection
@@ -3784,12 +3810,16 @@ mod tests {
             "transcript_revisions",
             "transcript_segments",
             "transcript_selections",
+            "transcript_corrections",
+            "speaker_adjudications",
+            "transcript_search",
+            "session_deletion_intents",
         ] {
             assert!(names.contains(required), "missing table {required}");
         }
         assert_eq!(
             database_value(&store, "SELECT MAX(version) FROM schema_migrations"),
-            5
+            7
         );
         let segment_columns: BTreeSet<String> = store
             .connection
@@ -3847,7 +3877,7 @@ mod tests {
         assert_eq!(channels, 1);
         assert_eq!(
             database_value(&store, "SELECT MAX(version) FROM schema_migrations"),
-            5
+            7
         );
     }
 

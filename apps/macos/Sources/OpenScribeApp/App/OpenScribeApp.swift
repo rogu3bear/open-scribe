@@ -41,6 +41,7 @@ struct OpenScribeApp: App {
   @StateObject private var importedMediaAuthority: ImportedMediaAuthorityAdapter
   @StateObject private var liveRecording: LiveMicrophoneRecordingController
   @StateObject private var recoveredSessions: RecoveredSessionController
+  @StateObject private var transcripts: TranscriptLibraryModel
 
   private let status = RustStatusSource.load()
 
@@ -92,6 +93,7 @@ struct OpenScribeApp: App {
     _importedMediaAuthority = StateObject(wrappedValue: importAuthority)
     _liveRecording = StateObject(wrappedValue: controller)
     _recoveredSessions = StateObject(wrappedValue: recovery)
+    _transcripts = StateObject(wrappedValue: TranscriptLibraryModel(managedRoot: managedRoot))
     if let proof = injectedProof {
       Task { @MainActor in await proof.run(runtime: runtime) }
     } else if let root = injectedRecoveryRoot {
@@ -137,7 +139,8 @@ struct OpenScribeApp: App {
         store: runtimeStore,
         importedMediaAuthority: importedMediaAuthority,
         liveRecording: liveRecording,
-        recoveredSessions: recoveredSessions
+        recoveredSessions: recoveredSessions,
+        transcripts: transcripts
       )
     }
     .defaultSize(width: 1040, height: 720)

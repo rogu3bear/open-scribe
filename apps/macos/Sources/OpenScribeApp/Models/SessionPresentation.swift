@@ -196,6 +196,8 @@ struct RuntimeSessionPresentation: Equatable, Sendable, Identifiable {
     case "first_sample_rejected": "First-sample evidence was rejected; recording was not claimed."
     case "stop_without_durable_sample": "A required source had no durable final sample."
     case "segment_seal_failed": "Audio could not be sealed; recovery state was preserved."
+    case "permission_revoked":
+      "Capture permission was withdrawn; the audio recorded before that was preserved."
     default: "Capture was interrupted; recovery state was preserved."
     }
   }

@@ -160,6 +160,7 @@ impl SessionStore {
     }
 
     fn recover_library_pass(&mut self) -> Result<LibraryRecovery, StoreError> {
+        self.settle_deletion_intents()?;
         let mut findings = self.recover_preparations()?;
         let blocked = blocked_sessions(&findings);
         for finding in self.recover_abandoned_preparations(&blocked)? {

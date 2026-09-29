@@ -9,9 +9,9 @@ use tempfile::TempDir;
 use super::*;
 use crate::{CAF_HEADER, DATABASE_NAME, ImportMediaRequest, JOURNAL_NAME, SESSIONS_DIRECTORY};
 
-const SECOND: i64 = 1_000_000_000;
+pub(crate) const SECOND: i64 = 1_000_000_000;
 
-fn write_caf(path: &Path, frames: u64, sample: impl Fn(u64) -> i16) {
+pub(crate) fn write_caf(path: &Path, frames: u64, sample: impl Fn(u64) -> i16) {
     let mut file = File::create(path).unwrap();
     file.write_all(CAF_HEADER).unwrap();
     file.write_all(b"desc").unwrap();
@@ -31,20 +31,20 @@ fn write_caf(path: &Path, frames: u64, sample: impl Fn(u64) -> i16) {
     file.sync_all().unwrap();
 }
 
-fn sample(frame: u64) -> i16 {
+pub(crate) fn sample(frame: u64) -> i16 {
     ((frame % 997) as i16 - 498) * 31
 }
 
-struct Fixture {
+pub(crate) struct Fixture {
     _temp: TempDir,
-    root: PathBuf,
-    store: SessionStore,
-    session: SessionId,
-    track: String,
-    media: PathBuf,
+    pub(crate) root: PathBuf,
+    pub(crate) store: SessionStore,
+    pub(crate) session: SessionId,
+    pub(crate) track: String,
+    pub(crate) media: PathBuf,
 }
 
-fn imported_fixture(frames: u64) -> Fixture {
+pub(crate) fn imported_fixture(frames: u64) -> Fixture {
     let temp = TempDir::new().unwrap();
     let source = temp.path().join("source.caf");
     write_caf(&source, frames, sample);
@@ -74,7 +74,7 @@ fn imported_fixture(frames: u64) -> Fixture {
     }
 }
 
-fn identity(fixture: &Fixture, options_digest: &str) -> TranscriptionRunIdentity {
+pub(crate) fn identity(fixture: &Fixture, options_digest: &str) -> TranscriptionRunIdentity {
     let input = fixture
         .store
         .transcription_input(&fixture.session, &fixture.track)
@@ -92,7 +92,7 @@ fn identity(fixture: &Fixture, options_digest: &str) -> TranscriptionRunIdentity
     }
 }
 
-fn plan() -> Vec<PlannedTranscriptChunk> {
+pub(crate) fn plan() -> Vec<PlannedTranscriptChunk> {
     vec![
         PlannedTranscriptChunk {
             span_index: 0,
@@ -107,7 +107,7 @@ fn plan() -> Vec<PlannedTranscriptChunk> {
     ]
 }
 
-fn hypothesis(text: &str) -> String {
+pub(crate) fn hypothesis(text: &str) -> String {
     serde_json::json!({"language": "en", "segments": [{"start_ms": 100, "end_ms": 900, "text": text}]})
         .to_string()
 }
@@ -123,7 +123,7 @@ fn segment(chunk: &TranscriptChunk, offset: i64, text: &str) -> RevisionSegmentI
     }
 }
 
-fn complete_all(
+pub(crate) fn complete_all(
     fixture: &mut Fixture,
     handle: &TranscriptionRunHandle,
     words: [&str; 2],
@@ -559,13 +559,16 @@ fn schema_v4_fixture_migrates_without_rewriting_sealed_evidence() {
             .unwrap()
             .map(Result::unwrap)
             .collect();
-        assert_eq!(versions, [1, 2, 3, 4, 5]);
+        assert_eq!(versions, [1, 2, 3, 4, 5, 6, 7]);
         let derived: i64 = store
             .connection
             .query_row(
                 "SELECT (SELECT COUNT(*) FROM transcription_runs)
                       + (SELECT COUNT(*) FROM transcript_revisions)
-                      + (SELECT COUNT(*) FROM transcript_selections)",
+                      + (SELECT COUNT(*) FROM transcript_selections)
+                      + (SELECT COUNT(*) FROM transcript_corrections)
+                      + (SELECT COUNT(*) FROM speaker_adjudications)
+                      + (SELECT COUNT(*) FROM transcript_search)",
                 [],
                 |row| row.get(0),
             )

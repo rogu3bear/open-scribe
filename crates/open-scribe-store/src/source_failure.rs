@@ -13,18 +13,22 @@ use super::{
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SourceFailureReason {
     CaptureFailed,
+    /// The operating system withdrew capture permission for this source.
+    PermissionRevoked,
 }
 
 impl SourceFailureReason {
     const fn as_str(self) -> &'static str {
         match self {
             Self::CaptureFailed => "capture_failed",
+            Self::PermissionRevoked => "permission_revoked",
         }
     }
 
     fn from_str(value: &str) -> Result<Self, StoreError> {
         match value {
             "capture_failed" => Ok(Self::CaptureFailed),
+            "permission_revoked" => Ok(Self::PermissionRevoked),
             _ => Err(StoreError::IntegrityMismatch(
                 "source failure reason is unsupported",
             )),
@@ -588,6 +592,59 @@ mod tests {
         );
         assert!(microphone.absolute_path.is_file());
         assert_eq!(source_failure_event_count(&store, &session_id.0), 2);
+    }
+
+    #[test]
+    fn permission_revocation_is_its_own_durable_reason_through_interruption() {
+        let temp = TempDir::new().unwrap();
+        let mut store = SessionStore::open(temp.path().join("Open Scribe")).unwrap();
+        let (session_id, _, _, system) = prepared_three_sources(&mut store);
+        seal_source(&mut store, &system);
+        let revoked = SourceFailureRequest {
+            session_id: session_id.clone(),
+            source_kind: MediaSourceKind::SystemAudio,
+            reason: SourceFailureReason::PermissionRevoked,
+        };
+        let evidence = store.record_source_failure(revoked.clone()).unwrap();
+        assert_eq!(evidence.reason, SourceFailureReason::PermissionRevoked);
+        assert!(evidence.recording_continues && evidence.session_degraded);
+        assert_eq!(store.record_source_failure(revoked).unwrap(), evidence);
+        let reason: String = store
+            .connection
+            .query_row(
+                "SELECT json_extract(payload_json, '$.reason') FROM session_events
+                 WHERE session_id = ?1 AND event_kind = 'source_failed'",
+                [&session_id.0],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(reason, "permission_revoked");
+        assert!(matches!(
+            store.record_source_failure(SourceFailureRequest {
+                session_id: session_id.clone(),
+                source_kind: MediaSourceKind::SystemAudio,
+                reason: SourceFailureReason::CaptureFailed,
+            }),
+            Err(StoreError::IntegrityMismatch(_))
+        ));
+
+        store
+            .interrupt_session(InterruptSessionRequest {
+                session_id: session_id.clone(),
+                reason: SessionInterruptionReason::PermissionRevoked,
+            })
+            .unwrap();
+        let snapshot = store.runtime_library_snapshot().unwrap();
+        let interrupted = snapshot
+            .current_session
+            .into_iter()
+            .chain(snapshot.saved_sessions)
+            .find(|session| session.session_id == session_id)
+            .unwrap();
+        assert_eq!(
+            interrupted.interruption_reason,
+            Some(SessionInterruptionReason::PermissionRevoked)
+        );
     }
 
     #[test]

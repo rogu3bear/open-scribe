@@ -5,8 +5,10 @@
 //! run, a revision, and its segments are immutable. Retry and replacement
 //! create new runs, and a session track's selected revision changes only when
 //! a replacement has completed. Rows cascade from their session so a future
-//! deletion removes all derived text with it.
+//! deletion removes all derived text with it; the search projection in
+//! `transcript_review` has no foreign keys and is cleared explicitly.
 
+use super::transcript_review::reindex_session_search;
 use super::{SessionStore, StoreError, wall_time_milliseconds};
 use open_scribe_types::SessionId;
 use rusqlite::{OptionalExtension, Transaction, params};
@@ -609,6 +611,7 @@ impl SessionStore {
             params![run_id, now],
         )?;
         select_revision(&transaction, &session_id, &track_id, &revision_id, now)?;
+        reindex_session_search(&transaction, &session_id)?;
         transaction.commit()?;
         Ok(revision_id)
     }
@@ -638,6 +641,7 @@ impl SessionStore {
             revision_id,
             wall_time_milliseconds(),
         )?;
+        reindex_session_search(&transaction, &session.0)?;
         transaction.commit()?;
         Ok(())
     }
@@ -850,4 +854,4 @@ fn digest_fields(domain: &[u8], fields: &[&str]) -> String {
 
 #[cfg(test)]
 #[path = "transcripts_tests.rs"]
-mod tests;
+pub(crate) mod tests;

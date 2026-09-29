@@ -1737,7 +1737,7 @@ final class RecoveredSessionController: ObservableObject {
     }
   }
 
-  func playSynchronized(sessionId: String) {
+  func playSynchronized(sessionId: String, startNanoseconds: Int64 = 0) {
     stopPlayback()
     clearPlaybackError()
     guard let timelineProvider else {
@@ -1758,7 +1758,9 @@ final class RecoveredSessionController: ObservableObject {
         }
         try Task.checkCancellation()
         guard self.activePlaybackGeneration == generation else { return }
-        try self.timelinePlayer.play(segments: segments, generation: generation) {
+        try self.timelinePlayer.play(
+          segments: segments, startNanoseconds: startNanoseconds, generation: generation
+        ) {
           [weak self] termination in
           Task { @MainActor [weak self] in
             guard let self, self.activePlaybackGeneration == termination.generation else { return }

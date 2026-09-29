@@ -33,7 +33,7 @@ if [[ "$mode" == --all || "$mode" == --entitlements ]]; then
 	info_plist="apps/macos/Support/Info.plist"
 	entitlements="apps/macos/Support/OpenScribe.entitlements"
 	plutil -lint "$info_plist" "$entitlements" >/dev/null
-	for key in app-sandbox device.audio-input files.user-selected.read-only; do
+	for key in app-sandbox device.audio-input files.user-selected.read-write; do
 		[[ "$(/usr/libexec/PlistBuddy -c "Print :com.apple.security.$key" "$entitlements")" == true ]] || exit 1
 	done
 	[[ "$(plutil -p "$entitlements" | rg -c '=>')" == 3 ]] || exit 1

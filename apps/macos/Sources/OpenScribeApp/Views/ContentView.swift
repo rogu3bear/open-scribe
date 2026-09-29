@@ -5,7 +5,9 @@ struct ContentView: View {
   @ObservedObject var importedMediaAuthority: ImportedMediaAuthorityAdapter
   @ObservedObject var liveRecording: LiveMicrophoneRecordingController
   @ObservedObject var recoveredSessions: RecoveredSessionController
+  @ObservedObject var transcripts: TranscriptLibraryModel
   @StateObject private var navigation = MainWorkspaceNavigation()
+  @State private var searchQuery = ""
 
   private var selectedSessionId: String? {
     navigation.selectedSessionId
@@ -63,6 +65,30 @@ struct ContentView: View {
         savedSessionIds: store.savedSessions.map(\.sessionId)
       )
     }
+    .onChange(of: searchQuery) { query in
+      transcripts.search(query)
+    }
+    .confirmationDialog(
+      "Move this conversation to Trash?",
+      isPresented: Binding(
+        get: { transcripts.pendingDeletion != nil },
+        set: { presented in
+          if !presented { transcripts.cancelDeletion() }
+        }
+      ),
+      presenting: transcripts.pendingDeletion
+    ) { _ in
+      Button("Move to Trash", role: .destructive) {
+        if transcripts.confirmDeletion() {
+          store.refresh()
+        }
+      }
+      Button("Cancel", role: .cancel) {
+        transcripts.cancelDeletion()
+      }
+    } message: { inventory in
+      Text(SessionDeletionSummary.text(inventory))
+    }
     .onChange(of: selectedSessionId) { selectedSessionId in
       if MainWorkspaceSelection.shouldStopDetachedPlayback(
         activePlaybackSessionId: recoveredSessions.activePlaybackSessionId,
@@ -84,6 +110,30 @@ struct ContentView: View {
 
   private var conversationSidebar: some View {
     List(selection: selectedSessionBinding) {
+      if !searchQuery.trimmingCharacters(in: .whitespaces).isEmpty {
+        Section("Transcript Matches") {
+          if transcripts.searchResults.isEmpty {
+            Text("No matching transcript text")
+              .foregroundStyle(.secondary)
+          }
+          ForEach(transcripts.searchResults, id: \.self) { hit in
+            Button {
+              openSearchHit(hit)
+            } label: {
+              VStack(alignment: .leading, spacing: 2) {
+                Text(hit.sessionTitle)
+                  .font(.caption)
+                  .foregroundStyle(.secondary)
+                Text(hit.effectiveText)
+                  .lineLimit(2)
+              }
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("\(hit.sessionTitle): \(hit.effectiveText)")
+          }
+        }
+      }
+
       if let current = store.currentSession {
         Section("Now") {
           ConversationSidebarRow(session: current, isCurrent: true)
@@ -99,11 +149,18 @@ struct ContentView: View {
           ForEach(store.savedSessions) { session in
             ConversationSidebarRow(session: session, isCurrent: false)
               .tag(session.sessionId)
+              .contextMenu {
+                Button("Move to Trash…", role: .destructive) {
+                  requestDeletion(session)
+                }
+                .disabled(!liveRecording.canStart)
+              }
           }
         }
       }
     }
     .listStyle(.sidebar)
+    .searchable(text: $searchQuery, placement: .sidebar, prompt: "Search transcripts")
     .navigationTitle("Library")
     .navigationSplitViewColumnWidth(min: 220, ideal: 260, max: 340)
   }
@@ -119,6 +176,7 @@ struct ContentView: View {
           ConversationWorkspaceView(
             session: selectedSession,
             playbackController: recoveredSessions,
+            transcripts: transcripts,
             loadRecorderEvents: { (try? liveRecording.detail(sessionId: $0).events) ?? [] }
           )
         }
@@ -231,6 +289,9 @@ struct ContentView: View {
     } else if notices.isEmpty, let message = importedMediaAuthority.statusMessage {
       notices.append(.init(id: "import", message: message, isFailure: false))
     }
+    if let message = transcripts.message {
+      notices.append(.init(id: "transcripts", message: message, isFailure: false))
+    }
     if notices.isEmpty, liveRecording.phase == .saved,
       selectedSessionId == liveRecording.lastSavedSessionId,
       let message = liveRecording.mixdownStatus
@@ -246,6 +307,21 @@ struct ContentView: View {
       store.refresh()
       synchronizeSelection(preferCurrentSession: true)
     }
+  }
+
+  private func openSearchHit(_ hit: NativeTranscriptSearchHit) {
+    navigation.select(hit.sessionId)
+    if store.savedSessions.contains(where: { $0.sessionId == hit.sessionId && $0.hasCaptureTimeline }) {
+      recoveredSessions.playSynchronized(
+        sessionId: hit.sessionId, startNanoseconds: hit.startNanoseconds)
+    }
+  }
+
+  private func requestDeletion(_ session: RuntimeSessionPresentation) {
+    if recoveredSessions.activePlaybackSessionId == session.sessionId {
+      recoveredSessions.stopPlayback()
+    }
+    transcripts.requestDeletion(sessionId: session.sessionId)
   }
 
   private func synchronizeSelection(preferCurrentSession: Bool) {
@@ -436,6 +512,7 @@ private struct ConversationSidebarRow: View {
 private struct ConversationWorkspaceView: View {
   let session: RuntimeSessionPresentation
   @ObservedObject var playbackController: RecoveredSessionController
+  @ObservedObject var transcripts: TranscriptLibraryModel
   let loadRecorderEvents: @MainActor (String) -> [NativeRecorderEvent]
   @State private var recorderEvents: [NativeRecorderEvent] = []
 
@@ -451,6 +528,17 @@ private struct ConversationWorkspaceView: View {
           attentionNotice
         }
         audioSection
+        if session.lifecycle == "ready_for_review" {
+          TranscriptSection(
+            session: session,
+            transcripts: transcripts,
+            canSeek: session.hasCaptureTimeline,
+            onSeek: { position in
+              playbackController.playSynchronized(
+                sessionId: session.sessionId, startNanoseconds: position)
+            }
+          )
+        }
         if !session.sources.isEmpty {
           sourceSection
         }

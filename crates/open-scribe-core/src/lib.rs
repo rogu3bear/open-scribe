@@ -6,6 +6,13 @@
 
 use std::path::{Path, PathBuf};
 
+mod export;
+pub use export::{
+    TRANSCRIPT_V1_SCHEMA_JSON, TranscriptAvailability, TranscriptExport, TranscriptExportError,
+    TranscriptExportFormat, TranscriptExportReceipt, write_transcript_export,
+};
+mod transcript_library;
+pub use transcript_library::TranscriptLibrary;
 mod transcription;
 pub use transcription::{
     TranscriptionError, TranscriptionOutcome, TranscriptionProgress, TranscriptionStage,
@@ -27,6 +34,10 @@ pub use open_scribe_store::{
     SealSegmentReceipt, SealedSegmentEvidence, SessionInterruptionEvidence,
     SessionInterruptionReason, SessionOrigin, SourceFailureEvidence, SourceFailureReason,
     SourceFailureRequest, StoreError, TimelineSegment, ValidatedMixdown, import_policy,
+};
+pub use open_scribe_store::{
+    SelectedRevisionProvenance, SessionDeletionInventory, SessionDeletionReceipt, SessionSpeaker,
+    SpeakerLabelOrigin, TranscriptDocumentSegment, TranscriptExportContext, TranscriptSearchHit,
 };
 
 pub struct CoarseMediaOpenReceipt {

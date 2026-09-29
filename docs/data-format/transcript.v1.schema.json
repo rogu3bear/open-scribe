@@ -1,0 +1,169 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://open-scribe.app/schema/transcript/v1",
+  "title": "Open Scribe transcript export v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "schema_version",
+    "exporter",
+    "session",
+    "exported_at",
+    "timeline_unit",
+    "duration_ns",
+    "availability",
+    "speakers_declaration",
+    "tracks",
+    "segments"
+  ],
+  "properties": {
+    "schema": { "const": "https://open-scribe.app/schema/transcript/v1" },
+    "schema_version": { "const": 1 },
+    "exporter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "version"],
+      "properties": {
+        "name": { "type": "string" },
+        "version": { "type": "string" }
+      }
+    },
+    "session": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "title", "created_at_ms"],
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string" },
+        "created_at_ms": { "type": "integer" }
+      }
+    },
+    "exported_at": { "type": "string", "format": "date-time" },
+    "timeline_unit": { "const": "nanoseconds" },
+    "duration_ns": { "type": "integer", "minimum": 0 },
+    "availability": { "enum": ["final", "draft", "failed", "unavailable"] },
+    "speakers_declaration": {
+      "enum": ["capture_source", "user_adjudicated", "anonymous"]
+    },
+    "tracks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "track_id",
+          "source_kind",
+          "input_digest",
+          "finality",
+          "speaker",
+          "revision"
+        ],
+        "properties": {
+          "track_id": { "type": "string" },
+          "source_kind": { "type": "string" },
+          "input_digest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+          "finality": { "enum": ["final", "pending", "failed"] },
+          "speaker": { "$ref": "#/$defs/speaker" },
+          "revision": {
+            "oneOf": [
+              { "type": "null" },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "revision_id",
+                  "run_id",
+                  "engine",
+                  "engine_version",
+                  "model_id",
+                  "model_sha256",
+                  "input_digest",
+                  "language"
+                ],
+                "properties": {
+                  "revision_id": { "type": "string" },
+                  "run_id": { "type": "string" },
+                  "engine": { "type": "string" },
+                  "engine_version": { "type": "string" },
+                  "model_id": { "type": "string" },
+                  "model_sha256": { "type": "string" },
+                  "input_digest": { "type": "string" },
+                  "language": { "type": ["string", "null"] }
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    "segments": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "revision_id",
+          "track_id",
+          "sequence",
+          "start_ns",
+          "end_ns",
+          "finality",
+          "verbatim_text",
+          "effective_text",
+          "correction",
+          "speaker",
+          "evidence_ref"
+        ],
+        "properties": {
+          "revision_id": { "type": "string" },
+          "track_id": { "type": "string" },
+          "sequence": { "type": "integer", "minimum": 0 },
+          "start_ns": { "type": "integer", "minimum": 0 },
+          "end_ns": { "type": "integer", "minimum": 0 },
+          "finality": { "const": "final" },
+          "verbatim_text": { "type": "string" },
+          "effective_text": { "type": "string" },
+          "correction": {
+            "oneOf": [
+              { "type": "null" },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["origin"],
+                "properties": { "origin": { "const": "human" } }
+              }
+            ]
+          },
+          "speaker": { "$ref": "#/$defs/speaker" },
+          "evidence_ref": {
+            "description": "open-scribe.evidence-ref/v1 as owned by open-scribe-evidence (ADR 0013).",
+            "type": "object",
+            "required": [
+              "schema",
+              "session_id",
+              "kind",
+              "record_id",
+              "revision_id",
+              "start_ns",
+              "end_ns",
+              "sub_item",
+              "content_digest"
+            ]
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "speaker": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["label", "origin"],
+      "properties": {
+        "label": { "type": "string" },
+        "origin": { "enum": ["source_default", "human"] }
+      }
+    }
+  }
+}

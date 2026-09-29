@@ -323,4 +323,4 @@ fn discontinuities(input: &TranscriptionInput) -> serde_json::Value {
 
 #[cfg(test)]
 #[path = "transcription_tests.rs"]
-mod tests;
+pub(crate) mod tests;

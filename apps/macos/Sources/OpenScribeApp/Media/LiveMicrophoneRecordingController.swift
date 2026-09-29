@@ -435,7 +435,7 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
                 String(describing: error),
                 code: "system-audio-\(String(describing: error))",
                 source: audioSource,
-                interruptionReason: .captureFailed
+                interruptionReason: error == .permissionDenied ? .permissionRevoked : .captureFailed
               )
             }
           }
@@ -465,11 +465,14 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
           Task { @MainActor [weak self] in
             guard self?.activeSessionId == sessionId else { return }
             guard self?.activeAttempt == attempt else { return }
+            // The microphone adapter cannot see TCC; a failure while access
+            // is no longer granted is reported as a withdrawn permission.
+            let revoked = self?.permission.currentState != .authorized
             await self?.handleCaptureFailure(
               String(describing: error),
               code: "capture-\(String(describing: error))",
               source: .microphone,
-              interruptionReason: .captureFailed
+              interruptionReason: revoked ? .permissionRevoked : .captureFailed
             )
           }
         }
@@ -731,7 +734,9 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
       }
       if phase == .capturing, Set(requiredSources).subtracting(failedSources).count > 1 {
         let task = Task { @MainActor in
-          await self.degradeCaptureAfterSourceFailure(source: source, message: message, code: code)
+          await self.degradeCaptureAfterSourceFailure(
+            source: source, message: message, code: code,
+            reason: interruptionReason == .permissionRevoked ? .permissionRevoked : .captureFailed)
           self.sourceFailureTask = nil
         }
         sourceFailureTask = task
@@ -745,10 +750,13 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
   private func degradeCaptureAfterSourceFailure(
     source: NativeMediaSourceKind,
     message: String,
-    code: String
+    code: String,
+    reason: NativeSourceFailureReason
   ) async {
+    let interruptionReason: NativeSessionInterruptionReason =
+      reason == .permissionRevoked ? .permissionRevoked : .captureFailed
     guard let preparation, let activeSessionId, let writer = writers[source] else {
-      await fail(message, code: code, interruptionReason: .captureFailed)
+      await fail(message, code: code, interruptionReason: interruptionReason)
       return
     }
     var sourceWasSealed = false
@@ -782,7 +790,7 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
       let failure = try preparation.recordSourceFailure(
         sessionId: activeSessionId,
         sourceKind: source,
-        reason: .captureFailed
+        reason: reason
       )
       guard failure.journalDurable, failure.sourceFailed, failure.sessionDegraded,
         !failure.sessionInterrupted, failure.recordingContinues
@@ -794,7 +802,9 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
         recorderDetail = try preparation.recorderDetail(sessionId: activeSessionId)
       }
       errorMessage =
-        "\(Self.displayName(for: source)) stopped. Remaining audio is still recording. \(message)"
+        reason == .permissionRevoked
+        ? "\(Self.displayName(for: source)) permission was withdrawn. Remaining audio is still recording."
+        : "\(Self.displayName(for: source)) stopped. Remaining audio is still recording. \(message)"
       failureCode = code
       phase = .capturing
     } catch {
@@ -805,7 +815,7 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
       await fail(
         "\(failureContext) \(error.localizedDescription)",
         code: code,
-        interruptionReason: .captureFailed
+        interruptionReason: interruptionReason
       )
     }
   }

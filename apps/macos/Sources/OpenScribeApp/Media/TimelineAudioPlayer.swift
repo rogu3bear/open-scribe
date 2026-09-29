@@ -20,7 +20,9 @@ final class TimelinePCMReader: @unchecked Sendable {
   private var position: Int64 = 0
   private let gain: Float
 
-  init(segments: [NativeTimelineSegment]) throws {
+  /// `startNanoseconds` is a session-timeline position; rendering begins
+  /// there and the frames before it are decoded only to be discarded.
+  init(segments: [NativeTimelineSegment], startNanoseconds: Int64 = 0) throws {
     guard !segments.isEmpty else { throw TimelinePlaybackError.invalidPlan }
     let origin = min(0, segments.map(\.startNanoseconds).min()!)
     entries = try segments.map { segment in
@@ -36,6 +38,9 @@ final class TimelinePCMReader: @unchecked Sendable {
     }
     totalFrames = entries.map(\.end).max()!
     gain = 1 / Float(Set(segments.map(\.trackId)).count)
+    let startSeconds = (Double(startNanoseconds) - Double(origin)) / 1_000_000_000
+    guard startSeconds.isFinite else { throw TimelinePlaybackError.invalidPlan }
+    position = min(max(0, Int64((startSeconds * Self.sampleRate).rounded())), totalFrames)
   }
 
   func read(maximumFrames: AVAudioFrameCount) throws -> AVAudioPCMBuffer? {
@@ -59,6 +64,14 @@ final class TimelinePCMReader: @unchecked Sendable {
         let source = try VerifiedDescriptorPlaybackSource.prepare(
           receipt: receipt, isCancelled: { false })
         entries[index].decoder = try CallbackCAFDecoder(source: source, onClose: {})
+        // A seek can open a segment mid-way; decode and drop its leading frames.
+        var skip = lower - entries[index].start
+        while skip > 0, let decoder = entries[index].decoder {
+          let chunk = AVAudioFrameCount(min(skip, 16_384))
+          guard let dropped = try decoder.read(maximumFrames: chunk), dropped.frameLength == chunk
+          else { throw TimelinePlaybackError.incompleteSegment }
+          skip -= Int64(chunk)
+        }
       }
       guard let decoder = entries[index].decoder,
         decoder.processingFormat.sampleRate == Self.sampleRate,
@@ -163,11 +176,11 @@ final class TimelineAudioPlayer {
   var isPlaying: Bool { player?.isPlaying == true && engine?.isRunning == true }
 
   func play(
-    segments: [NativeTimelineSegment], generation: UUID,
+    segments: [NativeTimelineSegment], startNanoseconds: Int64 = 0, generation: UUID,
     completion: @escaping @Sendable (PlaybackTermination) -> Void
   ) throws {
     stop()
-    let reader = try TimelinePCMReader(segments: segments)
+    let reader = try TimelinePCMReader(segments: segments, startNanoseconds: startNanoseconds)
     let scheduler = TimelineBufferScheduler(reader: reader) { outcome in
       completion(PlaybackTermination(generation: generation, outcome: outcome))
     }

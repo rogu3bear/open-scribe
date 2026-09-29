@@ -43,11 +43,13 @@ pub enum NativeSessionInterruptionReason {
     FirstSampleRejected,
     StopWithoutDurableSample,
     SegmentSealFailed,
+    PermissionRevoked,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, uniffi::Enum)]
 pub enum NativeSourceFailureReason {
     CaptureFailed,
+    PermissionRevoked,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
@@ -1038,6 +1040,9 @@ const fn map_session_interruption_reason(
         NativeSessionInterruptionReason::SegmentSealFailed => {
             open_scribe_core::SessionInterruptionReason::SegmentSealFailed
         }
+        NativeSessionInterruptionReason::PermissionRevoked => {
+            open_scribe_core::SessionInterruptionReason::PermissionRevoked
+        }
     }
 }
 
@@ -1047,6 +1052,9 @@ const fn map_source_failure_reason(
     match reason {
         NativeSourceFailureReason::CaptureFailed => {
             open_scribe_core::SourceFailureReason::CaptureFailed
+        }
+        NativeSourceFailureReason::PermissionRevoked => {
+            open_scribe_core::SourceFailureReason::PermissionRevoked
         }
     }
 }
@@ -1088,6 +1096,9 @@ fn map_runtime_session_snapshot(
                 }
                 open_scribe_core::SessionInterruptionReason::SegmentSealFailed => {
                     "segment_seal_failed"
+                }
+                open_scribe_core::SessionInterruptionReason::PermissionRevoked => {
+                    "permission_revoked"
                 }
             }
             .to_owned()
@@ -1468,6 +1479,8 @@ const fn permission_name(permission: open_scribe_types::PermissionState) -> &'st
 
 mod recorder;
 pub use recorder::*;
+mod transcript_library;
+pub use transcript_library::*;
 uniffi::setup_scaffolding!();
 
 #[cfg(test)]
