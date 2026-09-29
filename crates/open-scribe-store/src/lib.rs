@@ -41,6 +41,14 @@ mod segment_gaps;
 mod source_failure;
 mod timeline;
 pub use timeline::{CaptureClock, TimelineSegment};
+mod transcript_input;
+pub use transcript_input::{InputSegment, InputSpan, SealedTrackReader, TranscriptionInput};
+mod transcripts;
+pub use transcripts::{
+    PlannedTranscriptChunk, RevisionSegmentInput, TRANSCRIPT_SCHEMA_VERSION, TranscriptChunk,
+    TranscriptChunkState, TranscriptRevisionSummary, TranscriptSegmentView, TranscriptionFailure,
+    TranscriptionRunHandle, TranscriptionRunIdentity, TranscriptionRunSummary,
+};
 
 use conversation_identity::validate_request;
 pub use conversation_identity::{PrepareSessionRequest, PreparedSessionReceipt, SessionOrigin};
@@ -497,6 +505,8 @@ struct ValidatedMediaFile {
 struct CafInspection {
     channels: u16,
     sample_count: Option<u64>,
+    /// Byte offset of the first interleaved frame.
+    audio_offset: u64,
 }
 
 #[derive(Clone, Copy)]
@@ -2911,6 +2921,11 @@ fn apply_schema(connection: &mut Connection) -> Result<(), StoreError> {
         "INSERT OR IGNORE INTO schema_migrations (version, applied_at_ms) VALUES (4, ?1)",
         [applied_at],
     )?;
+    transcripts::apply_transcript_schema(&transaction)?;
+    transaction.execute(
+        "INSERT OR IGNORE INTO schema_migrations (version, applied_at_ms) VALUES (?1, ?2)",
+        params![transcripts::TRANSCRIPT_MIGRATION_VERSION, applied_at],
+    )?;
     transaction.commit()?;
     Ok(())
 }
@@ -3163,6 +3178,7 @@ fn inspect_pcm_caf(file: &mut File, byte_length: u64) -> Result<Option<CafInspec
             return Ok(Some(CafInspection {
                 channels,
                 sample_count: (audio_bytes > 0).then_some(audio_bytes / bytes_per_frame),
+                audio_offset: audio_start,
             }));
         }
 
@@ -3763,12 +3779,17 @@ mod tests {
             "imports",
             "deletion_receipts",
             "recovery_runs",
+            "transcription_runs",
+            "transcript_chunks",
+            "transcript_revisions",
+            "transcript_segments",
+            "transcript_selections",
         ] {
             assert!(names.contains(required), "missing table {required}");
         }
         assert_eq!(
             database_value(&store, "SELECT MAX(version) FROM schema_migrations"),
-            4
+            5
         );
         let segment_columns: BTreeSet<String> = store
             .connection
@@ -3826,7 +3847,7 @@ mod tests {
         assert_eq!(channels, 1);
         assert_eq!(
             database_value(&store, "SELECT MAX(version) FROM schema_migrations"),
-            4
+            5
         );
     }
 

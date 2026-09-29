@@ -13,7 +13,7 @@ Shared crates must remain free of filesystem, SQLite, network, Apple, model-runt
 ## Native layer
 
 - `open-scribe-store` — future SQLite/filesystem persistence and recovery journal
-- `open-scribe-asr` — future speech-recognizer capability and native adapters
+- `open-scribe-asr` — `SpeechRecognizer` capability, 48 kHz to 16 kHz mono conversion, chunk planning, and overlap reconciliation; no engine is integrated
 - `open-scribe-diarize` — future VAD/embedding/clustering pipeline
 - `open-scribe-memory` — future structured meeting-memory validation
 - `open-scribe-models` — checked model catalog, verification, and atomic installation policy; it never downloads or loads a model

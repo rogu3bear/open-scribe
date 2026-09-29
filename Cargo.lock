@@ -1448,6 +1448,9 @@ name = "open-scribe-asr"
 version = "0.0.0"
 dependencies = [
  "open-scribe-types",
+ "serde",
+ "serde_json",
+ "sha2",
 ]
 
 [[package]]
@@ -1463,6 +1466,8 @@ dependencies = [
  "open-scribe-store",
  "open-scribe-types",
  "serde_json",
+ "sha2",
+ "tempfile",
 ]
 
 [[package]]

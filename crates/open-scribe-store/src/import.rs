@@ -142,6 +142,11 @@ impl ImportedPlaybackLease {
     pub const fn maximum_snapshot_byte_length() -> u64 {
         MAX_IMPORTED_PLAYBACK_SNAPSHOT_BYTES
     }
+
+    /// The identity-bound descriptor, for in-crate readers of sealed bytes.
+    pub(crate) fn file(&self) -> &File {
+        &self.file
+    }
 }
 
 struct ValidatedImportSource {

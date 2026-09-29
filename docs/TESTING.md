@@ -8,6 +8,34 @@ Characterization tests pin observed behavior before correction. Safety-critical 
 
 Repository and source tests currently cover managed local CAF and M4A (AAC/Apple Lossless) import, deterministic deduplication and rejection, imported-conversation projection, validated-byte playback leasing, and shared recovered/imported playback failures. One dated real-file receipt (September 27, commit `3e51b72`, `~/Documents/Codex/2026-09-27/open-scribe-large-import/RETURN.md`) imported an operator-selected 865 MB stereo 48 kHz Apple Lossless M4A through the normal workflow and passed a 41-test run covering reopen, first- and last-frame decode, silent player startup, and bounded memory. Those tests do not prove other real files or formats, audible or full-duration playback, long-running sessions, source-loss recovery, an installed or signed artifact, or public delivery.
 
+### September 29 — M2 final-transcription pipeline without an engine
+
+Store schema migration 5 adds `transcription_runs`, `transcript_chunks`,
+`transcript_revisions`, `transcript_segments`, and `transcript_selections`
+(row schema 1, cascading from `sessions`). Triggers make complete chunks,
+finished runs, revisions, and segments immutable. Transcription input is read
+only from sealed PCM segments through playback leases, with every segment's
+full bytes rehashed against its sealed digest; `open-scribe-asr` supplies the
+`SpeechRecognizer` trait, 48 kHz to 16 kHz conversion, the `fixed-window-v1`
+planner, and `overlap-midpoint-v1` reconciliation; `open-scribe-core`
+orchestrates per-chunk commits.
+
+One guarded run of `cargo test -p open-scribe-store -p open-scribe-core
+-p open-scribe-asr -p open-scribe-models` passed (store 147 with one ignored,
+core 9, models 8, asr 6). New proof: exact sealed-sample reads and rejection
+of altered media; crash resume from committed chunks; failed and cancelled
+runs keeping their chunks while retries reuse only identity-matched chunks;
+replacement never displacing the selected revision before completion;
+revision and plan validation; decimator passband and anti-aliasing; and, with
+a test-only tone-burst recognizer on real imported media, segments within
+200 ms of true session time, one copy of an overlap-straddling burst, and
+unchanged sealed audio hashes. `crates/open-scribe-store/fixtures/schema-v4/`
+(a real schema-v4 database dump from `7122903`) migrates twice with every
+evidence row unchanged. Warnings-denied clippy, `NATIVE_CONTRACT_GREEN`, and
+`SCAFFOLD_GREEN` (0.9 GB reservation, 279 MB measured growth) passed.
+No speech engine, VAD, provisional transcript, UI, or runtime is proven;
+`local-transcription` stays Unavailable.
+
 ### September 29 — M2 model catalog and verification policy
 
 `docs/models/manifest.v1.json` now records the ADR 0008 `balanced-en` and

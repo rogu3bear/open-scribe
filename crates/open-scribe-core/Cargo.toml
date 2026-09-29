@@ -24,3 +24,7 @@ path = "src/lib.rs"
 [[bin]]
 name = "emit-runtime-capabilities"
 path = "src/bin/emit_runtime_capabilities.rs"
+
+[dev-dependencies]
+sha2 = "0.10"
+tempfile = "3"

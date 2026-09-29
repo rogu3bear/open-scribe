@@ -6,6 +6,12 @@
 
 use std::path::{Path, PathBuf};
 
+mod transcription;
+pub use transcription::{
+    TranscriptionError, TranscriptionOutcome, TranscriptionProgress, TranscriptionStage,
+    transcribe_track,
+};
+
 pub use open_scribe_domain::{
     Command, Fixture, Presentation, SessionSnapshot, TimerBehavior, TransitionError, announcement,
 };
