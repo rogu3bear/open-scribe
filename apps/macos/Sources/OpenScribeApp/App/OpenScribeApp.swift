@@ -68,11 +68,12 @@ struct OpenScribeApp: App {
       "--m1-forced-termination-recovery-root",
       from: arguments
     )
-    let managedRoot =
-      injectedMediaRoot ?? injectedRoot ?? injectedRecoveryRoot
-      ?? foundationReviewRoot ?? foundationLiveRecoveryRoot ?? timelineCaptureRoot
-      ?? timelineRecoveryRoot ?? liveProofRoot ?? forcedCaptureRoot ?? forcedRecoveryRoot
-      ?? Self.defaultRoot()
+    let proofRoots: [URL?] = [
+      injectedMediaRoot, injectedRoot, injectedRecoveryRoot, foundationReviewRoot,
+      foundationLiveRecoveryRoot, timelineCaptureRoot, timelineRecoveryRoot,
+      liveProofRoot, forcedCaptureRoot, forcedRecoveryRoot,
+    ]
+    let managedRoot = proofRoots.compactMap { $0 }.first ?? Self.defaultRoot()
     let injectedProof = injectedRoot.map {
       M1FailureRuntimeProof(root: $0, mediaRoot: injectedMediaRoot ?? $0, scenario: injectedScenario)
     }

@@ -326,6 +326,24 @@ measurement is `artifacts/m1-automated/before.txt`: target 2,426,940 KiB,
 native `.build` 3,935,704 KiB, task artifacts 2,346,896 KiB. Candidate admission
 and the final disk delta are recorded separately after execution.
 
+### First committed harness qualification attempt
+
+On `e0609d2b02c490b6f0f8e56ede5956188a4e260e`, the canonical command
+`disk-guard run --budget-gb 10 --volume "$PWD" -- ./script/check.sh --candidate "$PWD/apps/macos/.build/candidates/m1-closeout-e0609d2/candidate.json"`
+was admitted. It passed `SCAFFOLD_GREEN` (including 135 store and 8 UniFFI
+tests), clippy with warnings denied, `NATIVE_CONTRACT_GREEN`, and
+`WEB_BUILD_GREEN`; generated bindings matched. The Xcode test build then
+failed (exit 65) at `OpenScribeApp.swift`'s extended launch-root `??` chain:
+the compiler could not type-check it in reasonable time. The successor uses
+a typed optional-URL list with identical precedence. No candidate JSON or
+native runtime receipt was issued. Logs are
+`artifacts/m1-automated/candidate-e0609d2.log` and the candidate directory's
+`build.log`/`source-checks.log`; earlier source receipts remain bound to that
+commit. Measured target growth was 2,991,332 KiB and the partial native
+candidate occupied 980,340 KiB (4.067 GB together). With shared targets now
+warm, the successor requests a 6 GB budget, covering that measured growth
+plus headroom for native linking/tests; Disk Guard still owns admission.
+
 ## September 29, 2026 — Candidate build infrastructure
 
 The cold web failure was reproduced from base `71fa611` in a new
