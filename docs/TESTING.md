@@ -584,6 +584,43 @@ rejected unchanged; library reopen does not replenish released space. These
 are component results. The full native exhaustion gate and all affected
 candidate-bound runtime receipts remain due.
 
+### Delayed journal allocation after reserve release
+
+`abbb5baf3d3991887c6615950944fd1c1b0289a2` passed the complete 3 GB guarded
+contributor candidate gate: scaffold, clippy, web, macOS floor, 166 native tests
+(one optional skip), all three scenes, 79 recording-component tests, and the
+foundational workflow. Log: `artifacts/m1-automated/candidate-abbb5ba.log`.
+Record: `apps/macos/.build/candidates/m1-closeout-abbb5ba/candidate.json`, SHA-256
+`f5a4e39686eaa8d05060a844f5127530546ecde0c4ef2a9f43cb667111ecb866`;
+tree `4d5e04963079e63439a88bf2032073622095fa4a`. Its executable, debug-dylib,
+Info.plist, and Rust-library digests are respectively
+`104c2aee43dd1f4de6ec7a721de2ae48e0cd4b8703dc54eeaa5bb27648c79194`,
+`f8b5bfd335a3d1a462a05c47a90bbf4ad8962960fa55451400ea8b8376aa9c5c`,
+`c103e34b917098d3964f5992f343fd5f8fd17306642ecafb0e4c23fbaa97acab`, and
+`feea2c1c1457232ff1933b18fbc109483391f03773008624bcfb6f82c8b26189`.
+
+The native full-volume gate remained RED on that build: both tracks sealed
+before filler removal, but no critical-storage/failure event was journaled.
+The reserve was absent and one Rust ENOSPC was reported. Evidence is retained
+in `m1-storage-exhaustion.qEJ3ur/` under that candidate and in
+`artifacts/m1-automated/exhaustion-abbb5ba.log`. No case receipt was issued.
+Repeated component testing reproduced the same failure. Temporary stage
+diagnostics isolated it to replacement-file **creation**, after successful
+reserve unlink/close/directory sync (`reserve-journal-stage.log`, attempt 3).
+Those temporary source diagnostics were removed after diagnosis.
+
+The journal now retries only ENOSPC during create-new, with at most 25 waits
+of 10 ms. A successful creation ends the retry; permanent exhaustion, existing
+files, and unrelated errors still fail. Later append/sync/rename/projection
+operations are not retried. Three deterministic tests cover transient success,
+the strict retry bound, and preservation/error propagation. The real-volume
+regression then passed ten consecutive runs under a 1 GB guard while reusing
+the already allocated component-test volume. Logs:
+`artifacts/m1-automated/reserve-create-retry-green.log` and
+`reserve-create-retry-clippy.log` (clippy passed after making the now test-only
+OpenOptions import conditional). Native qualification remains due on the new
+committed candidate; these repetitions do not turn the earlier app failure green.
+
 ## September 29, 2026 — Candidate build infrastructure
 
 The cold web failure was reproduced from base `71fa611` in a new

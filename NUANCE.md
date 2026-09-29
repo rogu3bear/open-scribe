@@ -25,6 +25,9 @@ the truncation failure and passed with unlink-before-journal; exact commands
 and logs are in `docs/TESTING.md`. A small passing volume does not qualify the
 native exhaustion gate, and recovery after freeing filler cannot prove that
 the original failure was journaled while full.
+After unlink/close/fsync, replacement-file creation also intermittently returned
+ENOSPC. Only that create-new operation has a bounded 250 ms retry; journal writes,
+renames, projections, persistent exhaustion, and unrelated errors are not replayed.
 
 ### Writer generation advances on every rotation
 

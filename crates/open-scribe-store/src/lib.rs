@@ -9,7 +9,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsStr;
 use std::fmt;
-use std::fs::{self, File, OpenOptions};
+#[cfg(test)]
+use std::fs::OpenOptions;
+use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Read, Seek, Write};
 use std::os::fd::{AsFd, OwnedFd};
 use std::path::{Component, Path, PathBuf};
@@ -3026,10 +3028,7 @@ fn atomic_replace_journal_with_record(
     let _live = journal_replacement::LiveReplacement::begin(temporary_name.clone());
     let temporary_path = session_directory.join(&temporary_name);
     let result = (|| {
-        let mut temporary = OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .open(&temporary_path)?;
+        let mut temporary = journal_replacement::create_temporary(&temporary_path)?;
         temporary.write_all(&existing)?;
         append_journal_record(&mut temporary, record)?;
         interrupt_journal_replace_if(failure, JournalReplacementFailurePoint::TemporaryWrite)?;
