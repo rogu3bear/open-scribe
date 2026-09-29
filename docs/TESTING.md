@@ -274,12 +274,21 @@ reader passed against existing artifacts (778 arm64 archive members plus both
 app Mach-O files); that is a reader regression check, not new runtime evidence.
 
 **Acceptance HOLD:** the 10 GB guarded scaffold attempt returned exit 75 before
-execution. At the last denied attempt the volume had 144.6 GB free, with a
+execution. The scaffold hold reported 144.6 GB free, with a
 separate Cloudflare build holding a 40 GB reservation and a 100 GB host reserve.
 No hold was bypassed. The contributor candidate build and all four positive
 candidate-bound proofs have not run; no new app or Rust-library digests exist
 to report. `SCAFFOLD_GREEN` for this change is also still required. The final
 Worker build's added `--locked` argument awaits the contributor web rerun.
+
+After checkpoint commit `b44ba22d5046d6e0472855b9aa29ce8d08808768`, the canonical
+entry was attempted under the same 10 GB guard and again returned exit 75 before
+building, reporting 142.1 GB free. Its log is
+`artifacts/build-once/contributor-candidate.log`; no candidate record was issued.
+The retained successful cold-web log has SHA-256
+`ba9ff654151b7acf186d0314632ae6ddfbd5014b01fef90fd26143e123a87960`;
+the 14-case rejection-test log has SHA-256
+`ce8d99f1946f6c90297e2f5e13ac3ac99a698251af860a6271b878b757fcbc5e`.
 
 Measured allocation, in KiB (September 29, 17:28 UTC before and 17:51 UTC after):
 
