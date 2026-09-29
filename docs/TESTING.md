@@ -8,6 +8,36 @@ Characterization tests pin observed behavior before correction. Safety-critical 
 
 Repository and source tests currently cover managed local CAF and M4A (AAC/Apple Lossless) import, deterministic deduplication and rejection, imported-conversation projection, validated-byte playback leasing, and shared recovered/imported playback failures. One dated real-file receipt (September 27, commit `3e51b72`, `~/Documents/Codex/2026-09-27/open-scribe-large-import/RETURN.md`) imported an operator-selected 865 MB stereo 48 kHz Apple Lossless M4A through the normal workflow and passed a 41-test run covering reopen, first- and last-frame decode, silent player startup, and bounded memory. Those tests do not prove other real files or formats, audible or full-duration playback, long-running sessions, source-loss recovery, an installed or signed artifact, or public delivery.
 
+### September 29 — Attended M1 session preparation
+
+`docs/M1_OPERATOR_SESSION.md` is the ordered operator procedure for physical
+routes, permissions, display/sleep, consumer workflows, accessibility, the
+two-hour measurement, and macOS 13. It is a plan, not runtime evidence.
+`script/m1_operator_snapshot.rb` requires an exact qualified candidate before
+writing, rechecks it afterward, retains canonical `recovery.jsonl` bytes and
+SQLite projection/event snapshots, and compares sealed-media hashes against
+Rust receipts. It distinguishes operator-reported from native-and-operator
+observations and never issues an M1 acceptance marker.
+
+`bash script/check_m1_operator_snapshot.sh` passed
+`M1_OPERATOR_SNAPSHOT_TEST_GREEN cases=6`: an inert successful snapshot with
+the canonical journal, preservation of existing evidence, rejection of dirty
+source and changed app bytes before output creation, and retention of sealed
+media drift or missing sealed media as a failure. Ruby syntax, `shellcheck -x`, `shfmt -d`, and
+`git diff --check` passed. The canonical contributor source checks now include
+these fixtures. They do not launch or build an app or prove human behavior.
+
+The operator confirmed sole-writer custody of the checkout at `abbb5ba`; the
+four pre-existing APFS repair changes are preserved. Candidate selection
+(historical `072a3fb` diagnostic versus a freshly qualified repaired tip),
+physical devices and attendance, and the external VM volume remain pending.
+The native Computer Use inventory returned `-10005` (app-server exited), so no
+visible state, keyboard, or VoiceOver result was observed. Host readback was
+macOS 27.0 build 26A428, Apple Silicon `Mac16,5`; no external data volume was
+mounted. No recording or VM creation started. The coded stimulus/detector,
+bounded overnight runner, and human/long-run completion receipt consumer still
+require implementation and qualification. `M1_COMPLETE` remains HOLD.
+
 ### Recorder component check
 
 `./script/check.sh --candidate <absolute-new-record>` is the canonical contributor
