@@ -267,6 +267,41 @@ passed. These are build-tool component proofs; candidate-bound app/runtime
 acceptance is recorded separately after a committed-source run. No earlier app
 receipt qualifies the new gate.
 
+Implementation commit: `8cd176d1d3fc61b834e84898f6aaba0ba1425b4a`, tree
+`608e35adb2b184cc341f0357201865a0edc5b34f`. All four public consumers also
+rejected a missing record before executing a build or app. The extended floor
+reader passed against existing artifacts (778 arm64 archive members plus both
+app Mach-O files); that is a reader regression check, not new runtime evidence.
+
+**Acceptance HOLD:** the 10 GB guarded scaffold attempt returned exit 75 before
+execution. At the last denied attempt the volume had 144.6 GB free, with a
+separate Cloudflare build holding a 40 GB reservation and a 100 GB host reserve.
+No hold was bypassed. The contributor candidate build and all four positive
+candidate-bound proofs have not run; no new app or Rust-library digests exist
+to report. `SCAFFOLD_GREEN` for this change is also still required. The final
+Worker build's added `--locked` argument awaits the contributor web rerun.
+
+Measured allocation, in KiB (September 29, 17:28 UTC before and 17:51 UTC after):
+
+| Path / measure | Before | After |
+|---|---:|---:|
+| `target/` | 2,426,440 | 2,426,940 |
+| `apps/macos/.build/` | 3,935,704 | 3,935,704 |
+| Task-owned `artifacts/build-once/` | 0 | 2,346,868 |
+| Volume free (`df -k`) | 152,518,688 | 139,707,100 |
+
+The task's measured build/evidence footprint grew about 2.40 GB; free-space
+changes include concurrent work and are not attributed solely to this task.
+The failed and passing cold targets and logs remain retained. Measurements are
+in `artifacts/build-once/disk-{before,after}.txt`; scaffold holds are in
+`scaffold-precommit.log` and `scaffold-precommit-admitted.log` in that directory.
+
+Resume after Disk Guard can admit the allowance: run the scaffold, then
+`disk-guard run --budget-gb 10 --volume "$PWD" -- ./script/check.sh --candidate "$PWD/apps/macos/.build/candidates/$(git rev-parse HEAD)/candidate.json"`
+on the clean committed tip. Run the live dual-source and forced-termination
+consumers against that same record, compare all four receipts' app/library
+digests, and record the positive results here before closing the checklist.
+
 ## September 27, 2026 — Product pause/resume component proof
 
 The foundational recorder's Pause/Resume controls are included in the native

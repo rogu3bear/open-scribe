@@ -66,23 +66,23 @@
 - Proof: earlier gates; typed content-free reasons; journal-first interrupted projection; idempotent replay; restart reconciliation; unchanged partial media; coarse bindings; focused Swift failures.
 - Stop if: interruption edits media, recovery is called playable, `Recording` is asserted, or a higher plane is claimed.
 
-## Requalify short live dual-source capture
+## Short live dual-source capture evidence
 
-- Command: `./script/check.sh --m1-dual-source-runtime` (alias: `--m1-live-microphone`).
 - Commit `467ed2e` app passed `M1_DUAL_SOURCE_RUNTIME_GREEN` (mono microphone, stereo system audio); proof media is retained.
+- Invocation is documented in `docs/TESTING.md`; it has no new app receipt yet.
 - Does not prove: source loss, degraded continuation, permission revocation, application-scoped selection, long-session synchronization, signing, release.
 
-## Requalify forced-termination recovery
+## Forced-termination recovery evidence
 
-- Command: `./script/check.sh --m1-forced-termination-recovery`.
 - Expected: `M1_FORCED_TERMINATION_RECOVERY_GATE_GREEN`.
 - Earlier app proved two-source recovery, native playback, unchanged CAF digests, and idempotence. Current gate source requires rotation before kill; no current-app receipt exists.
 - Stop if: recovery mutates media, promotes invalid media, duplicates a receipt, or asserts `Recording`.
 
-## Validate recorder components
+## Validate candidate record tooling
 
-- Commands (via `disk-guard run … --`): `cargo test --locked -p open-scribe-store`; `bash script/build_and_run.sh --verify-recording` (`RECORDING_COMPONENTS_GREEN`); `bash script/check_foundational_workflow.sh <app binary>` (`FOUNDATION_SYNTHETIC_GREEN`).
-- Excludes: real capture, audible playback, signing, release.
+- Commands: `bash script/check_candidate_record.sh`; `bash script/check_native_contracts.sh`.
+- Expected: `CANDIDATE_RECORD_TEST_GREEN` (14 rejection cases); `NATIVE_CONTRACT_GREEN`.
+- Excludes: candidate build, app runtime, capture, signing, release. Current recorder commands and historical component receipts live in `docs/TESTING.md`.
 
 ## Admission rule
 
