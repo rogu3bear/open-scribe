@@ -508,6 +508,52 @@ from the default permission-free thirteen-case matrix and has no runtime
 receipt yet. Two-hour synchronization remains an automated runtime gap, not
 a relabeled human-only item.
 
+## September 29, 2026 — APFS exhaustion and scene-launch repair
+
+Candidate `ccf542bf0b42a3758e61293d4d0144572a30f677`, record
+`apps/macos/.build/candidates/m1-closeout-ccf542b/candidate.json` (SHA-256
+`c428515adb419ee63f9c38fc36339cca2267f4bb1ed41a4deec06381052999c5`), built once
+and passed 166 native tests with the optional large-import test skipped.
+Qualification remained RED: the standalone launch emitted only the menu-bar
+scene, so its primary-scene Settings trigger never ran. A second qualification
+attempt reused the same build and repeated all source/tests; live log streaming
+confirmed the missing primary event. Logs: `artifacts/m1-automated/candidate-ccf542b{,-retry}.log`
+and `scenes-ccf542b-retry.log`; first-attempt source/native logs are preserved
+under the candidate's `qualification-attempt-1/`. No checks receipt was issued.
+The explicit Debug scene-proof launch now opens the primary window from the
+menu-bar scene, retaining all three existing required scene checks. Its native
+reproof remains due on the next committed candidate.
+
+A diagnostic-only launch of that unqualified app reached actual ENOSPC and
+returned Rust I/O error 28 before any failure event. This did not issue a
+qualifying runtime receipt. Its executable/debug-dylib/Info.plist/Rust-library
+SHA-256 values were respectively
+`104c2aee43dd1f4de6ec7a721de2ae48e0cd4b8703dc54eeaa5bb27648c79194`,
+`1c05d469075b72d18aac6a02b2c74d2fc542c23f473957a07ed525695c618693`,
+`c103e34b917098d3964f5992f343fd5f8fd17306642ecafb0e4c23fbaa97acab`, and
+`a4c91c0bf68094ce9955b666c0f999bafa0ccb947e14198c13d90dbd03b2a88d`.
+The guarded 2 GB diagnostic log is `artifacts/m1-automated/ccf-enospc-diagnostic.log`;
+its retained 1.5 GiB APFS image is under `ccf-enospc-diagnostic.nthvRa/`.
+
+Direct operations on that owned reserve isolated the cause: truncation to 41,
+4096, and zero bytes all returned ENOSPC without changing its 16 MiB allocation.
+Validated unlink followed by close allowed a new file write and fsync. These
+two probes reused the already allocated diagnostic image under a 0.1 GB guard;
+logs are `reserve-{truncate,unlink}-ccf.log`. Only their own filler was removed;
+all source CAFs and original journal bytes remain retained.
+
+The ignored Rust regression was expanded to bound filling at 2 GiB and run
+on that same 1.5 GiB volume with
+`OPEN_SCRIBE_RESERVE_TEST_VOLUME=VOLUME cargo test --locked -p open-scribe-store m1_real_full_volume_can_release_reserve_and_journal_critical_storage -- --ignored --nocapture`.
+Under `disk-guard run --budget-gb 1 --volume "$PWD" -- …`, it failed with error 28
+before the fix (`reserve-large-red.log`), then passed after Rust switched to
+validated unlink, descriptor close, and directory fsync before journaling
+(`reserve-large-green.log`). Both ordinary reserve tests and store clippy
+with `-D warnings` also passed. Foreign files, symlinks, and hardlinks remain
+rejected unchanged; library reopen does not replenish released space. These
+are component results. The full native exhaustion gate and all affected
+candidate-bound runtime receipts remain due.
+
 ## September 29, 2026 — Candidate build infrastructure
 
 The cold web failure was reproduced from base `71fa611` in a new

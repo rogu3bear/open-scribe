@@ -15,6 +15,17 @@ The workspace release build-override disables stripping for host build
 dependencies; dependency versions and shipped-code optimization stay pinned.
 Do not solve this by warming an unrelated cache or editing Cargo's registry.
 
+### APFS emergency space must be releasable at actual ENOSPC
+
+On September 29, a 128 MiB volume passed reserve truncation, but the native
+1.5 GiB full-volume harness failed: even truncating the owned reserve to zero
+returned `ENOSPC`. Unlinking and closing that same validated allocation allowed
+a subsequent write and fsync. The expanded ignored store regression reproduced
+the truncation failure and passed with unlink-before-journal; exact commands
+and logs are in `docs/TESTING.md`. A small passing volume does not qualify the
+native exhaustion gate, and recovery after freeing filler cannot prove that
+the original failure was journaled while full.
+
 ### Writer generation advances on every rotation
 
 The segmented CAF writer opens a new segment every 30 seconds, on a forward

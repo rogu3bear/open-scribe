@@ -27,10 +27,10 @@ impl SessionStore {
             file.sync_all()
         })();
         if let Err(error) = allocation {
-            // No session has been created. Retain ownership but return the
-            // partial allocation so a failed preparation cannot consume it.
-            file.set_len(MAGIC.len() as u64)?;
-            file.sync_all()?;
+            // No session has been created. Return a partial allocation too;
+            // truncation itself can need unavailable APFS metadata space.
+            drop(file);
+            self.release_storage_reserve()?;
             return Err(StoreError::Io(error));
         }
         Ok(())
@@ -38,10 +38,23 @@ impl SessionStore {
 
     pub(super) fn release_storage_reserve(&self) -> Result<(), StoreError> {
         if let Some(file) = self.open_storage_reserve(false)? {
-            // Retain the validated header, not the blocks. Missing reserves are
-            // allowed for libraries created before this policy was implemented.
-            file.set_len(MAGIC.len() as u64)?;
-            file.sync_all()?;
+            // On a fully exhausted APFS volume even truncate-to-zero can fail
+            // with ENOSPC. Unlink the validated owned allocation, close its last
+            // descriptor, then sync the directory before journaling. Missing
+            // reserves are allowed for released or pre-policy libraries.
+            let root = open_managed_directory(&self.managed_root)?;
+            let opened = fd_fs::fstat(&file).map_err(std::io::Error::from)?;
+            let named = fd_fs::statat(&root, NAME, fd_fs::AtFlags::SYMLINK_NOFOLLOW)
+                .map_err(std::io::Error::from)?;
+            if opened.st_dev != named.st_dev || opened.st_ino != named.st_ino || named.st_nlink != 1
+            {
+                return Err(StoreError::IntegrityMismatch(
+                    "emergency reserve changed before release",
+                ));
+            }
+            fd_fs::unlinkat(&root, NAME, fd_fs::AtFlags::empty()).map_err(std::io::Error::from)?;
+            drop(file);
+            fd_fs::fsync(&root).map_err(std::io::Error::from)?;
         }
         Ok(())
     }

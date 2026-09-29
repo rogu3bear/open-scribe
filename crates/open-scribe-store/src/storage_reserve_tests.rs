@@ -26,7 +26,7 @@ fn m1_real_full_volume_can_release_reserve_and_journal_critical_storage() {
         .unwrap();
     let block = [0x5a; 1024 * 1024];
     let mut exhausted = false;
-    for _ in 0..256 {
+    for _ in 0..2048 {
         if let Err(error) = filler.write_all(&block) {
             assert_eq!(error.raw_os_error(), Some(28));
             exhausted = true;
@@ -34,10 +34,7 @@ fn m1_real_full_volume_can_release_reserve_and_journal_critical_storage() {
         }
     }
     drop(filler);
-    assert!(
-        exhausted,
-        "dedicated volume must reach ENOSPC within 256 MiB"
-    );
+    assert!(exhausted, "dedicated volume must reach ENOSPC within 2 GiB");
     let mut media = OpenOptions::new()
         .append(true)
         .open(&sources[0].absolute_path)
@@ -138,13 +135,15 @@ fn m1_capture_reserves_real_blocks_and_releases_them_before_critical_journaling(
             .iter()
             .any(|event| event.kind == "storage_observed")
     );
-    assert!(fs::metadata(&reserve).unwrap().blocks() * 512 < 4096 * 2);
-    let released_length = fs::metadata(&reserve).unwrap().len();
+    assert!(
+        !reserve.exists(),
+        "release must unlink the owned allocation"
+    );
+    store.release_storage_reserve().unwrap();
     drop(store);
     let mut store = SessionStore::open(temp.path()).unwrap();
-    assert_eq!(
-        fs::metadata(&reserve).unwrap().len(),
-        released_length,
+    assert!(
+        !reserve.exists(),
         "launch recovery must not spend the released emergency space"
     );
     assert_eq!(

@@ -149,6 +149,7 @@ struct MenuBarContent: View {
 }
 
 struct MenuBarLabel: View {
+  @Environment(\.openWindow) private var openWindow
   @ObservedObject var store: RuntimeLibraryStore
   @ObservedObject var liveRecording: LiveMicrophoneRecordingController
 
@@ -164,6 +165,13 @@ struct MenuBarLabel: View {
       .onAppear {
         store.refresh()
         AppTelemetry.runtimeSceneAppeared("menu-bar", session: store.currentSession)
+        #if DEBUG
+          // The explicit scene proof must also work after macOS restores a
+          // menu-bar-only launch. Its primary scene opens Settings in turn.
+          if ProcessInfo.processInfo.arguments.contains("--m0-proof-settings") {
+            openWindow(id: "main")
+          }
+        #endif
       }
   }
 
