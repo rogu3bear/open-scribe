@@ -8,6 +8,24 @@ Characterization tests pin observed behavior before correction. Safety-critical 
 
 Repository and source tests currently cover managed local CAF and M4A (AAC/Apple Lossless) import, deterministic deduplication and rejection, imported-conversation projection, validated-byte playback leasing, and shared recovered/imported playback failures. One dated real-file receipt (September 27, commit `3e51b72`, `~/Documents/Codex/2026-09-27/open-scribe-large-import/RETURN.md`) imported an operator-selected 865 MB stereo 48 kHz Apple Lossless M4A through the normal workflow and passed a 41-test run covering reopen, first- and last-frame decode, silent player startup, and bounded memory. Those tests do not prove other real files or formats, audible or full-duration playback, long-running sessions, source-loss recovery, an installed or signed artifact, or public delivery.
 
+### September 29 — M2 model catalog and verification policy
+
+`docs/models/manifest.v1.json` now records the ADR 0008 `balanced-en` and
+`balanced-multilingual` whisper.cpp q5_1 weights at upstream revision
+`5359861c739e955e79d9a303bcbc70fb988958b1`, with byte length, SHA-256, GGML
+header fields (read from the pinned files by range request), MIT license, and
+pinned download origin. Both remain `review_state: Pending` and unbundled.
+`cargo test -p open-scribe-models` passed 8 tests: canonical catalog shape;
+rejection of unsafe path identifiers, malformed digests, bundled or non-HTTPS
+records, duplicates, and unknown schemas; distinct truncated, oversized,
+digest-mismatch, not-GGML, wrong-model, incompatible-engine, non-regular, and
+symlinked staging failures; atomic idempotent installation that refuses a
+replaced staging file, a foreign path, a record mismatch, or a conflicting
+existing file; and the resume rule. Warnings-denied clippy and
+`./script/check.sh --scaffold` (inside a 2 GB `disk-guard run`) passed.
+No engine, known-answer inference, download, receipt persistence, or runtime
+behavior is proven; `local-transcription` stays Unavailable.
+
 ### September 29 — Attended M1 session preparation
 
 `docs/M1_OPERATOR_SESSION.md` is the ordered operator procedure for physical

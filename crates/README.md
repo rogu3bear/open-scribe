@@ -16,8 +16,8 @@ Shared crates must remain free of filesystem, SQLite, network, Apple, model-runt
 - `open-scribe-asr` — future speech-recognizer capability and native adapters
 - `open-scribe-diarize` — future VAD/embedding/clustering pipeline
 - `open-scribe-memory` — future structured meeting-memory validation
-- `open-scribe-models` — future model catalog and verification policy
+- `open-scribe-models` — checked model catalog, verification, and atomic installation policy; it never downloads or loads a model
 - `open-scribe-core` — future orchestration and durable product authority
 - `open-scribe-uniffi` — future coarse Swift control/query boundary
 
-No external dependency, public domain type, FFI contract, persistence schema, or model engine has been selected.
+No model engine has been integrated; transcription and diarization remain Unavailable.

@@ -1501,6 +1501,11 @@ name = "open-scribe-models"
 version = "0.0.0"
 dependencies = [
  "open-scribe-types",
+ "rustix",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
 ]
 
 [[package]]
