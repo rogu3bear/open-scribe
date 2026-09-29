@@ -775,7 +775,9 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
         throw LiveMicrophoneRecordingError.invalidSourceFailure
       }
       failedSources.insert(source)
-      recorderDetail = try preparation.recorderDetail(sessionId: activeSessionId)
+      if segmentedCapture {
+        recorderDetail = try preparation.recorderDetail(sessionId: activeSessionId)
+      }
       errorMessage =
         "\(Self.displayName(for: source)) stopped. Remaining audio is still recording. \(message)"
       failureCode = code

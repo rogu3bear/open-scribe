@@ -344,6 +344,35 @@ candidate occupied 980,340 KiB (4.067 GB together). With shared targets now
 warm, the successor requests a 6 GB budget, covering that measured growth
 plus headroom for native linking/tests; Disk Guard still owns admission.
 
+### Built candidate rejected by the full native test gate
+
+The guarded 6 GB canonical attempt at
+`f4dca800ff702f108c84a0b34b8ee9ea08a5ccf1` again passed scaffold, clippy,
+web, and fresh bindings. Its unsigned Xcode test build and artifact-floor
+checks passed, producing
+`apps/macos/.build/candidates/m1-closeout-f4dca80/candidate.json`:
+
+| Artifact | SHA-256 |
+| --- | --- |
+| Executable | `104c2aee43dd1f4de6ec7a721de2ae48e0cd4b8703dc54eeaa5bb27648c79194` |
+| Debug dylib | `427ce7da7b1c11c7b6474a5286b124d301b30b63132e0135e4528af2f8a9e45b` |
+| Info.plist | `c103e34b917098d3964f5992f343fd5f8fd17306642ecafb0e4c23fbaa97acab` |
+| Rust library | `ab22c70790f658454b755f5d1bcaf69abb3deb3fdc5ad695e5a858040207392b` |
+
+Full `test-without-building` then failed with crashes in four legacy
+`LiveMicrophoneRecordingControllerTests` source-failure cases. The crash
+stack enters `NativeRecordingPreparation.recorderDetail` through an inert
+test-double Rust handle. The new event refresh must apply only to segmented
+recording, which owns the recorder timeline; production and injected capture
+both use that path. The existing nonsegmented component cases remain in the
+full gate, and `RecorderPauseResumeTests` asserts the real event projection.
+This candidate has **no contributor-check qualification** and cannot be used
+for the runtime consumers. Its logs and failed `.xcresult` are retained;
+one surviving owned test-host process was terminated after the gate exited.
+Measured warm-target growth was 11,740 KiB; the completed native candidate
+occupied 999,364 KiB, totaling 1.035 GB. Subsequent qualification requests
+3 GB for these measured inputs plus headroom; no guard reserve is changed.
+
 ## September 29, 2026 — Candidate build infrastructure
 
 The cold web failure was reproduced from base `71fa611` in a new
