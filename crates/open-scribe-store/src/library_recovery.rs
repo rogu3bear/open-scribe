@@ -162,6 +162,10 @@ impl SessionStore {
     fn recover_library_pass(&mut self) -> Result<LibraryRecovery, StoreError> {
         let mut findings = self.recover_preparations()?;
         let blocked = blocked_sessions(&findings);
+        for finding in self.recover_abandoned_preparations(&blocked)? {
+            merge_finding(&mut findings, finding);
+        }
+        let blocked = blocked_sessions(&findings);
         for finding in self.recover_unstarted_successors(&blocked)? {
             merge_finding(&mut findings, finding);
         }
@@ -172,6 +176,42 @@ impl SessionStore {
         let playable = self.list_recovered_playable(&mut findings)?;
         findings.sort_by(|left, right| left.session_id.0.cmp(&right.session_id.0));
         Ok(LibraryRecovery { findings, playable })
+    }
+
+    /// A launch has no surviving capture to finish durable preparation. Mark
+    /// only trusted capture intents with no authorized media interrupted; import
+    /// jobs and sessions with media retain their own recovery protocols.
+    fn recover_abandoned_preparations(
+        &mut self,
+        blocked: &BTreeSet<String>,
+    ) -> Result<Vec<RecoveryFinding>, StoreError> {
+        let sessions: Vec<String> = {
+            let mut query = self.connection.prepare(
+                "SELECT id FROM sessions WHERE origin = 'capture' AND lifecycle = 'preparing'
+                 AND journal_durable = 1 AND NOT EXISTS (
+                    SELECT 1 FROM segments WHERE segments.session_id = sessions.id
+                 ) ORDER BY id",
+            )?;
+            query
+                .query_map([], |row| row.get(0))?
+                .collect::<Result<_, _>>()?
+        };
+        let mut findings = Vec::new();
+        for id in sessions.into_iter().filter(|id| !blocked.contains(id)) {
+            let session_id = SessionId(id);
+            let disposition = match self.interrupt_session(InterruptSessionRequest {
+                session_id: session_id.clone(),
+                reason: SessionInterruptionReason::CaptureStartFailed,
+            }) {
+                Ok(_) => RecoveryDisposition::InterruptedPrepared,
+                Err(error) => isolated_disposition(error)?,
+            };
+            findings.push(RecoveryFinding {
+                session_id,
+                disposition,
+            });
+        }
+        Ok(findings)
     }
 
     /// Lists every reviewable recovered session. A session whose accepted media

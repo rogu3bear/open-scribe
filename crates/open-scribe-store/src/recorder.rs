@@ -215,6 +215,10 @@ impl SessionStore {
                     || (matches!(phase, "preparing" | "paused")
                         && available_bytes < preflight_bytes);
                 let level = if critical {
+                    // A failed media write can arrive before the periodic
+                    // probe. Free physical emergency blocks before either the
+                    // journal replacement or SQLite needs to allocate space.
+                    self.release_storage_reserve()?;
                     "critical"
                 } else if available_bytes < WARNING_BYTES {
                     "warning"

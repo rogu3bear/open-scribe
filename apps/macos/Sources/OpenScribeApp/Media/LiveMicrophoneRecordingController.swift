@@ -704,10 +704,25 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
       return
     }
     if segmentedCapture, let preparation, let activeSessionId,
-      let detail = try? preparation.recorderDetail(sessionId: activeSessionId), detail.storageLevel == "critical" {
-      await stop()
-      errorMessage = "Recording stopped because storage reached its reserve. Existing audio was preserved."
-      return
+      let path = writers.values.first?.authorization.absolutePath
+    {
+      do {
+        // A writer can encounter ENOSPC before the timer runs. This fresh
+        // observation lets Rust release its emergency journal space first.
+        recorderDetail = try preparation.recorderAction(
+          sessionId: activeSessionId, action: .observeStorage(availableBytes: availableBytes(path)))
+        if recorderDetail?.storageLevel == "critical" {
+          await stop()
+          errorMessage =
+            "Recording stopped because storage reached its reserve. Existing audio was preserved."
+          return
+        }
+      } catch {
+        await fail(
+          "Storage availability could not be checked. Recording was stopped to preserve audio.",
+          code: "storage-observation-failed", interruptionReason: interruptionReason)
+        return
+      }
     }
     if let source {
       guard writers[source] != nil else { return }

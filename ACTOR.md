@@ -68,24 +68,29 @@
 
 ## Short live dual-source capture evidence
 
-- Commit `467ed2e` app passed `M1_DUAL_SOURCE_RUNTIME_GREEN` (mono microphone, stereo system audio); proof media is retained.
-- Invocation is documented in `docs/TESTING.md`; it has no new app receipt yet.
-- Does not prove: source loss, degraded continuation, permission revocation, application-scoped selection, long-session synchronization, signing, release.
+- Command: `./script/check.sh --m1-dual-source-runtime --candidate RECORD`.
+- `072a3fb` passed `M1_DUAL_SOURCE_RUNTIME_GREEN`; exact record, digests, and retained media: `docs/TESTING.md`.
+- Excludes: source loss, revocation, application scope, long-session synchronization, signing, release.
 
 ## Forced-termination recovery evidence
 
-- Expected: `M1_FORCED_TERMINATION_RECOVERY_GATE_GREEN`.
-- Earlier app proved two-source recovery, native playback, unchanged CAF digests, and idempotence. Current gate source requires rotation before kill; no current-app receipt exists.
+- Command: `./script/check.sh --m1-forced-termination-recovery --candidate RECORD`.
+- `072a3fb` passed `M1_FORCED_TERMINATION_RECOVERY_GATE_GREEN`: rotation, external kill, playback, unchanged CAFs, idempotent recovery.
 - Stop if: recovery mutates media, promotes invalid media, duplicates a receipt, or asserts `Recording`.
 
 ## Validate candidate record tooling
 
 - Commands: `bash script/check_candidate_record.sh`; `bash script/check_native_contracts.sh`; `ruby script/check_m1_injected_contract.rb`.
-- Expected: `CANDIDATE_RECORD_TEST_GREEN` (14 rejections); `NATIVE_CONTRACT_GREEN`; `M1_HARNESS_CONTRACT_GREEN` (10 fixtures).
+- Expected: `CANDIDATE_RECORD_TEST_GREEN` (14 rejections); `NATIVE_CONTRACT_GREEN`; `M1_HARNESS_CONTRACT_GREEN` (11 fixtures).
 - Excludes: builds, runtime, capture, signing, release. Recorder receipts: `docs/TESTING.md`.
+
+## Qualify one contributor build
+
+- Command: `disk-guard run --budget-gb 3 --volume "$PWD" -- ./script/check.sh --candidate RECORD`.
+- `072a3fb` passed `CONTRIBUTOR_CANDIDATE_GREEN`, including recording components and foundational recovery. Use measured capacity and a new record path; runtime consumers never rebuild.
 
 ## Admission rule
 
 Release readiness: `./script/release.sh prepare <semver>`; a hold names exact blockers and performs no publication.
 
-Do not add hypothetical build, launch, test, deploy, signing, notarization, capture, or release actions. Execute and inspect them first. Canonical unimplemented scripts fail closed by design.
+Record executed commands and inspected results only. Unimplemented scripts fail closed.

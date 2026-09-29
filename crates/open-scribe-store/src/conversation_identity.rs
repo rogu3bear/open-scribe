@@ -82,6 +82,9 @@ impl SessionStore {
     ) -> Result<PreparedSessionReceipt, StoreError> {
         validate_request(&request)?;
         require_real_directory(&self.sessions_root)?;
+        if request.origin == SessionOrigin::Capture {
+            self.prepare_storage_reserve()?;
+        }
         let session_id = Uuid::now_v7().to_string();
         let now = wall_time_milliseconds();
 

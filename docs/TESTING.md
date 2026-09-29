@@ -373,6 +373,79 @@ Measured warm-target growth was 11,740 KiB; the completed native candidate
 occupied 999,364 KiB, totaling 1.035 GB. Subsequent qualification requests
 3 GB for these measured inputs plus headroom; no guard reserve is changed.
 
+### Single-build acceptance at 072a3fb, followed by injected failures
+
+Committed source `072a3fb38b77356fe9bf47032610c100c8d0315a`, tree
+`35a8fc54d65eb963a8d3b19799edaf5cbace1f88`, passed the guarded 3 GB canonical
+candidate command. Record:
+`apps/macos/.build/candidates/m1-closeout-072a3fb/candidate.json`, SHA-256
+`e53ff285b17c078cda4296c9355a59973b9f4ea9d9abe51854389afb28d4837f`.
+
+| Artifact | SHA-256 |
+| --- | --- |
+| Executable | `104c2aee43dd1f4de6ec7a721de2ae48e0cd4b8703dc54eeaa5bb27648c79194` |
+| Debug dylib | `a7750683402c056567e5962861d7a2dd87ad6854100d9c8fe0184f5a2d3c84bc` |
+| Info.plist | `c103e34b917098d3964f5992f343fd5f8fd17306642ecafb0e4c23fbaa97acab` |
+| Rust library | `d6cbfd3325184cbc87d83a564bba430022741fad92c9b4493f771d21ffcacbe1` |
+
+`disk-guard run --budget-gb 3 --volume "$PWD" -- ./script/check.sh --candidate "$PWD/apps/macos/.build/candidates/m1-closeout-072a3fb/candidate.json"`
+passed scaffold, clippy with warnings denied, locked web build, fresh bindings,
+one unsigned build-for-testing, macOS 13 artifact floor and warning checks,
+166 Swift tests (one optional large-import sample skipped), and native scenes.
+Its two consumers printed `RECORDING_COMPONENTS_GREEN` (79 tests) and
+`FOUNDATION_SYNTHETIC_GREEN`, then `CONTRIBUTOR_CANDIDATE_GREEN`.
+Log: `artifacts/m1-automated/candidate-072a3fb.log`.
+
+`disk-guard run --budget-gb 0.25 --volume "$PWD" -- ./script/check.sh --m1-forced-termination-recovery --candidate "$PWD/apps/macos/.build/candidates/m1-closeout-072a3fb/candidate.json"`
+passed `M1_FORCED_TERMINATION_RECOVERY_GATE_GREEN`: real microphone and system
+audio, over 30 seconds of rotation, external SIGKILL, five independently
+decoded CAF segments with unchanged hashes, native playback open, and two
+idempotent relaunches. Log: `artifacts/m1-automated/forced-recovery-072a3fb.log`;
+retained root `apps/macos/.build/m1-forced-recovery.3eez7n`, session
+`01a0ee74-ba2e-7fe1-a6a4-8d1226d82671`.
+
+`disk-guard run --budget-gb 0.1 --volume "$PWD" -- ./script/check.sh --m1-dual-source-runtime --candidate "$PWD/apps/macos/.build/candidates/m1-closeout-072a3fb/candidate.json"`
+passed `M1_DUAL_SOURCE_RUNTIME_GREEN`. Log:
+`artifacts/m1-automated/dual-source-072a3fb.log`; retained root
+`apps/macos/.build/m1-live-microphone.bl66Dg`, session
+`01a0ee75-b2a5-7513-900f-f86ebbb43fe8`. All four consumers reported the same
+artifact digests above and performed no rebuild. These are bounded 072a3fb
+receipts; subsequent code repairs require fresh qualification.
+
+All thirteen injected cases were attempted on that candidate. None qualified:
+ten app outcomes reached their intended state but the independent verifier
+wrongly expected the two initial SQLite preparation events to share journal
+IDs. The actual protocol creates SQLite intent before the journal, then a
+separate directory-ready journal record; later IDs do match. The repaired
+verifier checks that exact mapping, including a new missing-preparation
+rejection fixture (`M1_HARNESS_CONTRACT_GREEN cases=11`).
+
+Two product defects were reproduced. `kill-preparation` left the durable
+session in `preparing` after launch. The dedicated APFS volume reached zero
+available bytes (`ENOSPC_OBSERVED bytes_written=1578106880`); capture failed
+visibly and preserved its media, but journal/SQLite had no failure event and
+SQLite still said `recording`. Evidence is retained under the candidate's
+`m1-kill-preparation.IcfdCF` and `m1-storage-exhaustion.QpzHQU` roots. The latter
+contains `journal-before-free.jsonl` and
+`events-before-recovery-inspection.json`, collected before any production
+recovery. Only the owned filler was removed; the volume image was detached
+and retained. A readonly SQLite attempt at completely full capacity also
+failed with disk I/O error; the harness now snapshots the journal first,
+frees its filler after app exit, and reads SQLite before recovery.
+
+On the 072a3fb source plus the repair diff, the guarded 1 GB command
+`cargo test --locked -p open-scribe-store m1_` failed both new regressions for
+those intended behaviors, then passed after repair. The full guarded
+`cargo test --locked -p open-scribe-store` passed 138 tests. Logs:
+`artifacts/m1-automated/rust-m1-red-072a3fb.log`, `rust-m1-green.log`, and
+`rust-m1-repair-suite.log`. Rust now interrupts trusted, abandoned pre-media
+capture preparation and physically allocates 16 MiB of emergency journal
+space before a new capture. A critical observation releases that allocation
+before journal/SQLite writes; reopening a library does not refill it. Foreign
+files, symlinks, and hardlinks are refused unchanged. Swift rechecks actual
+capacity on source failure. These component proofs do not qualify the repaired
+full-volume runtime until a fresh committed candidate passes it.
+
 ## September 29, 2026 — Candidate build infrastructure
 
 The cold web failure was reproduced from base `71fa611` in a new

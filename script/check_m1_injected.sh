@@ -116,12 +116,15 @@ run_case() {
 		touch "$proof_root/injection-go"
 		wait_file outcome.json
 		wait_exit
-		sqlite3 -readonly -json "$media_root/Library.sqlite3" \
-			'SELECT event_kind, payload_json FROM session_events ORDER BY sequence;' \
-			>"$proof_root/events-before-recovery.json"
-		# Reclaim only this run's filler after capture stops. Preserve the
-		# volume image, journals, media, and all reports even on a red result.
+		session="$(jq -r '.session_id' "$proof_root/outcome.json")"
+		cp "$media_root/Sessions/$session/recovery.jsonl" "$proof_root/journal-before-free.jsonl"
+		# Reclaim only this run's filler after capture stops. This lets readonly
+		# SQLite open SHM if necessary; recovery has not run, and the original
+		# journal bytes above prove the failure was logged while the volume was full.
 		rm -- "$proof_root/volume/owned-pressure-fill"
+		sqlite3 -readonly -json "$media_root/Library.sqlite3" \
+			'SELECT id, event_kind, payload_json FROM session_events ORDER BY sequence;' \
+			>"$proof_root/events-before-recovery.json"
 		snapshot_media
 	else
 		wait_file outcome.json

@@ -67,13 +67,28 @@ if $PROGRAM_NAME == __FILE__
     database = File.join(media_root, 'Library.sqlite3')
     sessions = query(database, 'SELECT id, lifecycle FROM sessions;')
     demand(sessions.length == 1 && sessions[0]['id'] == session, 'unexpected session set')
-    events = query(database, "SELECT id, event_kind, payload_json FROM session_events WHERE session_id = '#{session}' ORDER BY sequence;")
+    events = query(database, "SELECT id, sequence, event_kind, payload_json FROM session_events WHERE session_id = '#{session}' ORDER BY sequence;")
     journal = File.readlines(File.join(media_root, 'Sessions', session, 'recovery.jsonl')).map { |line| JSON.parse(line) }
     demand(!journal.empty?, 'empty activity journal')
-    events.each do |event|
-      demand(journal.any? { |record| record['event_id'] == event['id'] &&
+    # Preparation intentionally creates a SQLite intent before the directory
+    # exists, then independently creates journal sequence 1. Those two SQLite
+    # events have distinct IDs/payloads; subsequent events share journal IDs.
+    demand(events.length >= 3 && events[0]['sequence'] == 1 &&
+      events[0]['event_kind'] == 'session_create_intent' &&
+      JSON.parse(events[0]['payload_json']) == { 'origin' => 'capture' } &&
+      events[1]['sequence'] == 2 && events[1]['event_kind'] == 'session_directory_ready' &&
+      JSON.parse(events[1]['payload_json']) == { 'relative_path' => '.' }, 'invalid database preparation')
+    first = journal.first
+    demand(first['sequence'] == 1 && first['session_id'] == session &&
+      first['event_kind'] == 'session_directory_ready' && first['relative_path'] == '.' &&
+      first['prior_digest'].nil? && first['payload'] == { 'subdirectories' => %w[audio video context exports] },
+      'missing or invalid independent preparation journal')
+    demand(journal.length == events.length - 1, 'journal/database event counts differ')
+    events.drop(2).zip(journal.drop(1)).each do |event, record|
+      demand(record['event_id'] == event['id'] &&
         record['session_id'] == session && record['event_kind'] == event['event_kind'] &&
-        record['payload'] == JSON.parse(event['payload_json']) }, 'database event lacks matching journal record')
+        record['sequence'] == event['sequence'] - 1 &&
+        record['payload'] == JSON.parse(event['payload_json']), 'database event lacks matching journal record')
     end
     kinds = events.map { |event| event['event_kind'] }
     if forced || exhausted
@@ -101,9 +116,13 @@ if $PROGRAM_NAME == __FILE__
         # Recovery by itself cannot qualify the failure event. The disk/source
         # failure must also have reached Rust's activity journal.
         before_events = read_json(File.join(proof_root, 'events-before-recovery.json'))
-        demand(before_events.any? { |event| ['source_failed', 'session_interrupted'].include?(event['event_kind']) ||
-          (event['event_kind'] == 'storage_observed' && JSON.parse(event['payload_json'])['level'] == 'critical') },
-          'exhaustion event was not durably logged')
+        failures = before_events.select { |event| ['source_failed', 'session_interrupted'].include?(event['event_kind']) ||
+          (event['event_kind'] == 'storage_observed' && JSON.parse(event['payload_json'])['level'] == 'critical') }
+        before_journal = File.readlines(File.join(proof_root, 'journal-before-free.jsonl')).map { |line| JSON.parse(line) }
+        demand(!failures.empty? && failures.all? { |event| before_journal.any? { |record|
+          record['event_id'] == event['id'] && record['session_id'] == session &&
+            record['event_kind'] == event['event_kind'] && record['payload'] == JSON.parse(event['payload_json']) } },
+          'exhaustion event was not durably logged before freeing space')
       else
         demand(report['result'] == 'INJECTED_CASE_GREEN', 'app did not pass')
         expected = case scenario

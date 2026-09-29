@@ -14,20 +14,26 @@ Dir.mktmpdir('open-scribe-m1-verifier.') do |root|
   recovery = { 'session_id' => session, 'result' => 'INJECTED_RECOVERY_GREEN',
     'lifecycle' => 'interrupted', 'rendered_frames' => 0, 'recovery_projection' => 'none' }
   checkpoint = { 'session_id' => session, 'phase' => 'preparation', 'pid' => 1 }
-  event = { 'event_id' => 'e1', 'session_id' => session, 'event_kind' => 'session_interrupted', 'payload' => {} }
+  prepared = { 'event_id' => 'j1', 'sequence' => 1, 'session_id' => session,
+    'event_kind' => 'session_directory_ready', 'relative_path' => '.', 'prior_digest' => nil,
+    'payload' => { 'subdirectories' => %w[audio video context exports] } }
+  event = { 'event_id' => 'e3', 'sequence' => 2, 'session_id' => session, 'event_kind' => 'session_interrupted', 'payload' => {} }
+  journal_bytes = ->(records) { records.map { |record| JSON.generate(record) + "\n" }.join }
   write = ->(name, value) { File.write(File.join(root, name), JSON.generate(value)) }
   write.call('checkpoint.json', checkpoint)
   write.call('recovery.json', recovery)
   write.call('recovery-first.json', recovery)
   write.call('media-before.json', {})
-  File.write(journal_path, JSON.generate(event) + "\n")
+  File.write(journal_path, journal_bytes.call([prepared, event]))
   File.write(File.join(root, 'journal-first.sha256'), Digest::SHA256.file(journal_path).hexdigest)
   command('sqlite3', database, <<~SQL)
     CREATE TABLE sessions(id TEXT, lifecycle TEXT);
     CREATE TABLE session_events(id TEXT, session_id TEXT, event_kind TEXT, payload_json TEXT, sequence INTEGER);
     CREATE TABLE segments(relative_path TEXT, digest TEXT, byte_length INTEGER, sample_count INTEGER, channels INTEGER, lifecycle TEXT);
     INSERT INTO sessions VALUES('#{session}', 'interrupted');
-    INSERT INTO session_events VALUES('e1', '#{session}', 'session_interrupted', '{}', 1);
+    INSERT INTO session_events VALUES('e1', '#{session}', 'session_create_intent', '{"origin":"capture"}', 1);
+    INSERT INTO session_events VALUES('e2', '#{session}', 'session_directory_ready', '{"relative_path":"."}', 2);
+    INSERT INTO session_events VALUES('e3', '#{session}', 'session_interrupted', '{}', 3);
   SQL
   run = -> { Open3.capture3('ruby', verifier, 'kill-preparation', root, root) }
   output, error, status = run.call
@@ -41,8 +47,10 @@ Dir.mktmpdir('open-scribe-m1-verifier.') do |root|
       -> { command('sqlite3', database, "UPDATE sessions SET lifecycle='interrupted';") }],
     ['changed recovery', -> { write.call('recovery-first.json', recovery.merge('rendered_frames' => 1)) },
       -> { write.call('recovery-first.json', recovery) }],
-    ['missing activity record', -> { File.write(journal_path, JSON.generate(event.merge('event_id' => 'other')) + "\n") },
-      -> { File.write(journal_path, JSON.generate(event) + "\n") }],
+    ['missing activity record', -> { File.write(journal_path, journal_bytes.call([prepared, event.merge('event_id' => 'other')])) },
+      -> { File.write(journal_path, journal_bytes.call([prepared, event])) }],
+    ['missing preparation journal', -> { File.write(journal_path, journal_bytes.call([event])) },
+      -> { File.write(journal_path, journal_bytes.call([prepared, event])) }],
     ['app error', -> { File.write(File.join(root, 'proof-error'), 'injected failure') },
       -> { File.unlink(File.join(root, 'proof-error')) }],
     ['journal changed on second recovery', -> { File.write(File.join(root, 'journal-first.sha256'), '0' * 64) },

@@ -3,6 +3,56 @@
 use super::*;
 use std::io::SeekFrom;
 
+#[test]
+fn m1_launch_interrupts_abandoned_preparation_without_claiming_media() {
+    let temp = TempDir::new().unwrap();
+    let mut store = SessionStore::open(temp.path()).unwrap();
+    let session = store
+        .prepare_session(PrepareSessionRequest {
+            title: "Killed before opening media".to_owned(),
+            origin: SessionOrigin::Capture,
+        })
+        .unwrap()
+        .session_id;
+    drop(store);
+
+    let mut store = SessionStore::open(temp.path()).unwrap();
+    let first = store.recover_library().unwrap();
+    assert_eq!(
+        store.recorder_detail(&session).unwrap().lifecycle,
+        "interrupted"
+    );
+    assert_eq!(
+        finding_for(&first, &session),
+        Some(RecoveryDisposition::InterruptedPrepared)
+    );
+    assert_eq!(playable_count(&first, &session), 0);
+    let events = event_kinds(&store, &session);
+    assert!(events.iter().any(|kind| kind == "session_interrupted"));
+    assert!(!events.iter().any(|kind| kind == "recording_started"));
+    let journal_path = store
+        .session_directory(&session.0)
+        .unwrap()
+        .join(JOURNAL_NAME);
+    let journal = fs::read(&journal_path).unwrap();
+    assert!(
+        journal_records(&store, &session)
+            .iter()
+            .any(|record| record.body.event_kind == "session_interrupted"
+                && record.body.payload["reason"] == "capture_start_failed")
+    );
+    drop(store);
+
+    let mut store = SessionStore::open(temp.path()).unwrap();
+    store.recover_library().unwrap();
+    assert_eq!(
+        store.recorder_detail(&session).unwrap().lifecycle,
+        "interrupted"
+    );
+    assert_eq!(event_kinds(&store, &session), events);
+    assert_eq!(fs::read(journal_path).unwrap(), journal);
+}
+
 fn finding_for(recovery: &LibraryRecovery, session: &SessionId) -> Option<RecoveryDisposition> {
     recovery
         .findings
