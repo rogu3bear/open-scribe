@@ -234,9 +234,9 @@ impl SessionStore {
                 false,
             )
             .is_ok_and(|validated| {
-                !validated
+                validated
                     .channels
-                    .is_some_and(|actual| actual != channels as u16)
+                    .is_none_or(|actual| actual == channels as u16)
             })
         {
             Ok(RecoveryDisposition::MediaOpenAwaitingReceipt)
