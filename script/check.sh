@@ -15,6 +15,8 @@ if [[ "$#" -ge 3 && "$2" == --candidate ]]; then
 	--m1-dual-source-runtime | --m1-live-microphone) exec "$script_dir/build_and_run.sh" --m1-dual-source-runtime-proof "$@" ;;
 	--m1-forced-termination-recovery) exec "$script_dir/check_m1_forced_termination_recovery.sh" "$@" ;;
 	--m1-injected-failures) exec "$script_dir/check_m1_injected.sh" "$@" ;;
+	--m1-live-controls) exec "$script_dir/check_m1_injected.sh" "$@" --case live-pause-resume ;;
+	--m1-complete) exec "$script_dir/check_m1_complete.sh" "$@" ;;
 	esac
 fi
 

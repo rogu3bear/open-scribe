@@ -19,6 +19,9 @@ mod recovery_resilience_tests;
 #[path = "journal_replacement_tests.rs"]
 mod journal_replacement_tests;
 
+#[path = "storage_reserve_tests.rs"]
+mod storage_reserve_tests;
+
 fn create_media(store: &mut SessionStore, a: &MediaOpenAuthorization) {
     let mut file = OpenOptions::new()
         .write(true)

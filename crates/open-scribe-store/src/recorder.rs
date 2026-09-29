@@ -60,6 +60,14 @@ impl SessionStore {
         session: SessionId,
         action: RecorderAction,
     ) -> Result<RecorderDetail, StoreError> {
+        if let RecorderAction::ObserveStorage { available_bytes } = &action
+            && *available_bytes < RESERVE_BYTES
+        {
+            // Even a SQLite read may need WAL/SHM recovery space. A known
+            // critical observation must return emergency blocks before any
+            // database access, not after reading the current projection.
+            self.release_storage_reserve()?;
+        }
         let state = self.recorder_detail(&session)?;
         let phase = state.lifecycle.as_str();
         let (kind, payload) = match action {

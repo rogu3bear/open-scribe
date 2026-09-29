@@ -1126,6 +1126,25 @@ fn map_runtime_session_snapshot(
 }
 
 fn map_storage_error(error: open_scribe_core::StoreError) -> NativeStorageError {
+    #[cfg(debug_assertions)]
+    if std::env::var_os("OPEN_SCRIBE_M1_PROOF_DIAGNOSTICS").as_deref()
+        == Some(std::ffi::OsStr::new("1"))
+    {
+        // Explicit development proofs retain only error classes, never paths,
+        // SQL payloads, titles, or media. Normal app runs emit nothing here.
+        let class = match &error {
+            open_scribe_core::StoreError::Io(value) => {
+                format!("io_errno:{:?}", value.raw_os_error())
+            }
+            open_scribe_core::StoreError::Sqlite(value) => {
+                format!("sqlite_code:{:?}", value.sqlite_error_code())
+            }
+            open_scribe_core::StoreError::InvalidState(_) => "invalid_state".to_owned(),
+            open_scribe_core::StoreError::IntegrityMismatch(_) => "integrity_mismatch".to_owned(),
+            _ => "other_rejection".to_owned(),
+        };
+        eprintln!("M1_STORAGE_DIAGNOSTIC {class}");
+    }
     match error {
         open_scribe_core::StoreError::InvalidManagedRoot(_) => {
             NativeStorageError::InvalidManagedRoot

@@ -3,6 +3,79 @@ use std::os::unix::fs::MetadataExt;
 use tempfile::TempDir;
 
 #[test]
+#[ignore = "requires OPEN_SCRIBE_RESERVE_TEST_VOLUME on a dedicated disposable volume"]
+fn m1_real_full_volume_can_release_reserve_and_journal_critical_storage() {
+    let volume =
+        std::env::var_os("OPEN_SCRIBE_RESERVE_TEST_VOLUME").expect("dedicated volume required");
+    let volume = PathBuf::from(volume).canonicalize().unwrap();
+    assert_ne!(
+        fs::metadata(&volume).unwrap().dev(),
+        fs::metadata(std::env::current_dir().unwrap())
+            .unwrap()
+            .dev(),
+        "refuse filling the host filesystem"
+    );
+    let root = tempfile::tempdir_in(volume).unwrap();
+    let mut store = SessionStore::open(root.path()).unwrap();
+    let (session, sources) = recording_pair(&mut store);
+    let filler_path = root.path().join("owned-filler");
+    let mut filler = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&filler_path)
+        .unwrap();
+    let block = [0x5a; 1024 * 1024];
+    let mut exhausted = false;
+    for _ in 0..256 {
+        if let Err(error) = filler.write_all(&block) {
+            assert_eq!(error.raw_os_error(), Some(28));
+            exhausted = true;
+            break;
+        }
+    }
+    drop(filler);
+    assert!(
+        exhausted,
+        "dedicated volume must reach ENOSPC within 256 MiB"
+    );
+    let mut media = OpenOptions::new()
+        .append(true)
+        .open(&sources[0].absolute_path)
+        .unwrap();
+    let mut media_exhausted = false;
+    for _ in 0..16 {
+        if let Err(error) = media.write_all(&block).and_then(|()| media.sync_all()) {
+            assert_eq!(error.raw_os_error(), Some(28));
+            media_exhausted = true;
+            break;
+        }
+    }
+    assert!(media_exhausted, "real source write must fail");
+    drop(media);
+    let result = store.recorder_action(
+        session,
+        RecorderAction::ObserveStorage { available_bytes: 0 },
+    );
+    if let Err(error) = &result {
+        eprintln!("critical observation: {error:?}");
+        eprintln!(
+            "direct reserve release: {:?}",
+            store.release_storage_reserve()
+        );
+    }
+    // Cleanup only the test's filler after capturing the original result.
+    fs::remove_file(filler_path).unwrap();
+    let detail = result.expect("must journal before any filler space is returned");
+    assert_eq!(detail.storage_level, "critical");
+    assert!(
+        detail
+            .events
+            .iter()
+            .any(|event| event.kind == "storage_observed")
+    );
+}
+
+#[test]
 fn m1_reserve_refuses_foreign_files_symlinks_and_hardlinks_without_changing_them() {
     for link in ["foreign", "symlink", "hardlink"] {
         let temp = TempDir::new().unwrap();

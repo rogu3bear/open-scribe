@@ -38,6 +38,10 @@ Dir.mktmpdir('open-scribe-m1-verifier.') do |root|
   run = -> { Open3.capture3('ruby', verifier, 'kill-preparation', root, root) }
   output, error, status = run.call
   demand(status.success? && output.include?('M1_INJECTED_KILL_PREPARATION_GREEN'), "control fixture failed: #{error}")
+  # Mapping-only control: Rust's derived-media protocol has journal-only rows.
+  events = query(database, 'SELECT id, sequence, event_kind, payload_json FROM session_events ORDER BY sequence;')
+  mix = event.merge('event_id' => 'm1', 'event_kind' => 'mixdown_intent', 'sequence' => 3)
+  verify_activity(events, [prepared, event, mix], session, 'ready_for_review')
   cases = [
     ['wrong checkpoint', -> { write.call('checkpoint.json', checkpoint.merge('phase' => 'recording')) },
       -> { write.call('checkpoint.json', checkpoint) }],
@@ -50,6 +54,10 @@ Dir.mktmpdir('open-scribe-m1-verifier.') do |root|
     ['missing activity record', -> { File.write(journal_path, journal_bytes.call([prepared, event.merge('event_id' => 'other')])) },
       -> { File.write(journal_path, journal_bytes.call([prepared, event])) }],
     ['missing preparation journal', -> { File.write(journal_path, journal_bytes.call([event])) },
+      -> { File.write(journal_path, journal_bytes.call([prepared, event])) }],
+    ['unprojected recorder event', -> { File.write(journal_path, journal_bytes.call([prepared, event, mix.merge('event_kind' => 'storage_observed')])) },
+      -> { File.write(journal_path, journal_bytes.call([prepared, event])) }],
+    ['mixdown without reviewable media', -> { File.write(journal_path, journal_bytes.call([prepared, event, mix])) },
       -> { File.write(journal_path, journal_bytes.call([prepared, event])) }],
     ['app error', -> { File.write(File.join(root, 'proof-error'), 'injected failure') },
       -> { File.unlink(File.join(root, 'proof-error')) }],
@@ -70,7 +78,7 @@ Dir.mktmpdir('open-scribe-m1-verifier.') do |root|
   _, error, status = Open3.capture3('ruby', File.join(__dir__, 'm1_fill_volume.rb'), volume, root)
   demand(!status.success? && error.include?('not isolated from the host'), 'fill helper admitted host volume')
   demand(!File.exist?(File.join(volume, 'owned-pressure-fill')), 'fill helper wrote before volume admission')
-  puts "M1_HARNESS_CONTRACT_GREEN cases=#{cases.length + 2}"
+  puts "M1_HARNESS_CONTRACT_GREEN cases=#{cases.length + 3}"
   puts 'proof=verifier_control_and_rejection_fixtures,host_volume_refused_before_write'
   puts 'excludes=app_build,app_runtime,injected_failure_acceptance,m1_completion'
 end

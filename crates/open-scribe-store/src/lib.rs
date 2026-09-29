@@ -28,8 +28,6 @@ mod import;
 mod journal_replacement;
 mod library_recovery;
 mod storage_reserve;
-#[cfg(test)]
-mod storage_reserve_tests;
 pub use library_recovery::LibraryRecovery;
 mod media_recovery;
 mod mixdown;

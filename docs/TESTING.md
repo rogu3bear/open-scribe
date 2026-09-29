@@ -446,6 +446,68 @@ files, symlinks, and hardlinks are refused unchanged. Swift rechecks actual
 capacity on source failure. These component proofs do not qualify the repaired
 full-volume runtime until a fresh committed candidate passes it.
 
+### 327a894 qualification and remaining full-volume diagnosis
+
+`327a8948bd66ea8fc4e483378b96b356257c9181` (tree
+`c3e53420cbba628d27fe2cd4efe0d84c255a06c1`) passed the guarded 3 GB canonical
+gate, including 138 Rust store tests, 166 Swift tests (one optional sample
+skipped), 79 recorder tests, and foundational recovery. Record:
+`apps/macos/.build/candidates/m1-closeout-327a894/candidate.json`, SHA-256
+`c6799135c2c6f2cb91e19b3cb3350c9a57e0befe7c8c95520ebd99a71494aaf0`.
+
+| Artifact | SHA-256 |
+| --- | --- |
+| Executable | `104c2aee43dd1f4de6ec7a721de2ae48e0cd4b8703dc54eeaa5bb27648c79194` |
+| Debug dylib | `3e23032fff9b54c5bd110ba071a31698a6a0b3d5f86bcbd1a91807efbe051a41` |
+| Info.plist | `c103e34b917098d3964f5992f343fd5f8fd17306642ecafb0e4c23fbaa97acab` |
+| Rust library | `9bcd4e2c298a7cbc3b8cae6412e5b065038b3563a5c4742c21185293adc21db8` |
+
+The guarded 0.1 GB `--m1-injected-failures --candidate RECORD --case kill-preparation`
+passed `M1_INJECTED_KILL_PREPARATION_GREEN` and issued a candidate-bound case
+receipt. It now shows Interrupted with no invented audio and unchanged journal
+bytes across two relaunches. Log: `artifacts/m1-automated/preparation-327a894.log`.
+
+The default matrix stopped on a second verifier mismatch: Rust intentionally
+keeps `mixdown_intent`/`mixdown_validated` only in JSONL. The verifier now admits
+only those exact journal-only kinds for reviewable sessions while requiring
+every recorder event to match SQLite, with contiguous sequences in both logs.
+Three added fixtures cover that mapping and reject unknown unprojected events
+and derived media before reviewability (`M1_HARNESS_CONTRACT_GREEN cases=14`).
+
+The guarded 2 GB full-volume retry remained RED: source media recovered, but
+there was still no failure event before the filler was removed. Root:
+`apps/macos/.build/candidates/m1-closeout-327a894/m1-storage-exhaustion.ktXOzL`;
+log: `artifacts/m1-automated/exhaustion-327a894.log`. Its 16 MiB reserve remained
+allocated. Foundation capacity probes returned zero correctly. A separate
+128 MiB APFS Rust test reached actual ENOSPC, failed a real source-file write,
+then released reserve space and journaled critical storage successfully:
+`artifacts/m1-automated/reserve-capture.B7RGmo/test.log`. This narrows the
+failure but does not qualify the native app. LLDB stopped at macOS's
+`task_for_pid` authorization boundary; only the owned diagnostic processes
+were terminated and their volume detached, with no permission change.
+
+The next repair moves known-critical reserve release before any SQLite read,
+since WAL/SHM handling itself can need space. Explicit Debug harness launches
+also retain content-free Rust error classes and storage-probe results. The
+native full-volume result remains due; the ordering change is not yet claimed
+as its proven root-cause repair. The dedicated-volume Rust regression is
+explicitly ignored in ordinary suites and must be run with
+`OPEN_SCRIBE_RESERVE_TEST_VOLUME` on an isolated disposable volume; it refuses
+the host device and bounds filling.
+
+`--m1-complete --candidate RECORD` now validates each case record's candidate
+hash, scenario, marker, and harness-log hash before removing its automated
+gap. Six inert fixtures reject absent, foreign-build, changed-log,
+missing-marker, and redirected receipts. Source inspection found the
+application picker/filter and mono/stereo adapters implemented; their actual
+scope/device matrices remain explicitly unqualified human checks. Markers,
+mixdown, and storage-policy proof remain conditional on their runtime cases.
+The separate `--m1-live-controls --candidate RECORD` entry point is intended
+to check real pause/resume/stop and both continued sources. It is excluded
+from the default permission-free thirteen-case matrix and has no runtime
+receipt yet. Two-hour synchronization remains an automated runtime gap, not
+a relabeled human-only item.
+
 ## September 29, 2026 — Candidate build infrastructure
 
 The cold web failure was reproduced from base `71fa611` in a new

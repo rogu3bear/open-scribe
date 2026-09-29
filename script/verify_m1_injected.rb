@@ -24,15 +24,46 @@ def query(database, sql)
   JSON.parse(result.strip.empty? ? '[]' : result)
 end
 
-def verify_media(root, session, segments, proof_root)
+def verify_activity(events, journal, session, lifecycle)
+  # SQLite intent precedes the journal. All later recorder events share IDs;
+  # mixdown intent/validation are journal-only by the Rust mixdown protocol.
+  demand(events.length >= 3 && events[0]['sequence'] == 1 &&
+    events[0]['event_kind'] == 'session_create_intent' &&
+    JSON.parse(events[0]['payload_json']) == { 'origin' => 'capture' } &&
+    events[1]['sequence'] == 2 && events[1]['event_kind'] == 'session_directory_ready' &&
+    JSON.parse(events[1]['payload_json']) == { 'relative_path' => '.' }, 'invalid database preparation')
+  first = journal.first
+  demand(first && first['sequence'] == 1 && first['session_id'] == session &&
+    first['event_kind'] == 'session_directory_ready' && first['relative_path'] == '.' &&
+    first['prior_digest'].nil? && first['payload'] == { 'subdirectories' => %w[audio video context exports] },
+    'missing or invalid independent preparation journal')
+  journal.each_with_index do |record, index|
+    demand(record['sequence'] == index + 1 && record['session_id'] == session, 'journal sequence/session differs')
+  end
+  derived, projected = journal.partition { |record| %w[mixdown_intent mixdown_validated].include?(record['event_kind']) }
+  demand(derived.empty? || lifecycle == 'ready_for_review', 'mixdown without reviewable source media')
+  demand(projected.length == events.length - 1, 'journal/database event counts differ')
+  events.drop(2).zip(projected.drop(1)).each_with_index do |(event, record), index|
+    demand(record['event_id'] == event['id'] && record['event_kind'] == event['event_kind'] &&
+      event['sequence'] == index + 3 && record['payload'] == JSON.parse(event['payload_json']),
+      'database event lacks matching journal record')
+  end
+end
+
+def verify_media(root, session, segments, proof_root, synthetic: true)
   demand(!segments.empty?, 'no source media')
+  unless synthetic
+    demand(segments.map { |segment| segment['channels'] }.uniq.sort == [1, 2] &&
+      segments.group_by { |segment| segment['channels'] }.values.all? { |track|
+        track.sum { |segment| segment['sample_count'] } >= 96_000 }, 'live source coverage missing')
+  end
   segments.each_with_index do |segment, index|
     path = File.expand_path("Sessions/#{session}/#{segment.fetch('relative_path')}", root)
     demand(path.start_with?("#{File.expand_path(root)}/Sessions/#{session}/") && !File.symlink?(path), 'media escaped root')
     demand(segment['lifecycle'] == 'sealed', 'unsealed media after recovery/finalization')
     demand(Digest::SHA256.file(path).hexdigest == segment.fetch('digest'), 'Rust media digest differs')
     demand(File.size(path) == segment.fetch('byte_length'), 'Rust media byte count differs')
-    demand(segment.fetch('sample_count') >= 48_000, 'lost pre-event audio')
+    demand(segment.fetch('sample_count') >= (synthetic ? 48_000 : 1), 'lost pre-event audio')
     command('/usr/bin/afinfo', path)
     wave = File.join(proof_root, "decoded-#{index}.wav")
     command('/usr/bin/afconvert', path, wave, '-f', 'WAVE', '-d', 'LEI16')
@@ -49,7 +80,7 @@ def verify_media(root, session, segments, proof_root)
     demand([1, 2].include?(channels) && pcm, 'missing PCM channel layout')
     demand(pcm.bytesize == segment.fetch('sample_count') * channels * 2, 'independent decoded frame count differs')
     expected = channels == 1 ? [8192] : [16384, -8192]
-    demand(pcm.unpack('s<*').each_slice(channels).all? { |frame| frame == expected },
+    demand(!synthetic || pcm.unpack('s<*').each_slice(channels).all? { |frame| frame == expected },
       'pre-event PCM or channel identity changed')
   end
 end
@@ -70,26 +101,7 @@ if $PROGRAM_NAME == __FILE__
     events = query(database, "SELECT id, sequence, event_kind, payload_json FROM session_events WHERE session_id = '#{session}' ORDER BY sequence;")
     journal = File.readlines(File.join(media_root, 'Sessions', session, 'recovery.jsonl')).map { |line| JSON.parse(line) }
     demand(!journal.empty?, 'empty activity journal')
-    # Preparation intentionally creates a SQLite intent before the directory
-    # exists, then independently creates journal sequence 1. Those two SQLite
-    # events have distinct IDs/payloads; subsequent events share journal IDs.
-    demand(events.length >= 3 && events[0]['sequence'] == 1 &&
-      events[0]['event_kind'] == 'session_create_intent' &&
-      JSON.parse(events[0]['payload_json']) == { 'origin' => 'capture' } &&
-      events[1]['sequence'] == 2 && events[1]['event_kind'] == 'session_directory_ready' &&
-      JSON.parse(events[1]['payload_json']) == { 'relative_path' => '.' }, 'invalid database preparation')
-    first = journal.first
-    demand(first['sequence'] == 1 && first['session_id'] == session &&
-      first['event_kind'] == 'session_directory_ready' && first['relative_path'] == '.' &&
-      first['prior_digest'].nil? && first['payload'] == { 'subdirectories' => %w[audio video context exports] },
-      'missing or invalid independent preparation journal')
-    demand(journal.length == events.length - 1, 'journal/database event counts differ')
-    events.drop(2).zip(journal.drop(1)).each do |event, record|
-      demand(record['event_id'] == event['id'] &&
-        record['session_id'] == session && record['event_kind'] == event['event_kind'] &&
-        record['sequence'] == event['sequence'] - 1 &&
-        record['payload'] == JSON.parse(event['payload_json']), 'database event lacks matching journal record')
-    end
+    verify_activity(events, journal, session, sessions[0]['lifecycle'])
     kinds = events.map { |event| event['event_kind'] }
     if forced || exhausted
       recovery = read_json(File.join(proof_root, 'recovery.json'))
@@ -129,6 +141,10 @@ if $PROGRAM_NAME == __FILE__
                    when 'storage-warning', 'storage-critical' then ['storage_observed']
                    when 'sleep-wake' then ['system_sleep_observed', 'capture_paused', 'system_wake_observed']
                    when 'microphone-loss', 'system-loss', 'application-loss', 'selected-app-exit' then ['source_failed']
+                   when 'live-pause-resume'
+                     demand(report['capture_backend'] == 'AVAudioEngine+ScreenCaptureKit' &&
+                       !report.fetch('paused_status').empty? && !report.fetch('resumed_status').empty?, 'live controls projection missing')
+                     ['capture_paused', 'capture_resumed']
                    else raise 'unknown scenario'
                    end
         demand(expected.all? { |kind| kinds.include?(kind) && report.fetch('visible_events').include?(kind) },
@@ -142,7 +158,7 @@ if $PROGRAM_NAME == __FILE__
       demand(!kinds.include?('recording_started'), 'preparation was reported Recording')
     else
       demand(sessions[0]['lifecycle'] == 'ready_for_review', 'media is not reviewable')
-      verify_media(media_root, session, segments, proof_root)
+      verify_media(media_root, session, segments, proof_root, synthetic: scenario != 'live-pause-resume')
     end
     puts "M1_INJECTED_#{scenario.tr('-', '_').upcase}_GREEN"
     puts 'proof=production_controller_projection,rust_activity_journal,source_media_digests,independent_pcm_decode,explicit_fallback_or_stop'

@@ -122,6 +122,7 @@ final class M1ProofSource: MicrophoneCapturing, SystemAudioCapturing, @unchecked
 }
 
 final class M1ProofInputs: @unchecked Sendable {
+  private let proofRoot: URL
   private let lock = NSLock()
   private var storageOverride: UInt64?
   private var host = mach_absolute_time()
@@ -129,12 +130,24 @@ final class M1ProofInputs: @unchecked Sendable {
   var microphone: M1ProofSource?
   var audio: M1ProofSource?
 
+  init(root: URL) { proofRoot = root }
+
   var now: UInt64 { lock.withLock { host } }
   func advance() { lock.withLock { host += AVAudioTime.hostTime(forSeconds: 1) } }
   func storage(_ bytes: UInt64?) { lock.withLock { storageOverride = bytes } }
   func available(at path: String) throws -> UInt64 {
-    if let value = lock.withLock({ storageOverride }) { return value }
-    return try RecorderStorage.availableBytes(at: path)
+    do {
+      let value = try lock.withLock({ storageOverride }) ?? RecorderStorage.availableBytes(at: path)
+      try M1ProofFiles.write(
+        ["available_bytes": value], name: "storage-probe.json", root: proofRoot)
+      return value
+    } catch {
+      let observed = error as NSError
+      try? M1ProofFiles.write(
+        ["error_domain": observed.domain, "error_code": observed.code],
+        name: "storage-probe.json", root: proofRoot)
+      throw error
+    }
   }
   func makeMicrophone(_ writer: ManagedSegmentWriting) -> M1ProofSource {
     let source = M1ProofSource(writer)

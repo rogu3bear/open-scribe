@@ -16,6 +16,8 @@ if [[ "$#" != 0 ]]; then
 	selected="$2"
 	valid=0
 	for scenario in "${cases[@]}"; do [[ "$scenario" != "$selected" ]] || valid=1; done
+	# This explicit single case opens real devices; the default matrix never does.
+	[[ "$selected" != live-pause-resume ]] || valid=1
 	[[ "$valid" == 1 ]] || candidate_fail 'unknown injected case'
 	cases=("$selected")
 fi
@@ -71,7 +73,7 @@ run_case() {
 	}
 	launch_recovery() {
 		candidate_assert
-		"$app_binary" --m1-injected-recovery-root "$proof_root" --m1-proof-media-root "$media_root" \
+		OPEN_SCRIBE_M1_PROOF_DIAGNOSTICS=1 "$app_binary" --m1-injected-recovery-root "$proof_root" --m1-proof-media-root "$media_root" \
 			>>"$proof_root/recovery-app.log" 2>&1 &
 		app_pid=$!
 		wait_file recovery.json
@@ -87,7 +89,7 @@ run_case() {
 		media_root="$proof_root/volume/media"
 	fi
 	candidate_assert
-	"$app_binary" --m1-injected-proof-root "$proof_root" --m1-proof-media-root "$media_root" \
+	OPEN_SCRIBE_M1_PROOF_DIAGNOSTICS=1 "$app_binary" --m1-injected-proof-root "$proof_root" --m1-proof-media-root "$media_root" \
 		--m1-injected-case "$scenario" >"$proof_root/app.log" 2>&1 &
 	app_pid=$!
 	if [[ "$scenario" == kill-* ]]; then

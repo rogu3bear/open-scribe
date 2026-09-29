@@ -16,8 +16,14 @@ final class M1FailureRuntimeProof {
     self.root = root
     self.mediaRoot = mediaRoot
     self.scenario = scenario
-    let inputs = M1ProofInputs()
+    let inputs = M1ProofInputs(root: root)
     self.inputs = inputs
+    // This separate, explicit case uses actual platform permission authorities
+    // and adapters. It is never included in the permission-free default matrix.
+    if scenario == "live-pause-resume" {
+      controller = LiveMicrophoneRecordingController(managedRoot: mediaRoot)
+      return
+    }
     // Reserve-stop is tested separately. Hold the timer's injected probe
     // normal while the parent fills the isolated volume, then restore the
     // real probe before the actual writer failure and explicit storage check.
@@ -46,6 +52,11 @@ final class M1FailureRuntimeProof {
 
   func run(runtime: RuntimeLibraryStore) async {
     do {
+      if scenario == "live-pause-resume" {
+        try await liveControls(runtime: runtime)
+        NSApp.terminate(nil)
+        return
+      }
       let scenarios = [
         "storage-warning", "storage-critical", "storage-exhaustion",
         "microphone-loss", "system-loss", "application-loss", "selected-app-exit", "sleep-wake",
@@ -180,6 +191,61 @@ final class M1FailureRuntimeProof {
         ], name: "outcome.json", root: root)
     } catch { M1ProofFiles.fail(error, root: root) }
     NSApp.terminate(nil)
+  }
+
+  private func liveControls(runtime: RuntimeLibraryStore) async throws {
+    await controller.start()
+    try await wait { self.controller.phase == .capturing }
+    runtime.refresh()
+    try await wait { runtime.currentSession?.lifecycle == "recording" && !runtime.isSnapshotStale }
+    guard let sessionId = runtime.currentSession?.sessionId else {
+      throw M1ProofError.failed("live session not visible")
+    }
+    try await Task.sleep(for: .seconds(2))
+    controller.addMarker(label: "Live pause boundary")
+    await controller.stop(pausing: true)
+    try requireM1(controller.phase == .paused, controller.errorMessage ?? "live pause failed")
+    let paused = try await Self.visibleSession(runtime, sessionId: sessionId, lifecycle: "paused")
+    let preparation = try NativeRecordingPreparation.open(managedRoot: mediaRoot.path)
+    let before = try preparation.playbackTimeline(sessionId: sessionId)
+    try requireM1(Set(before.map(\.trackId)).count == 2, "pause lost a source")
+    try await Task.sleep(for: .seconds(1))
+    await controller.start(resuming: true)
+    try await wait { self.controller.phase == .capturing }
+    let resumed = try await Self.visibleSession(
+      runtime, sessionId: sessionId, lifecycle: "recording")
+    try await Task.sleep(for: .seconds(2))
+    await controller.stop()
+    try requireM1(controller.phase == .saved, controller.errorMessage ?? "live stop failed")
+    let final = try preparation.playbackTimeline(sessionId: sessionId)
+    // Rust revalidates every accepted digest while producing this final plan.
+    for track in Set(before.map(\.trackId)) {
+      let priorFrames = before.filter { $0.trackId == track }.reduce(UInt64(0)) {
+        $0 + $1.sampleCount
+      }
+      let finalFrames = final.filter { $0.trackId == track }.reduce(UInt64(0)) {
+        $0 + $1.sampleCount
+      }
+      try requireM1(
+        priorFrames >= 48_000 && finalFrames > priorFrames + 48_000,
+        "one live source did not continue after resume")
+    }
+    let detail = try preparation.recorderDetail(sessionId: sessionId)
+    let expected = ["capture_paused", "capture_resumed", "marker_added"]
+    try requireM1(
+      expected.allSatisfy { kind in detail.events.contains { $0.kind == kind } },
+      "live control event missing")
+    let saved = try await Self.visibleSession(
+      runtime, sessionId: sessionId, lifecycle: "ready_for_review")
+    try M1ProofFiles.write(
+      [
+        "scenario": scenario, "session_id": sessionId, "result": "INJECTED_CASE_GREEN",
+        "capture_backend": "AVAudioEngine+ScreenCaptureKit", "lifecycle": detail.lifecycle,
+        "visible_message": controller.statusText, "visible_events": detail.events.map(\.kind),
+        "visible_status": saved.statusText, "paused_status": paused.statusText,
+        "resumed_status": resumed.statusText, "fallback": "explicit-pause-resume-stop",
+        "tracks": 2, "rendered_frames": try Self.decode(final),
+      ], name: "outcome.json", root: root)
   }
 
   private func exhaust(microphone: M1ProofSource, sessionId: String) async throws {

@@ -81,7 +81,7 @@
 ## Validate candidate record tooling
 
 - Commands: `bash script/check_candidate_record.sh`; `bash script/check_native_contracts.sh`; `ruby script/check_m1_injected_contract.rb`.
-- Expected: `CANDIDATE_RECORD_TEST_GREEN` (14 rejections); `NATIVE_CONTRACT_GREEN`; `M1_HARNESS_CONTRACT_GREEN` (11 fixtures).
+- Expected: `CANDIDATE_RECORD_TEST_GREEN` (14 rejections); `M1_COMPLETE_RECEIPT_TEST_GREEN` (6 fixtures); `NATIVE_CONTRACT_GREEN`; `M1_HARNESS_CONTRACT_GREEN` (14 fixtures).
 - Excludes: builds, runtime, capture, signing, release. Recorder receipts: `docs/TESTING.md`.
 
 ## Qualify one contributor build
