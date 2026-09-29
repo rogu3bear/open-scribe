@@ -69,7 +69,7 @@
 ## Requalify short live dual-source capture
 
 - Command: `./script/check.sh --m1-dual-source-runtime` (alias: `--m1-live-microphone`).
-- Earlier app passed `M1_DUAL_SOURCE_RUNTIME_GREEN`. Current gate source accepts segmented CAFs and retains proof media; no current-app receipt exists.
+- Commit `467ed2e` app passed `M1_DUAL_SOURCE_RUNTIME_GREEN` (mono microphone, stereo system audio); proof media is retained.
 - Does not prove: source loss, degraded continuation, permission revocation, application-scoped selection, long-session synchronization, signing, release.
 
 ## Requalify forced-termination recovery

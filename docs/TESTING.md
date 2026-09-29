@@ -178,6 +178,18 @@ bindings checked in before this run were stale against the mixdown API.
 These are synthetic and component receipts. They exclude real capture,
 permissions, audible output, source loss, long sessions, and M1 acceptance.
 
+The same app then passed `./script/check.sh --m1-dual-source-runtime`
+(`M1_DUAL_SOURCE_RUNTIME_GREEN`) from commit `467ed2e`, with identical digests.
+Session `01a0eb34-61b3-71e2-b0aa-8552331d4372` sealed one segment per track: the
+microphone as mono (106,496 samples, SHA-256 `8769bc25…5dd5a3`) and system audio
+as stereo (130,560 samples, SHA-256 `b4dc650a…651c17`). Both Rust digests
+matched the saved files and both CAFs decoded independently. This is the first
+live receipt for delivered channel-layout fidelity. The gate retains its proof
+root under `apps/macos/.build/`. It excludes forced-termination recovery, native
+playback, rotation, source loss, permission revocation, application selection,
+disk pressure, and two-hour capture. The forced-termination gate did not run:
+Disk Guard held at 95.7 GB free against its 100 GB reserve.
+
 ### September 28 — M1 failure and duration matrix request
 
 The requested source-loss, permission-revocation, route/device-change,
