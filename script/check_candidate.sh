@@ -24,6 +24,7 @@ else
 fi
 source_checks() {
 	"$script_dir/check_candidate_record.sh"
+	ruby "$script_dir/check_macos_build_configuration_test.rb"
 	bash "$script_dir/check_m1_operator_snapshot.sh"
 	ruby "$script_dir/check_m1_injected_contract.rb"
 	"$script_dir/check_scaffold.sh"

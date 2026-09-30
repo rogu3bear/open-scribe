@@ -1,5 +1,12 @@
 [env]
 MACOSX_DEPLOYMENT_TARGET = { value = "13.0", force = true }
+# Portable native dependency policy for both the app and host-side bindgen.
+# CPU instructions follow an explicit ARM baseline, never the build machine.
+GGML_NATIVE = { value = "OFF", force = true }
+GGML_CPU_ARM_ARCH = { value = "armv8-a", force = true }
+GGML_METAL = { value = "ON", force = true }
+GGML_ACCELERATE = { value = "ON", force = true }
+CMAKE_EXPORT_COMPILE_COMMANDS = { value = "ON", force = true }
 
 [target.wasm32-unknown-unknown]
 rustflags = ["--cfg", "getrandom_backend=\"wasm_js\""]

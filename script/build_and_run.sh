@@ -8,7 +8,9 @@ app_name="OpenScribeApp"
 bundle_id="app.open-scribe.dev"
 xcode_project="$macos_root/OpenScribe.xcodeproj"
 derived_data="$macos_root/.build/xcode"
-rust_target_dir="$macos_root/.build/rust-macos13"
+# A changed policy gets fresh dependency outputs without deleting old proof.
+native_policy_digest="$(shasum -a 256 "$repo_root/.cargo/config.toml" | cut -d ' ' -f 1)"
+rust_target_dir="$macos_root/.build/rust-macos13-${native_policy_digest:0:12}"
 mode="run"
 candidate_record=""
 # shellcheck source=script/candidate.sh
@@ -96,6 +98,7 @@ if [[ -z "$candidate_record" ]]; then
 		printf '%s\n' 'M0_NATIVE_RED: generated C binding is stale' >&2
 		exit 1
 	}
+	ruby "$script_dir/check_macos_build_configuration.rb" "$rust_target_dir"
 fi
 
 app_bundle="$derived_data/Build/Products/Debug/OpenScribeApp.app"

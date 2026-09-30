@@ -94,6 +94,22 @@ bundle with `build-for-testing`. It retains source/native logs and their digests
 It then runs the complete Swift suite, scene launch, recorder components, and
 synthetic foundational recovery. Device-dependent proofs remain separate.
 
+The native dependency CPU policy lives in `.cargo/config.toml`: `GGML_NATIVE=OFF`
+and `GGML_CPU_ARM_ARCH=armv8-a`, with Metal and Accelerate enabled. Cargo forces
+these values for both the application target and host-side binding generator.
+The builders audit every retained Whisper CMake cache and exported compiler
+command with `script/check_macos_build_configuration.rb`, rejecting native CPU
+selection or a CPU backend without the declared baseline. The readback records
+policy, compiler, CMake, Rust and SDK identities plus configuration evidence
+digests in the existing candidate build log; its artifact hash binds the result
+without changing the candidate schema. Existing candidate evidence is preserved.
+The direct development builder keys its Rust output directory by the Cargo
+configuration digest, so a policy change cannot reuse the old dependency outputs.
+Candidate build directories are already required to be new. Explicit calls to
+the Rust builder must also use a fresh directory when policy changes; the audit
+rejects stale cached configuration. This establishes compiler configuration, not oldest-Mac
+runtime compatibility, transcription performance, or recorder acceptance.
+
 `./script/build_and_run.sh --verify-recording --candidate <absolute-record>`
 consumes that record with `test-without-building` and runs the microphone, system-audio,
 recording-controller, pause/resume, media-open, and timeline workflow suites. It uses synthetic buffers and

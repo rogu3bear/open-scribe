@@ -26,4 +26,5 @@ library="$cargo_target_dir/$target_triple/debug/libopen_scribe_uniffi.a"
 	exit 1
 }
 
+ruby "$script_dir/check_macos_build_configuration.rb" "$cargo_target_dir" >&2
 printf '%s\n' "$library"

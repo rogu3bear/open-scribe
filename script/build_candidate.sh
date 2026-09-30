@@ -29,6 +29,7 @@ build_native() {
 	xcrun clang-format -i "$candidate_root/bindings/OpenScribeFFI.h"
 	cmp "$candidate_root/bindings/OpenScribeCore.swift" apps/macos/Sources/OpenScribeApp/Generated/OpenScribeCore.swift
 	cmp "$candidate_root/bindings/OpenScribeFFI.h" apps/macos/Sources/OpenScribeFFI/include/OpenScribeFFI.h
+	ruby "$script_dir/check_macos_build_configuration.rb" "$rust_target_dir"
 	xcodebuild -project apps/macos/OpenScribe.xcodeproj -scheme OpenScribeApp \
 		-configuration Debug -derivedDataPath "$derived_data" \
 		ARCHS=arm64 ONLY_ACTIVE_ARCH=YES LIBRARY_SEARCH_PATHS="$(dirname "$rust_library")" \
