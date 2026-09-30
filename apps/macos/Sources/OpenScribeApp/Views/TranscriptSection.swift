@@ -4,10 +4,11 @@ import UniformTypeIdentifiers
 
 /// The saved conversation's transcript: selected Final text on the session
 /// timeline, with human corrections beside the machine reading, source-aware
-/// speaker names, click-to-play, and export.
+/// speaker names, click-to-play, export, and local transcription.
 struct TranscriptSection: View {
   let session: RuntimeSessionPresentation
   @ObservedObject var transcripts: TranscriptLibraryModel
+  @ObservedObject var speech: SpeechTranscriptionModel
   /// Captured recordings play from any timeline position; imported audio
   /// has no capture timeline to seek.
   let canSeek: Bool
@@ -17,6 +18,7 @@ struct TranscriptSection: View {
   @State private var draftText = ""
   @State private var renaming: NativeSessionSpeaker?
   @State private var draftLabel = ""
+  @State private var showingModels = false
 
   var body: some View {
     VStack(alignment: .leading, spacing: 12) {
@@ -30,6 +32,17 @@ struct TranscriptSection: View {
       Text(transcripts.availabilityText)
         .font(.callout)
         .foregroundStyle(.secondary)
+      if transcripts.availability != .final {
+        transcriptionControls
+      }
+      if let message = speech.message, !showingModels {
+        Label(
+          message,
+          systemImage: speech.messageIsFailure ? "exclamationmark.triangle" : "checkmark.circle"
+        )
+        .font(.callout)
+        .foregroundStyle(speech.messageIsFailure ? Color.red : Color.secondary)
+      }
       if !transcripts.segments.isEmpty {
         speakerList
         // Long sessions hold thousands of segments; build only visible rows.
@@ -48,6 +61,54 @@ struct TranscriptSection: View {
     }
     .sheet(item: $renaming) { speaker in
       renameSheet(speaker)
+    }
+    .sheet(isPresented: $showingModels) {
+      SpeechModelSheet(speech: speech) { showingModels = false }
+    }
+  }
+
+  /// Transcription runs on this Mac only after a verified model is installed;
+  /// progress and Cancel stay beside the transcript they will produce.
+  @ViewBuilder
+  private var transcriptionControls: some View {
+    if speech.transcribingSessionId == session.sessionId {
+      VStack(alignment: .leading, spacing: 6) {
+        if let fraction = speech.progressFraction {
+          ProgressView(value: fraction) { Text(speech.progressText) }
+        } else {
+          ProgressView { Text(speech.progressText) }
+        }
+        Button("Cancel Transcription") { speech.cancel() }
+      }
+      .frame(maxWidth: 420, alignment: .leading)
+    } else if speech.installedModel != nil {
+      HStack(spacing: 12) {
+        Button("Transcribe on This Mac") {
+          Task {
+            await speech.transcribe(sessionId: session.sessionId)
+            transcripts.load(sessionId: session.sessionId)
+          }
+        }
+        .disabled(speech.transcribingSessionId != nil)
+        .help(
+          speech.transcribingSessionId != nil
+            ? "Another conversation is being transcribed"
+            : "Transcribe every recorded track with the installed local model")
+        Button("Speech Model…") {
+          speech.dismissMessage()
+          showingModels = true
+        }
+        .buttonStyle(.link)
+      }
+    } else {
+      VStack(alignment: .leading, spacing: 6) {
+        Text("Transcription needs a verified local speech model.")
+          .font(.callout)
+        Button("Install Speech Model…") {
+          speech.dismissMessage()
+          showingModels = true
+        }
+      }
     }
   }
 

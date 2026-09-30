@@ -31,6 +31,14 @@ direction.
 - Distribution obligation: preserve the MIT notices for rusqlite and libsqlite3-sys. SQLite itself is dedicated to the public domain as described by `https://sqlite.org/copyright.html`.
 - Release status: present only in an unsigned local development artifact. Transitive dependency and exact binary-component review remains a release gate.
 
+### whisper.cpp 1.8.3 and ggml, through whisper-rs-sys 0.15.0
+
+- Source: `https://github.com/ggml-org/whisper.cpp` at commit `2eeeba56e9edd762b4b38467bab96c2517163158`, vendored by `https://crates.io/crates/whisper-rs-sys/0.15.0` (`https://codeberg.org/tazz4843/whisper-rs`). All 778 vendored files were byte-compared with that commit's archive (SHA-256 `089b898aa83b24a8321e0fd554eeb0967fb03dd687e27f6374c72d3363b5b429`); none differed.
+- License: whisper.cpp and ggml, MIT; whisper-rs-sys, Unlicense. The build-only helpers (`bindgen`, `cmake`, and their dependencies) do not ship.
+- Use: the ADR 0008 in-process speech engine in `open-scribe-asr`, statically linked with Accelerate and Metal. It loads only a manifest-verified model file and makes no network request.
+- Distribution obligation: preserve the whisper.cpp and ggml MIT notice. Model weights are separate artifacts under their own licenses (`docs/models/manifest.v1.json`) and are not bundled.
+- Release status: present only in unsigned local development artifacts.
+
 Transitive Rust packages are pinned in `Cargo.lock`. Their complete license and distribution-obligation audit remains a release gate and is not implied by this development notice.
 
 The attached founding PRD is operator-supplied product material. The repository-context templates were transformed into project-specific doctrine and do not ship as product runtime code.

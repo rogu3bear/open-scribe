@@ -61,7 +61,7 @@ final class TranscriptLibraryModel: ObservableObject {
     case .draft: "Draft — some tracks do not have a Final transcript yet"
     case .failed: "Transcription failed. The recorded audio is unaffected."
     case .unavailable:
-      "No transcript. This build cannot transcribe locally; the recorded audio above is complete."
+      "No transcript yet. The recorded audio above is complete."
     }
   }
 

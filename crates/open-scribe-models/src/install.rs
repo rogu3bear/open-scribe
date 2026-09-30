@@ -1,9 +1,9 @@
 use crate::catalog::ModelRecord;
 use crate::verify::{VerifiedArtifact, modified_nanoseconds, open_no_follow};
 use std::fmt;
-use std::fs::{self, File};
-use std::io;
-use std::os::unix::fs::MetadataExt;
+use std::fs::{self, File, OpenOptions};
+use std::io::{self, Read};
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 
 const MODELS_DIRECTORY: &str = "Models";
@@ -102,6 +102,7 @@ pub struct InstalledArtifact {
 #[derive(Debug)]
 pub enum InstallError {
     RecordMismatch,
+    NotRegularFile,
     NotStagingPath,
     ChangedSinceVerification,
     ConflictingInstallation,
@@ -112,6 +113,7 @@ impl InstallError {
     pub const fn class(&self) -> &'static str {
         match self {
             Self::RecordMismatch => "record_mismatch",
+            Self::NotRegularFile => "not_regular_file",
             Self::NotStagingPath => "not_staging_path",
             Self::ChangedSinceVerification => "changed_since_verification",
             Self::ConflictingInstallation => "conflicting_installation",
@@ -194,6 +196,33 @@ impl ModelLayout {
         sync_directory(&directory)?;
         sync_directory(&self.staging_directory())?;
         Ok(installed)
+    }
+
+    /// Copies a user-chosen local file into this record's staging path for
+    /// verification. The source is only read. The copy stops one byte past
+    /// the manifest length, so an oversized file fails verification without
+    /// being staged whole. Nothing here loads the bytes.
+    pub fn stage_from_file(
+        &self,
+        record: &ModelRecord,
+        source: &Path,
+    ) -> Result<PathBuf, InstallError> {
+        let input = File::open(source)?;
+        if !input.metadata()?.is_file() {
+            return Err(InstallError::NotRegularFile);
+        }
+        fs::create_dir_all(self.staging_directory())?;
+        let staged = self.partial_path(record);
+        let mut output = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
+            .open(&staged)?;
+        io::copy(&mut input.take(record.byte_length + 1), &mut output)?;
+        output.sync_all()?;
+        sync_directory(&self.staging_directory())?;
+        Ok(staged)
     }
 
     /// Discards a partial after an explicit restart decision or user action.
@@ -362,5 +391,41 @@ mod tests {
         let staged = stage(&layout, &record, b"partial");
         layout.discard_partial(&record).unwrap();
         assert!(!staged.exists());
+    }
+
+    #[test]
+    fn a_chosen_file_is_staged_verified_and_installed_without_changing_it() {
+        let root = tempfile::tempdir().unwrap();
+        let layout = ModelLayout::new(root.path());
+        let bytes = fixture_bytes(51864);
+        let record = fixture(&bytes);
+        let chosen = root.path().join("Downloads-ggml.bin");
+        fs::write(&chosen, &bytes).unwrap();
+
+        let staged = layout.stage_from_file(&record, &chosen).unwrap();
+        assert_eq!(staged, layout.partial_path(&record));
+        let verified = verify_staged(&record, ENGINE, COMPATIBILITY, &staged).unwrap();
+        let installed = layout.install(&record, &verified, &staged).unwrap();
+        assert_eq!(fs::read(&installed.path).unwrap(), bytes);
+        assert_eq!(
+            fs::read(&chosen).unwrap(),
+            bytes,
+            "the chosen file is unchanged"
+        );
+
+        let oversized = root.path().join("oversized.bin");
+        let mut longer = bytes.clone();
+        longer.extend_from_slice(&[0; 4096]);
+        fs::write(&oversized, &longer).unwrap();
+        let staged = layout.stage_from_file(&record, &oversized).unwrap();
+        assert_eq!(fs::metadata(&staged).unwrap().len(), record.byte_length + 1);
+        assert!(matches!(
+            verify_staged(&record, ENGINE, COMPATIBILITY, &staged),
+            Err(crate::VerifyError::Oversized { .. })
+        ));
+        assert!(matches!(
+            layout.stage_from_file(&record, root.path()),
+            Err(InstallError::NotRegularFile)
+        ));
     }
 }

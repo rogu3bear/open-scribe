@@ -940,3 +940,54 @@ The human matrix (permission grant/deny/revoke/restore on macOS 13 and current,
 physical routes and devices, application-scope isolation, channel layouts,
 rendered accessibility, perceptual playback) remains unqualified. One live run
 on one Mac is not that matrix.
+
+## September 29, 2026 — In-process whisper.cpp transcription from a verified local model
+
+`open-scribe-asr` now links whisper.cpp 1.8.3 through `whisper-rs-sys` 0.15.0
+(Accelerate and Metal, static). All 778 vendored whisper.cpp files were
+byte-compared with upstream commit `2eeeba56e9edd762b4b38467bab96c2517163158`
+(archive SHA-256 `089b898aa83b24a8321e0fd554eeb0967fb03dd687e27f6374c72d3363b5b429`)
+and none differed; that is the commit the model manifest pins. The pinned
+`ggml-small.en-q5_1.bin` was fetched from its manifest origin into `/tmp`
+(outside the repository) and matched the manifest's 190,098,681 bytes and
+SHA-256 `bfdff4894dcb76bbf647d56263ea2a96645423f1669176f4844a1bf8e478ad30`.
+The app itself makes no network request: the user chooses a downloaded file;
+Rust stages it, verifies length, header, engine compatibility, and SHA-256,
+decodes one second of silence as a self-test, installs atomically, and
+reverifies before every load. Reconciliation v2 counts whole-segment
+annotations such as `[BLANK_AUDIO]` as non-speech instead of transcript text.
+
+Speech samples came from `say -v Samantha` (16 kHz float WAV SHA-256
+`61b0f752b772b1e9ecf55bff47d0eded93bb82fdb7bb356cc85edd7250ca7015`; 48 kHz
+16-bit CAF SHA-256
+`a6f3263e87835a63b269b4ffd35125b79424dd8dda94e09629bdb275e2de97b1`).
+
+- `disk-guard run --budget-gb 3 --volume "$PWD" -- cargo test --offline -p open-scribe-asr -p open-scribe-models -p open-scribe-core`
+  with the three `OPEN_SCRIBE_WHISPER_*` paths set: all passed. The known-answer
+  test returned "openscribe keeps the recording safe before it writes a
+  transcript." (mean token probability 0.95), refused a 31-second window, and
+  honored cancellation. The core end-to-end test installed the model from the
+  chosen file, transcribed an imported conversation (two segments), read it
+  back through the review library, and found it by search.
+- Clippy with warnings denied on store, core, uniffi, asr, and models: clean.
+- Bindings regenerated; all 20 whisper/ggml archive members report `minos 13.0`.
+- `disk-guard run --budget-gb 0.4 --volume "$PWD" -- ./script/build_and_run.sh --verify`
+  with `TEST_RUNNER_`-prefixed paths: `NATIVE_FIXTURE_XCODE_GREEN`, 174 Swift
+  tests with the one optional large-import skip. In the app test host,
+  `SpeechTranscriptionModelTests` refused a wrong file without changing it, then
+  installed the real model, transcribed an imported conversation (11.8 s),
+  loaded a Final transcript containing the spoken sentence, and found it by
+  search. Its render test drew the no-model, ready, and progress states and the
+  model sheet; AppKit progress bars and links draw as placeholders in that
+  renderer.
+- `disk-guard run --budget-gb 0.5 --volume "$PWD" -- ./script/check.sh --scaffold`:
+  `SCAFFOLD_GREEN` (210 workspace tests; the real-model cases skip without
+  their paths). `./script/check_native_contracts.sh --all`: `NATIVE_CONTRACT_GREEN`.
+
+Plane: source, unit, integration, and native test-host proof on this Mac.
+Excluded: a candidate-bound receipt, a person clicking through the sheet and
+open panel, Metal versus CPU performance, memory or thermal pressure while
+recording, the multilingual model, compressed (48 kHz) M4A imports, in-app
+download, removal, persisted installation receipts, a speech known-answer at
+install time, signing, and release. The capability manifest keeps
+`local-transcription` Unavailable.

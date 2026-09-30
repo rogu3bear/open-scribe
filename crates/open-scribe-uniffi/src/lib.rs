@@ -1479,6 +1479,8 @@ const fn permission_name(permission: open_scribe_types::PermissionState) -> &'st
 
 mod recorder;
 pub use recorder::*;
+mod speech;
+pub use speech::*;
 mod transcript_library;
 pub use transcript_library::*;
 uniffi::setup_scaffolding!();

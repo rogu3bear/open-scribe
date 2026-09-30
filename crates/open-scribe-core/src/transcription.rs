@@ -238,6 +238,7 @@ pub fn transcribe_track(
         .collect();
     let rejections_json = serde_json::json!({
         "empty": rejections.empty,
+        "non_speech": rejections.non_speech,
         "inverted": rejections.inverted,
         "outside_coverage": rejections.outside_coverage,
         "overlap_duplicates": rejections.overlap_duplicates,

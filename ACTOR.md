@@ -5,12 +5,12 @@
 ## Inspect repository state
 
 - Commands: `git status --short --branch`, `git worktree list --porcelain`, `git diff --check`, `git diff --stat`.
-- Stop if: checkout identity, dirty ownership, whitespace, scope, or generated-artifact residue conflicts with the lane.
+- Stop if: identity, dirty ownership, whitespace, scope, or generated residue conflicts with the lane.
 
 ## Inspect workspace packages
 
 - Command: `cargo metadata --locked --no-deps --format-version 1`.
-- Stop if: a crate duplicates, resolves outside this root, or leaks native dependencies into shared code.
+- Stop if: a crate duplicates, resolves outside this root, or leaks native dependencies into shared crates.
 
 ## Validate the founding scaffold
 
@@ -78,7 +78,7 @@
 
 - Commands: `bash script/check_candidate_record.sh`; `bash script/check_native_contracts.sh`; `ruby script/check_m1_injected_contract.rb`; `bash script/check_m1_operator_snapshot.sh`.
 - Expected: `CANDIDATE_RECORD_TEST_GREEN` (14 rejections); `M1_COMPLETE_RECEIPT_TEST_GREEN` (6 fixtures); `NATIVE_CONTRACT_GREEN`; `M1_HARNESS_CONTRACT_GREEN` (14 fixtures).
-- Excludes: builds, runtime, capture, signing, release. Recorder receipts: `docs/TESTING.md`.
+- Excludes: builds, runtime, capture, signing, release.
 
 ## Qualify one contributor build
 
@@ -93,6 +93,7 @@
 ## Local verification
 
 - `./script/build_and_run.sh --verify`: `NATIVE_FIXTURE_XCODE_GREEN`; `./script/build_web.sh`: `WEB_BUILD_GREEN`.
+- Real-model speech: set `OPEN_SCRIBE_WHISPER_MODEL`, `OPEN_SCRIBE_WHISPER_SPEECH_WAV`, and `OPEN_SCRIBE_WHISPER_SPEECH_CAF` for `cargo test -p open-scribe-asr -p open-scribe-core`, or `TEST_RUNNER_`-prefixed for native verify; unset, they skip.
 
 ## Admission rule
 

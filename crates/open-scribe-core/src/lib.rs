@@ -1,8 +1,9 @@
 //! Native session authority for Open Scribe.
 //!
 //! The current tranche keeps deterministic fixture commands and adds native
-//! durable session/media-open preparation. It performs no capture, playback,
-//! model, provider, or network work and never starts Recording.
+//! durable session/media-open preparation, review, and local transcription
+//! through a manifest-verified model. It performs no capture, playback,
+//! provider, or network work and never starts Recording.
 
 use std::path::{Path, PathBuf};
 
@@ -18,6 +19,14 @@ pub use transcription::{
     TranscriptionError, TranscriptionOutcome, TranscriptionProgress, TranscriptionStage,
     transcribe_track,
 };
+mod speech;
+pub use open_scribe_asr::{WHISPER_ENGINE, WHISPER_ENGINE_VERSION};
+pub use speech::{
+    SpeechError, SpeechModelError, SpeechModelStatus, SpeechModels, decode_language,
+    transcribe_session,
+};
+#[cfg(test)]
+mod speech_tests;
 
 pub use open_scribe_domain::{
     Command, Fixture, Presentation, SessionSnapshot, TimerBehavior, TransitionError, announcement,

@@ -9,11 +9,16 @@ license, and download origin. Both have `review_state: Pending`; neither is
 bundled, mirrored, or approved for release.
 
 `open-scribe-models` implements catalog validation, the staging `.part` path,
-the ADR 0008 resume rule, verification of length, header, engine
-compatibility, and digest, and atomic installation of the exact verified file.
-It never downloads, maps, loads, or executes a model. The whisper.cpp engine,
-the known-answer self-test, installation receipts, and removal are not yet
-implemented, so transcription remains Unavailable.
+staging from a user-chosen file, the ADR 0008 resume rule, verification of
+length, header, engine compatibility, and digest, and atomic installation of
+the exact verified file. It never downloads, maps, loads, or executes a model.
+`open-scribe-core` installs a chosen file only after that verification and a
+one-second decode self-test in the whisper.cpp 1.8.3 engine, and reverifies
+the installed bytes before every load. The app makes no network request; the
+user downloads the file in a browser. The install-time self-test decodes
+silence rather than a speech known answer; persisted installation receipts,
+in-app download, and removal are not implemented, and the manifest
+capability stays Unavailable until release proof exists.
 
 Each admitted entry must record:
 

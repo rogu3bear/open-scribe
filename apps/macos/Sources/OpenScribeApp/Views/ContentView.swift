@@ -6,6 +6,7 @@ struct ContentView: View {
   @ObservedObject var liveRecording: LiveMicrophoneRecordingController
   @ObservedObject var recoveredSessions: RecoveredSessionController
   @ObservedObject var transcripts: TranscriptLibraryModel
+  @ObservedObject var speech: SpeechTranscriptionModel
   @StateObject private var navigation = MainWorkspaceNavigation()
   @State private var searchQuery = ""
 
@@ -185,6 +186,7 @@ struct ContentView: View {
             session: selectedSession,
             playbackController: recoveredSessions,
             transcripts: transcripts,
+            speech: speech,
             loadRecorderEvents: { (try? liveRecording.detail(sessionId: $0).events) ?? [] }
           )
         }
@@ -522,6 +524,7 @@ private struct ConversationWorkspaceView: View {
   let session: RuntimeSessionPresentation
   @ObservedObject var playbackController: RecoveredSessionController
   @ObservedObject var transcripts: TranscriptLibraryModel
+  @ObservedObject var speech: SpeechTranscriptionModel
   let loadRecorderEvents: @MainActor (String) -> [NativeRecorderEvent]
   @State private var recorderEvents: [NativeRecorderEvent] = []
 
@@ -541,6 +544,7 @@ private struct ConversationWorkspaceView: View {
           TranscriptSection(
             session: session,
             transcripts: transcripts,
+            speech: speech,
             canSeek: session.hasCaptureTimeline,
             onSeek: { position in
               playbackController.playSynchronized(

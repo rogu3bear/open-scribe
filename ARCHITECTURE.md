@@ -19,8 +19,8 @@ SwiftUI uses Apple adapters; UniFFI connects to Rust. Leptos targets Workers. Sh
 | `open-scribe-domain` | implemented, WASM-safe | transitions and presentation | persistence or capture |
 | `open-scribe-evidence` | evidence-ref/v1, WASM-safe | evidence IDs and validation semantics | model execution or native storage |
 | `open-scribe-store` | recorder/timeline foundation | session intent, journal, SQLite, clock/segment receipts, recovery, transcripts/review/search/deletion, runtime/library projection | buffers, capture, UI-local authority |
-| other native Rust crates | core/asr/models; rest placeholders | later ML and memory | Apple UI or permission UX |
-| `open-scribe-uniffi` | coarse boundary | fixtures, preparation, segment receipts, recorder controls, timelines, imports, leases, snapshots, transcript library | state authority or hot-path data |
+| other native Rust crates | core/asr/models: whisper.cpp; rest placeholders | transcription, later ML/memory | Apple UI or permission UX |
+| `open-scribe-uniffi` | coarse boundary | fixtures, preparation, segment receipts, recorder controls, timelines, imports, leases, snapshots, transcript library, speech models | state authority or hot-path data |
 | `web` | M0 foundation | stateless Leptos SSR | capture, app backend, database, deployment authority |
 | `docs/legal` | present drafts | single legal-text source for future app/site consumers | duplicated edited copies |
 

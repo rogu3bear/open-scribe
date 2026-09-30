@@ -25,7 +25,7 @@ final class TranscriptLibraryModelTests: XCTestCase {
     XCTAssertTrue(model.segments.isEmpty)
     XCTAssertEqual(
       model.availabilityText,
-      "No transcript. This build cannot transcribe locally; the recorded audio above is complete.")
+      "No transcript yet. The recorded audio above is complete.")
     XCTAssertFalse(model.speakers.isEmpty)
     XCTAssertTrue(model.speakers.allSatisfy { !$0.namedByUser })
     let track = try XCTUnwrap(model.speakers.first)
@@ -135,7 +135,8 @@ final class TranscriptLibraryModelTests: XCTestCase {
       let model = TranscriptLibraryModel(
         preview: availability, segments: rows, speakers: rows.isEmpty ? [] : speakers)
       let view = TranscriptSection(
-        session: session, transcripts: model, canSeek: true, onSeek: { _ in }
+        session: session, transcripts: model, speech: SpeechTranscriptionModel(speech: nil),
+        canSeek: true, onSeek: { _ in }
       )
       .padding(32)
       .frame(width: width)

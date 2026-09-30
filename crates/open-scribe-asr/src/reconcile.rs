@@ -4,7 +4,8 @@
 
 use crate::recognizer::Hypothesis;
 
-pub const RECONCILIATION_VERSION: &str = "overlap-midpoint-v1";
+/// v2 rejects whole-segment non-speech annotations such as `[BLANK_AUDIO]`.
+pub const RECONCILIATION_VERSION: &str = "overlap-midpoint-v2";
 
 /// Segments may end this far past their chunk before they are rejected as
 /// materially outside input coverage; smaller overruns are clamped.
@@ -34,9 +35,23 @@ pub struct ReconciledSegment {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct Rejections {
     pub empty: u32,
+    /// Whole segments that are a bracketed recognizer annotation, not speech.
+    pub non_speech: u32,
     pub inverted: u32,
     pub outside_coverage: u32,
     pub overlap_duplicates: u32,
+}
+
+/// Whisper marks silence and sounds with a segment wholly inside brackets or
+/// parentheses (`[BLANK_AUDIO]`, `(music)`). Such a segment is not speech;
+/// the verbatim hypothesis keeps it.
+fn is_non_speech_annotation(text: &str) -> bool {
+    [('[', ']'), ('(', ')')].iter().any(|&(open, close)| {
+        text.len() > 2
+            && text.starts_with(open)
+            && text.ends_with(close)
+            && !text[1..text.len() - 1].contains([open, close])
+    })
 }
 
 /// `chunks` must be ordered by span and start time, as planned.
@@ -86,6 +101,10 @@ fn place(chunk: &ChunkHypothesis<'_>, rejections: &mut Rejections) -> Vec<Reconc
         let text = segment.text.trim();
         if text.is_empty() {
             rejections.empty += 1;
+            continue;
+        }
+        if is_non_speech_annotation(text) {
+            rejections.non_speech += 1;
             continue;
         }
         if segment.end_ms < segment.start_ms {
@@ -258,10 +277,34 @@ mod tests {
             rejections,
             Rejections {
                 empty: 1,
+                non_speech: 0,
                 inverted: 1,
                 outside_coverage: 1,
                 overlap_duplicates: 0
             }
         );
+    }
+
+    #[test]
+    fn whole_segment_annotations_are_counted_not_placed() {
+        let only = hypothesis(&[
+            (0, 900, " [BLANK_AUDIO]"),
+            (1_000, 2_000, "(upbeat music)"),
+            (2_000, 3_000, "(laughs) Okay, let's start."),
+            (3_000, 4_000, "[Music] and [applause]"),
+        ]);
+        let chunks = [ChunkHypothesis {
+            chunk_id: "c0",
+            span_index: 0,
+            start_nanoseconds: 0,
+            end_nanoseconds: 28 * S,
+            hypothesis: &only,
+        }];
+        let (segments, rejections) = reconcile(&chunks);
+        assert_eq!(
+            texts(&segments),
+            ["(laughs) Okay, let's start.", "[Music] and [applause]"]
+        );
+        assert_eq!(rejections.non_speech, 2);
     }
 }
