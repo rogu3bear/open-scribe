@@ -83,12 +83,12 @@
 ## Qualify one contributor build
 
 - Command: `disk-guard run --budget-gb 3 --volume "$PWD" -- ./script/check.sh --candidate RECORD`.
-- `429ec94` passed `CONTRIBUTOR_CANDIDATE_GREEN`. Use measured capacity and a new record path; runtime consumers never rebuild.
+- `c082a16` passed `CONTRIBUTOR_CANDIDATE_GREEN`. Use measured capacity and a new record path; runtime consumers never rebuild.
 
 ## Injected M1 failure cases
 
 - Command: `disk-guard run --budget-gb 0.25 --volume "$PWD" -- ./script/check.sh --m1-injected-failures --candidate RECORD --case CASE` (2 GB for `storage-exhaustion`; `live-pause-resume` uses real devices).
-- `429ec94` passed all fourteen; `--m1-complete --candidate RECORD` then held only on two-hour synchronization and the human matrix.
+- `c082a16` passed all fourteen; `--m1-complete --candidate RECORD` then held only on two-hour synchronization and the human matrix.
 
 ## Local verification
 

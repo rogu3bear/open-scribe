@@ -1298,3 +1298,52 @@ Excluded:
 - crash-report content;
 - deletion through the system Trash;
 - providers.
+
+### c082a16: all fourteen automated M1 cases on a candidate carrying speech, exports, context, and evidence
+
+The first candidate attempt on `016b7e4` stopped in its source checks with
+`NATIVE_CONTRACT_RED`. Two doc comments in `open-scribe-uniffi` used words
+the coarse-boundary check refuses: "PCM" in `speech.rs`, present since
+`77c26f5`, and "pointer" in `context.rs`. They described what does not
+cross the boundary. `c082a16` rewords them and leaves the check unchanged.
+That attempt's directory holds only its source-check log.
+
+Committed source `c082a160dd5a25642e9852e6bdacee002d1118c7`, tree
+`937c55c748d991ec769dd6d4bbedb21bbed75029`, passed
+`disk-guard run --budget-gb 2 --volume "$PWD" -- ./script/check.sh --candidate "$PWD/apps/macos/.build/candidates/m1-closeout-c082a16/candidate.json"`:
+`CONTRIBUTOR_CANDIDATE_GREEN`, 192 Swift tests (four optional skips) and 80
+recording-component tests. Record SHA-256
+`4d31247549438e19efc3f7baae262502d8f53ff0b679dd467fc286be77a83fd7`.
+
+| Artifact | SHA-256 |
+| --- | --- |
+| Executable | `104c2aee43dd1f4de6ec7a721de2ae48e0cd4b8703dc54eeaa5bb27648c79194` |
+| Debug dylib | `efdc6f6cd8397f6ed89b643e0587fc6d2038db722707bbf07a96c19598428a91` |
+| Info.plist | `c103e34b917098d3964f5992f343fd5f8fd17306642ecafb0e4c23fbaa97acab` |
+| Rust library | `d65b52f58f26920d9b0bd9567f9f02259524eac9d2772a172e08bcfa24a83c55` |
+
+Each of the fourteen cases (the thirteen defaults and `live-pause-resume`)
+ran against this record with
+`disk-guard run --budget-gb 0.25 --volume "$PWD" -- ./script/check.sh --m1-injected-failures --candidate RECORD --case CASE`,
+using 2 GB for `storage-exhaustion`. Each printed its candidate-bound
+`M1_INJECTED_*_GREEN` receipt. `live-pause-resume` used real capture on this
+Mac's already-granted permissions.
+
+`./script/check.sh --m1-complete --candidate RECORD` prints
+`M1_COMPLETE_HOLD`:
+
+- `qualified_cases` lists all fourteen;
+- `missing_implementation_proof` is empty;
+- `missing_automated=two_hour_synchronization`;
+- the supported-platform human matrix is unchanged.
+
+Logs:
+
+- `artifacts/m1-automated/candidate-c082a16.log`, SHA-256
+  `8ea0b9d22895066d9d1ba5b1feef6df6c21cc18b42a96d069430fdba6f07d01d`;
+- `injected-c082a16.log`, SHA-256
+  `c4b9760b6e91cd471b19bc60661aecfa85f4d4dd3178a8b8e86b1a18cd5b13ff`.
+
+This candidate supersedes `429ec94` for M1 regression evidence on the
+current feature set. It proves nothing about two-hour synchronization or
+the human matrix.
