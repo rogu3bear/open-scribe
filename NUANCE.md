@@ -43,3 +43,13 @@ authorization. Reproduced by
 matches observations against the full identity bound at capture start (its
 generation included) plus a monotonic sequence, never against the current
 segment's generation.
+
+### Unprivileged macOS logs no sandbox network denials
+
+On September 29, `sandbox-exec` with `(deny network-outbound (remote ip))` made
+`curl https://1.1.1.1` fail, yet `log show` found no denial. Allow rules
+`(with report)` logged nothing either, and deny rules reject the modifier. A
+first local-only run went RED because `log show --style compact` echoes its
+filter predicate as a header line, which matched the search text. Bound
+attempted connections with in-process socket samples and symbol and source
+checks (`script/check_m4_local_only.sh`), never with a log search for denials.
