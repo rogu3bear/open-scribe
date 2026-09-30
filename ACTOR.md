@@ -22,7 +22,6 @@
 
 - Command: `./script/check.sh --m0-native`.
 - Expected: `M0_NATIVE_GREEN`, then `M0_NATIVE_CHECK_GREEN`.
-- Proof: scaffold, Rust/Swift boundary, bindings, app assembly, process identity, scene logs.
 - Stop if: bindings drift, Swift bypasses Rust truth, protected capability appears, or signing/release is claimed.
 
 ## Close Milestone 0
@@ -35,21 +34,18 @@
 
 - Command: `./script/check.sh --state-fixtures`.
 - Expected: `STATE_FIXTURES_GREEN`.
-- Proof: Rust/UniFFI guards, one Rust-owned runtime/library snapshot, WASM checks, fresh bindings, Swift state/accessibility tests, unsigned-app launch, diff hygiene.
 - Stop if: hot-path values cross UniFFI, fixture state reaches product surfaces, Starting becomes durable, or recording truth diverges.
 
 ## Validate durable preparation and media-open
 
 - Commands: `./script/check.sh --m1-storage` (Rust preparation); `./script/check.sh --m1-media-open` (Swift/Rust media-open integration).
 - Expected: the command's named green receipt.
-- Proof: durable schema/journal, interruption/tamper checks, create-new CAF, fresh bindings, Xcode/M0.
 - Stop if: preparation becomes Recording, invalid evidence is repaired, buffers cross UniFFI, or higher proof is claimed.
 
 ## Validate the microphone foundation
 
 - Command: `./script/check.sh --m1-microphone-foundation`.
 - Expected: `M1_MICROPHONE_FOUNDATION_GREEN`.
-- Proof: earlier gates, durable first sample, bounded Swift buffers, synthetic conversion, coarse bindings, permissions/entitlements, unsigned build, focused tests.
 - Stop if: hot media crosses UniFFI, first sample asserts Recording, callbacks block, or higher proof is claimed.
 
 ## Validate bounded segment sealing
@@ -87,7 +83,12 @@
 ## Qualify one contributor build
 
 - Command: `disk-guard run --budget-gb 3 --volume "$PWD" -- ./script/check.sh --candidate RECORD`.
-- `072a3fb` passed `CONTRIBUTOR_CANDIDATE_GREEN`, including recording components and foundational recovery. Use measured capacity and a new record path; runtime consumers never rebuild.
+- `429ec94` passed `CONTRIBUTOR_CANDIDATE_GREEN`. Use measured capacity and a new record path; runtime consumers never rebuild.
+
+## Injected M1 failure cases
+
+- Command: `disk-guard run --budget-gb 0.25 --volume "$PWD" -- ./script/check.sh --m1-injected-failures --candidate RECORD --case CASE` (2 GB for `storage-exhaustion`; `live-pause-resume` uses real devices).
+- `429ec94` passed all fourteen; `--m1-complete --candidate RECORD` then held only on two-hour synchronization and the human matrix.
 
 ## Local verification
 

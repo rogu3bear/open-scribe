@@ -900,3 +900,43 @@ behavior:
 Evidence stays under the candidate directory (`m1-storage-exhaustion.Nx6eEF`,
 `m1-live-pause-resume.mh0nX9`). These fixes change committed source, so all
 fourteen cases must run again on a new candidate.
+
+### 429ec94: all fourteen automated M1 cases on one candidate
+
+Committed source `429ec94c734d981b1efe2ecef88452c109b45add`, tree
+`06af79b3f0ac038546313bc7e9a036147fd4ee15`, passed
+`disk-guard run --budget-gb 2 --volume "$PWD" -- ./script/check.sh --candidate "$PWD/apps/macos/.build/candidates/m1-closeout-429ec94/candidate.json"`:
+`CONTRIBUTOR_CANDIDATE_GREEN`, 171 Swift tests (one optional skip) and 80
+recording-component tests. A first 5 GB request was held by Disk Guard (111.5 GB
+free); it was not bypassed, and the retry used the measured footprint (the
+d106565 build occupied about 1.1 GB). Record SHA-256
+`c3d20aacd1c2e397237ab373504a38af2ccccc847bae751d1d235c80e38c9415`.
+
+| Artifact | SHA-256 |
+| --- | --- |
+| Executable | `104c2aee43dd1f4de6ec7a721de2ae48e0cd4b8703dc54eeaa5bb27648c79194` |
+| Debug dylib | `7fb1a184eb5641daa25e9ceb304eb402f23c46e147e4f828fc999031c2916f3c` |
+| Info.plist | `c103e34b917098d3964f5992f343fd5f8fd17306642ecafb0e4c23fbaa97acab` |
+| Rust library | `3c311fa01fabf002d9ee5d5f5943805818893794f3d952d99a4da014014ecb49` |
+
+Each case ran as
+`disk-guard run --budget-gb 0.25 --volume "$PWD" -- ./script/check.sh --m1-injected-failures --candidate RECORD --case CASE`
+(2 GB for storage-exhaustion). All fourteen issued candidate-bound GREEN
+receipts: the thirteen default cases and live-pause-resume. storage-exhaustion
+filled its image to the 4 KiB block (`bytes_written=1569718272`), the media
+write failed (`write_failed: true`), capture stopped, the failure was journaled
+before space was freed, and recovery was idempotent. live-pause-resume used
+real `AVAudioEngine+ScreenCaptureKit` capture on this Mac's already-granted
+permissions: marker, pause, resume, two tracks, 534,760 rendered frames.
+Logs: `artifacts/m1-automated/candidate-429ec94.log` (SHA-256
+`4136411a1ba3d47d115e13bad1585c9884e83ce394d545c36f654991a1b0b0d3`) and
+`injected-429ec94.log` (SHA-256
+`430834dc87ac852018af5757c372dc619b83344477dd59cc89ab060552ec25e0`).
+
+`./script/check.sh --m1-complete --candidate RECORD` still prints
+`M1_COMPLETE_HOLD`, now with `qualified_cases` listing all fourteen,
+`missing_implementation_proof` empty, and `missing_automated=two_hour_synchronization`.
+The human matrix (permission grant/deny/revoke/restore on macOS 13 and current,
+physical routes and devices, application-scope isolation, channel layouts,
+rendered accessibility, perceptual playback) remains unqualified. One live run
+on one Mac is not that matrix.
