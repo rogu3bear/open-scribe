@@ -545,10 +545,15 @@ private struct ConversationWorkspaceView: View {
             session: session,
             transcripts: transcripts,
             speech: speech,
-            canSeek: session.hasCaptureTimeline,
+            canSeek: session.hasCaptureTimeline || session.playableMedia?.isPlayable == true,
             onSeek: { position in
-              playbackController.playSynchronized(
-                sessionId: session.sessionId, startNanoseconds: position)
+              // Captures seek on the shared timeline; imports within their media.
+              if session.hasCaptureTimeline {
+                playbackController.playSynchronized(
+                  sessionId: session.sessionId, startNanoseconds: position)
+              } else {
+                playbackController.play(session, startNanoseconds: position)
+              }
             }
           )
         }

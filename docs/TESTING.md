@@ -991,3 +991,24 @@ recording, the multilingual model, compressed (48 kHz) M4A imports, in-app
 download, removal, persisted installation receipts, a speech known-answer at
 install time, signing, and release. The capability manifest keeps
 `local-transcription` Unavailable.
+
+### Imported audio seeks from the transcript; playback file split
+
+`RecoveredSessionController.swift` (1,902 lines) was split by responsibility,
+with every line preserved (sorted-line comparison), into
+`PlaybackByteSources.swift` (verified byte sources and the callback decoder),
+`RecoveredAudioPlayer.swift` (the bounded player), and the controller. Imported
+audio now plays from a transcript timestamp: the callback session seeks its
+decoder to the frame at the file's own rate before priming. A stereo 48 kHz
+ALAC import kept compressed decoded -0.5 after seeking into its second half
+(the first half is 0.25), and the controller passed a 12.5-second start
+position to the player. The first run of the new decoder test used a mono
+file, which the importer normalizes to PCM rather than keeping compressed; the
+fixture is now stereo.
+
+- Full `./script/build_and_run.sh --verify` on this tree: every other test
+  passed; only that first fixture failed.
+- `xcodebuild … -only-testing:OpenScribeAppTests/ImportedMediaAuthorityAdapterTests -only-testing:OpenScribeAppTests/SavedAudioPlaybackTests test`
+  after the fix: 36 tests, one optional skip, 0 failures.
+
+Excluded: audible seek accuracy by ear, and a candidate-bound receipt.

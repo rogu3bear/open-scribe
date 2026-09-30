@@ -48,9 +48,25 @@ final class SavedAudioPlaybackTests: RecoveredSessionTestCase {
     XCTAssertEqual(controller.playingSessionId, imported.sessionId)
     XCTAssertEqual(controller.activePlaybackSessionId, imported.sessionId)
     XCTAssertEqual(player.importedReceipt, descriptorReceipt())
+    XCTAssertEqual(player.importedStartNanoseconds, 0)
     XCTAssertNil(player.recoveredReceipt)
     XCTAssertTrue(player.retainedLease === lease)
     XCTAssertNil(controller.errorMessage)
+  }
+
+  func testImportedPlaybackStartsFromTheRequestedMediaPosition() async {
+    let player = RecoveredAudioPlayerFake()
+    let controller = RecoveredSessionController(
+      recoveryFactory: { RecoveryPreparationFake() },
+      importedPlaybackLeaseProvider: { _ in ImportedPlaybackLeaseFake(path: descriptorReceipt()) },
+      player: player
+    )
+    let imported = savedSession(availability: "available", absolutePath: "/tmp/imported.m4a")
+
+    controller.play(imported, startNanoseconds: 12_500_000_000)
+    await assertEventually { controller.playingSessionId == imported.sessionId }
+
+    XCTAssertEqual(player.importedStartNanoseconds, 12_500_000_000)
   }
 
   func testPendingImportedPlaybackIsSelectionBoundAndCannotStartAfterDetachment() async {

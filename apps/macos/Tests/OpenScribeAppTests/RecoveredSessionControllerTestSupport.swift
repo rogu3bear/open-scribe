@@ -39,6 +39,7 @@ final class RecoveryPreparationFake: NativeRecordingPreparation, @unchecked Send
 final class RecoveredAudioPlayerFake: RecoveredAudioPlaying {
   private(set) var recoveredReceipt: String?
   private(set) var importedReceipt: String?
+  private(set) var importedStartNanoseconds: Int64?
   private(set) var retainedLease: AnyObject?
   private(set) var importedGeneration: UUID?
   private(set) var stopCount = 0
@@ -68,10 +69,12 @@ final class RecoveredAudioPlayerFake: RecoveredAudioPlaying {
   func playImported(
     receipt: String,
     retaining lease: AnyObject,
-    generation: UUID
+    generation: UUID,
+    startNanoseconds: Int64
   ) async throws {
     if let playError { throw playError }
     importedReceipt = receipt
+    importedStartNanoseconds = startNanoseconds
     retainedLease = lease
     importedGeneration = generation
     if holdImportedPlayback {

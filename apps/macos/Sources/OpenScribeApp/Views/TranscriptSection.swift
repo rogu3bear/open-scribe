@@ -9,8 +9,8 @@ struct TranscriptSection: View {
   let session: RuntimeSessionPresentation
   @ObservedObject var transcripts: TranscriptLibraryModel
   @ObservedObject var speech: SpeechTranscriptionModel
-  /// Captured recordings play from any timeline position; imported audio
-  /// has no capture timeline to seek.
+  /// Captured recordings play from any timeline position and imported audio
+  /// from any media position; without playable audio nothing can seek.
   let canSeek: Bool
   let onSeek: (Int64) -> Void
 
@@ -141,7 +141,7 @@ struct TranscriptSection: View {
       // One column for every timestamp width keeps the text column aligned.
       .frame(minWidth: 48, alignment: .leading)
       .disabled(!canSeek)
-      .help(canSeek ? "Play from \(stamp)" : "Imported audio cannot be played from a position yet")
+      .help(canSeek ? "Play from \(stamp)" : "This conversation has no playable audio")
       .accessibilityLabel(canSeek ? "Play from \(stamp)" : stamp)
       VStack(alignment: .leading, spacing: 2) {
         Text(segment.speakerLabel)

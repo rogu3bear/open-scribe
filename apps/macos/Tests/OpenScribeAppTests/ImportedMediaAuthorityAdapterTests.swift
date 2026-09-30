@@ -198,6 +198,50 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
     withExtendedLifetime(lease) {}
   }
 
+  /// Imported audio seeks inside the compressed media: a position in the
+  /// second half decodes the second half's samples.
+  func testImportedCompressedAudioSeeksToAPositionInTheMedia() async throws {
+    let root = FileManager.default.temporaryDirectory
+      .appendingPathComponent("open-scribe-imported-seek-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let source = root.appendingPathComponent("Two halves.m4a")
+    do {
+      let file = try AVAudioFile(
+        forWriting: source,
+        settings: [
+          AVFormatIDKey: kAudioFormatAppleLossless,
+          AVSampleRateKey: 48_000.0,
+          AVNumberOfChannelsKey: 2,
+          AVEncoderBitDepthHintKey: 16,
+        ])
+      let buffer = try XCTUnwrap(
+        AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: 96_000))
+      buffer.frameLength = 96_000
+      let channels = try XCTUnwrap(buffer.floatChannelData)
+      for frame in 0..<96_000 {
+        channels[0][frame] = frame < 48_000 ? 0.25 : -0.5
+        channels[1][frame] = channels[0][frame]
+      }
+      try file.write(from: buffer)
+    }
+    let managedRoot = root.appendingPathComponent("Library", isDirectory: true)
+    let evidence = try RuntimeLibraryStore(managedRoot: managedRoot)
+      .importManagedAudio(title: "Two halves", sourceURL: source)
+    XCTAssertTrue(evidence.relativePath.hasSuffix(".m4a"))
+    let lease = try NativeRecordingPreparation.open(managedRoot: managedRoot.path)
+      .leaseImportedPlayback(sessionId: evidence.sessionId)
+    let receipt = try RecoveredPlaybackDescriptorReceipt(serialized: lease.playbackPath())
+    let decoder = try CallbackCAFDecoder(
+      source: try VerifiedDescriptorPlaybackSource.prepare(receipt: receipt),
+      fileTypeHint: receipt.fileTypeHint, onClose: {})
+    defer { decoder.close() }
+    try decoder.seek(toFrame: 60_000)
+    let decoded = try XCTUnwrap(decoder.read(maximumFrames: 1_024))
+    XCTAssertEqual(decoded.floatChannelData?[0][0] ?? 0, -0.5, accuracy: 0.001)
+    withExtendedLifetime(lease) {}
+  }
+
   func testOperatorSelectedLargeM4AImportsAndDecodesBeginningAndEnd() async throws {
     guard let path = ProcessInfo.processInfo.environment["OPEN_SCRIBE_LARGE_IMPORT_SAMPLE"] else {
       throw XCTSkip(

@@ -43,6 +43,8 @@
 		C263A3F920D148E6A9BCE201 /* LiveMicrophoneRecordingController.swift in Sources */ = {isa = PBXBuildFile; fileRef = D263A3F920D148E6A9BCE201 /* LiveMicrophoneRecordingController.swift */; };
 		C363A3F920D148E6A9BCE201 /* LiveMicrophoneRecordingControllerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D363A3F920D148E6A9BCE201 /* LiveMicrophoneRecordingControllerTests.swift */; };
 		C463A3F920D148E6A9BCE201 /* RecoveredSessionController.swift in Sources */ = {isa = PBXBuildFile; fileRef = D463A3F920D148E6A9BCE201 /* RecoveredSessionController.swift */; };
+		5E7C1A2B3D4F5061728394AB /* PlaybackByteSources.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E7C1A2B3D4F5061728394AC /* PlaybackByteSources.swift */; };
+		5E7C1A2B3D4F5061728394AD /* RecoveredAudioPlayer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E7C1A2B3D4F5061728394AE /* RecoveredAudioPlayer.swift */; };
 		C563A3F920D148E6A9BCE201 /* RecoveredSessionControllerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D563A3F920D148E6A9BCE201 /* RecoveredSessionControllerTests.swift */; };
 		C763A3F920D148E6A9BCE201 /* RecoveredSessionControllerTestSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = D763A3F920D148E6A9BCE201 /* RecoveredSessionControllerTestSupport.swift */; };
 		C863A3F920D148E6A9BCE201 /* RecoveredAudioPlaybackTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D863A3F920D148E6A9BCE201 /* RecoveredAudioPlaybackTests.swift */; };
@@ -109,6 +111,8 @@
 		D263A3F920D148E6A9BCE201 /* LiveMicrophoneRecordingController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveMicrophoneRecordingController.swift; sourceTree = "<group>"; };
 		D363A3F920D148E6A9BCE201 /* LiveMicrophoneRecordingControllerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveMicrophoneRecordingControllerTests.swift; sourceTree = "<group>"; };
 		D463A3F920D148E6A9BCE201 /* RecoveredSessionController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecoveredSessionController.swift; sourceTree = "<group>"; };
+		5E7C1A2B3D4F5061728394AC /* PlaybackByteSources.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlaybackByteSources.swift; sourceTree = "<group>"; };
+		5E7C1A2B3D4F5061728394AE /* RecoveredAudioPlayer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecoveredAudioPlayer.swift; sourceTree = "<group>"; };
 		D563A3F920D148E6A9BCE201 /* RecoveredSessionControllerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecoveredSessionControllerTests.swift; sourceTree = "<group>"; };
 		D763A3F920D148E6A9BCE201 /* RecoveredSessionControllerTestSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecoveredSessionControllerTestSupport.swift; sourceTree = "<group>"; };
 		D863A3F920D148E6A9BCE201 /* RecoveredAudioPlaybackTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecoveredAudioPlaybackTests.swift; sourceTree = "<group>"; };
@@ -191,6 +195,8 @@
 				B01A3F920D148E6A9BCE201 /* BoundedAudioImport.swift */,
 				D263A3F920D148E6A9BCE201 /* LiveMicrophoneRecordingController.swift */,
 				D663A3F920D148E6A9BCE201 /* SystemAudioCaptureAdapter.swift */,
+				5E7C1A2B3D4F5061728394AC /* PlaybackByteSources.swift */,
+				5E7C1A2B3D4F5061728394AE /* RecoveredAudioPlayer.swift */,
 				D463A3F920D148E6A9BCE201 /* RecoveredSessionController.swift */,
 				5A61A3F920D148E6A9BCE201 /* ManagedCAFWriter.swift */,
 				AC61A3F920D148E6A9BCE301 /* SegmentedCAFWriter.swift */,
@@ -390,6 +396,8 @@
 				262A2A7F0F8421EC6AD0E79E /* ContentView.swift in Sources */,
 				C263A3F920D148E6A9BCE201 /* LiveMicrophoneRecordingController.swift in Sources */,
 				C663A3F920D148E6A9BCE201 /* SystemAudioCaptureAdapter.swift in Sources */,
+				5E7C1A2B3D4F5061728394AB /* PlaybackByteSources.swift in Sources */,
+				5E7C1A2B3D4F5061728394AD /* RecoveredAudioPlayer.swift in Sources */,
 				C463A3F920D148E6A9BCE201 /* RecoveredSessionController.swift in Sources */,
 				4A61A3F920D148E6A9BCE201 /* ManagedCAFWriter.swift in Sources */,
 				AB61A3F920D148E6A9BCE301 /* SegmentedCAFWriter.swift in Sources */,
