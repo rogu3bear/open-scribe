@@ -207,8 +207,14 @@ final class M1FailureRuntimeProof {
     try requireM1(controller.phase == .paused, controller.errorMessage ?? "live pause failed")
     let paused = try await Self.visibleSession(runtime, sessionId: sessionId, lifecycle: "paused")
     let preparation = try NativeRecordingPreparation.open(managedRoot: mediaRoot.path)
-    let before = try preparation.playbackTimeline(sessionId: sessionId)
-    try requireM1(Set(before.map(\.trackId)).count == 2, "pause lost a source")
+    // Rust plans playback only for saved sessions, so the pause boundary comes
+    // from its journaled capture_paused event and splits the final plan.
+    let pausedDetail = try preparation.recorderDetail(sessionId: sessionId)
+    guard
+      pausedDetail.lifecycle == "paused",
+      let pausedAt = pausedDetail.events.last(where: { $0.kind == "capture_paused" })?
+        .sessionNanoseconds
+    else { throw M1ProofError.failed("pause boundary was not journaled") }
     try await Task.sleep(for: .seconds(1))
     await controller.start(resuming: true)
     try await wait { self.controller.phase == .capturing }
@@ -219,6 +225,8 @@ final class M1FailureRuntimeProof {
     try requireM1(controller.phase == .saved, controller.errorMessage ?? "live stop failed")
     let final = try preparation.playbackTimeline(sessionId: sessionId)
     // Rust revalidates every accepted digest while producing this final plan.
+    let before = final.filter { $0.nativeStartNanoseconds < pausedAt }
+    try requireM1(Set(before.map(\.trackId)).count == 2, "pause lost a source")
     for track in Set(before.map(\.trackId)) {
       let priorFrames = before.filter { $0.trackId == track }.reduce(UInt64(0)) {
         $0 + $1.sampleCount

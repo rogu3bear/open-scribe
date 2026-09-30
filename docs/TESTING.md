@@ -854,3 +854,49 @@ Plane: source, unit, and local build proof. Excluded: a browser load under the
 policy, deployed response headers, reflow, accessibility, performance budgets,
 and every other ADR 0015 release acceptance. Capability-true equality with a
 release manifest remains missing, and deployment requires separate authority.
+
+## September 29, 2026 — d106565 candidate and the fourteen automated M1 cases
+
+Committed source `d106565db4724541fdd3d34387f7e3c5d9285277`, tree
+`936f62c109fe1929aef3a7a5964b6bf5ebeae849`, passed
+`disk-guard run --budget-gb 5 --volume "$PWD" -- ./script/check.sh --candidate "$PWD/apps/macos/.build/candidates/m1-closeout-d106565/candidate.json"`:
+`CONTRIBUTOR_CANDIDATE_GREEN` (scaffold, clippy, web, macOS 13 floor, 171 Swift
+tests with one optional skip, three scenes, recording components, and the
+synthetic SIGKILL recovery workflow). Record SHA-256
+`5cb164026021a452878dacae098649c705e04781bb9c99b5a79ce2a1a71299fb`.
+
+| Artifact | SHA-256 |
+| --- | --- |
+| Executable | `104c2aee43dd1f4de6ec7a721de2ae48e0cd4b8703dc54eeaa5bb27648c79194` |
+| Debug dylib | `cc5062da1d3fd0a096ff6b8973ca51b700db3b5b241a72175908d3975e117372` |
+| Info.plist | `c103e34b917098d3964f5992f343fd5f8fd17306642ecafb0e4c23fbaa97acab` |
+| Rust library | `a07cb46d0aa4ff3f23ebf918d0e2a7512c3e4fca9707b2a50f46cd764508b600` |
+
+Against that record, `--m1-injected-failures` issued candidate-bound GREEN
+receipts for 12 of the 13 default cases: storage-warning, storage-critical,
+microphone-loss, system-loss, application-loss, selected-app-exit, sleep-wake,
+and kill-preparation, -recording, -stop, -seal, and -processing. Logs:
+`/tmp/os-verify/injected-d106565.log` and `injected-rest-d106565.log`.
+
+Two cases were RED, both from proof-harness defects rather than recorder
+behavior:
+
+- **storage-exhaustion:** `real media write did not fail on the dedicated full
+  volume`. The filler stops at the first refused 1 MiB write, which can leave
+  most of a MiB free; the app's 96 KB write then succeeded, and capture stopped
+  cleanly at the reserve with `storage_observed` critical journaled. On a
+  scratch 64 MB APFS image, 404 KiB more fit in 4 KiB writes after the first
+  1 MiB refusal. `m1_fill_volume.rb` now steps down through 64 KiB and 4 KiB
+  chunks; on a fresh scratch image a following 96 KiB write then failed with
+  ENOSPC. The verifier is unchanged.
+- **live-pause-resume** (real microphone and ScreenCaptureKit, one explicit
+  run): capture, marker, pause, and both seals were journaled, then the proof
+  asked Rust for a playback plan while paused. `playback_timeline` admits only
+  `ready_for_review` sessions (since `702ae68`), so it returned
+  `no sealed timeline media`. The proof now reads the pause boundary from the
+  journaled `capture_paused` event and splits the final Rust-validated plan at
+  it, keeping the same two-source and one-second continuation thresholds.
+
+Evidence stays under the candidate directory (`m1-storage-exhaustion.Nx6eEF`,
+`m1-live-pause-resume.mh0nX9`). These fixes change committed source, so all
+fourteen cases must run again on a new candidate.
