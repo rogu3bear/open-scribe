@@ -563,7 +563,14 @@ private struct ConversationWorkspaceView: View {
         }
         ContextEventsSection(
           detail: transcripts.sessionId == session.sessionId ? transcripts.contextDetail : nil,
-          events: transcripts.sessionId == session.sessionId ? transcripts.contextEvents : [])
+          events: transcripts.sessionId == session.sessionId ? transcripts.contextEvents : [],
+          canSeek: session.hasCaptureTimeline,
+          onSeek: { event in
+            // Navigation follows Rust evidence resolution, never the row alone.
+            if let start = transcripts.contextEvidenceStart(event) {
+              playbackController.playSynchronized(sessionId: session.sessionId, startNanoseconds: start)
+            }
+          })
         RecorderEventList(events: recorderEvents)
       }
       .frame(maxWidth: 760, alignment: .leading)

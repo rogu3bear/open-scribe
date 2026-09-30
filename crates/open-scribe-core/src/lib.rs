@@ -40,6 +40,13 @@ mod speech_tests;
 pub use open_scribe_domain::{
     Command, Fixture, Presentation, SessionSnapshot, TimerBehavior, TransitionError, announcement,
 };
+pub use open_scribe_evidence::{EvidenceKind, EvidenceRef, EvidenceRefError, ResolutionState};
+pub use open_scribe_store::ResolvedEvidence;
+
+/// Canonical `open-scribe.evidence-ref/v1` JSON for a Rust-derived reference.
+pub fn encode_evidence_ref(reference: &EvidenceRef) -> Result<String, StoreError> {
+    serde_json::to_string(reference).map_err(StoreError::Json)
+}
 pub use open_scribe_store::{
     AcceptedContextEvent, CONTEXT_EVENT_SCHEMA, CONTEXT_EXCLUSIONS, CONTEXT_SCOPE_SCHEMA,
     ContextAction, ContextBounds, ContextCondition, ContextDecision, ContextDetail,

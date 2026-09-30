@@ -1479,6 +1479,8 @@ const fn permission_name(permission: open_scribe_types::PermissionState) -> &'st
 
 mod context;
 pub use context::*;
+mod evidence;
+pub use evidence::*;
 mod recorder;
 pub use recorder::*;
 mod speech;

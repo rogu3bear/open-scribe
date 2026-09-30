@@ -222,6 +222,36 @@ final class TranscriptLibraryModel: ObservableObject {
     }
   }
 
+  /// Where a saved context event begins, once Rust has resolved its citation
+  /// as available evidence; otherwise says why it cannot be opened.
+  func contextEvidenceStart(_ event: NativeContextEvent) -> Int64? {
+    guard let library, let sessionId else { return nil }
+    do {
+      let reference = try library.citeContextEvent(
+        sessionId: sessionId, eventId: event.eventId, block: nil)
+      let resolved = try library.resolveEvidence(referenceJson: reference)
+      guard resolved.state == .available else {
+        report(Self.evidenceProblem(resolved.state), failure: true)
+        return nil
+      }
+      return resolved.startNs
+    } catch {
+      report(Self.describe(error, action: "open this context event"), failure: true)
+      return nil
+    }
+  }
+
+  nonisolated static func evidenceProblem(_ state: NativeEvidenceState) -> String {
+    switch state {
+    case .available: "The evidence is available."
+    case .superseded: "A newer reading replaces this evidence."
+    case .missing: "This evidence is no longer in the library."
+    case .deleted: "This evidence was deleted."
+    case .integrityMismatch: "This evidence no longer matches what was recorded."
+    case .unsupportedVersion: "This evidence uses a newer format than this version of Open Scribe."
+    }
+  }
+
   /// Records the intent and exposes exactly what deletion would remove.
   func requestDeletion(sessionId: String) {
     guard let library else { return }

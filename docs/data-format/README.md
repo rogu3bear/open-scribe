@@ -14,7 +14,7 @@ Rust types and schemas are canonical. Swift views, website demo fixtures, SQLite
 
 Current, not yet stable:
 
-- [`open-scribe.evidence-ref/v1`](../../crates/open-scribe-evidence/src/lib.rs) — evidence reference and its validation (ADR 0013).
+- [`open-scribe.evidence-ref/v1`](../../crates/open-scribe-evidence/src/lib.rs) — evidence reference and its validation (ADR 0013). The store derives references for transcript segments, human corrections, audio ranges, markers, and context events, and resolves each to exactly one ADR 0013 state ([evidence_resolution.rs](../../crates/open-scribe-store/src/evidence_resolution.rs)); an audio range rehashes the sealed file.
 - [`transcript.v1.schema.json`](transcript.v1.schema.json) — `open-scribe.transcript/v1` JSON export; the core exporter takes its schema identity from this file. Plain text, Markdown, WebVTT, and SubRip exports render the same selected Final revisions.
 - Store migrations 6 and 7 — append-only transcript corrections and speaker names, the FTS5 search projection, and deletion intents, tombstones, and receipts.
 - Store migration 8 — context scope epochs, append-only accepted context events, and declared participants and topic. Every change is journaled first. The scope receipt is `open-scribe.context-scope/v1` ([context.rs](../../crates/open-scribe-store/src/context.rs)). The event is `open-scribe.context-event/v1` ([context_events.rs](../../crates/open-scribe-store/src/context_events.rs)): reduced text blocks with boxes in thousandths, a semantic hash, the prior event's digest, and `retention: no_pixels`. It contains no pixels or pointer samples. Context events are not yet part of exports or the portable package.

@@ -1194,3 +1194,47 @@ Excluded:
 - a candidate-bound receipt.
 
 The capability manifest keeps `context-and-evidence-lineage` Unavailable.
+
+### Evidence citation and resolution for every kind (ADR 0013)
+
+`open-scribe.evidence-ref/v1` gains the `context_event` kind. The store
+derives every reference from stored identity: the caller never supplies
+the IDs, ranges, or digests. It covers transcript segments, human
+corrections, audio ranges, markers, and context events (whole, or one
+`block-N`). Resolution re-reads the record and returns exactly one ADR 0013
+state:
+
+- an audio range rehashes the sealed file's full bytes;
+- a context event recomputes its event digest;
+- a transcript revision that is no longer selected resolves as Superseded
+  and names the current revision, but is never replaced.
+
+UniFFI carries references as canonical JSON. In a saved conversation, Play
+from a context event resolves the event first and plays only if it is
+Available; otherwise it states why not.
+
+- Clippy with warnings denied on evidence, store, core, and uniffi: clean.
+- `cargo test --offline` on store, core, and uniffi: store 167 passed, one
+  ignored; core 22; uniffi 8. The evidence crate's 2 tests passed. The four
+  new store tests cover:
+  - transcripts: Available, Superseded by a newer revision, then
+    IntegrityMismatch for a changed digest, a changed start, or another
+    track;
+  - Missing for an absent sequence or an unknown session;
+  - UnsupportedVersion for v2, and an error for a malformed identifier;
+  - corrections: Superseded by a later correction;
+  - audio: a one-byte change resolves as IntegrityMismatch and Available
+    again once restored; a range past the segment is refused;
+  - Deleted after two-phase deletion;
+  - context events and blocks: Available, then IntegrityMismatch after the
+    stored event JSON changed;
+  - markers: Available, and IntegrityMismatch for a changed digest.
+- `./script/build_and_run.sh --verify`: `NATIVE_FIXTURE_XCODE_GREEN`, 192
+  tests, four optional skips. The new Swift test saved a conversation
+  through recovery and loaded its context event, whose scope reads Ended.
+  It navigated only through resolution, and reported UnsupportedVersion for
+  a v2 reference and an error for `{}`.
+
+Excluded: claim evidence navigation and adjudication (Milestone 4),
+resolution of stored references across app versions, and a candidate-bound
+receipt.

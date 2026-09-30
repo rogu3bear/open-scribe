@@ -23,6 +23,8 @@ pub enum EvidenceKind {
     AudioRange,
     Marker,
     HumanCorrection,
+    /// An accepted context event, or one of its text blocks (`block-N`).
+    ContextEvent,
 }
 
 /// A stable pointer to evidence. Identity never depends on display text, a
@@ -33,7 +35,7 @@ pub struct EvidenceRef {
     pub schema: String,
     pub session_id: String,
     pub kind: EvidenceKind,
-    /// Stable record: a transcript revision, track, marker, or event ID.
+    /// Stable record: a track, correction, marker, or context event ID.
     pub record_id: String,
     /// Immutable revision where the kind has one.
     pub revision_id: Option<String>,
@@ -202,6 +204,17 @@ mod tests {
         audio.revision_id = None;
         audio.sub_item = None;
         audio.validate().unwrap();
+
+        let mut context = transcript_ref();
+        context.kind = EvidenceKind::ContextEvent;
+        context.revision_id = None;
+        context.sub_item = Some("block-2".into());
+        context.validate().unwrap();
+        assert!(
+            serde_json::to_string(&context)
+                .unwrap()
+                .contains("\"kind\":\"context_event\"")
+        );
 
         let extra = serde_json::to_string(&transcript_ref())
             .unwrap()

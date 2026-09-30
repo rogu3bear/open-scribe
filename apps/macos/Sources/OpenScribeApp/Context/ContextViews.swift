@@ -274,6 +274,8 @@ struct RegionEditor: View {
 struct ContextEventsSection: View {
   let detail: NativeContextDetail?
   let events: [NativeContextEvent]
+  var canSeek = false
+  var onSeek: (NativeContextEvent) -> Void = { _ in }
 
   var body: some View {
     if let detail, !detail.scopes.isEmpty || !detail.declaration.participants.isEmpty
@@ -297,6 +299,11 @@ struct ContextEventsSection: View {
               Text(event.application.map { "\($0) — \(event.sourceName)" } ?? event.sourceName)
                 .font(.headline)
               if event.reason == .userMarked { Text("Marked").font(.caption).foregroundStyle(.secondary) }
+              if canSeek {
+                Spacer()
+                Button("Play from \(TranscriptSection.timestamp(event.startNs))") { onSeek(event) }
+                  .buttonStyle(.link)
+              }
             }
             Text(event.text.isEmpty ? "No text was recognized." : event.text)
               .textSelection(.enabled)

@@ -13,9 +13,11 @@ use crate::session_export::{
     FileExportReceipt, PortableSummary, SessionExportError, export_source_media, export_track_wav,
     export_validated_mix, write_portable_package, write_session_manifest,
 };
+use open_scribe_evidence::EvidenceRef;
 use open_scribe_store::{
-    ContextDetail, ContextEventRecord, SessionDeletionInventory, SessionDeletionReceipt,
-    SessionSpeaker, SessionStore, StoreError, TranscriptDocumentSegment, TranscriptSearchHit,
+    ContextDetail, ContextEventRecord, ResolvedEvidence, SessionDeletionInventory,
+    SessionDeletionReceipt, SessionSpeaker, SessionStore, StoreError, TranscriptDocumentSegment,
+    TranscriptSearchHit,
 };
 use open_scribe_types::SessionId;
 use std::path::Path;
@@ -59,6 +61,33 @@ impl TranscriptLibrary {
         session: &SessionId,
     ) -> Result<Vec<ContextEventRecord>, StoreError> {
         self.store.context_events(session)
+    }
+
+    /// Rust derives every citation; callers never choose its identity.
+    pub fn cite_context_event(
+        &self,
+        session: &SessionId,
+        event_id: &str,
+        block: Option<usize>,
+    ) -> Result<EvidenceRef, StoreError> {
+        self.store.cite_context_event(session, event_id, block)
+    }
+
+    pub fn cite_transcript_segment(
+        &self,
+        session: &SessionId,
+        revision_id: &str,
+        sequence: u32,
+    ) -> Result<EvidenceRef, StoreError> {
+        self.store
+            .cite_transcript_segment(session, revision_id, sequence)
+    }
+
+    pub fn resolve_evidence(
+        &self,
+        reference: &EvidenceRef,
+    ) -> Result<ResolvedEvidence, StoreError> {
+        self.store.resolve_evidence(reference)
     }
 
     pub fn correct_segment(

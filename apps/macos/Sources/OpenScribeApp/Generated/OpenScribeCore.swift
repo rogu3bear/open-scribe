@@ -1628,6 +1628,17 @@ public protocol NativeTranscriptLibraryProtocol: AnyObject, Sendable {
 
   func contextEvents(sessionId: String) throws -> [NativeContextEvent]
 
+  func citeContextEvent(sessionId: String, eventId: String, block: UInt32?) throws -> String
+
+  func citeTranscriptSegment(sessionId: String, revisionId: String, sequence: UInt32) throws
+    -> String
+
+  /**
+   * Re-reads the cited evidence. A malformed reference is an error; a
+   * newer schema version is reported as such.
+   */
+  func resolveEvidence(referenceJson: String) throws -> NativeResolvedEvidence
+
   func abandonDeletion(sessionId: String) throws
 
   func audioExportOptions(sessionId: String) throws -> NativeAudioExportOptions
@@ -1759,6 +1770,49 @@ open class NativeTranscriptLibrary: NativeTranscriptLibraryProtocol, @unchecked 
         uniffi_open_scribe_uniffi_fn_method_nativetranscriptlibrary_context_events(
           self.uniffiCloneHandle(),
           FfiConverterString.lower(sessionId), uniffiCallStatus
+        )
+      })
+  }
+
+  open func citeContextEvent(sessionId: String, eventId: String, block: UInt32?) throws -> String {
+    return try FfiConverterString.lift(
+      try rustCallWithError(FfiConverterTypeNativeStorageError_lift) {
+        uniffiCallStatus in
+        uniffi_open_scribe_uniffi_fn_method_nativetranscriptlibrary_cite_context_event(
+          self.uniffiCloneHandle(),
+          FfiConverterString.lower(sessionId),
+          FfiConverterString.lower(eventId),
+          FfiConverterOptionUInt32.lower(block), uniffiCallStatus
+        )
+      })
+  }
+
+  open func citeTranscriptSegment(sessionId: String, revisionId: String, sequence: UInt32) throws
+    -> String
+  {
+    return try FfiConverterString.lift(
+      try rustCallWithError(FfiConverterTypeNativeStorageError_lift) {
+        uniffiCallStatus in
+        uniffi_open_scribe_uniffi_fn_method_nativetranscriptlibrary_cite_transcript_segment(
+          self.uniffiCloneHandle(),
+          FfiConverterString.lower(sessionId),
+          FfiConverterString.lower(revisionId),
+          FfiConverterUInt32.lower(sequence), uniffiCallStatus
+        )
+      })
+  }
+
+  /**
+   * Re-reads the cited evidence. A malformed reference is an error; a
+   * newer schema version is reported as such.
+   */
+  open func resolveEvidence(referenceJson: String) throws -> NativeResolvedEvidence {
+    return try FfiConverterTypeNativeResolvedEvidence_lift(
+      try rustCallWithError(FfiConverterTypeNativeStorageError_lift) {
+        uniffiCallStatus in
+        uniffi_open_scribe_uniffi_fn_method_nativetranscriptlibrary_resolve_evidence(
+          self.uniffiCloneHandle(),
+          FfiConverterString.lower(referenceJson), uniffiCallStatus
         )
       })
   }
@@ -4428,6 +4482,99 @@ public func FfiConverterTypeNativeRecoveredPlayableSession_lower(
   _ value: NativeRecoveredPlayableSession
 ) -> RustBuffer {
   return FfiConverterTypeNativeRecoveredPlayableSession.lower(value)
+}
+
+public struct NativeResolvedEvidence: Equatable, Hashable {
+  public let state: NativeEvidenceState
+  /**
+   * `transcript_segment`, `audio_range`, `marker`, `human_correction`, or
+   * `context_event`; empty for an unsupported version.
+   */
+  public let kind: String
+  public let sessionId: String
+  /**
+   * The cited half-open session range.
+   */
+  public let startNs: Int64
+  public let endNs: Int64
+  public let text: String?
+  public let currentRevisionId: String?
+
+  // Default memberwise initializers are never public by default, so we
+  // declare one manually.
+  public init(
+    state: NativeEvidenceState,
+    /**
+     * `transcript_segment`, `audio_range`, `marker`, `human_correction`, or
+     * `context_event`; empty for an unsupported version.
+     */
+    kind: String, sessionId: String,
+    /**
+     * The cited half-open session range.
+     */
+    startNs: Int64, endNs: Int64, text: String?, currentRevisionId: String?
+  ) {
+    self.state = state
+    self.kind = kind
+    self.sessionId = sessionId
+    self.startNs = startNs
+    self.endNs = endNs
+    self.text = text
+    self.currentRevisionId = currentRevisionId
+  }
+
+}
+
+#if compiler(>=6)
+  extension NativeResolvedEvidence: Sendable {}
+#endif
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeNativeResolvedEvidence: FfiConverterRustBuffer {
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws
+    -> NativeResolvedEvidence
+  {
+    return
+      try NativeResolvedEvidence(
+        state: FfiConverterTypeNativeEvidenceState.read(from: &buf),
+        kind: FfiConverterString.read(from: &buf),
+        sessionId: FfiConverterString.read(from: &buf),
+        startNs: FfiConverterInt64.read(from: &buf),
+        endNs: FfiConverterInt64.read(from: &buf),
+        text: FfiConverterOptionString.read(from: &buf),
+        currentRevisionId: FfiConverterOptionString.read(from: &buf)
+      )
+  }
+
+  public static func write(_ value: NativeResolvedEvidence, into buf: inout [UInt8]) {
+    FfiConverterTypeNativeEvidenceState.write(value.state, into: &buf)
+    FfiConverterString.write(value.kind, into: &buf)
+    FfiConverterString.write(value.sessionId, into: &buf)
+    FfiConverterInt64.write(value.startNs, into: &buf)
+    FfiConverterInt64.write(value.endNs, into: &buf)
+    FfiConverterOptionString.write(value.text, into: &buf)
+    FfiConverterOptionString.write(value.currentRevisionId, into: &buf)
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeResolvedEvidence_lift(_ buf: RustBuffer) throws
+  -> NativeResolvedEvidence
+{
+  return try FfiConverterTypeNativeResolvedEvidence.lift(buf)
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeResolvedEvidence_lower(_ value: NativeResolvedEvidence)
+  -> RustBuffer
+{
+  return FfiConverterTypeNativeResolvedEvidence.lower(value)
 }
 
 public struct NativeRuntimeLibrarySnapshot: Equatable, Hashable {
@@ -7115,6 +7262,90 @@ public func FfiConverterTypeNativeContextTargetKind_lower(_ value: NativeContext
   return FfiConverterTypeNativeContextTargetKind.lower(value)
 }
 
+public enum NativeEvidenceState: Equatable, Hashable {
+
+  case available
+  case superseded
+  case missing
+  case deleted
+  case integrityMismatch
+  case unsupportedVersion
+
+}
+
+#if compiler(>=6)
+  extension NativeEvidenceState: Sendable {}
+#endif
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeNativeEvidenceState: FfiConverterRustBuffer {
+  typealias SwiftType = NativeEvidenceState
+
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws
+    -> NativeEvidenceState
+  {
+    let variant: Int32 = try readInt(&buf)
+    switch variant {
+
+    case 1: return .available
+
+    case 2: return .superseded
+
+    case 3: return .missing
+
+    case 4: return .deleted
+
+    case 5: return .integrityMismatch
+
+    case 6: return .unsupportedVersion
+
+    default: throw UniffiInternalError.unexpectedEnumCase
+    }
+  }
+
+  public static func write(_ value: NativeEvidenceState, into buf: inout [UInt8]) {
+    switch value {
+
+    case .available:
+      writeInt(&buf, Int32(1))
+
+    case .superseded:
+      writeInt(&buf, Int32(2))
+
+    case .missing:
+      writeInt(&buf, Int32(3))
+
+    case .deleted:
+      writeInt(&buf, Int32(4))
+
+    case .integrityMismatch:
+      writeInt(&buf, Int32(5))
+
+    case .unsupportedVersion:
+      writeInt(&buf, Int32(6))
+
+    }
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeEvidenceState_lift(_ buf: RustBuffer) throws
+  -> NativeEvidenceState
+{
+  return try FfiConverterTypeNativeEvidenceState.lift(buf)
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeEvidenceState_lower(_ value: NativeEvidenceState) -> RustBuffer {
+  return FfiConverterTypeNativeEvidenceState.lower(value)
+}
+
 public enum NativeFixture: Equatable, Hashable {
 
   case idle
@@ -8140,6 +8371,30 @@ public func FfiConverterTypeNativeTranscriptionStage_lower(_ value: NativeTransc
 #if swift(>=5.8)
   @_documentation(visibility: private)
 #endif
+private struct FfiConverterOptionUInt32: FfiConverterRustBuffer {
+  typealias SwiftType = UInt32?
+
+  public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+    guard let value = value else {
+      writeInt(&buf, Int8(0))
+      return
+    }
+    writeInt(&buf, Int8(1))
+    FfiConverterUInt32.write(value, into: &buf)
+  }
+
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+    switch try readInt(&buf) as Int8 {
+    case 0: return nil
+    case 1: return try FfiConverterUInt32.read(from: &buf)
+    default: throw UniffiInternalError.unexpectedOptionalTag
+    }
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
 private struct FfiConverterOptionString: FfiConverterRustBuffer {
   typealias SwiftType = String?
 
@@ -9054,6 +9309,18 @@ private let initializationResult: InitializationResult = {
     return InitializationResult.apiChecksumMismatch
   }
   if uniffi_open_scribe_uniffi_checksum_method_nativetranscriptlibrary_context_events() != 14257 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_open_scribe_uniffi_checksum_method_nativetranscriptlibrary_cite_context_event() != 44738
+  {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_open_scribe_uniffi_checksum_method_nativetranscriptlibrary_cite_transcript_segment()
+    != 8596
+  {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_open_scribe_uniffi_checksum_method_nativetranscriptlibrary_resolve_evidence() != 47938 {
     return InitializationResult.apiChecksumMismatch
   }
   if uniffi_open_scribe_uniffi_checksum_method_nativetranscriptlibrary_abandon_deletion() != 33047 {

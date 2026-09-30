@@ -1,4 +1,5 @@
 use super::*;
+use open_scribe_evidence::ResolutionState;
 
 fn display(id: &str, name: &str, x: f64) -> DisplayTopology {
     DisplayTopology {
@@ -446,5 +447,86 @@ fn malformed_proposals_fail_and_oversized_ones_are_refused_without_a_record() {
         !journal_records(&store, &session)
             .iter()
             .any(|record| record.body.event_kind == "context_event_accepted")
+    );
+}
+
+#[test]
+fn context_events_and_markers_are_citable_evidence() {
+    let temp = TempDir::new().unwrap();
+    let mut store = SessionStore::open(temp.path()).unwrap();
+    let (session, _) = recording_pair(&mut store);
+    let scope = authorize(&mut store, &session);
+    let event = accepted(
+        store
+            .propose_context_event(
+                session.clone(),
+                proposal(&scope, 10_000_001, &["Q3 plan", "Owner: Dana"]),
+            )
+            .unwrap(),
+    );
+    let whole = store
+        .cite_context_event(&session, &event.event_id, None)
+        .unwrap();
+    let resolved = store.resolve_evidence(&whole).unwrap();
+    assert_eq!(resolved.state, ResolutionState::Available);
+    assert_eq!(resolved.text.as_deref(), Some("Q3 plan\nOwner: Dana"));
+    let block = store
+        .cite_context_event(&session, &event.event_id, Some(1))
+        .unwrap();
+    assert_eq!(block.sub_item.as_deref(), Some("block-1"));
+    assert_eq!(
+        store.resolve_evidence(&block).unwrap().text.as_deref(),
+        Some("Owner: Dana")
+    );
+    assert!(
+        store
+            .cite_context_event(&session, &event.event_id, Some(9))
+            .is_err()
+    );
+    let mut absent_block = block.clone();
+    absent_block.sub_item = Some("block-9".into());
+    assert_eq!(
+        store.resolve_evidence(&absent_block).unwrap().state,
+        ResolutionState::Missing
+    );
+    // A stored event whose bytes no longer match its digest does not verify.
+    store
+        .connection
+        .execute_batch(
+            "DROP TRIGGER context_events_append_only;
+             UPDATE context_events SET event_json = replace(event_json, 'Dana', 'Sam');",
+        )
+        .unwrap();
+    assert_eq!(
+        store.resolve_evidence(&whole).unwrap().state,
+        ResolutionState::IntegrityMismatch
+    );
+
+    store
+        .recorder_action(
+            session.clone(),
+            RecorderAction::Marker {
+                host_time: 20_000_001,
+                label: "Decision".into(),
+            },
+        )
+        .unwrap();
+    let marker: String = store
+        .connection
+        .query_row(
+            "SELECT id FROM markers WHERE session_id = ?1",
+            [&session.0],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let cited = store.cite_marker(&session, &marker).unwrap();
+    let resolved = store.resolve_evidence(&cited).unwrap();
+    assert_eq!(resolved.state, ResolutionState::Available);
+    assert_eq!(resolved.text.as_deref(), Some("Decision"));
+    let mut relabeled = cited;
+    relabeled.content_digest = "f".repeat(64);
+    assert_eq!(
+        store.resolve_evidence(&relabeled).unwrap().state,
+        ResolutionState::IntegrityMismatch
     );
 }

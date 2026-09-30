@@ -325,6 +325,54 @@ final class ContextTests: XCTestCase {
     print("CONTEXT_LIVE_CAPTURE width=\(image.width) height=\(image.height) region=\(region.width)x\(region.height) blocks=\(blocks.count) luma=\(fingerprint.luma.count)")
   }
 
+  func testSavedContextNavigatesOnlyThroughResolvedEvidence() throws {
+    let fixture = try RecordingFixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let scope = try XCTUnwrap(
+      fixture.preparation.contextAction(
+        sessionId: fixture.sessionId, action: .authorize(request: fixture.windowScope())
+      ).scopes.last)
+    let host = mach_absolute_time()
+    let decision = try fixture.preparation.proposeContextEvent(
+      sessionId: fixture.sessionId,
+      proposal: NativeContextProposal(
+        scopeId: scope.scopeId, epoch: scope.epoch, reason: .userMarked, startHostTime: host,
+        endHostTime: host, observedAtMs: 0,
+        source: NativeContextSource(platformId: "4242", name: "Plan", application: "Preview"),
+        bounds: nil, reducerRevision: ContextReducer.revision,
+        visionRevision: ContextReducer.visionRevision, languages: ["en-US"],
+        blocks: [NativeContextTextBlock(text: "Agenda", x: 0.1, y: 0.1, width: 0.3, height: 0.1)]))
+    guard case .accepted(let eventId, let startNs, _, _) = decision else {
+      return XCTFail("\(decision)")
+    }
+    // Saved review reads a saved conversation: recover it as a relaunch would.
+    let recovered = try fixture.preparation.recoverPlayableSessions()
+    XCTAssertTrue(recovered.contains { $0.sessionId == fixture.sessionId })
+    let model = TranscriptLibraryModel(managedRoot: fixture.root)
+    model.load(sessionId: fixture.sessionId)
+    let event = try XCTUnwrap(model.contextEvents.first, model.message ?? "")
+    XCTAssertEqual(model.contextDetail?.scopes.last?.condition, .ended)
+    XCTAssertEqual(event.eventId, eventId)
+    XCTAssertEqual(model.contextEvidenceStart(event), startNs)
+
+    let library = try NativeTranscriptLibrary.open(managedRoot: fixture.root.path)
+    let reference = try library.citeContextEvent(
+      sessionId: fixture.sessionId, eventId: eventId, block: 0)
+    let resolved = try library.resolveEvidence(referenceJson: reference)
+    XCTAssertEqual(resolved.state, .available)
+    XCTAssertEqual(resolved.kind, "context_event")
+    XCTAssertEqual(resolved.text, "Agenda")
+    let newer = reference.replacingOccurrences(
+      of: "open-scribe.evidence-ref/v1", with: "open-scribe.evidence-ref/v2")
+    XCTAssertNotEqual(newer, reference)
+    XCTAssertEqual(try library.resolveEvidence(referenceJson: newer).state, .unsupportedVersion)
+    XCTAssertThrowsError(try library.resolveEvidence(referenceJson: "{}"))
+    XCTAssertEqual(
+      TranscriptLibraryModel.evidenceProblem(.integrityMismatch),
+      "This evidence no longer matches what was recorded.")
+    withExtendedLifetime(fixture.writer) {}
+  }
+
   // MARK: Scope model
 
   func testTheModelAsksForPermissionOnlyToAuthorizeAndStopsOnPlatformSignals() async throws {

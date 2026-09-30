@@ -57,6 +57,8 @@ mod timeline;
 pub use timeline::{CaptureClock, TimelineSegment};
 mod transcript_input;
 pub use transcript_input::{InputSegment, InputSpan, SealedTrackReader, TranscriptionInput};
+mod evidence_resolution;
+pub use evidence_resolution::ResolvedEvidence;
 mod session_inventory;
 pub use session_inventory::{SessionInventory, SessionMarker, SessionMediaEntry, VerifiedMedia};
 mod transcript_export;
