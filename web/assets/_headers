@@ -1,7 +1,9 @@
 /pkg/*
   Cache-Control: public, max-age=31536000, immutable
   X-Content-Type-Options: nosniff
+  Cross-Origin-Resource-Policy: same-origin
 
 /asset-manifest.json
   Cache-Control: no-store
   X-Content-Type-Options: nosniff
+  Cross-Origin-Resource-Policy: same-origin

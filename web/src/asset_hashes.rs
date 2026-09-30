@@ -10,3 +10,7 @@ pub const CSS_HASH: &str = match option_env!("OPEN_SCRIBE_WEB_CSS_HASH") {
     Some(hash) => hash,
     None => "",
 };
+pub const BOOT_HASH: &str = match option_env!("OPEN_SCRIBE_WEB_BOOT_HASH") {
+    Some(hash) => hash,
+    None => "",
+};

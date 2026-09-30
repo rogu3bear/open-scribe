@@ -13,7 +13,8 @@ function hash(buffer) {
 }
 
 async function removeOld(extension) {
-  const pattern = new RegExp(`^${outputName}\\.[a-f0-9]{16}\\.${extension}$`);
+  const suffix = extension.replaceAll(".", "\\.");
+  const pattern = new RegExp(`^${outputName}\\.[a-f0-9]{16}\\.${suffix}$`);
   for (const entry of readdirSync(pkgDir)) {
     if (pattern.test(entry)) await rm(join(pkgDir, entry), { force: true });
   }
@@ -30,7 +31,9 @@ for (const path of Object.values(source)) {
   if (!existsSync(path)) throw new Error(`missing build artifact: ${path}`);
 }
 
-for (const extension of Object.keys(source)) await removeOld(extension);
+for (const extension of [...Object.keys(source), "boot.js"]) {
+  await removeOld(extension);
+}
 
 const buffers = {
   js: await readFile(source.js),
@@ -59,7 +62,17 @@ const rewrittenJsBytes = new TextEncoder().encode(rewrittenJs);
 hashes.js = hash(rewrittenJsBytes);
 names.js = `${outputName}.${hashes.js}.js`;
 
+// The exact ADR 0015 CSP admits no inline script, so hydration starts from
+// this same-origin module rather than an SSR-inlined import.
+const bootBytes = new TextEncoder().encode(
+  `import init, { hydrate } from "./${names.js}";\n` +
+    `init({ module_or_path: "/pkg/${names.wasm}" }).then(() => hydrate());\n`,
+);
+hashes.boot = hash(bootBytes);
+names.boot = `${outputName}.${hashes.boot}.boot.js`;
+
 await writeFile(join(pkgDir, names.js), rewrittenJsBytes);
+await writeFile(join(pkgDir, names.boot), bootBytes);
 await writeFile(join(pkgDir, names.css), buffers.css);
 await rename(source.wasm, join(pkgDir, names.wasm));
 await rm(source.js, { force: true });
@@ -71,6 +84,7 @@ await writeFile(
     js: `/pkg/${names.js}`,
     wasm: `/pkg/${names.wasm}`,
     css: `/pkg/${names.css}`,
+    boot: `/pkg/${names.boot}`,
     hashes,
   }, null, 2)}\n`,
 );
@@ -80,6 +94,7 @@ await writeFile(
     `export OPEN_SCRIBE_WEB_JS_HASH="${hashes.js}"`,
     `export OPEN_SCRIBE_WEB_WASM_HASH="${hashes.wasm}"`,
     `export OPEN_SCRIBE_WEB_CSS_HASH="${hashes.css}"`,
+    `export OPEN_SCRIBE_WEB_BOOT_HASH="${hashes.boot}"`,
     "",
   ].join("\n"),
 );

@@ -1550,7 +1550,6 @@ name = "open-scribe-web"
 version = "0.0.0"
 dependencies = [
  "axum",
- "base64",
  "console_error_panic_hook",
  "getrandom 0.3.4",
  "getrandom 0.4.3",
@@ -1559,7 +1558,6 @@ dependencies = [
  "leptos_meta",
  "leptos_router",
  "serde_json",
- "sha2",
  "tower-service",
  "wasm-bindgen",
  "worker",

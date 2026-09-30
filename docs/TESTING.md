@@ -822,3 +822,35 @@ remain uninspected. Named, not fixed: two co-equal playback buttons in the
 audio section, Export in the transcript header rather than the intended
 inspector, a per-row `Correct…` action, disabled seek for imported audio, and
 a search empty state that does not distinguish "nothing transcribed".
+
+## September 29, 2026 — Website conformance to ADR 0015 routes, CSP, and headers
+
+The site now follows ADR 0015's route and header decisions instead of the
+M0 drift the completeness audit found. `/documentation` replaces `/docs`;
+GitHub is an external footer link, not a `/github` route; primary navigation is
+Product, How It Works, Privacy, Documentation, and Download; Product links
+Record and Meeting; Download says `No public release is available` with no
+button. Release SSR sends the exact ADR policy (no `unsafe-inline`),
+`Referrer-Policy: strict-origin`, COOP and CORP `same-origin`, a Permissions
+Policy denying camera, microphone, display capture, geolocation, and other
+sensors, and `X-Robots-Tag: noindex` on `workers.dev` hosts. Hydration starts
+from a hashed same-origin boot module that `hash_assets.mjs` emits, so the
+inline hydration hash and the `base64`/`sha2` web dependencies were removed;
+`Cargo.lock` and `docs/supply-chain/components.v1.json` were regenerated.
+
+- `disk-guard run --budget-gb 3 --volume "$PWD" -- cargo test -p open-scribe-web --features ssr --lib`:
+  5 passed, including the exact policy, the header set with preview
+  `noindex`, the route and navigation matrix, and the no-inline boot.
+- `disk-guard run --budget-gb 4 --volume "$PWD" -- ./script/build_web.sh`:
+  `WEB_BUILD_GREEN`. The same five tests ran with the build's asset hashes, and
+  `verify_build.mjs` checked the boot module's hash and its references to the
+  hashed JS and Wasm, plus the Worker Wasm carrying the boot hash, the exact
+  script policy, COOP, and Permissions Policy. Boot asset:
+  `/pkg/open-scribe-web.0380b69d15de5de0.boot.js`.
+- `disk-guard run --budget-gb 3 --volume "$PWD" -- ./script/check.sh --scaffold`:
+  `SCAFFOLD_GREEN` (200 workspace tests).
+
+Plane: source, unit, and local build proof. Excluded: a browser load under the
+policy, deployed response headers, reflow, accessibility, performance budgets,
+and every other ADR 0015 release acceptance. Capability-true equality with a
+release manifest remains missing, and deployment requires separate authority.

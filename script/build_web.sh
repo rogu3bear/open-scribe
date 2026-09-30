@@ -41,11 +41,11 @@ bun web/scripts/hash_assets.mjs
 
 # shellcheck source=/dev/null
 source "$repo_root/target/web-asset-hashes.env"
-export OPEN_SCRIBE_WEB_JS_HASH OPEN_SCRIBE_WEB_WASM_HASH OPEN_SCRIBE_WEB_CSS_HASH
+export OPEN_SCRIBE_WEB_JS_HASH OPEN_SCRIBE_WEB_WASM_HASH OPEN_SCRIBE_WEB_CSS_HASH OPEN_SCRIBE_WEB_BOOT_HASH
 worker-build web --release --locked --features ssr
 bun web/scripts/write_worker_shim.mjs
 
 cargo run --locked --release -p open-scribe-web --features ssr \
 	--bin render-web-ssr -- "$repo_root/target/web-ssr/index.html"
-cargo test --locked -p open-scribe-web --features ssr ssr_is_useful_without_hydration
+cargo test --locked -p open-scribe-web --features ssr --lib
 bun web/scripts/verify_build.mjs
