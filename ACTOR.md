@@ -89,8 +89,12 @@
 - Command: `disk-guard run --budget-gb 3 --volume "$PWD" -- ./script/check.sh --candidate RECORD`.
 - `072a3fb` passed `CONTRIBUTOR_CANDIDATE_GREEN`, including recording components and foundational recovery. Use measured capacity and a new record path; runtime consumers never rebuild.
 
+## Local verification
+
+- `./script/build_and_run.sh --verify`: `NATIVE_FIXTURE_XCODE_GREEN`; `./script/build_web.sh`: `WEB_BUILD_GREEN`.
+
 ## Admission rule
 
 Release readiness: `./script/release.sh prepare <semver>`; a hold names exact blockers and performs no publication.
 
-Record executed commands and inspected results only. Unimplemented scripts fail closed.
+Unimplemented scripts fail closed.

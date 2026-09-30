@@ -10,6 +10,14 @@ This directory remains the documentation owner for versioned specifications of:
 - export formats and the `.openscribe` portable package;
 - compatibility, deletion, and retention behavior.
 
-Rust types and schemas are canonical. Swift views, website demo fixtures, SQLite projections, and intended exports must be derived consumers rather than independently edited definitions. Public export formats and the portable package remain intended; current storage records do not establish their implementation or compatibility.
+Rust types and schemas are canonical. Swift views, website demo fixtures, SQLite projections, and exports must be derived consumers rather than independently edited definitions.
+
+Current, not yet stable:
+
+- [`open-scribe.evidence-ref/v1`](../../crates/open-scribe-evidence/src/lib.rs) — evidence reference and its validation (ADR 0013).
+- [`transcript.v1.schema.json`](transcript.v1.schema.json) — `open-scribe.transcript/v1` JSON export; the core exporter takes its schema identity from this file. Plain text, Markdown, WebVTT, and SubRip exports render the same selected Final revisions.
+- Store migrations 6 and 7 — append-only transcript corrections and speaker names, the FTS5 search projection, and deletion intents, tombstones, and receipts.
+
+Audio exports, the session manifest, and the `.openscribe` portable package remain intended.
 
 No format may be called stable before round-trip fixtures, migration tests, path-safety tests, and recovery behavior are implemented.

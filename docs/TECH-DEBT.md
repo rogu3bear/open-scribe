@@ -5,8 +5,7 @@
 | ID | Area | Current Behavior / Debt | Risk | Priority | Owner | Retirement Evidence |
 |---|---|---|---|---:|---|---|
 | TD-003 | Single instance | `AppDelegate` treats lock-file I/O failure as if another instance exists. | Silent termination can misdiagnose a local filesystem fault. | P1 | Native shell owner | Separate user-visible paths and tests for `alreadyRunning` versus `cannotOpen`. |
-| TD-004 | Recording truth | The live controller reaches `capturing` after microphone first-sample evidence but never asserts authoritative `Recording`. | UI or future code could promote one-source evidence into a false session claim. | P0 | Product/durability owners | Required-source coordinator and Rust-owned transition with tests. |
-| TD-006 | Required system audio | Selected application/system audio is not implemented. | The product cannot yet record both sides of a meeting. | P0 | Platform capture owner | One validated mode, source visibility, loss behavior, and two-hour sync proof. |
+| TD-006 | Required system audio | Application/system audio capture exists and passed one short live dual-source run (`072a3fb`); real-device source loss, permission revocation, and long sessions are unqualified. | A meeting recording may still fail or drift outside the proven short run. | P0 | Platform capture owner | One validated mode, source visibility, loss behavior, and two-hour sync proof. |
 | TD-009 | Default product gate | The repository’s broad default product gates intentionally fail closed. | Contributors can mistake scaffold success for application readiness. | P1 | Build/release owner | One canonical candidate gate with precise exclusions and contributor docs. |
 
 ## Retired Debt
@@ -19,6 +18,7 @@
 | TD-010 | Architecture and operator projections now describe the admitted live-microphone slice. | `22aaa8f`. |
 | TD-002 | Post-preparation failures retain typed interruption evidence; strict startup recovery converts valid process-killed microphone CAF media to persistent playable `ready_for_review` output. | `M1_FORCED_TERMINATION_RECOVERY_GATE_GREEN`; projection interruption, invalid-media, external-kill, unchanged-digest, playback, and idempotence proof. |
 | TD-007 | Forced-termination microphone media is strictly validated, durably recovered, persistently rediscovered, and opened through native playback without changing source bytes. | `M1_FORCED_TERMINATION_RECOVERY_GATE_GREEN`; long-session and required-source work remains under TD-006. |
+| TD-004 | Only Rust `confirm_recording` enters `Recording`, once every required source has durable first-sample evidence; the live controller asserts it through that call alone. | Store required-source tests and 170 Swift tests at `c4fae7f`; `M1_DUAL_SOURCE_RUNTIME_GREEN` on `072a3fb`. |
 
 ## Smell Inventory
 
@@ -26,7 +26,7 @@
 |---|---|---|---:|---|---|
 | Broad error collapse | `AppDelegate.applicationWillFinishLaunching` | Distinct lock failures produce the same action. | P1 | Native shell owner | Add characterization and split error handling. |
 | String-only controller errors | `LiveMicrophoneRecordingController` | UI cannot reliably distinguish permission, source, writer, seal, and recovery actions. | P1 | Native runtime owner | Introduce typed operator-facing failure categories after the state contract is approved. |
-| Recovery UI is not yet a general library | `RecoveredSessionController` + `open-scribe-store` | Forced-exit microphone sessions persist and play, but ordinary sealed sessions, imports, naming, deletion, and search do not share a complete conversation-library query. | P1 | Conversation-loop owner | Introduce one Rust-owned library projection after required-source recording is authoritative. |
+| Oversized playback owner | `RecoveredSessionController` (about 1,900 lines) | Imported, recovered, synchronized, and mixdown playback share one file near the 2,000-line limit, so imported-audio seek has no clean home. | P1 | Native runtime owner | Split playback strategies by responsibility before adding imported-audio seek. |
 
 ## Sprout/Wrap Register
 

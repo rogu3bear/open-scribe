@@ -766,3 +766,41 @@ TCC change, speaker output, long-session synchronization, marker qualification,
 validated mixdown, disk-pressure policy, application-scoped selection or native
 channel-layout fidelity is proved by this component receipt. The September 25
 foundational narrative and its narrower proof boundaries remain unchanged.
+
+## September 29, 2026 — Transcript review, export, deletion, and permission truth
+
+Commit `c4fae7fa5f76d9d30efc1cb7e0889398559c73e8` (tree
+`c75a50ffdefbc62aa049fad74ff1490ec83e0453`; feature commit `c66f460`). Every
+command below ran against that exact tree before it was committed, each under
+`disk-guard run --budget-gb <2–5> --volume "$PWD" -- …`:
+
+- `cargo fmt --all -- --check`.
+- `cargo test --locked -p open-scribe-evidence -p open-scribe-store`: evidence 2
+  passed; store 156 passed (1 ignored) plus 1 separately. New: three deletion
+  paths, five review/search tests, and permission revocation through interruption.
+- `cargo test --locked -p open-scribe-core -p open-scribe-uniffi`: core 14 passed
+  (five export tests over a real import and transcription run); UniFFI 8 passed.
+- `cargo clippy --locked -p open-scribe-store -p open-scribe-core -p open-scribe-uniffi -p open-scribe-evidence -p open-scribe-asr -p open-scribe-models --all-targets -- -D warnings`:
+  clean once `bec01a0` named the placement tuple.
+- `./script/check.sh --scaffold`: `SCAFFOLD_GREEN` (200 workspace tests, WASM
+  check of shared crates, shell lint, diff hygiene).
+- Bindings regenerated with `script/build_rust_macos.sh`, `uniffi-bindgen generate --library …`,
+  `swift-format`, and `clang-format`; `./script/build_and_run.sh --verify` then
+  byte-compared them and printed `NATIVE_FIXTURE_XCODE_GREEN`: 170 Swift tests,
+  one optional skip, zero project compile warnings, including timeline seek and
+  three transcript-model tests against the real Rust library.
+- `./script/check_native_contracts.sh --all`: `NATIVE_CONTRACT_GREEN`, with the
+  user-selected read-write entitlement.
+- `cargo test --locked -p open-scribe-web --features ssr ssr_is_useful_without_hydration`
+  and `./script/build_web.sh`: `WEB_BUILD_GREEN`.
+
+Local Debug app, not a candidate record: executable, debug-dylib, and Info.plist
+SHA-256 `104c2aee43dd1f4de6ec7a721de2ae48e0cd4b8703dc54eeaa5bb27648c79194`,
+`2c20b0a062f03c7e5b852ed6b5bb3d49bb24feb37345e0563f25c97d88d3b6cc`, and
+`c103e34b917098d3964f5992f343fd5f8fd17306642ecafb0e4c23fbaa97acab`.
+
+Plane: source, unit, integration, and native test-host proof. Deletion used
+temporary libraries; the Swift test injects its trash mover instead of the user's
+Trash. Excluded: a qualified candidate, live capture, Finder Trash, real TCC
+revocation, rendered inspection of the new transcript surface, transcription (no
+engine is integrated), signing, and release.
