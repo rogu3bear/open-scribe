@@ -1099,22 +1099,6 @@ Excluded:
 - export of very long sessions;
 - a candidate-bound receipt.
 
-### Screen context: explicit scope, sparse events, no pixel retention (ADR 0011, 0012)
-
-Rust store migration 8 owns context state:
-
-- the scope receipt (`open-scribe.context-scope/v1`) and its epoch;
-- the scope's condition: active, paused, revoked, failed, superseded, or
-  ended with the recording;
-- declared participants and topic;
-- append-only `open-scribe.context-event/v1` events.
-
-Every change is journaled before it is projected, and replay is idempotent.
-Changing the scope issues a new epoch, and so does resuming it. A proposal
-is accepted only under the current active epoch while audio is recording.
-Its host times map onto the session clock and may not precede the latest
-pause boundary or the last event. Text that repeats the epoch's last
-reading is refused as a duplicate unless the user marked the moment. An
 ### Opening a portable package from another Mac (ADR 0010 round trip)
 
 "Open Portable Package…" (toolbar, ⌘O, and the empty library) opens a
@@ -1176,6 +1160,22 @@ Excluded:
 - opening package media in independent applications;
 - a candidate-bound receipt.
 
+### Screen context: explicit scope, sparse events, no pixel retention (ADR 0011, 0012)
+
+Rust store migration 8 owns context state:
+
+- the scope receipt (`open-scribe.context-scope/v1`) and its epoch;
+- the scope's condition: active, paused, revoked, failed, superseded, or
+  ended with the recording;
+- declared participants and topic;
+- append-only `open-scribe.context-event/v1` events.
+
+Every change is journaled before it is projected, and replay is idempotent.
+Changing the scope issues a new epoch, and so does resuming it. A proposal
+is accepted only under the current active epoch while audio is recording.
+Its host times map onto the session clock and may not precede the latest
+pause boundary or the last event. Text that repeats the epoch's last
+reading is refused as a duplicate unless the user marked the moment. An
 empty reading, or one larger than the 16 KiB journal bound (TD-012), is
 refused. Refusals are values, never durable effects.
 
