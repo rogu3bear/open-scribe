@@ -24,7 +24,7 @@ fn transcript_references_resolve_supersede_and_detect_tampering() {
         .store
         .cite_transcript_segment(&session, &first, 0)
         .unwrap();
-    assert_eq!(cited.record_id, fixture.track);
+    assert_eq!(cited.record_id, first);
     assert_eq!(cited.sub_item.as_deref(), Some("0"));
     let resolved = fixture.store.resolve_evidence(&cited).unwrap();
     assert_eq!(resolved.state, ResolutionState::Available);
@@ -56,9 +56,9 @@ fn transcript_references_resolve_supersede_and_detect_tampering() {
     wrong_digest.content_digest = "0".repeat(64);
     let mut moved = cited.clone();
     moved.start_ns += 1;
-    let mut other_track = cited.clone();
-    other_track.record_id = "another-track".into();
-    for reference in [wrong_digest, moved, other_track] {
+    let mut other_record = cited.clone();
+    other_record.record_id = "another-revision".into();
+    for reference in [wrong_digest, moved, other_record] {
         assert_eq!(
             state(&fixture, &reference),
             ResolutionState::IntegrityMismatch

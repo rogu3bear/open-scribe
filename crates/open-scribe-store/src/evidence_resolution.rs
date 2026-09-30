@@ -6,8 +6,9 @@
 //! or deleted evidence is never silently replaced by something nearby.
 //!
 //! Per kind, a reference binds:
-//! - transcript segment: the track (`record_id`), the immutable revision, the
-//!   segment sequence, and the SHA-256 of its verbatim text;
+//! - transcript segment: the immutable revision (`record_id` and
+//!   `revision_id`, as the transcript export writes it), the segment sequence,
+//!   and the SHA-256 of its verbatim text;
 //! - human correction: the correction, its revision and sequence, and the
 //!   SHA-256 of its replacement text (empty when it restored the verbatim);
 //! - audio range: the track, the sealed segment holding its start, and that
@@ -88,23 +89,23 @@ impl SessionStore {
         revision_id: &str,
         sequence: u32,
     ) -> Result<EvidenceRef, StoreError> {
-        let (track, start, end, text): (String, i64, i64, String) = self
+        let (start, end, text): (i64, i64, String) = self
             .connection
             .query_row(
-                "SELECT revisions.track_id, segments.start_ns, segments.end_ns, segments.text
+                "SELECT segments.start_ns, segments.end_ns, segments.text
                  FROM transcript_segments AS segments
                  JOIN transcript_revisions AS revisions ON revisions.id = segments.revision_id
                  WHERE revisions.session_id = ?1 AND segments.revision_id = ?2
                    AND segments.sequence = ?3",
                 params![session.0, revision_id, sequence],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .optional()?
             .ok_or(StoreError::InvalidRequest("no such transcript segment"))?;
         reference(
             session,
             EvidenceKind::TranscriptSegment,
-            &track,
+            revision_id,
             Some(revision_id.to_owned()),
             (start, end),
             Some(sequence.to_string()),
@@ -332,7 +333,7 @@ impl SessionStore {
         let Some((track, start, end, text)) = found else {
             return Ok(ResolvedEvidence::state(ResolutionState::Missing));
         };
-        if track != reference.record_id
+        if revision != reference.record_id
             || start != reference.start_ns
             || end.max(start + 1) != reference.end_ns
             || text_digest(&text) != reference.content_digest
