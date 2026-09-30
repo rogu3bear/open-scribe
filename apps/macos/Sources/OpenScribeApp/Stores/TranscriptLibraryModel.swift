@@ -15,9 +15,14 @@ final class TranscriptLibraryModel: ObservableObject {
   @Published private(set) var searchResults: [NativeTranscriptSearchHit] = []
   @Published private(set) var pendingDeletion: NativeSessionDeletionInventory?
   @Published private(set) var message: String?
+  /// Whether `message` reports a failure rather than a completed action.
+  @Published private(set) var messageIsFailure = false
 
   private let library: NativeTranscriptLibrary?
   private let moveToTrash: TrashMover
+  #if DEBUG
+    private var isFixedPreview = false
+  #endif
 
   init(library: NativeTranscriptLibrary?, moveToTrash: @escaping TrashMover = TranscriptLibraryModel.systemTrash) {
     self.library = library
@@ -27,6 +32,22 @@ final class TranscriptLibraryModel: ObservableObject {
   convenience init(managedRoot: URL?) {
     self.init(library: try? managedRoot.map { try NativeTranscriptLibrary.open(managedRoot: $0.path) })
   }
+
+  #if DEBUG
+    /// Fixed values for rendered inspection and tests: no library and no
+    /// durable effects; `load` keeps these values.
+    convenience init(
+      preview availability: NativeTranscriptAvailability,
+      segments: [NativeTranscriptSegment],
+      speakers: [NativeSessionSpeaker]
+    ) {
+      self.init(library: nil)
+      self.availability = availability
+      self.segments = segments
+      self.speakers = speakers
+      isFixedPreview = true
+    }
+  #endif
 
   nonisolated static func systemTrash(_ url: URL) throws -> URL? {
     var resulting: NSURL?
@@ -39,40 +60,48 @@ final class TranscriptLibraryModel: ObservableObject {
     case .final: "Final transcript"
     case .draft: "Draft — some tracks do not have a Final transcript yet"
     case .failed: "Transcription failed. The recorded audio is unaffected."
-    case .unavailable: "No transcript. Local transcription is not available in this build."
+    case .unavailable:
+      "No transcript. This build cannot transcribe locally; the recorded audio above is complete."
     }
   }
 
   func load(sessionId: String) {
     self.sessionId = sessionId
+    #if DEBUG
+      if isFixedPreview { return }
+    #endif
     guard let library else {
       clear(message: "The conversation library is unavailable.")
+      messageIsFailure = true
       return
     }
     do {
       availability = try library.availability(sessionId: sessionId)
       segments = try library.document(sessionId: sessionId)
       speakers = try library.speakers(sessionId: sessionId)
-      message = nil
+      report(nil)
     } catch {
       clear(message: Self.describe(error, action: "load the transcript"))
+      messageIsFailure = true
     }
   }
 
-  /// `nil` restores the machine's verbatim reading.
-  func correct(_ segment: NativeTranscriptSegment, text: String?) {
-    guard let library, let sessionId else { return }
-    perform("save the correction") {
+  /// `nil` restores the machine's verbatim reading. Returns whether it saved.
+  @discardableResult
+  func correct(_ segment: NativeTranscriptSegment, text: String?) -> Bool {
+    guard let library, let sessionId else { return false }
+    return perform("save the correction") {
       try library.correctSegment(
         sessionId: sessionId, revisionId: segment.revisionId, sequence: segment.sequence,
         text: text)
     }
   }
 
-  /// `nil` restores the name derived from the capture source.
-  func renameSpeaker(trackId: String, label: String?) {
-    guard let library, let sessionId else { return }
-    perform("rename the speaker") {
+  /// `nil` restores the name derived from the capture source. Returns whether it saved.
+  @discardableResult
+  func renameSpeaker(trackId: String, label: String?) -> Bool {
+    guard let library, let sessionId else { return false }
+    return perform("rename the speaker") {
       try library.renameSpeaker(sessionId: sessionId, trackId: trackId, label: label)
     }
   }
@@ -86,7 +115,7 @@ final class TranscriptLibraryModel: ObservableObject {
       searchResults = try library.search(query: query, sessionId: nil, limit: 50)
     } catch {
       searchResults = []
-      message = Self.describe(error, action: "search transcripts")
+      report(Self.describe(error, action: "search transcripts"), failure: true)
     }
   }
 
@@ -96,10 +125,10 @@ final class TranscriptLibraryModel: ObservableObject {
     do {
       let receipt = try library.export(
         sessionId: sessionId, format: format, destinationPath: destination.path)
-      message = "Exported \(receipt.segmentCount) segments."
+      report("Exported \(receipt.segmentCount) segments.")
       return true
     } catch {
-      message = Self.describe(error, action: "export the transcript")
+      report(Self.describe(error, action: "export the transcript"), failure: true)
       return false
     }
   }
@@ -109,10 +138,10 @@ final class TranscriptLibraryModel: ObservableObject {
     guard let library else { return }
     do {
       pendingDeletion = try library.beginDeletion(sessionId: sessionId)
-      message = nil
+      report(nil)
     } catch {
       pendingDeletion = nil
-      message = Self.describe(error, action: "prepare the deletion")
+      report(Self.describe(error, action: "prepare the deletion"), failure: true)
     }
   }
 
@@ -133,35 +162,47 @@ final class TranscriptLibraryModel: ObservableObject {
       trashed = try moveToTrash(URL(fileURLWithPath: inventory.directoryPath, isDirectory: true))
     } catch {
       try? library.abandonDeletion(sessionId: inventory.sessionId)
-      message = "The conversation could not be moved to Trash, so nothing was deleted."
+      report("The conversation could not be moved to Trash, so nothing was deleted.", failure: true)
       return false
     }
     do {
       _ = try library.completeDeletion(
         sessionId: inventory.sessionId, trashReference: trashed?.absoluteString)
       if sessionId == inventory.sessionId { clear(message: nil) }
-      message = "“\(inventory.title)” was moved to Trash."
+      report("“\(inventory.title)” was moved to Trash.")
       return true
     } catch {
-      message = Self.describe(error, action: "finish the deletion")
+      report(Self.describe(error, action: "finish the deletion"), failure: true)
       return false
     }
   }
 
-  private func perform(_ action: String, _ body: () throws -> Void) {
+  private func perform(_ action: String, _ body: () throws -> Void) -> Bool {
     do {
       try body()
       if let sessionId { load(sessionId: sessionId) }
+      return true
     } catch {
-      message = Self.describe(error, action: action)
+      report(Self.describe(error, action: action), failure: true)
+      return false
     }
+  }
+
+  /// Clears a finished status before a new edit starts.
+  func dismissMessage() {
+    report(nil)
+  }
+
+  private func report(_ text: String?, failure: Bool = false) {
+    message = text
+    messageIsFailure = text != nil && failure
   }
 
   private func clear(message: String?) {
     availability = .unavailable
     segments = []
     speakers = []
-    self.message = message
+    report(message)
   }
 
   nonisolated static func describe(_ error: Error, action: String) -> String {

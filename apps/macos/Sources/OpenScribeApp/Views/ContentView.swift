@@ -161,6 +161,14 @@ struct ContentView: View {
     }
     .listStyle(.sidebar)
     .searchable(text: $searchQuery, placement: .sidebar, prompt: "Search transcripts")
+    .onDeleteCommand {
+      // Delete (or Edit > Delete) moves the selected saved conversation to
+      // Trash through the same confirmation as the context menu.
+      guard liveRecording.canStart,
+        let session = store.savedSessions.first(where: { $0.sessionId == selectedSessionId })
+      else { return }
+      requestDeletion(session)
+    }
     .navigationTitle("Library")
     .navigationSplitViewColumnWidth(min: 220, ideal: 260, max: 340)
   }
@@ -290,7 +298,8 @@ struct ContentView: View {
       notices.append(.init(id: "import", message: message, isFailure: false))
     }
     if let message = transcripts.message {
-      notices.append(.init(id: "transcripts", message: message, isFailure: false))
+      notices.append(
+        .init(id: "transcripts", message: message, isFailure: transcripts.messageIsFailure))
     }
     if notices.isEmpty, liveRecording.phase == .saved,
       selectedSessionId == liveRecording.lastSavedSessionId,

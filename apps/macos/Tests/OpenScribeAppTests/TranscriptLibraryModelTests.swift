@@ -1,3 +1,5 @@
+import AppKit
+import SwiftUI
 import UniformTypeIdentifiers
 import XCTest
 
@@ -21,7 +23,9 @@ final class TranscriptLibraryModelTests: XCTestCase {
     model.load(sessionId: sessionId)
     XCTAssertEqual(model.availability, .unavailable)
     XCTAssertTrue(model.segments.isEmpty)
-    XCTAssertEqual(model.availabilityText, "No transcript. Local transcription is not available in this build.")
+    XCTAssertEqual(
+      model.availabilityText,
+      "No transcript. This build cannot transcribe locally; the recorded audio above is complete.")
     XCTAssertFalse(model.speakers.isEmpty)
     XCTAssertTrue(model.speakers.allSatisfy { !$0.namedByUser })
     let track = try XCTUnwrap(model.speakers.first)
@@ -31,8 +35,12 @@ final class TranscriptLibraryModelTests: XCTestCase {
     XCTAssertEqual(model.speakers.first { $0.trackId == track.trackId }?.namedByUser, true)
     model.renameSpeaker(trackId: track.trackId, label: nil)
     XCTAssertEqual(model.speakers.first { $0.trackId == track.trackId }, track)
-    model.renameSpeaker(trackId: track.trackId, label: "")
+    XCTAssertFalse(model.renameSpeaker(trackId: track.trackId, label: ""))
     XCTAssertNotNil(model.message)
+    XCTAssertTrue(model.messageIsFailure, "a failed rename is reported as a failure")
+    model.dismissMessage()
+    XCTAssertNil(model.message)
+    XCTAssertFalse(model.messageIsFailure)
 
     model.search("anything")
     XCTAssertTrue(model.searchResults.isEmpty)
@@ -56,6 +64,7 @@ final class TranscriptLibraryModelTests: XCTestCase {
     XCTAssertFalse(failing.confirmDeletion())
     XCTAssertEqual(
       failing.message, "The conversation could not be moved to Trash, so nothing was deleted.")
+    XCTAssertTrue(failing.messageIsFailure)
     let preparation = try NativeRecordingPreparation.open(managedRoot: root.path)
     XCTAssertTrue(
       try preparation.runtimeLibrarySnapshot().savedSessions.contains { $0.sessionId == sessionId })
@@ -70,12 +79,83 @@ final class TranscriptLibraryModelTests: XCTestCase {
     }
     model.requestDeletion(sessionId: sessionId)
     XCTAssertTrue(model.confirmDeletion())
+    XCTAssertFalse(model.messageIsFailure)
     XCTAssertFalse(
       try preparation.runtimeLibrarySnapshot().savedSessions.contains { $0.sessionId == sessionId })
     XCTAssertTrue(
       FileManager.default.fileExists(atPath: trash.appendingPathComponent(sessionId).path),
       "the audio remains recoverable from Trash")
     withExtendedLifetime(capture) {}
+  }
+
+  private func segment(
+    _ sequence: UInt32, _ start: Int64, _ speaker: String, named: Bool, _ text: String,
+    machine: String? = nil
+  ) -> NativeTranscriptSegment {
+    NativeTranscriptSegment(
+      revisionId: "revision", trackId: named ? "system" : "microphone", sequence: sequence,
+      startNanoseconds: start, endNanoseconds: start + 3_000_000_000,
+      verbatimText: machine ?? text, effectiveText: text, corrected: machine != nil,
+      speakerLabel: speaker, speakerNamedByUser: named)
+  }
+
+  /// Renders the real view through AppKit at the full document width and at
+  /// the narrowest detail width the 760-point minimum window allows. Set
+  /// OPEN_SCRIBE_RENDER_DIR (TEST_RUNNER_ prefix under xcodebuild) to keep PNGs.
+  func testTranscriptSectionRendersInsideTheDocumentMeasure() throws {
+    let session = RuntimeSessionPresentation(
+      native: NativeRuntimeSessionSnapshot(
+        sessionId: "session", title: "Weekly planning", lifecycle: "ready_for_review",
+        health: "healthy", elapsedSeconds: 3_900, journalDurable: true, mediaFilesOpen: false,
+        interruptionReason: nil, recovered: false, hasCaptureTimeline: true, sources: [],
+        playableMedia: nil))
+    let segments = [
+      segment(
+        0, 4_200_000_000, "Local user", named: false,
+        "Thanks for joining. Let's start with the release checklist, then cover the open questions from last week's review."
+      ),
+      segment(
+        1, 12_800_000_000, "Dana", named: true,
+        "The signing identity is still waiting on legal review.",
+        machine: "The signing identity is still waiting on legal few."),
+      segment(2, 3_725_000_000_000, "Dana", named: true, "Agreed."),
+    ]
+    let speakers = [
+      NativeSessionSpeaker(
+        trackId: "microphone", sourceKind: "microphone", label: "Local user", namedByUser: false),
+      NativeSessionSpeaker(
+        trackId: "system", sourceKind: "application_audio", label: "Dana", namedByUser: true),
+    ]
+    let cases: [(String, NativeTranscriptAvailability, [NativeTranscriptSegment], CGFloat)] = [
+      ("transcript-final-760", .final, segments, 760),
+      ("transcript-final-480", .final, segments, 480),
+      ("transcript-unavailable-760", .unavailable, [], 760),
+    ]
+    for (name, availability, rows, width) in cases {
+      let model = TranscriptLibraryModel(
+        preview: availability, segments: rows, speakers: rows.isEmpty ? [] : speakers)
+      let view = TranscriptSection(
+        session: session, transcripts: model, canSeek: true, onSeek: { _ in }
+      )
+      .padding(32)
+      .frame(width: width)
+      .background(Color(nsColor: .windowBackgroundColor))
+      let host = NSHostingView(rootView: view)
+      let size = host.fittingSize
+      XCTAssertLessThanOrEqual(size.width, width + 1, name)
+      XCTAssertGreaterThan(size.height, rows.isEmpty ? 60 : 200, name)
+      guard let directory = ProcessInfo.processInfo.environment["OPEN_SCRIBE_RENDER_DIR"] else {
+        continue
+      }
+      // ImageRenderer draws SwiftUI text; AppKit-hosted controls may render
+      // as placeholders.
+      let renderer = ImageRenderer(content: view)
+      renderer.scale = 2
+      let image = try XCTUnwrap(renderer.cgImage)
+      let png = try XCTUnwrap(
+        NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]))
+      try png.write(to: URL(fileURLWithPath: directory).appendingPathComponent("\(name).png"))
+    }
   }
 
   func testTimestampsAndExportNamesAreStable() {

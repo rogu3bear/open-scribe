@@ -32,8 +32,11 @@ struct TranscriptSection: View {
         .foregroundStyle(.secondary)
       if !transcripts.segments.isEmpty {
         speakerList
-        ForEach(transcripts.segments) { segment in
-          segmentRow(segment)
+        // Long sessions hold thousands of segments; build only visible rows.
+        LazyVStack(alignment: .leading, spacing: 12) {
+          ForEach(transcripts.segments) { segment in
+            segmentRow(segment)
+          }
         }
       }
     }
@@ -53,6 +56,7 @@ struct TranscriptSection: View {
       ForEach(transcripts.speakers) { speaker in
         Button {
           draftLabel = speaker.namedByUser ? speaker.label : ""
+          transcripts.dismissMessage()
           renaming = speaker
         } label: {
           Label(speaker.label, systemImage: "person.wave.2")
@@ -72,16 +76,18 @@ struct TranscriptSection: View {
         onSeek(segment.startNanoseconds)
       }
       .buttonStyle(.link)
-      .monospacedDigit()
+      .font(.caption.monospacedDigit())
+      // One column for every timestamp width keeps the text column aligned.
+      .frame(minWidth: 48, alignment: .leading)
       .disabled(!canSeek)
       .help(canSeek ? "Play from \(stamp)" : "Imported audio cannot be played from a position yet")
       .accessibilityLabel(canSeek ? "Play from \(stamp)" : stamp)
       VStack(alignment: .leading, spacing: 2) {
         Text(segment.speakerLabel)
-          .font(.caption.weight(.semibold))
-          .foregroundStyle(.secondary)
+          .font(.subheadline.weight(.semibold))
         Text(segment.effectiveText)
           .textSelection(.enabled)
+          .fixedSize(horizontal: false, vertical: true)
         if segment.corrected {
           Text("Corrected. Machine reading: \(segment.verbatimText)")
             .font(.caption)
@@ -89,15 +95,30 @@ struct TranscriptSection: View {
             .textSelection(.enabled)
         }
       }
+      // Keep transcript lines near the 60–85 character measure (DESIGN §10).
+      .frame(maxWidth: 500, alignment: .leading)
       Spacer(minLength: 8)
       Button("Correct…") {
         draftText = segment.effectiveText
+        transcripts.dismissMessage()
         editing = segment
       }
       .buttonStyle(.borderless)
       .accessibilityLabel("Correct the text at \(stamp)")
     }
+    // The row action stays beside its text instead of the far edge.
+    .frame(maxWidth: 660, alignment: .leading)
     .accessibilityElement(children: .contain)
+  }
+
+  /// A failed save keeps the sheet and its text open and says why.
+  @ViewBuilder
+  private var sheetFailure: some View {
+    if transcripts.messageIsFailure, let message = transcripts.message {
+      Label(message, systemImage: "exclamationmark.triangle")
+        .font(.callout)
+        .foregroundStyle(.red)
+    }
   }
 
   private var exportMenu: some View {
@@ -110,6 +131,7 @@ struct TranscriptSection: View {
     }
     .fixedSize()
     .disabled(transcripts.segments.isEmpty)
+    .help(transcripts.segments.isEmpty ? "Export needs a transcript" : "Export this transcript")
   }
 
   private func correctionSheet(_ segment: NativeTranscriptSegment) -> some View {
@@ -126,19 +148,18 @@ struct TranscriptSection: View {
         .frame(minHeight: 90)
         .border(Color.secondary.opacity(0.4))
         .accessibilityLabel("Corrected text")
+      sheetFailure
       HStack {
         if segment.corrected {
           Button("Restore Machine Reading") {
-            transcripts.correct(segment, text: nil)
-            editing = nil
+            if transcripts.correct(segment, text: nil) { editing = nil }
           }
         }
         Spacer()
         Button("Cancel", role: .cancel) { editing = nil }
           .keyboardShortcut(.cancelAction)
         Button("Save") {
-          transcripts.correct(segment, text: draftText)
-          editing = nil
+          if transcripts.correct(segment, text: draftText) { editing = nil }
         }
         .keyboardShortcut(.defaultAction)
         .disabled(draftText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
@@ -157,19 +178,20 @@ struct TranscriptSection: View {
         .foregroundStyle(.secondary)
       TextField("Name", text: $draftLabel)
         .textFieldStyle(.roundedBorder)
+      sheetFailure
       HStack {
         if speaker.namedByUser {
           Button("Use Source Name") {
-            transcripts.renameSpeaker(trackId: speaker.trackId, label: nil)
-            renaming = nil
+            if transcripts.renameSpeaker(trackId: speaker.trackId, label: nil) { renaming = nil }
           }
         }
         Spacer()
         Button("Cancel", role: .cancel) { renaming = nil }
           .keyboardShortcut(.cancelAction)
         Button("Rename") {
-          transcripts.renameSpeaker(trackId: speaker.trackId, label: draftLabel)
-          renaming = nil
+          if transcripts.renameSpeaker(trackId: speaker.trackId, label: draftLabel) {
+            renaming = nil
+          }
         }
         .keyboardShortcut(.defaultAction)
         .disabled(draftLabel.trimmingCharacters(in: .whitespaces).isEmpty)
