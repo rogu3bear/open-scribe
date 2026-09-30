@@ -1,3 +1,4 @@
+import AVFoundation
 import AppKit
 import SwiftUI
 import XCTest
@@ -140,5 +141,86 @@ final class SpeechTranscriptionModelTests: XCTestCase {
         NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]))
       try png.write(to: URL(fileURLWithPath: directory).appendingPathComponent("\(name).png"))
     }
+  }
+
+  /// A compressed import needs a decoded companion; the platform decode from
+  /// its leased bytes is 48 kHz 16-bit PCM with the import's exact frames.
+  func testACompressedImportDecodesToAnExactPCMCompanion() throws {
+    let root = temporaryRoot()
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let source = root.appendingPathComponent("Stereo memo.m4a")
+    do {
+      let file = try AVAudioFile(
+        forWriting: source,
+        settings: [
+          AVFormatIDKey: kAudioFormatAppleLossless, AVSampleRateKey: 48_000.0,
+          AVNumberOfChannelsKey: 2, AVEncoderBitDepthHintKey: 16,
+        ])
+      let buffer = try XCTUnwrap(
+        AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: 96_000))
+      buffer.frameLength = 96_000
+      let channels = try XCTUnwrap(buffer.floatChannelData)
+      for frame in 0..<96_000 {
+        channels[0][frame] = 0.25
+        channels[1][frame] = -0.25
+      }
+      try file.write(from: buffer)
+    }
+    let managedRoot = root.appendingPathComponent("Library", isDirectory: true)
+    let evidence = try RuntimeLibraryStore(managedRoot: managedRoot)
+      .importManagedAudio(title: "Stereo memo", sourceURL: source)
+    XCTAssertTrue(evidence.relativePath.hasSuffix(".m4a"))
+    let speech = try NativeSpeechModels.open(managedRoot: managedRoot.path)
+    XCTAssertTrue(try speech.needsDecodedCompanion(sessionId: evidence.sessionId))
+
+    let companion = root.appendingPathComponent("decoded.caf")
+    let lease = try NativeRecordingPreparation.open(managedRoot: managedRoot.path)
+      .leaseImportedPlayback(sessionId: evidence.sessionId)
+    try TranscriptionCompanionDecoder.decode(lease: lease, to: companion, isCancelled: { false })
+    let decoded = try AVAudioFile(forReading: companion)
+    XCTAssertEqual(decoded.length, 96_000)
+    XCTAssertEqual(decoded.fileFormat.channelCount, 2)
+    XCTAssertEqual(decoded.fileFormat.sampleRate, 48_000)
+    XCTAssertEqual(decoded.fileFormat.streamDescription.pointee.mBitsPerChannel, 16)
+    XCTAssertEqual(decoded.fileFormat.streamDescription.pointee.mFormatID, kAudioFormatLinearPCM)
+
+    let cancelled = root.appendingPathComponent("cancelled.caf")
+    XCTAssertThrowsError(
+      try TranscriptionCompanionDecoder.decode(lease: lease, to: cancelled, isCancelled: { true }))
+  }
+
+  /// The real model on a compressed stereo AAC import: the app decodes the
+  /// companion, Rust validates it, and the transcript reads back. Set
+  /// `OPEN_SCRIBE_WHISPER_MODEL` and `OPEN_SCRIBE_WHISPER_SPEECH_M4A`.
+  func testThePinnedModelTranscribesACompressedImport() async throws {
+    let environment = ProcessInfo.processInfo.environment
+    guard let modelPath = environment["OPEN_SCRIBE_WHISPER_MODEL"],
+      let speechPath = environment["OPEN_SCRIBE_WHISPER_SPEECH_M4A"]
+    else {
+      throw XCTSkip("Set OPEN_SCRIBE_WHISPER_MODEL and OPEN_SCRIBE_WHISPER_SPEECH_M4A.")
+    }
+    let root = temporaryRoot()
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let source = root.appendingPathComponent("Spoken.m4a")
+    try FileManager.default.copyItem(at: URL(fileURLWithPath: speechPath), to: source)
+    let managedRoot = root.appendingPathComponent("Library", isDirectory: true)
+    let evidence = try RuntimeLibraryStore(managedRoot: managedRoot)
+      .importManagedAudio(title: "Spoken", sourceURL: source)
+    XCTAssertTrue(evidence.relativePath.hasSuffix(".m4a"), "kept compressed")
+
+    let speech = SpeechTranscriptionModel(managedRoot: managedRoot)
+    let installed = await speech.install(
+      try XCTUnwrap(speech.models.first), from: URL(fileURLWithPath: modelPath))
+    XCTAssertTrue(installed, speech.message ?? "")
+    let transcribed = await speech.transcribe(sessionId: evidence.sessionId)
+    XCTAssertTrue(transcribed, speech.message ?? "")
+
+    let transcripts = TranscriptLibraryModel(managedRoot: managedRoot)
+    transcripts.load(sessionId: evidence.sessionId)
+    XCTAssertEqual(transcripts.availability, .final)
+    let text = transcripts.segments.map(\.effectiveText).joined(separator: " ").lowercased()
+    XCTAssertTrue(text.contains("recording safe"), text)
   }
 }

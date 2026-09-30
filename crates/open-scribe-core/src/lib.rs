@@ -16,8 +16,8 @@ mod transcript_library;
 pub use transcript_library::TranscriptLibrary;
 mod transcription;
 pub use transcription::{
-    TranscriptionError, TranscriptionOutcome, TranscriptionProgress, TranscriptionStage,
-    transcribe_track,
+    TrackRequest, TranscriptionError, TranscriptionOutcome, TranscriptionProgress,
+    TranscriptionStage, transcribe_request, transcribe_track,
 };
 mod speech;
 pub use open_scribe_asr::{WHISPER_ENGINE, WHISPER_ENGINE_VERSION};

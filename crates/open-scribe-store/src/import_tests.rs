@@ -1,6 +1,6 @@
 use std::fs::OpenOptions;
 use std::io::{SeekFrom, Write};
-use std::os::unix::fs::{MetadataExt, symlink};
+use std::os::unix::fs::{FileExt, MetadataExt, symlink};
 
 use tempfile::TempDir;
 
@@ -983,4 +983,93 @@ fn durable_import_journal_replays_an_uncommitted_library_projection() {
     assert!(snapshot.current_session.is_none());
     assert_eq!(snapshot.saved_sessions.len(), 1);
     assert_eq!(snapshot.saved_sessions[0].session_id.0, session_id);
+}
+
+/// A 48 kHz 16-bit stereo PCM CAF, as AVAudioFile writes one, whose left and
+/// right samples are `left` and `-left`.
+fn stereo_pcm_caf(path: &Path, frames: u64, left: i16) {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(CAF_HEADER);
+    bytes.extend_from_slice(b"desc");
+    bytes.extend_from_slice(&32_i64.to_be_bytes());
+    bytes.extend_from_slice(&48_000_f64.to_bits().to_be_bytes());
+    bytes.extend_from_slice(b"lpcm");
+    for value in [2_u32, 4, 1, 2, 16] {
+        bytes.extend_from_slice(&value.to_be_bytes());
+    }
+    bytes.extend_from_slice(b"data");
+    bytes.extend_from_slice(&(4 + frames as i64 * 4).to_be_bytes());
+    bytes.extend_from_slice(&0_u32.to_be_bytes());
+    for _ in 0..frames {
+        bytes.extend_from_slice(&left.to_le_bytes());
+        bytes.extend_from_slice(&(-left).to_le_bytes());
+    }
+    fs::write(path, &bytes).unwrap();
+}
+
+#[test]
+fn compressed_import_transcribes_only_through_a_matching_decoded_companion() {
+    let temp = TempDir::new().unwrap();
+    let source = temp.path().join("source.m4a");
+    let metadata = compressed_source(&source);
+    let root = temp.path().join("Library");
+    let mut store = SessionStore::open(&root).unwrap();
+    let evidence = store
+        .import_compressed_m4a(
+            ImportMediaRequest {
+                title: "Stereo memo".to_owned(),
+                source_path: source,
+            },
+            metadata,
+        )
+        .unwrap();
+    let session = evidence.session_id.clone();
+    let tracks = store.transcription_tracks(&session).unwrap();
+    assert_eq!(tracks.len(), 1);
+    let input = store.transcription_input(&session, &tracks[0]).unwrap();
+    assert!(input.compressed);
+    assert_eq!((input.channels, input.spans[0].frames), (2, 48_000));
+    assert!(matches!(
+        store.open_transcription_input(&input),
+        Err(StoreError::InvalidState(_))
+    ));
+
+    let decoded = temp.path().join("decoded.caf");
+    stereo_pcm_caf(&decoded, 48_000, 1_234);
+    let reader = store
+        .open_decoded_transcription_input(&input, &decoded)
+        .unwrap();
+    assert_eq!(
+        reader.read_frames(0, 47_999, 48_000).unwrap(),
+        [1_234, -1_234]
+    );
+
+    let short = temp.path().join("short.caf");
+    stereo_pcm_caf(&short, 47_999, 1);
+    assert!(matches!(
+        store.open_decoded_transcription_input(&input, &short),
+        Err(StoreError::InvalidRequest(_))
+    ));
+    let link = temp.path().join("link.caf");
+    symlink(&decoded, &link).unwrap();
+    assert!(
+        store
+            .open_decoded_transcription_input(&input, &link)
+            .is_err()
+    );
+
+    // The original is rehashed: altered managed bytes refuse the companion.
+    let managed = root
+        .join("Sessions")
+        .join(&session.0)
+        .join(&evidence.relative_path);
+    let file = OpenOptions::new().write(true).open(&managed).unwrap();
+    file.write_all_at(&[0], fs::metadata(&managed).unwrap().len() - 1)
+        .unwrap();
+    drop(file);
+    assert!(
+        store
+            .open_decoded_transcription_input(&input, &decoded)
+            .is_err()
+    );
 }

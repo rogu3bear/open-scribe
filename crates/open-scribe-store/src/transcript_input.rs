@@ -3,15 +3,20 @@
 //! Inputs come only from sealed segments of a `ready_for_review` session,
 //! through the same identity-bound leases playback uses. Every segment's full
 //! bytes are rehashed against its sealed digest before any sample is read, so
-//! transcription can never consume unsealed, replaced, or altered media.
+//! transcription can never consume unsealed, replaced, or altered media. A
+//! compressed import is read through a decoded PCM companion the platform
+//! produced from its leased bytes; Rust rehashes the original and checks the
+//! companion's format and exact sample count before reading it.
 
-use super::import::ImportedPlaybackLease;
+use super::import::{COMPRESSED_IMPORT_MEDIA_FORMAT, ImportedPlaybackLease};
 use super::{
     MEDIA_FORMAT_CAF_PCM_S16LE, MEDIA_SAMPLE_RATE_HZ, SessionStore, StoreError, inspect_pcm_caf,
 };
 use open_scribe_types::SessionId;
 use sha2::{Digest, Sha256};
-use std::os::unix::fs::FileExt;
+use std::fs::{File, OpenOptions};
+use std::os::unix::fs::{FileExt, OpenOptionsExt};
+use std::path::Path;
 
 /// A positive placement gap larger than one 48 kHz frame starts a new span.
 const SPAN_GAP_NANOSECONDS: i64 = 1_000_000_000 / MEDIA_SAMPLE_RATE_HZ as i64 + 1;
@@ -25,6 +30,8 @@ pub struct TranscriptionInput {
     pub session_id: SessionId,
     pub track_id: String,
     pub channels: u16,
+    /// A compressed import, readable only through a decoded PCM companion.
+    pub compressed: bool,
     /// Digest over the ordered sealed segment identities and placements.
     pub input_digest: String,
     pub spans: Vec<InputSpan>,
@@ -47,7 +54,7 @@ pub struct InputSegment {
 }
 
 struct OpenSegment {
-    lease: ImportedPlaybackLease,
+    file: File,
     audio_offset: u64,
     first_frame: u64,
     frames: u64,
@@ -60,19 +67,25 @@ pub struct SealedTrackReader {
 }
 
 impl SessionStore {
-    /// Sealed PCM tracks of a saved session that transcription may read.
+    /// Sealed tracks of a saved session that transcription may read: PCM, or
+    /// a compressed import read through its decoded companion.
     pub fn transcription_tracks(&self, session: &SessionId) -> Result<Vec<String>, StoreError> {
         let mut statement = self.connection.prepare(
             "SELECT DISTINCT segments.track_id FROM sessions
              JOIN segments ON segments.session_id = sessions.id
              WHERE sessions.id = ?1 AND sessions.lifecycle = 'ready_for_review'
                AND segments.lifecycle = 'sealed' AND segments.seal_state = 'sealed'
-               AND segments.media_format = ?2
+               AND (segments.media_format = ?2
+                    OR (sessions.origin = 'import' AND segments.media_format = ?3))
              ORDER BY segments.track_id",
         )?;
         let tracks = statement
             .query_map(
-                rusqlite::params![&session.0, MEDIA_FORMAT_CAF_PCM_S16LE],
+                rusqlite::params![
+                    &session.0,
+                    MEDIA_FORMAT_CAF_PCM_S16LE,
+                    COMPRESSED_IMPORT_MEDIA_FORMAT
+                ],
                 |row| row.get::<_, String>(0),
             )?
             .collect::<Result<Vec<_>, _>>()?;
@@ -97,10 +110,11 @@ impl SessionStore {
                 }
                 other => StoreError::Sqlite(other),
             })?;
-        let placed = if origin == "import" {
+        let (placed, compressed) = if origin == "import" {
             self.imported_placement(session, track_id)?
         } else {
-            self.playback_timeline(session)?
+            let placed = self
+                .playback_timeline(session)?
                 .into_iter()
                 .filter(|segment| segment.track_id == track_id)
                 .map(|segment| {
@@ -113,10 +127,11 @@ impl SessionStore {
                         segment.channels,
                     )
                 })
-                .collect()
+                .collect();
+            (placed, false)
         };
         if placed.is_empty() {
-            return Err(StoreError::InvalidState("track has no sealed PCM media"));
+            return Err(StoreError::InvalidState("track has no sealed media"));
         }
         let channels = placed[0].5;
         let mut spans: Vec<InputSpan> = Vec::new();
@@ -125,6 +140,10 @@ impl SessionStore {
         hasher.update(session.0.as_bytes());
         hasher.update(b"\n");
         hasher.update(track_id.as_bytes());
+        if compressed {
+            // PCM identities are unchanged; a compressed import names its path.
+            hasher.update(b"\ncompressed-import/decoded-companion/v1");
+        }
         for (source_id, segment_id, start, gap, frames, segment_channels) in placed {
             if segment_channels != channels {
                 return Err(StoreError::IntegrityMismatch(
@@ -161,6 +180,7 @@ impl SessionStore {
             session_id: session.clone(),
             track_id: track_id.to_owned(),
             channels,
+            compressed,
             input_digest: hex(&hasher.finalize()),
             spans,
         })
@@ -171,9 +191,10 @@ impl SessionStore {
         &self,
         input: &TranscriptionInput,
     ) -> Result<SealedTrackReader, StoreError> {
-        if self.transcription_input(&input.session_id, &input.track_id)? != *input {
-            return Err(StoreError::IntegrityMismatch(
-                "transcription input changed since it was planned",
+        self.require_planned(input)?;
+        if input.compressed {
+            return Err(StoreError::InvalidState(
+                "a compressed import is read through its decoded companion",
             ));
         }
         let imported = input.spans.len() == 1
@@ -197,7 +218,7 @@ impl SessionStore {
                 };
                 let audio_offset = verify_sealed_bytes(&lease, segment, input.channels)?;
                 opened.push(OpenSegment {
-                    lease,
+                    file: lease.file().try_clone()?,
                     audio_offset,
                     first_frame,
                     frames: segment.frames,
@@ -212,28 +233,105 @@ impl SessionStore {
         })
     }
 
+    /// Opens a compressed import through the PCM companion the platform
+    /// decoded from its leased bytes. The original is rehashed against its
+    /// sealed digest; the companion must be 48 kHz 16-bit PCM CAF with the
+    /// import's channel count and exact sample count. The companion is only
+    /// read, never recorded as evidence; transcript times stay on the
+    /// original's timeline.
+    pub fn open_decoded_transcription_input(
+        &self,
+        input: &TranscriptionInput,
+        decoded: &Path,
+    ) -> Result<SealedTrackReader, StoreError> {
+        self.require_planned(input)?;
+        let [span] = input.spans.as_slice() else {
+            return Err(StoreError::InvalidState(
+                "input is not one compressed import",
+            ));
+        };
+        let [segment] = span.segments.as_slice() else {
+            return Err(StoreError::InvalidState(
+                "input is not one compressed import",
+            ));
+        };
+        if !input.compressed {
+            return Err(StoreError::InvalidState(
+                "input is not one compressed import",
+            ));
+        }
+        let lease = self.lease_imported_playback(&input.session_id)?;
+        if lease.media_format() != COMPRESSED_IMPORT_MEDIA_FORMAT {
+            return Err(StoreError::IntegrityMismatch(
+                "imported media changed format since planning",
+            ));
+        }
+        verify_full_digest(lease.file(), &segment.digest_sha256)?;
+        let mut file = OpenOptions::new()
+            .read(true)
+            .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
+            .open(decoded)?;
+        let length = file.metadata()?.len();
+        let inspection = inspect_pcm_caf(&mut file, length)?.ok_or(StoreError::InvalidRequest(
+            "decoded companion is not 48 kHz 16-bit PCM CAF",
+        ))?;
+        if inspection.channels != input.channels || inspection.sample_count != Some(segment.frames)
+        {
+            return Err(StoreError::InvalidRequest(
+                "decoded companion does not match the import's channels and length",
+            ));
+        }
+        Ok(SealedTrackReader {
+            channels: input.channels,
+            spans: vec![vec![OpenSegment {
+                file,
+                audio_offset: inspection.audio_offset,
+                first_frame: 0,
+                frames: segment.frames,
+            }]],
+        })
+    }
+
+    fn require_planned(&self, input: &TranscriptionInput) -> Result<(), StoreError> {
+        if self.transcription_input(&input.session_id, &input.track_id)? != *input {
+            return Err(StoreError::IntegrityMismatch(
+                "transcription input changed since it was planned",
+            ));
+        }
+        Ok(())
+    }
+
+    /// The single sealed segment of an imported track, and whether it is a
+    /// compressed original rather than PCM.
     fn imported_placement(
         &self,
         session: &SessionId,
         track_id: &str,
-    ) -> Result<Vec<PlacedSegment>, StoreError> {
+    ) -> Result<(Vec<PlacedSegment>, bool), StoreError> {
         let mut statement = self.connection.prepare(
-            "SELECT tracks.source_id, segments.id, segments.sample_count, segments.channels
+            "SELECT tracks.source_id, segments.id, segments.sample_count, segments.channels,
+                    segments.media_format
              FROM segments JOIN tracks ON tracks.id = segments.track_id
                             AND tracks.session_id = segments.session_id
              WHERE segments.session_id = ?1 AND segments.track_id = ?2
                AND segments.lifecycle = 'sealed' AND segments.seal_state = 'sealed'
-               AND segments.media_format = ?3",
+               AND segments.media_format IN (?3, ?4)",
         )?;
         let rows = statement
             .query_map(
-                rusqlite::params![&session.0, track_id, MEDIA_FORMAT_CAF_PCM_S16LE],
+                rusqlite::params![
+                    &session.0,
+                    track_id,
+                    MEDIA_FORMAT_CAF_PCM_S16LE,
+                    COMPRESSED_IMPORT_MEDIA_FORMAT
+                ],
                 |row| {
                     Ok((
                         row.get::<_, String>(0)?,
                         row.get::<_, String>(1)?,
                         row.get::<_, i64>(2)?,
                         row.get::<_, i64>(3)?,
+                        row.get::<_, String>(4)?,
                     ))
                 },
             )?
@@ -243,19 +341,54 @@ impl SessionStore {
                 "imported track has more than one segment",
             ));
         }
-        rows.into_iter()
-            .map(|(source_id, segment_id, frames, channels)| {
+        let compressed = rows
+            .first()
+            .is_some_and(|row| row.4 == COMPRESSED_IMPORT_MEDIA_FORMAT);
+        let placed = rows
+            .into_iter()
+            .map(|(source_id, segment_id, frames, channels, _)| {
                 let frames = u64::try_from(frames)
                     .ok()
                     .filter(|frames| *frames > 0)
                     .ok_or(StoreError::IntegrityMismatch(
                         "imported sample count is invalid",
                     ))?;
-                let channels = u16::try_from(channels)
-                    .map_err(|_| StoreError::IntegrityMismatch("imported channels are invalid"))?;
+                // A compressed segment row carries no PCM channel count.
+                let channels = if compressed {
+                    self.compressed_import_channels(session, &segment_id)?
+                } else {
+                    u16::try_from(channels).map_err(|_| {
+                        StoreError::IntegrityMismatch("imported channels are invalid")
+                    })?
+                };
                 Ok((source_id, segment_id, 0, 0, frames, channels))
             })
-            .collect()
+            .collect::<Result<Vec<_>, StoreError>>()?;
+        Ok((placed, compressed))
+    }
+
+    /// A compressed import's channel count from its journaled original media.
+    fn compressed_import_channels(
+        &self,
+        session: &SessionId,
+        segment_id: &str,
+    ) -> Result<u16, StoreError> {
+        let channels = self.connection.query_row(
+            "SELECT json_extract(payload_json, '$.original_media.channel_count')
+             FROM session_events
+             WHERE session_id = ?1 AND event_kind = 'media_imported'
+               AND json_extract(payload_json, '$.segment_id') = ?2",
+            [&session.0, segment_id],
+            |row| row.get::<_, Option<i64>>(0),
+        );
+        match channels {
+            Ok(Some(1)) => Ok(1),
+            Ok(Some(2)) => Ok(2),
+            Ok(_) | Err(rusqlite::Error::QueryReturnedNoRows) => Err(
+                StoreError::IntegrityMismatch("compressed import channel count is not journaled"),
+            ),
+            Err(error) => Err(error.into()),
+        }
     }
 
     fn sealed_segment_digest(
@@ -350,7 +483,7 @@ impl SealedTrackReader {
                 continue;
             }
             let mut bytes = vec![0_u8; ((to - from) * bytes_per_frame) as usize];
-            segment.lease.file().read_exact_at(
+            segment.file.read_exact_at(
                 &mut bytes,
                 segment.audio_offset + (from - segment.first_frame) * bytes_per_frame,
             )?;
@@ -372,4 +505,25 @@ fn hex(bytes: &[u8]) -> String {
             let _ = write!(out, "{byte:02x}");
             out
         })
+}
+
+fn verify_full_digest(file: &File, expected: &str) -> Result<(), StoreError> {
+    let length = file.metadata()?.len();
+    let mut hasher = Sha256::new();
+    let mut offset = 0_u64;
+    let mut buffer = vec![0_u8; 1 << 20];
+    while offset < length {
+        let read = file.read_at(&mut buffer, offset)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+        offset += read as u64;
+    }
+    if offset != length || hex(&hasher.finalize()) != expected {
+        return Err(StoreError::IntegrityMismatch(
+            "imported bytes differ from their sealed digest",
+        ));
+    }
+    Ok(())
 }

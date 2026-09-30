@@ -5,7 +5,8 @@
 //! here touches the network.
 
 use crate::transcription::{
-    TranscriptionError, TranscriptionOutcome, TranscriptionProgress, transcribe_track,
+    TrackRequest, TranscriptionError, TranscriptionOutcome, TranscriptionProgress,
+    transcribe_request,
 };
 use open_scribe_asr::{
     DecodeOptions, Language, MODEL_SAMPLE_RATE_HZ, RecognizerError, SpeechRecognizer,
@@ -154,12 +155,25 @@ impl SpeechModels {
         WhisperRecognizer::load(&path, &record.id, &record.sha256).map_err(SpeechModelError::Load)
     }
 
+    /// Whether the session is a compressed import that the platform must first
+    /// decode to a PCM companion for transcription.
+    pub fn needs_decoded_companion(&self, session: &SessionId) -> Result<bool, StoreError> {
+        let store = SessionStore::open(&self.managed_root)?;
+        for track in store.transcription_tracks(session)? {
+            if store.transcription_input(session, &track)?.compressed {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
     /// Reverifies and loads the model, then transcribes every sealed track of
     /// one saved session with its own store connection.
     pub fn transcribe(
         &self,
         model_id: &str,
         session: &SessionId,
+        decoded_companion: Option<&Path>,
         cancel: &AtomicBool,
         progress: &mut dyn FnMut(usize, usize, TranscriptionProgress),
     ) -> Result<Vec<TranscriptionOutcome>, SpeechError> {
@@ -173,6 +187,7 @@ impl SpeechModels {
             &mut recognizer,
             &options,
             session,
+            decoded_companion,
             cancel,
             progress,
         )
@@ -220,12 +235,14 @@ pub fn decode_language(record_languages: &[String]) -> Language {
 
 /// Final transcription of every sealed track of one saved session. Each track
 /// is its own run; a failed or cancelled track ends the call and leaves
-/// earlier tracks' committed revisions in place.
+/// earlier tracks' committed revisions in place. `decoded_companion` is the
+/// platform's PCM decode of a compressed import and is ignored otherwise.
 pub fn transcribe_session(
     store: &mut SessionStore,
     recognizer: &mut dyn SpeechRecognizer,
     options: &DecodeOptions,
     session: &SessionId,
+    decoded_companion: Option<&Path>,
     cancel: &AtomicBool,
     progress: &mut dyn FnMut(usize, usize, TranscriptionProgress),
 ) -> Result<Vec<TranscriptionOutcome>, TranscriptionError> {
@@ -238,12 +255,16 @@ pub fn transcribe_session(
     let count = tracks.len();
     let mut outcomes = Vec::with_capacity(count);
     for (index, track) in tracks.iter().enumerate() {
-        outcomes.push(transcribe_track(
+        let request = TrackRequest {
+            session,
+            track_id: track,
+            decoded_companion,
+        };
+        outcomes.push(transcribe_request(
             store,
             recognizer,
             options,
-            session,
-            track,
+            request,
             cancel,
             &mut |update| progress(index, count, update),
         )?);

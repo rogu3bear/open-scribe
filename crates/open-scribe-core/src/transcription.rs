@@ -17,6 +17,7 @@ use open_scribe_store::{
 };
 use open_scribe_types::SessionId;
 use std::fmt;
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 const NANOSECONDS_PER_SECOND: i64 = 1_000_000_000;
@@ -84,6 +85,15 @@ struct PlannedWindow {
     chunk: PlannedTranscriptChunk,
 }
 
+/// One track to transcribe. A compressed import also needs the PCM companion
+/// the platform decoded from its leased bytes.
+#[derive(Clone, Copy, Debug)]
+pub struct TrackRequest<'a> {
+    pub session: &'a SessionId,
+    pub track_id: &'a str,
+    pub decoded_companion: Option<&'a Path>,
+}
+
 pub fn transcribe_track(
     store: &mut SessionStore,
     recognizer: &mut dyn SpeechRecognizer,
@@ -93,8 +103,34 @@ pub fn transcribe_track(
     cancel: &AtomicBool,
     progress: &mut dyn FnMut(TranscriptionProgress),
 ) -> Result<TranscriptionOutcome, TranscriptionError> {
+    let request = TrackRequest {
+        session,
+        track_id,
+        decoded_companion: None,
+    };
+    transcribe_request(store, recognizer, options, request, cancel, progress)
+}
+
+pub fn transcribe_request(
+    store: &mut SessionStore,
+    recognizer: &mut dyn SpeechRecognizer,
+    options: &DecodeOptions,
+    request: TrackRequest<'_>,
+    cancel: &AtomicBool,
+    progress: &mut dyn FnMut(TranscriptionProgress),
+) -> Result<TranscriptionOutcome, TranscriptionError> {
+    let TrackRequest {
+        session,
+        track_id,
+        decoded_companion,
+    } = request;
     let input = store.transcription_input(session, track_id)?;
-    let reader = store.open_transcription_input(&input)?;
+    let reader = match decoded_companion {
+        Some(decoded) if input.compressed => {
+            store.open_decoded_transcription_input(&input, decoded)?
+        }
+        _ => store.open_transcription_input(&input)?,
+    };
     let windows = plan_windows(&input);
     let required = windows
         .iter()

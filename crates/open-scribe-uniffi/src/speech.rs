@@ -58,6 +58,8 @@ pub enum NativeSpeechError {
     ModelRejected { reason: String },
     #[error("The conversation has no recorded audio this build can transcribe.")]
     NoTranscribableAudio,
+    #[error("The decoded audio did not match the imported recording.")]
+    DecodedAudioRejected,
     #[error("Transcription was cancelled.")]
     Cancelled,
     #[error("Transcription ended ({reason}); recorded audio is unchanged.")]
@@ -93,6 +95,10 @@ impl NativeTranscriptionJob {
 
     pub fn cancel(&self) {
         self.cancel.store(true, Ordering::Relaxed);
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.cancel.load(Ordering::Relaxed)
     }
 
     pub fn progress(&self) -> NativeTranscriptionProgress {
@@ -185,12 +191,25 @@ impl NativeSpeechModels {
             .map_err(map_model_error)
     }
 
+    /// Whether the app must first decode the session's compressed import to a
+    /// 48 kHz 16-bit PCM CAF companion and pass it to `transcribe_session`.
+    pub fn needs_decoded_companion(&self, session_id: String) -> Result<bool, NativeSpeechError> {
+        self.models
+            .needs_decoded_companion(&SessionId(session_id))
+            .map_err(|error| match error {
+                StoreError::InvalidState(_) => NativeSpeechError::NoTranscribableAudio,
+                _ => NativeSpeechError::StorageFailure,
+            })
+    }
+
     /// Reverifies the model, then transcribes every sealed track of one saved
     /// session. Blocking; honors `job.cancel()` between and within chunks.
+    /// `decoded_companion_path` is required for a compressed import.
     pub fn transcribe_session(
         &self,
         model_id: String,
         session_id: String,
+        decoded_companion_path: Option<String>,
         job: Arc<NativeTranscriptionJob>,
     ) -> Result<NativeTranscriptionSummary, NativeSpeechError> {
         let outcomes = self
@@ -198,6 +217,7 @@ impl NativeSpeechModels {
             .transcribe(
                 &model_id,
                 &SessionId(session_id),
+                decoded_companion_path.as_deref().map(Path::new),
                 &job.cancel,
                 &mut |index, count, update| job.record(index, count, update),
             )
@@ -238,6 +258,9 @@ fn map_transcription_error(error: TranscriptionError, cancelled: bool) -> Native
         },
         TranscriptionError::Store(StoreError::InvalidState(_)) => {
             NativeSpeechError::NoTranscribableAudio
+        }
+        TranscriptionError::Store(StoreError::InvalidRequest(_)) => {
+            NativeSpeechError::DecodedAudioRejected
         }
         TranscriptionError::Store(_) => NativeSpeechError::StorageFailure,
     }

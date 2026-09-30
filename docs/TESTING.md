@@ -1012,3 +1012,37 @@ fixture is now stereo.
   after the fix: 36 tests, one optional skip, 0 failures.
 
 Excluded: audible seek accuracy by ear, and a candidate-bound receipt.
+
+### Compressed M4A imports transcribe through a validated PCM companion
+
+A 48 kHz M4A import stays compressed, so Rust cannot read its samples.
+`transcription_tracks` now lists it, and its input is marked compressed. The
+app decodes the Rust-verified lease bytes into a temporary 48 kHz 16-bit PCM
+CAF. Rust rehashes the managed original against its sealed digest, then
+admits the companion only if its format, channel count, and exact frame count
+match the import (the channel count comes from the journaled import metadata,
+because a compressed segment row carries none). The companion is read, never
+recorded as evidence, and is deleted afterwards; transcript times stay on
+the original's timeline. The first store run exposed that query reading the
+journal kind `media_import_staged` where the SQLite projection uses
+`media_imported`; that was fixed before this receipt.
+
+- `cargo test --offline -p open-scribe-store -p open-scribe-core -p open-scribe-uniffi`
+  (real-model paths set): store 157 passed, one ignored, and every core and
+  uniffi test passed. The new store test refused the PCM reader for a
+  compressed input, read a matching companion's last frame exactly, refused a
+  one-frame-short companion and a symlinked one, and refused the companion
+  once the managed original had one byte changed.
+- Clippy with warnings denied on store, core, and uniffi: clean. Bindings regenerated.
+- `./script/build_and_run.sh --verify` with `TEST_RUNNER_` paths including a
+  stereo AAC `afconvert` of the speech sample (SHA-256
+  `cd9cce5c438c82b89e1d48e134296606b435fb2f3f823597d834f60aa6fc6a47`):
+  `NATIVE_FIXTURE_XCODE_GREEN`, 178 tests, one optional skip. A stereo ALAC
+  import decoded to a 96,000-frame, 16-bit, two-channel PCM companion, and
+  cancellation stopped the decode. With the real model, the compressed AAC
+  import was kept as M4A, transcribed (12.9 s), and read back as Final text
+  containing the spoken sentence.
+
+Excluded: HE-AAC and other codecs beyond what AudioToolbox decodes on this
+Mac, decode determinism across macOS versions, long imports, and a
+candidate-bound receipt.

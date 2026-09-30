@@ -1239,11 +1239,19 @@ public protocol NativeSpeechModelsProtocol: AnyObject, Sendable {
   func models() -> [NativeSpeechModel]
 
   /**
+   * Whether the app must first decode the session's compressed import to a
+   * 48 kHz 16-bit PCM CAF companion and pass it to `transcribe_session`.
+   */
+  func needsDecodedCompanion(sessionId: String) throws -> Bool
+
+  /**
    * Reverifies the model, then transcribes every sealed track of one saved
    * session. Blocking; honors `job.cancel()` between and within chunks.
+   * `decoded_companion_path` is required for a compressed import.
    */
-  func transcribeSession(modelId: String, sessionId: String, job: NativeTranscriptionJob) throws
-    -> NativeTranscriptionSummary
+  func transcribeSession(
+    modelId: String, sessionId: String, decodedCompanionPath: String?, job: NativeTranscriptionJob
+  ) throws -> NativeTranscriptionSummary
 
 }
 open class NativeSpeechModels: NativeSpeechModelsProtocol, @unchecked Sendable {
@@ -1332,12 +1340,28 @@ open class NativeSpeechModels: NativeSpeechModelsProtocol, @unchecked Sendable {
   }
 
   /**
+   * Whether the app must first decode the session's compressed import to a
+   * 48 kHz 16-bit PCM CAF companion and pass it to `transcribe_session`.
+   */
+  open func needsDecodedCompanion(sessionId: String) throws -> Bool {
+    return try FfiConverterBool.lift(
+      try rustCallWithError(FfiConverterTypeNativeSpeechError_lift) {
+        uniffiCallStatus in
+        uniffi_open_scribe_uniffi_fn_method_nativespeechmodels_needs_decoded_companion(
+          self.uniffiCloneHandle(),
+          FfiConverterString.lower(sessionId), uniffiCallStatus
+        )
+      })
+  }
+
+  /**
    * Reverifies the model, then transcribes every sealed track of one saved
    * session. Blocking; honors `job.cancel()` between and within chunks.
+   * `decoded_companion_path` is required for a compressed import.
    */
-  open func transcribeSession(modelId: String, sessionId: String, job: NativeTranscriptionJob)
-    throws -> NativeTranscriptionSummary
-  {
+  open func transcribeSession(
+    modelId: String, sessionId: String, decodedCompanionPath: String?, job: NativeTranscriptionJob
+  ) throws -> NativeTranscriptionSummary {
     return try FfiConverterTypeNativeTranscriptionSummary_lift(
       try rustCallWithError(FfiConverterTypeNativeSpeechError_lift) {
         uniffiCallStatus in
@@ -1345,6 +1369,7 @@ open class NativeSpeechModels: NativeSpeechModelsProtocol, @unchecked Sendable {
           self.uniffiCloneHandle(),
           FfiConverterString.lower(modelId),
           FfiConverterString.lower(sessionId),
+          FfiConverterOptionString.lower(decodedCompanionPath),
           FfiConverterTypeNativeTranscriptionJob_lower(job), uniffiCallStatus
         )
       })
@@ -1791,6 +1816,8 @@ public protocol NativeTranscriptionJobProtocol: AnyObject, Sendable {
 
   func cancel()
 
+  func isCancelled() -> Bool
+
   func progress() -> NativeTranscriptionProgress
 
 }
@@ -1863,6 +1890,16 @@ open class NativeTranscriptionJob: NativeTranscriptionJobProtocol, @unchecked Se
         self.uniffiCloneHandle(), uniffiCallStatus
       )
     }
+  }
+
+  open func isCancelled() -> Bool {
+    return try! FfiConverterBool.lift(
+      try! rustCall {
+        uniffiCallStatus in
+        uniffi_open_scribe_uniffi_fn_method_nativetranscriptionjob_is_cancelled(
+          self.uniffiCloneHandle(), uniffiCallStatus
+        )
+      })
   }
 
   open func progress() -> NativeTranscriptionProgress {
@@ -5620,6 +5657,7 @@ public
     reason: String
   )
   case NoTranscribableAudio
+  case DecodedAudioRejected
   case Cancelled
   case TranscriptionFailed(
     reason: String
@@ -5654,12 +5692,13 @@ public struct FfiConverterTypeNativeSpeechError: FfiConverterRustBuffer {
         reason: try FfiConverterString.read(from: &buf)
       )
     case 3: return .NoTranscribableAudio
-    case 4: return .Cancelled
-    case 5:
+    case 4: return .DecodedAudioRejected
+    case 5: return .Cancelled
+    case 6:
       return .TranscriptionFailed(
         reason: try FfiConverterString.read(from: &buf)
       )
-    case 6: return .StorageFailure
+    case 7: return .StorageFailure
 
     default: throw UniffiInternalError.unexpectedEnumCase
     }
@@ -5678,15 +5717,18 @@ public struct FfiConverterTypeNativeSpeechError: FfiConverterRustBuffer {
     case .NoTranscribableAudio:
       writeInt(&buf, Int32(3))
 
-    case .Cancelled:
+    case .DecodedAudioRejected:
       writeInt(&buf, Int32(4))
 
-    case .TranscriptionFailed(let reason):
+    case .Cancelled:
       writeInt(&buf, Int32(5))
+
+    case .TranscriptionFailed(let reason):
+      writeInt(&buf, Int32(6))
       FfiConverterString.write(reason, into: &buf)
 
     case .StorageFailure:
-      writeInt(&buf, Int32(6))
+      writeInt(&buf, Int32(7))
 
     }
   }
@@ -6731,10 +6773,17 @@ private let initializationResult: InitializationResult = {
   if uniffi_open_scribe_uniffi_checksum_method_nativespeechmodels_models() != 16715 {
     return InitializationResult.apiChecksumMismatch
   }
-  if uniffi_open_scribe_uniffi_checksum_method_nativespeechmodels_transcribe_session() != 65123 {
+  if uniffi_open_scribe_uniffi_checksum_method_nativespeechmodels_needs_decoded_companion() != 35891
+  {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_open_scribe_uniffi_checksum_method_nativespeechmodels_transcribe_session() != 61554 {
     return InitializationResult.apiChecksumMismatch
   }
   if uniffi_open_scribe_uniffi_checksum_method_nativetranscriptionjob_cancel() != 26035 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_open_scribe_uniffi_checksum_method_nativetranscriptionjob_is_cancelled() != 5161 {
     return InitializationResult.apiChecksumMismatch
   }
   if uniffi_open_scribe_uniffi_checksum_method_nativetranscriptionjob_progress() != 43176 {

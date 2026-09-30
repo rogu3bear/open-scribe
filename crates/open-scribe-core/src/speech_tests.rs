@@ -78,6 +78,7 @@ fn a_fresh_library_lists_the_catalog_uninstalled_and_refuses_wrong_files() {
         models.transcribe(
             "whisper-small.en-q5_1",
             &SessionId("missing".into()),
+            None,
             &AtomicBool::new(false),
             &mut |_, _, _| {}
         ),
@@ -106,6 +107,7 @@ fn a_session_transcribes_every_track_and_one_without_audio_is_refused() {
         &mut recognizer,
         &options,
         &fixture.session,
+        None,
         &AtomicBool::new(false),
         &mut |index, count, _| seen.push((index, count)),
     )
@@ -119,6 +121,7 @@ fn a_session_transcribes_every_track_and_one_without_audio_is_refused() {
         &mut recognizer,
         &options,
         &SessionId("no-such-session".into()),
+        None,
         &AtomicBool::new(false),
         &mut |_, _, _| {},
     );
@@ -169,6 +172,7 @@ fn the_pinned_model_installs_and_transcribes_an_imported_conversation() {
         .transcribe(
             "whisper-small.en-q5_1",
             &session,
+            None,
             &AtomicBool::new(false),
             &mut |_, _, _| {},
         )

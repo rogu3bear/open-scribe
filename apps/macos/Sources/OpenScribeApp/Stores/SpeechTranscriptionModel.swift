@@ -14,15 +14,21 @@ final class SpeechTranscriptionModel: ObservableObject {
   @Published private(set) var messageIsFailure = false
 
   private let speech: NativeSpeechModels?
+  /// Leases a compressed import's verified bytes for companion decoding.
+  private let preparation: NativeRecordingPreparation?
   private var job: NativeTranscriptionJob?
 
-  init(speech: NativeSpeechModels?) {
+  init(speech: NativeSpeechModels?, preparation: NativeRecordingPreparation? = nil) {
     self.speech = speech
+    self.preparation = preparation
     refresh()
   }
 
   convenience init(managedRoot: URL?) {
-    self.init(speech: try? managedRoot.map { try NativeSpeechModels.open(managedRoot: $0.path) })
+    self.init(
+      speech: try? managedRoot.map { try NativeSpeechModels.open(managedRoot: $0.path) },
+      preparation: try? managedRoot.map { try NativeRecordingPreparation.open(managedRoot: $0.path) }
+    )
   }
 
   #if DEBUG
@@ -85,8 +91,11 @@ final class SpeechTranscriptionModel: ObservableObject {
       progress = nil
     }
     let modelId = model.modelId
+    let preparation = preparation
     let work = Task.detached(priority: .utility) {
-      try speech.transcribeSession(modelId: modelId, sessionId: sessionId, job: job)
+      try Self.run(
+        speech: speech, preparation: preparation, modelId: modelId, sessionId: sessionId,
+        job: job)
     }
     // Progress is polled from Rust's job, never pushed per chunk.
     let poll = Task { [weak self] in
@@ -109,6 +118,33 @@ final class SpeechTranscriptionModel: ObservableObject {
 
   func cancel() {
     job?.cancel()
+  }
+
+  /// A compressed import is first decoded, from its leased bytes, into a
+  /// temporary PCM companion that Rust validates and reads; it is removed after.
+  nonisolated private static func run(
+    speech: NativeSpeechModels, preparation: NativeRecordingPreparation?, modelId: String,
+    sessionId: String, job: NativeTranscriptionJob
+  ) throws -> NativeTranscriptionSummary {
+    guard try speech.needsDecodedCompanion(sessionId: sessionId) else {
+      return try speech.transcribeSession(
+        modelId: modelId, sessionId: sessionId, decodedCompanionPath: nil, job: job)
+    }
+    guard let preparation else { throw NativeSpeechError.StorageFailure }
+    let directory = FileManager.default.temporaryDirectory
+      .appendingPathComponent("open-scribe-companion-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let companion = directory.appendingPathComponent("decoded.caf")
+    do {
+      try TranscriptionCompanionDecoder.decode(
+        lease: try preparation.leaseImportedPlayback(sessionId: sessionId), to: companion,
+        isCancelled: { job.isCancelled() })
+    } catch is CancellationError {
+      throw NativeSpeechError.Cancelled
+    }
+    return try speech.transcribeSession(
+      modelId: modelId, sessionId: sessionId, decodedCompanionPath: companion.path, job: job)
   }
 
   func dismissMessage() {
@@ -146,7 +182,9 @@ final class SpeechTranscriptionModel: ObservableObject {
     case .ModelRejected(let reason):
       return "The model file was not installed: \(rejection(reason))."
     case .NoTranscribableAudio:
-      return "This conversation's audio format cannot be transcribed yet. The audio is unchanged."
+      return "This conversation has no recorded audio to transcribe."
+    case .DecodedAudioRejected:
+      return "The imported audio could not be decoded consistently, so nothing was transcribed."
     case .Cancelled:
       return "Transcription was cancelled. The recorded audio is unchanged."
     case .TranscriptionFailed:

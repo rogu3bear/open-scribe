@@ -483,11 +483,18 @@ void uniffi_open_scribe_uniffi_fn_method_nativespeechmodels_install_from_file(
 RustBuffer uniffi_open_scribe_uniffi_fn_method_nativespeechmodels_models(
     uint64_t ptr, RustCallStatus *_Nonnull out_status);
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_FN_METHOD_NATIVESPEECHMODELS_NEEDS_DECODED_COMPANION
+#define UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_FN_METHOD_NATIVESPEECHMODELS_NEEDS_DECODED_COMPANION
+int8_t
+uniffi_open_scribe_uniffi_fn_method_nativespeechmodels_needs_decoded_companion(
+    uint64_t ptr, RustBuffer session_id, RustCallStatus *_Nonnull out_status);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_FN_METHOD_NATIVESPEECHMODELS_TRANSCRIBE_SESSION
 #define UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_FN_METHOD_NATIVESPEECHMODELS_TRANSCRIBE_SESSION
 RustBuffer
 uniffi_open_scribe_uniffi_fn_method_nativespeechmodels_transcribe_session(
-    uint64_t ptr, RustBuffer model_id, RustBuffer session_id, uint64_t job,
+    uint64_t ptr, RustBuffer model_id, RustBuffer session_id,
+    RustBuffer decoded_companion_path, uint64_t job,
     RustCallStatus *_Nonnull out_status);
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_FN_CLONE_NATIVETRANSCRIPTIONJOB
@@ -510,6 +517,11 @@ uint64_t uniffi_open_scribe_uniffi_fn_constructor_nativetranscriptionjob_new(
 #ifndef UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_FN_METHOD_NATIVETRANSCRIPTIONJOB_CANCEL
 #define UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_FN_METHOD_NATIVETRANSCRIPTIONJOB_CANCEL
 void uniffi_open_scribe_uniffi_fn_method_nativetranscriptionjob_cancel(
+    uint64_t ptr, RustCallStatus *_Nonnull out_status);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_FN_METHOD_NATIVETRANSCRIPTIONJOB_IS_CANCELLED
+#define UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_FN_METHOD_NATIVETRANSCRIPTIONJOB_IS_CANCELLED
+int8_t uniffi_open_scribe_uniffi_fn_method_nativetranscriptionjob_is_cancelled(
     uint64_t ptr, RustCallStatus *_Nonnull out_status);
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_FN_METHOD_NATIVETRANSCRIPTIONJOB_PROGRESS
@@ -1141,6 +1153,14 @@ uniffi_open_scribe_uniffi_checksum_method_nativespeechmodels_models(void
 
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_CHECKSUM_METHOD_NATIVESPEECHMODELS_NEEDS_DECODED_COMPANION
+#define UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_CHECKSUM_METHOD_NATIVESPEECHMODELS_NEEDS_DECODED_COMPANION
+uint16_t
+uniffi_open_scribe_uniffi_checksum_method_nativespeechmodels_needs_decoded_companion(
+    void
+
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_CHECKSUM_METHOD_NATIVESPEECHMODELS_TRANSCRIBE_SESSION
 #define UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_CHECKSUM_METHOD_NATIVESPEECHMODELS_TRANSCRIBE_SESSION
 uint16_t
@@ -1153,6 +1173,14 @@ uniffi_open_scribe_uniffi_checksum_method_nativespeechmodels_transcribe_session(
 #define UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_CHECKSUM_METHOD_NATIVETRANSCRIPTIONJOB_CANCEL
 uint16_t
 uniffi_open_scribe_uniffi_checksum_method_nativetranscriptionjob_cancel(void
+
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_CHECKSUM_METHOD_NATIVETRANSCRIPTIONJOB_IS_CANCELLED
+#define UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_CHECKSUM_METHOD_NATIVETRANSCRIPTIONJOB_IS_CANCELLED
+uint16_t
+uniffi_open_scribe_uniffi_checksum_method_nativetranscriptionjob_is_cancelled(
+    void
 
 );
 #endif
