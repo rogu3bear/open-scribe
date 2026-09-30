@@ -1535,6 +1535,8 @@ public protocol NativeTranscriptLibraryProtocol: AnyObject, Sendable {
 
   func abandonDeletion(sessionId: String) throws
 
+  func audioExportOptions(sessionId: String) throws -> NativeAudioExportOptions
+
   func availability(sessionId: String) throws -> NativeTranscriptAvailability
 
   func beginDeletion(sessionId: String) throws -> NativeSessionDeletionInventory
@@ -1555,6 +1557,21 @@ public protocol NativeTranscriptLibraryProtocol: AnyObject, Sendable {
    */
   func export(sessionId: String, format: NativeTranscriptExportFormat, destinationPath: String)
     throws -> NativeTranscriptExportReceipt
+
+  func exportOriginalMedia(sessionId: String, destinationPath: String) throws
+    -> NativeFileExportReceipt
+
+  func exportPortablePackage(sessionId: String, destinationPath: String) throws
+    -> NativePortableSummary
+
+  func exportSessionManifest(sessionId: String, destinationPath: String) throws
+    -> NativeFileExportReceipt
+
+  func exportTrackWav(sessionId: String, trackId: String, destinationPath: String) throws
+    -> NativeFileExportReceipt
+
+  func exportValidatedMix(sessionId: String, destinationPath: String) throws
+    -> NativeFileExportReceipt
 
   /**
    * `None` restores the source-derived speaker name.
@@ -1639,6 +1656,17 @@ open class NativeTranscriptLibrary: NativeTranscriptLibraryProtocol, @unchecked 
     }
   }
 
+  open func audioExportOptions(sessionId: String) throws -> NativeAudioExportOptions {
+    return try FfiConverterTypeNativeAudioExportOptions_lift(
+      try rustCallWithError(FfiConverterTypeNativeStorageError_lift) {
+        uniffiCallStatus in
+        uniffi_open_scribe_uniffi_fn_method_nativetranscriptlibrary_audio_export_options(
+          self.uniffiCloneHandle(),
+          FfiConverterString.lower(sessionId), uniffiCallStatus
+        )
+      })
+  }
+
   open func availability(sessionId: String) throws -> NativeTranscriptAvailability {
     return try FfiConverterTypeNativeTranscriptAvailability_lift(
       try rustCallWithError(FfiConverterTypeNativeStorageError_lift) {
@@ -1718,6 +1746,77 @@ open class NativeTranscriptLibrary: NativeTranscriptLibraryProtocol, @unchecked 
           self.uniffiCloneHandle(),
           FfiConverterString.lower(sessionId),
           FfiConverterTypeNativeTranscriptExportFormat_lower(format),
+          FfiConverterString.lower(destinationPath), uniffiCallStatus
+        )
+      })
+  }
+
+  open func exportOriginalMedia(sessionId: String, destinationPath: String) throws
+    -> NativeFileExportReceipt
+  {
+    return try FfiConverterTypeNativeFileExportReceipt_lift(
+      try rustCallWithError(FfiConverterTypeNativeStorageError_lift) {
+        uniffiCallStatus in
+        uniffi_open_scribe_uniffi_fn_method_nativetranscriptlibrary_export_original_media(
+          self.uniffiCloneHandle(),
+          FfiConverterString.lower(sessionId),
+          FfiConverterString.lower(destinationPath), uniffiCallStatus
+        )
+      })
+  }
+
+  open func exportPortablePackage(sessionId: String, destinationPath: String) throws
+    -> NativePortableSummary
+  {
+    return try FfiConverterTypeNativePortableSummary_lift(
+      try rustCallWithError(FfiConverterTypeNativeStorageError_lift) {
+        uniffiCallStatus in
+        uniffi_open_scribe_uniffi_fn_method_nativetranscriptlibrary_export_portable_package(
+          self.uniffiCloneHandle(),
+          FfiConverterString.lower(sessionId),
+          FfiConverterString.lower(destinationPath), uniffiCallStatus
+        )
+      })
+  }
+
+  open func exportSessionManifest(sessionId: String, destinationPath: String) throws
+    -> NativeFileExportReceipt
+  {
+    return try FfiConverterTypeNativeFileExportReceipt_lift(
+      try rustCallWithError(FfiConverterTypeNativeStorageError_lift) {
+        uniffiCallStatus in
+        uniffi_open_scribe_uniffi_fn_method_nativetranscriptlibrary_export_session_manifest(
+          self.uniffiCloneHandle(),
+          FfiConverterString.lower(sessionId),
+          FfiConverterString.lower(destinationPath), uniffiCallStatus
+        )
+      })
+  }
+
+  open func exportTrackWav(sessionId: String, trackId: String, destinationPath: String) throws
+    -> NativeFileExportReceipt
+  {
+    return try FfiConverterTypeNativeFileExportReceipt_lift(
+      try rustCallWithError(FfiConverterTypeNativeStorageError_lift) {
+        uniffiCallStatus in
+        uniffi_open_scribe_uniffi_fn_method_nativetranscriptlibrary_export_track_wav(
+          self.uniffiCloneHandle(),
+          FfiConverterString.lower(sessionId),
+          FfiConverterString.lower(trackId),
+          FfiConverterString.lower(destinationPath), uniffiCallStatus
+        )
+      })
+  }
+
+  open func exportValidatedMix(sessionId: String, destinationPath: String) throws
+    -> NativeFileExportReceipt
+  {
+    return try FfiConverterTypeNativeFileExportReceipt_lift(
+      try rustCallWithError(FfiConverterTypeNativeStorageError_lift) {
+        uniffiCallStatus in
+        uniffi_open_scribe_uniffi_fn_method_nativetranscriptlibrary_export_validated_mix(
+          self.uniffiCloneHandle(),
+          FfiConverterString.lower(sessionId),
           FfiConverterString.lower(destinationPath), uniffiCallStatus
         )
       })
@@ -1958,6 +2057,65 @@ public func FfiConverterTypeNativeTranscriptionJob_lower(_ value: NativeTranscri
   return FfiConverterTypeNativeTranscriptionJob.lower(value)
 }
 
+public struct NativeAudioExportOptions: Equatable, Hashable {
+  public let hasValidatedMix: Bool
+  public let originalExtension: String?
+  public let pcmTracks: [String]
+
+  // Default memberwise initializers are never public by default, so we
+  // declare one manually.
+  public init(hasValidatedMix: Bool, originalExtension: String?, pcmTracks: [String]) {
+    self.hasValidatedMix = hasValidatedMix
+    self.originalExtension = originalExtension
+    self.pcmTracks = pcmTracks
+  }
+
+}
+
+#if compiler(>=6)
+  extension NativeAudioExportOptions: Sendable {}
+#endif
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeNativeAudioExportOptions: FfiConverterRustBuffer {
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws
+    -> NativeAudioExportOptions
+  {
+    return
+      try NativeAudioExportOptions(
+        hasValidatedMix: FfiConverterBool.read(from: &buf),
+        originalExtension: FfiConverterOptionString.read(from: &buf),
+        pcmTracks: FfiConverterSequenceString.read(from: &buf)
+      )
+  }
+
+  public static func write(_ value: NativeAudioExportOptions, into buf: inout [UInt8]) {
+    FfiConverterBool.write(value.hasValidatedMix, into: &buf)
+    FfiConverterOptionString.write(value.originalExtension, into: &buf)
+    FfiConverterSequenceString.write(value.pcmTracks, into: &buf)
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeAudioExportOptions_lift(_ buf: RustBuffer) throws
+  -> NativeAudioExportOptions
+{
+  return try FfiConverterTypeNativeAudioExportOptions.lift(buf)
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeAudioExportOptions_lower(_ value: NativeAudioExportOptions)
+  -> RustBuffer
+{
+  return FfiConverterTypeNativeAudioExportOptions.lower(value)
+}
+
 public struct NativeCommand: Equatable, Hashable {
   public let kind: NativeCommandKind
   public let journalDurable: Bool
@@ -2080,6 +2238,61 @@ public func FfiConverterTypeNativeCompressedImportMetadata_lower(
   _ value: NativeCompressedImportMetadata
 ) -> RustBuffer {
   return FfiConverterTypeNativeCompressedImportMetadata.lower(value)
+}
+
+public struct NativeFileExportReceipt: Equatable, Hashable {
+  public let byteLength: UInt64
+  public let sha256: String
+
+  // Default memberwise initializers are never public by default, so we
+  // declare one manually.
+  public init(byteLength: UInt64, sha256: String) {
+    self.byteLength = byteLength
+    self.sha256 = sha256
+  }
+
+}
+
+#if compiler(>=6)
+  extension NativeFileExportReceipt: Sendable {}
+#endif
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeNativeFileExportReceipt: FfiConverterRustBuffer {
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws
+    -> NativeFileExportReceipt
+  {
+    return
+      try NativeFileExportReceipt(
+        byteLength: FfiConverterUInt64.read(from: &buf),
+        sha256: FfiConverterString.read(from: &buf)
+      )
+  }
+
+  public static func write(_ value: NativeFileExportReceipt, into buf: inout [UInt8]) {
+    FfiConverterUInt64.write(value.byteLength, into: &buf)
+    FfiConverterString.write(value.sha256, into: &buf)
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeFileExportReceipt_lift(_ buf: RustBuffer) throws
+  -> NativeFileExportReceipt
+{
+  return try FfiConverterTypeNativeFileExportReceipt.lift(buf)
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeFileExportReceipt_lower(_ value: NativeFileExportReceipt)
+  -> RustBuffer
+{
+  return FfiConverterTypeNativeFileExportReceipt.lower(value)
 }
 
 public struct NativeFirstSampleEvidence: Equatable, Hashable {
@@ -2876,6 +3089,69 @@ public func FfiConverterTypeNativeOriginalImportMetadata_lower(
   _ value: NativeOriginalImportMetadata
 ) -> RustBuffer {
   return FfiConverterTypeNativeOriginalImportMetadata.lower(value)
+}
+
+public struct NativePortableSummary: Equatable, Hashable {
+  public let sourceSessionId: String
+  public let title: String
+  public let files: UInt32
+  public let byteLength: UInt64
+
+  // Default memberwise initializers are never public by default, so we
+  // declare one manually.
+  public init(sourceSessionId: String, title: String, files: UInt32, byteLength: UInt64) {
+    self.sourceSessionId = sourceSessionId
+    self.title = title
+    self.files = files
+    self.byteLength = byteLength
+  }
+
+}
+
+#if compiler(>=6)
+  extension NativePortableSummary: Sendable {}
+#endif
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeNativePortableSummary: FfiConverterRustBuffer {
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws
+    -> NativePortableSummary
+  {
+    return
+      try NativePortableSummary(
+        sourceSessionId: FfiConverterString.read(from: &buf),
+        title: FfiConverterString.read(from: &buf),
+        files: FfiConverterUInt32.read(from: &buf),
+        byteLength: FfiConverterUInt64.read(from: &buf)
+      )
+  }
+
+  public static func write(_ value: NativePortableSummary, into buf: inout [UInt8]) {
+    FfiConverterString.write(value.sourceSessionId, into: &buf)
+    FfiConverterString.write(value.title, into: &buf)
+    FfiConverterUInt32.write(value.files, into: &buf)
+    FfiConverterUInt64.write(value.byteLength, into: &buf)
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativePortableSummary_lift(_ buf: RustBuffer) throws
+  -> NativePortableSummary
+{
+  return try FfiConverterTypeNativePortableSummary.lift(buf)
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativePortableSummary_lower(_ value: NativePortableSummary)
+  -> RustBuffer
+{
+  return FfiConverterTypeNativePortableSummary.lower(value)
 }
 
 public struct NativePreparedSession: Equatable, Hashable {
@@ -6606,6 +6882,16 @@ public func nativeStatus() -> NativeStatus {
       )
     })
 }
+/// Checks an untrusted `.openscribe` package without opening a library.
+public func verifyPortablePackage(packagePath: String) throws -> NativePortableSummary {
+  return try FfiConverterTypeNativePortableSummary_lift(
+    try rustCallWithError(FfiConverterTypeNativeStorageError_lift) {
+      uniffiCallStatus in
+      uniffi_open_scribe_uniffi_fn_func_verify_portable_package(
+        FfiConverterString.lower(packagePath), uniffiCallStatus
+      )
+    })
+}
 
 private enum InitializationResult {
   case ok
@@ -6635,6 +6921,9 @@ private let initializationResult: InitializationResult = {
     return InitializationResult.apiChecksumMismatch
   }
   if uniffi_open_scribe_uniffi_checksum_func_native_status() != 55397 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_open_scribe_uniffi_checksum_func_verify_portable_package() != 50136 {
     return InitializationResult.apiChecksumMismatch
   }
   if uniffi_open_scribe_uniffi_checksum_method_nativeimportedplaybacklease_playback_path() != 168 {
@@ -6792,6 +7081,11 @@ private let initializationResult: InitializationResult = {
   if uniffi_open_scribe_uniffi_checksum_method_nativetranscriptlibrary_abandon_deletion() != 33047 {
     return InitializationResult.apiChecksumMismatch
   }
+  if uniffi_open_scribe_uniffi_checksum_method_nativetranscriptlibrary_audio_export_options()
+    != 8940
+  {
+    return InitializationResult.apiChecksumMismatch
+  }
   if uniffi_open_scribe_uniffi_checksum_method_nativetranscriptlibrary_availability() != 37826 {
     return InitializationResult.apiChecksumMismatch
   }
@@ -6809,6 +7103,29 @@ private let initializationResult: InitializationResult = {
     return InitializationResult.apiChecksumMismatch
   }
   if uniffi_open_scribe_uniffi_checksum_method_nativetranscriptlibrary_export() != 34734 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_open_scribe_uniffi_checksum_method_nativetranscriptlibrary_export_original_media()
+    != 48411
+  {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_open_scribe_uniffi_checksum_method_nativetranscriptlibrary_export_portable_package()
+    != 37788
+  {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_open_scribe_uniffi_checksum_method_nativetranscriptlibrary_export_session_manifest()
+    != 54863
+  {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_open_scribe_uniffi_checksum_method_nativetranscriptlibrary_export_track_wav() != 14662 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_open_scribe_uniffi_checksum_method_nativetranscriptlibrary_export_validated_mix()
+    != 21468
+  {
     return InitializationResult.apiChecksumMismatch
   }
   if uniffi_open_scribe_uniffi_checksum_method_nativetranscriptlibrary_rename_speaker() != 30331 {

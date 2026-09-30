@@ -183,16 +183,61 @@ struct TranscriptSection: View {
   }
 
   private var exportMenu: some View {
-    Menu("Export") {
-      Button("Plain Text…") { export(.plainText, type: .plainText) }
-      Button("Markdown…") { export(.markdown, type: UTType(filenameExtension: "md") ?? .plainText) }
-      Button("WebVTT Subtitles…") { export(.webVtt, type: UTType(filenameExtension: "vtt") ?? .plainText) }
-      Button("SubRip Subtitles…") { export(.subRip, type: UTType(filenameExtension: "srt") ?? .plainText) }
-      Button("Transcript JSON…") { export(.transcriptJson, type: .json) }
+    HStack(spacing: 8) {
+      if transcripts.isExporting {
+        ProgressView().controlSize(.small)
+        Text("Exporting…").font(.caption).foregroundStyle(.secondary)
+      }
+      Menu("Export") {
+        Section("Transcript") {
+          Group {
+            Button("Plain Text…") { export(.plainText, type: .plainText) }
+            Button("Markdown…") { export(.markdown, type: UTType(filenameExtension: "md") ?? .plainText) }
+            Button("WebVTT Subtitles…") {
+              export(.webVtt, type: UTType(filenameExtension: "vtt") ?? .plainText)
+            }
+            Button("SubRip Subtitles…") {
+              export(.subRip, type: UTType(filenameExtension: "srt") ?? .plainText)
+            }
+            Button("Transcript JSON…") { export(.transcriptJson, type: .json) }
+          }
+          .disabled(transcripts.segments.isEmpty)
+        }
+        Section("Audio") { audioExports }
+        Section("Conversation") {
+          Button("Session Manifest (JSON)…") {
+            exportConversation(.sessionManifest, type: .json, suffix: " manifest")
+          }
+          Button("Portable Package…") { exportPackage() }
+        }
+      }
+      .fixedSize()
+      .disabled(transcripts.isExporting)
+      .help("Export the transcript, audio, or a portable package of this conversation")
     }
-    .fixedSize()
-    .disabled(transcripts.segments.isEmpty)
-    .help(transcripts.segments.isEmpty ? "Export needs a transcript" : "Export this transcript")
+  }
+
+  /// Only exports the session can honestly produce are offered.
+  @ViewBuilder
+  private var audioExports: some View {
+    if transcripts.audioOptions?.hasValidatedMix == true {
+      Button("Verified Mix (M4A)…") { exportConversation(.validatedMix, type: .mpeg4Audio) }
+    }
+    if session.hasCaptureTimeline {
+      Button("Lossless Mix (WAV)…") { exportConversation(.mixWAV, type: .wav) }
+    }
+    ForEach(transcripts.audioOptions?.pcmTracks ?? [], id: \.self) { track in
+      let label = transcripts.speakers.first { $0.trackId == track }?.label ?? "Track"
+      Button("\(label) Track (WAV)…") {
+        exportConversation(.track(track), type: .wav, suffix: " - \(label)")
+      }
+    }
+    if let fileExtension = transcripts.audioOptions?.originalExtension {
+      Button("Original Audio…") {
+        exportConversation(
+          .original, type: UTType(filenameExtension: fileExtension) ?? .audio)
+      }
+    }
   }
 
   private func correctionSheet(_ segment: NativeTranscriptSegment) -> some View {
@@ -269,6 +314,29 @@ struct TranscriptSection: View {
     panel.nameFieldStringValue = Self.fileName(session.title, type: type)
     guard panel.runModal() == .OK, let url = panel.url else { return }
     transcripts.export(format: format, to: url)
+  }
+
+  private func exportConversation(
+    _ kind: TranscriptLibraryModel.ConversationExport, type: UTType, suffix: String = ""
+  ) {
+    let panel = NSSavePanel()
+    panel.allowedContentTypes = [type]
+    panel.canCreateDirectories = true
+    panel.nameFieldStringValue = Self.fileName(session.title + suffix, type: type)
+    guard panel.runModal() == .OK, let url = panel.url else { return }
+    Task { await transcripts.export(kind, to: url) }
+  }
+
+  /// A `.openscribe` package is a directory; the name always keeps its extension.
+  private func exportPackage() {
+    let packageType = UTType(filenameExtension: "openscribe", conformingTo: .package) ?? .package
+    let panel = NSSavePanel()
+    panel.allowedContentTypes = [packageType]
+    panel.canCreateDirectories = true
+    panel.nameFieldStringValue = Self.fileName(session.title, type: packageType)
+    guard panel.runModal() == .OK, var url = panel.url else { return }
+    if url.pathExtension != "openscribe" { url.appendPathExtension("openscribe") }
+    Task { await transcripts.export(.portablePackage, to: url) }
   }
 
   static func fileName(_ title: String, type: UTType) -> String {

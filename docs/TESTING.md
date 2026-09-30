@@ -1046,3 +1046,54 @@ journal kind `media_import_staged` where the SQLite projection uses
 Excluded: HE-AAC and other codecs beyond what AudioToolbox decodes on this
 Mac, decode determinism across macOS versions, long imports, and a
 candidate-bound receipt.
+
+### Audio exports, session manifest, and portable package (ADR 0010)
+
+The transcript section's Export menu now offers, per conversation:
+
+- the validated AAC mix;
+- a lossless 16-bit WAV mix rendered from the Rust-validated timeline;
+- a timeline-aligned WAV for each PCM track;
+- an import's managed original;
+- an `open-scribe.session-manifest/v1` JSON;
+- a `<name>.openscribe` package (`portable.v1.schema.json`).
+
+Media leaves only through a lease whose full bytes match the sealed digest.
+The package is staged in a hidden sibling directory and synced. The Rust
+verifier checks it before rename, and the rename replaces any existing
+package only after that check passes. Export never journals or changes
+session state.
+
+- `cargo clippy` with warnings denied on store, core, and uniffi: clean.
+  Bindings were regenerated.
+- `cargo test --offline -p open-scribe-store -p open-scribe-core -p open-scribe-uniffi`:
+  - store: 157 passed, one ignored.
+  - core: 22 passed.
+  - uniffi: 8 passed.
+- The three new core tests:
+  - validate a rendered manifest against the checked-in schema;
+  - export an import's original byte for byte and a track WAV whose samples
+    equal the sealed CAF's, then refuse a mix for an import and a hidden
+    destination name;
+  - write and verify a package. Verification refused each tampered variant:
+    a changed media byte, an undeclared file, a symlink, a traversal path,
+    a duplicate path, and an unsupported version.
+- `./script/build_and_run.sh --verify`: `NATIVE_FIXTURE_XCODE_GREEN`, 180
+  tests, three optional real-model skips.
+- `ConversationExportTests`, on a synthetic two-track capture:
+  - exported the stereo mix M4A;
+  - exported a 16-bit stereo WAV mix of at least 31 s;
+  - exported both padded track WAVs;
+  - exported a two-track manifest;
+  - exported a seven-file package that `verifyPortablePackage` accepted.
+- On an imported M4A, the same tests exported a byte-identical original and
+  refused a mix.
+- `docs/supply-chain/components.v1.json` was regenerated for the lock
+  change (core now depends on `rustix` and `sha2` directly).
+
+Excluded:
+
+- importing a package back as a new session (round trip, still intended);
+- sandboxed export staging (TD-011);
+- export of very long sessions;
+- a candidate-bound receipt.

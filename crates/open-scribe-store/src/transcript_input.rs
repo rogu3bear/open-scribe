@@ -368,7 +368,7 @@ impl SessionStore {
     }
 
     /// A compressed import's channel count from its journaled original media.
-    fn compressed_import_channels(
+    pub(super) fn compressed_import_channels(
         &self,
         session: &SessionId,
         segment_id: &str,
@@ -411,7 +411,7 @@ impl SessionStore {
             })
     }
 
-    fn session_origin(&self, session: &SessionId) -> Result<String, StoreError> {
+    pub(super) fn session_origin(&self, session: &SessionId) -> Result<String, StoreError> {
         Ok(self.connection.query_row(
             "SELECT origin FROM sessions WHERE id = ?1",
             [&session.0],
@@ -507,7 +507,7 @@ fn hex(bytes: &[u8]) -> String {
         })
 }
 
-fn verify_full_digest(file: &File, expected: &str) -> Result<(), StoreError> {
+pub(super) fn verify_full_digest(file: &File, expected: &str) -> Result<(), StoreError> {
     let length = file.metadata()?.len();
     let mut hasher = Sha256::new();
     let mut offset = 0_u64;

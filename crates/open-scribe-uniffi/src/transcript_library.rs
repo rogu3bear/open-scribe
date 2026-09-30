@@ -280,6 +280,140 @@ impl NativeTranscriptLibrary {
             wal_checkpointed: receipt.wal_checkpointed,
         })
     }
+
+    pub fn audio_export_options(
+        &self,
+        session_id: String,
+    ) -> Result<NativeAudioExportOptions, NativeStorageError> {
+        let options = self
+            .library()?
+            .audio_export_options(&SessionId(session_id))
+            .map_err(map_storage_error)?;
+        Ok(NativeAudioExportOptions {
+            has_validated_mix: options.has_validated_mix,
+            original_extension: options.original_extension,
+            pcm_tracks: options.pcm_tracks,
+        })
+    }
+
+    pub fn export_session_manifest(
+        &self,
+        session_id: String,
+        destination_path: String,
+    ) -> Result<NativeFileExportReceipt, NativeStorageError> {
+        self.library()?
+            .export_session_manifest(&SessionId(session_id), Path::new(&destination_path))
+            .map(map_file_receipt)
+            .map_err(map_session_export_error)
+    }
+
+    pub fn export_validated_mix(
+        &self,
+        session_id: String,
+        destination_path: String,
+    ) -> Result<NativeFileExportReceipt, NativeStorageError> {
+        self.library()?
+            .export_validated_mix(&SessionId(session_id), Path::new(&destination_path))
+            .map(map_file_receipt)
+            .map_err(map_session_export_error)
+    }
+
+    pub fn export_original_media(
+        &self,
+        session_id: String,
+        destination_path: String,
+    ) -> Result<NativeFileExportReceipt, NativeStorageError> {
+        self.library()?
+            .export_original_media(&SessionId(session_id), Path::new(&destination_path))
+            .map(map_file_receipt)
+            .map_err(map_session_export_error)
+    }
+
+    pub fn export_track_wav(
+        &self,
+        session_id: String,
+        track_id: String,
+        destination_path: String,
+    ) -> Result<NativeFileExportReceipt, NativeStorageError> {
+        self.library()?
+            .export_track_wav(
+                &SessionId(session_id),
+                &track_id,
+                Path::new(&destination_path),
+            )
+            .map(map_file_receipt)
+            .map_err(map_session_export_error)
+    }
+
+    pub fn export_portable_package(
+        &self,
+        session_id: String,
+        destination_path: String,
+    ) -> Result<NativePortableSummary, NativeStorageError> {
+        self.library()?
+            .export_portable_package(&SessionId(session_id), Path::new(&destination_path))
+            .map(map_portable_summary)
+            .map_err(map_session_export_error)
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct NativeAudioExportOptions {
+    pub has_validated_mix: bool,
+    pub original_extension: Option<String>,
+    pub pcm_tracks: Vec<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct NativeFileExportReceipt {
+    pub byte_length: u64,
+    pub sha256: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct NativePortableSummary {
+    pub source_session_id: String,
+    pub title: String,
+    pub files: u32,
+    pub byte_length: u64,
+}
+
+/// Checks an untrusted `.openscribe` package without opening a library.
+#[uniffi::export]
+pub fn verify_portable_package(
+    package_path: String,
+) -> Result<NativePortableSummary, NativeStorageError> {
+    open_scribe_core::verify_portable_package(Path::new(&package_path))
+        .map(map_portable_summary)
+        .map_err(map_session_export_error)
+}
+
+fn map_file_receipt(receipt: open_scribe_core::FileExportReceipt) -> NativeFileExportReceipt {
+    NativeFileExportReceipt {
+        byte_length: receipt.byte_length,
+        sha256: receipt.sha256,
+    }
+}
+
+fn map_portable_summary(summary: open_scribe_core::PortableSummary) -> NativePortableSummary {
+    NativePortableSummary {
+        source_session_id: summary.source_session_id,
+        title: summary.title,
+        files: summary.files,
+        byte_length: summary.byte_length,
+    }
+}
+
+fn map_session_export_error(error: open_scribe_core::SessionExportError) -> NativeStorageError {
+    use open_scribe_core::SessionExportError as Error;
+    match error {
+        Error::Store(error) => map_storage_error(error),
+        Error::Transcript(error) => map_export_error(error),
+        Error::Unavailable(_) => NativeStorageError::InvalidState,
+        Error::InvalidDestination(_) => NativeStorageError::InvalidRequest,
+        Error::InvalidPackage(_) => NativeStorageError::IntegrityMismatch,
+        Error::Io(_) => NativeStorageError::StorageFailure,
+    }
 }
 
 impl NativeTranscriptLibrary {

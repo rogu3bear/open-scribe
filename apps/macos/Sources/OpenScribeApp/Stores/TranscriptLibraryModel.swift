@@ -17,20 +17,37 @@ final class TranscriptLibraryModel: ObservableObject {
   @Published private(set) var message: String?
   /// Whether `message` reports a failure rather than a completed action.
   @Published private(set) var messageIsFailure = false
+  /// Which audio exports the loaded session can offer.
+  @Published private(set) var audioOptions: NativeAudioExportOptions?
+  @Published private(set) var isExporting = false
 
   private let library: NativeTranscriptLibrary?
   private let moveToTrash: TrashMover
+  /// The Rust-validated capture timeline, for the WAV mix.
+  private let timeline: (@Sendable (String) throws -> [NativeTimelineSegment])?
   #if DEBUG
     private var isFixedPreview = false
   #endif
 
-  init(library: NativeTranscriptLibrary?, moveToTrash: @escaping TrashMover = TranscriptLibraryModel.systemTrash) {
+  init(
+    library: NativeTranscriptLibrary?,
+    moveToTrash: @escaping TrashMover = TranscriptLibraryModel.systemTrash,
+    timeline: (@Sendable (String) throws -> [NativeTimelineSegment])? = nil
+  ) {
     self.library = library
     self.moveToTrash = moveToTrash
+    self.timeline = timeline
   }
 
   convenience init(managedRoot: URL?) {
-    self.init(library: try? managedRoot.map { try NativeTranscriptLibrary.open(managedRoot: $0.path) })
+    let library = try? managedRoot.map { try NativeTranscriptLibrary.open(managedRoot: $0.path) }
+    var timeline: (@Sendable (String) throws -> [NativeTimelineSegment])?
+    if let root = managedRoot,
+      let preparation = try? NativeRecordingPreparation.open(managedRoot: root.path)
+    {
+      timeline = { sessionId in try preparation.playbackTimeline(sessionId: sessionId) }
+    }
+    self.init(library: library, timeline: timeline)
   }
 
   #if DEBUG
@@ -79,6 +96,7 @@ final class TranscriptLibraryModel: ObservableObject {
       availability = try library.availability(sessionId: sessionId)
       segments = try library.document(sessionId: sessionId)
       speakers = try library.speakers(sessionId: sessionId)
+      audioOptions = try? library.audioExportOptions(sessionId: sessionId)
       report(nil)
     } catch {
       clear(message: Self.describe(error, action: "load the transcript"))
@@ -130,6 +148,72 @@ final class TranscriptLibraryModel: ObservableObject {
     } catch {
       report(Self.describe(error, action: "export the transcript"), failure: true)
       return false
+    }
+  }
+
+  /// Conversation exports beyond transcript text (ADR 0010).
+  enum ConversationExport: Sendable {
+    case validatedMix
+    case mixWAV
+    case original
+    case track(String)
+    case sessionManifest
+    case portablePackage
+  }
+
+  /// Media and package exports copy whole files, so they run off the main
+  /// actor. Rust verifies every byte it writes; export never changes state.
+  @discardableResult
+  func export(_ kind: ConversationExport, to destination: URL) async -> Bool {
+    guard let library, let sessionId, !isExporting else { return false }
+    isExporting = true
+    report(nil)
+    defer { isExporting = false }
+    let timeline = timeline
+    do {
+      let summary = try await Task.detached(priority: .utility) {
+        try Self.run(
+          kind, library: library, timeline: timeline, sessionId: sessionId,
+          destination: destination)
+      }.value
+      report(summary)
+      return true
+    } catch {
+      report(Self.describe(error, action: "export the conversation"), failure: true)
+      return false
+    }
+  }
+
+  nonisolated private static func run(
+    _ kind: ConversationExport, library: NativeTranscriptLibrary,
+    timeline: (@Sendable (String) throws -> [NativeTimelineSegment])?, sessionId: String,
+    destination: URL
+  ) throws -> String {
+    let path = destination.path
+    let size = { (bytes: UInt64) in
+      ByteCountFormatter.string(fromByteCount: Int64(clamping: bytes), countStyle: .file)
+    }
+    switch kind {
+    case .validatedMix:
+      let receipt = try library.exportValidatedMix(sessionId: sessionId, destinationPath: path)
+      return "Exported the verified mix (\(size(receipt.byteLength)))."
+    case .mixWAV:
+      guard let timeline else { throw NativeStorageError.InvalidState }
+      try TimelineMixExporter.exportWAV(plan: try timeline(sessionId), to: destination)
+      return "Exported the lossless mix."
+    case .original:
+      let receipt = try library.exportOriginalMedia(sessionId: sessionId, destinationPath: path)
+      return "Exported the original audio (\(size(receipt.byteLength)))."
+    case .track(let trackId):
+      let receipt = try library.exportTrackWav(
+        sessionId: sessionId, trackId: trackId, destinationPath: path)
+      return "Exported the track (\(size(receipt.byteLength)))."
+    case .sessionManifest:
+      _ = try library.exportSessionManifest(sessionId: sessionId, destinationPath: path)
+      return "Exported the session manifest."
+    case .portablePackage:
+      let summary = try library.exportPortablePackage(sessionId: sessionId, destinationPath: path)
+      return "Exported a portable package: \(summary.files) files, \(size(summary.byteLength))."
     }
   }
 

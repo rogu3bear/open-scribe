@@ -9,6 +9,10 @@ use crate::export::{
     TranscriptAvailability, TranscriptExport, TranscriptExportError, TranscriptExportFormat,
     TranscriptExportReceipt, write_transcript_export,
 };
+use crate::session_export::{
+    FileExportReceipt, PortableSummary, SessionExportError, export_source_media, export_track_wav,
+    export_validated_mix, write_portable_package, write_session_manifest,
+};
 use open_scribe_store::{
     SessionDeletionInventory, SessionDeletionReceipt, SessionSpeaker, SessionStore, StoreError,
     TranscriptDocumentSegment, TranscriptSearchHit,
@@ -103,4 +107,86 @@ impl TranscriptLibrary {
         self.store
             .complete_session_deletion(session, trash_reference)
     }
+
+    /// Which audio exports a saved session can offer.
+    pub fn audio_export_options(
+        &self,
+        session: &SessionId,
+    ) -> Result<AudioExportOptions, StoreError> {
+        let inventory = self.store.session_inventory(session)?;
+        let mut pcm_tracks: Vec<String> = inventory
+            .media
+            .iter()
+            .filter(|entry| entry.media_format == "caf-pcm-s16le")
+            .map(|entry| entry.track_id.clone())
+            .collect();
+        pcm_tracks.dedup();
+        let original_extension = (inventory.origin == "import")
+            .then(|| inventory.media.first())
+            .flatten()
+            .map(|entry| {
+                if entry.media_format.starts_with("m4a") {
+                    "m4a"
+                } else {
+                    "caf"
+                }
+                .to_owned()
+            });
+        Ok(AudioExportOptions {
+            has_validated_mix: inventory.mixdown.is_some(),
+            original_extension,
+            pcm_tracks,
+        })
+    }
+
+    pub fn export_session_manifest(
+        &self,
+        session: &SessionId,
+        destination: &Path,
+    ) -> Result<FileExportReceipt, SessionExportError> {
+        write_session_manifest(&self.store, session, destination)
+    }
+
+    pub fn export_validated_mix(
+        &self,
+        session: &SessionId,
+        destination: &Path,
+    ) -> Result<FileExportReceipt, SessionExportError> {
+        export_validated_mix(&self.store, session, destination)
+    }
+
+    pub fn export_original_media(
+        &self,
+        session: &SessionId,
+        destination: &Path,
+    ) -> Result<FileExportReceipt, SessionExportError> {
+        export_source_media(&self.store, session, destination)
+    }
+
+    pub fn export_track_wav(
+        &self,
+        session: &SessionId,
+        track_id: &str,
+        destination: &Path,
+    ) -> Result<FileExportReceipt, SessionExportError> {
+        export_track_wav(&self.store, session, track_id, destination)
+    }
+
+    pub fn export_portable_package(
+        &self,
+        session: &SessionId,
+        destination: &Path,
+    ) -> Result<PortableSummary, SessionExportError> {
+        write_portable_package(&self.store, session, destination)
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AudioExportOptions {
+    pub has_validated_mix: bool,
+    /// An imported session exports its one managed original, whose file
+    /// extension this names (`m4a` or `caf`).
+    pub original_extension: Option<String>,
+    /// Tracks with sealed PCM that can export as timeline-aligned WAV.
+    pub pcm_tracks: Vec<String>,
 }

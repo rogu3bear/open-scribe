@@ -13,12 +13,21 @@ pub use export::{
     TranscriptExportFormat, TranscriptExportReceipt, write_transcript_export,
 };
 mod transcript_library;
-pub use transcript_library::TranscriptLibrary;
+pub use transcript_library::{AudioExportOptions, TranscriptLibrary};
 mod transcription;
 pub use transcription::{
     TrackRequest, TranscriptionError, TranscriptionOutcome, TranscriptionProgress,
     TranscriptionStage, transcribe_request, transcribe_track,
 };
+mod session_export;
+pub use session_export::{
+    FileExportReceipt, PORTABLE_V1_SCHEMA_JSON, PortableSummary, SESSION_MANIFEST_V1_SCHEMA_JSON,
+    SessionExportError, export_source_media, export_track_wav, export_validated_mix,
+    render_session_manifest, verify_portable_package, write_portable_package,
+    write_session_manifest,
+};
+#[cfg(test)]
+mod session_export_tests;
 mod speech;
 pub use open_scribe_asr::{WHISPER_ENGINE, WHISPER_ENGINE_VERSION};
 pub use speech::{

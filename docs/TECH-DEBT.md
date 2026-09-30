@@ -5,8 +5,9 @@
 | ID | Area | Current Behavior / Debt | Risk | Priority | Owner | Retirement Evidence |
 |---|---|---|---|---:|---|---|
 | TD-003 | Single instance | `AppDelegate` treats lock-file I/O failure as if another instance exists. | Silent termination can misdiagnose a local filesystem fault. | P1 | Native shell owner | Separate user-visible paths and tests for `alreadyRunning` versus `cannotOpen`. |
-| TD-006 | Required system audio | Application/system audio capture exists and passed one short live dual-source run (`072a3fb`); real-device source loss, permission revocation, and long sessions are unqualified. | A meeting recording may still fail or drift outside the proven short run. | P0 | Platform capture owner | One validated mode, source visibility, loss behavior, and two-hour sync proof. |
+| TD-006 | Required system audio | Application/system audio capture passed a short live dual-source run (`072a3fb`), the injected source-loss cases, and a live pause/resume run (`429ec94`); real-device source loss, permission revocation, and long sessions are unqualified. | A meeting recording may still fail or drift outside the proven short run. | P0 | Platform capture owner | One validated mode, source visibility, loss behavior, and two-hour sync proof. |
 | TD-009 | Default product gate | The repository’s broad default product gates intentionally fail closed. | Contributors can mistake scaffold success for application readiness. | P1 | Build/release owner | One canonical candidate gate with precise exclusions and contributor docs. |
+| TD-011 | Sandboxed export staging | Transcript, audio, manifest, and package exports stage a hidden sibling beside the user-chosen destination, then rename it. Unsigned development builds do not run inside App Sandbox, so no test exercises user-selected-file access. | A signed, sandboxed build may be refused the sibling and fail every export. | P1 | Export owner | Exports pass on a signed sandboxed build, or stage in an item-replacement directory the sandbox grants. |
 
 ## Retired Debt
 

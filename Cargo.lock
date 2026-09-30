@@ -1540,6 +1540,7 @@ dependencies = [
  "open-scribe-models",
  "open-scribe-store",
  "open-scribe-types",
+ "rustix",
  "serde_json",
  "sha2",
  "tempfile",

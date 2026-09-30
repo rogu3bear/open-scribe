@@ -24,8 +24,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// The checked schema is the version authority; the exporter reads its `$id`.
 pub const TRANSCRIPT_V1_SCHEMA_JSON: &str =
     include_str!("../../../docs/data-format/transcript.v1.schema.json");
-const EXPORTER_NAME: &str = "open-scribe-core";
-const EXPORTER_VERSION: &str = env!("CARGO_PKG_VERSION");
+pub(crate) const EXPORTER_NAME: &str = "open-scribe-core";
+pub(crate) const EXPORTER_VERSION: &str = env!("CARGO_PKG_VERSION");
 const NANOSECONDS_PER_MILLISECOND: i64 = 1_000_000;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -484,11 +484,7 @@ pub fn write_transcript_export(
     format: TranscriptExportFormat,
     destination: &Path,
 ) -> Result<TranscriptExportReceipt, TranscriptExportError> {
-    let exported_at_ms = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |elapsed| {
-            i64::try_from(elapsed.as_millis()).unwrap_or(i64::MAX)
-        });
+    let exported_at_ms = now_milliseconds();
     let export = TranscriptExport::collect(store, session, exported_at_ms)?;
     let rendered = export.render(format)?;
     write_atomically(destination, rendered.as_bytes())?;
@@ -501,7 +497,24 @@ pub fn write_transcript_export(
     })
 }
 
+pub(crate) fn now_milliseconds() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |elapsed| {
+            i64::try_from(elapsed.as_millis()).unwrap_or(i64::MAX)
+        })
+}
+
 fn write_atomically(destination: &Path, bytes: &[u8]) -> Result<(), TranscriptExportError> {
+    write_atomically_with(destination, |file| file.write_all(bytes))
+}
+
+/// Writes a hidden sibling, synchronizes it, and renames it over `destination`;
+/// a failure leaves no partial file behind.
+pub(crate) fn write_atomically_with(
+    destination: &Path,
+    write: impl FnOnce(&mut File) -> std::io::Result<()>,
+) -> Result<(), TranscriptExportError> {
     let file_name = destination
         .file_name()
         .and_then(|name| name.to_str())
@@ -527,7 +540,7 @@ fn write_atomically(destination: &Path, bytes: &[u8]) -> Result<(), TranscriptEx
         ".{file_name}.partial-{}-{nonce}",
         std::process::id()
     ));
-    let result = stage_and_rename(&staging, destination, parent, bytes);
+    let result = stage_and_rename(&staging, destination, parent, write);
     if result.is_err() {
         let _ = fs::remove_file(&staging);
     }
@@ -538,13 +551,13 @@ fn stage_and_rename(
     staging: &Path,
     destination: &Path,
     parent: &Path,
-    bytes: &[u8],
+    write: impl FnOnce(&mut File) -> std::io::Result<()>,
 ) -> std::io::Result<()> {
     let mut file = OpenOptions::new()
         .write(true)
         .create_new(true)
         .open(staging)?;
-    file.write_all(bytes)?;
+    write(&mut file)?;
     file.sync_all()?;
     drop(file);
     fs::rename(staging, destination)?;
@@ -614,7 +627,7 @@ fn clock_milliseconds(milliseconds: i64, separator: char) -> String {
 }
 
 /// UTC RFC 3339 with millisecond precision from Unix milliseconds.
-fn rfc3339_utc(milliseconds: i64) -> String {
+pub(crate) fn rfc3339_utc(milliseconds: i64) -> String {
     let days = milliseconds.div_euclid(86_400_000);
     let of_day = milliseconds.rem_euclid(86_400_000);
     // Howard Hinnant's civil-from-days algorithm.
