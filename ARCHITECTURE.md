@@ -51,7 +51,7 @@ Tests cover required-source planning, all-source `Recording`, CAF writing/sealin
 | Session fixture schema | `open-scribe-types` + ADR 0004 | domain snapshots, UniFFI, Swift fixture views |
 | Session/storage schema | [Rust store](crates/open-scribe-store/src/lib.rs) + ADR 0006 | SQLite projection, journal, recovery classification |
 | Live and library presentation state | `open-scribe-store` SQLite projection | coarse UniFFI snapshot, main window, menu bar |
-| Evidence/export schema | `open-scribe-evidence` + [transcript/v1](docs/data-format/transcript.v1.schema.json) | exports and runtime views |
+| Evidence/export schema | `open-scribe-evidence` + [transcript/v1](docs/data-format/transcript.v1.schema.json) | exports, package import, runtime views |
 | Legal text | `docs/legal/*` | app and website rendering |
 | Capability claims | [checked manifest](docs/capabilities/manifest.v1.json) | runtime registry, UI, website, release claims |
 | Model metadata | [checked manifest](docs/models/manifest.v1.json), review-pending entries | intended model manager, notices, website |

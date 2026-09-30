@@ -5,6 +5,7 @@ use rusqlite::params;
 use serde_json::json;
 use uuid::Uuid;
 
+use super::package_restore::{RestorationIntent, insert_restoration_intent};
 use super::{
     FailurePoint, JOURNAL_NAME, JOURNAL_VERSION, MAX_TITLE_BYTES, MediaSourceKind, SCHEMA_VERSION,
     SESSION_SUBDIRECTORIES, SessionStore, StoreError, append_journal_record, event_digest,
@@ -80,9 +81,20 @@ impl SessionStore {
         request: PrepareSessionRequest,
         failure: Option<FailurePoint>,
     ) -> Result<PreparedSessionReceipt, StoreError> {
+        self.prepare_session_recorded(request, failure, None)
+    }
+
+    /// A restored package records its provenance in the transaction that
+    /// creates the session, and needs no capture reserve.
+    pub(super) fn prepare_session_recorded(
+        &mut self,
+        request: PrepareSessionRequest,
+        failure: Option<FailurePoint>,
+        restoration: Option<&RestorationIntent<'_>>,
+    ) -> Result<PreparedSessionReceipt, StoreError> {
         validate_request(&request)?;
         require_real_directory(&self.sessions_root)?;
-        if request.origin == SessionOrigin::Capture {
+        if request.origin == SessionOrigin::Capture && restoration.is_none() {
             self.prepare_storage_reserve()?;
         }
         let session_id = Uuid::now_v7().to_string();
@@ -121,6 +133,9 @@ impl SessionStore {
                 None,
                 &intent_digest,
             )?;
+            if let Some(intent) = restoration {
+                insert_restoration_intent(&transaction, &session_id, intent, now)?;
+            }
             transaction.commit()?;
         }
         interrupt_if(failure, FailurePoint::DatabaseIntent)?;

@@ -587,6 +587,80 @@ final class RecorderPauseResumeTests: XCTestCase {
       try RecorderStorage.availableBytes(at: "/does-not-exist-\(UUID().uuidString)/audio"))
   }
 
+  func testACapturedConversationOpensFromAPortablePackageInAnotherLibrary() async throws {
+    let harness = try PauseHarness()
+    defer { harness.removeFiles() }
+    await harness.controller.start()
+    try await harness.capture()
+    await harness.controller.stop()
+    XCTAssertEqual(harness.controller.phase, .saved)
+    let sessionId = try XCTUnwrap(harness.captures.microphones.first).writer.authorization.sessionId
+    let sourcePlan = try harness.preparation.playbackTimeline(sessionId: sessionId)
+    let exchange = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: exchange, withIntermediateDirectories: false)
+    defer { try? FileManager.default.removeItem(at: exchange) }
+    let package = exchange.appendingPathComponent("Call.openscribe", isDirectory: true)
+    _ = try NativeTranscriptLibrary.open(managedRoot: harness.root.path)
+      .exportPortablePackage(sessionId: sessionId, destinationPath: package.path)
+
+    // The other Mac opens it through the same path the toolbar uses.
+    let otherRoot = exchange.appendingPathComponent("Other Mac", isDirectory: true)
+    let runtime = RuntimeLibraryStore(managedRoot: otherRoot)
+    let adapter = ImportedMediaAuthorityAdapter(
+      startSecurityScope: { _ in true },
+      stopSecurityScope: { _ in },
+      importer: { _, _ in throw CancellationError() },
+      packagePicker: { package },
+      packageOpener: { try runtime.openPortablePackage(packageURL: $0) }
+    )
+    adapter.chooseAndOpenPackage()
+    for _ in 0..<500 where adapter.phase == .importing {
+      try await Task.sleep(for: .milliseconds(10))
+    }
+    XCTAssertEqual(adapter.phase, .succeeded, adapter.statusMessage ?? "no status")
+    let restoredId = try XCTUnwrap(adapter.importedSessionId)
+    XCTAssertNotEqual(restoredId, sessionId)
+    XCTAssertTrue(adapter.statusMessage?.contains("2 audio files") == true)
+
+    let other = try NativeRecordingPreparation.open(managedRoot: otherRoot.path)
+    let restoredPlan = try other.playbackTimeline(sessionId: restoredId)
+    XCTAssertEqual(
+      restoredPlan.map { [$0.sequence, $0.sampleCount, UInt64($0.startNanoseconds)] },
+      sourcePlan.map { [$0.sequence, $0.sampleCount, UInt64($0.startNanoseconds)] })
+    func samples(_ plan: [NativeTimelineSegment]) throws -> [Float] {
+      let reader = try TimelinePCMReader(segments: plan)
+      defer { reader.close() }
+      var values: [Float] = []
+      while let buffer = try reader.read(maximumFrames: 4096) {
+        values += UnsafeBufferPointer(
+          start: buffer.floatChannelData![0], count: Int(buffer.frameLength))
+      }
+      return values
+    }
+    let restoredSamples = try samples(restoredPlan)
+    XCTAssertEqual(restoredSamples.count, 48_000)
+    XCTAssertEqual(restoredSamples, try samples(sourcePlan))
+    for _ in 0..<500 where !runtime.savedSessions.contains(where: { $0.sessionId == restoredId }) {
+      try await Task.sleep(for: .milliseconds(10))
+    }
+    let saved = try XCTUnwrap(runtime.savedSessions.first { $0.sessionId == restoredId })
+    XCTAssertTrue(saved.hasCaptureTimeline)
+
+    // The same package cannot be opened once a file inside it changes.
+    let media = try XCTUnwrap(
+      FileManager.default.enumerator(at: package, includingPropertiesForKeys: nil)?
+        .compactMap { $0 as? URL }.first { $0.pathExtension == "caf" })
+    var bytes = try Data(contentsOf: media)
+    bytes[bytes.count - 1] ^= 0x01
+    try bytes.write(to: media)
+    adapter.chooseAndOpenPackage()
+    for _ in 0..<500 where adapter.phase == .importing {
+      try await Task.sleep(for: .milliseconds(10))
+    }
+    XCTAssertEqual(adapter.phase, .failed)
+    XCTAssertTrue(adapter.statusMessage?.contains("did not verify") == true)
+  }
+
   private func settle() async {
     for _ in 0..<30 { await Task.yield() }
   }

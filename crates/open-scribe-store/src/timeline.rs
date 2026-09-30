@@ -426,6 +426,9 @@ impl SessionStore {
         &self,
         session: &SessionId,
     ) -> Result<Vec<TimelineSegment>, StoreError> {
+        if self.restored_capture(&session.0)? {
+            return self.restored_playback_timeline(session);
+        }
         let clock = self
             .capture_clock(&session.0)?
             .ok_or(StoreError::InvalidState(

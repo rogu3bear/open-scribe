@@ -1680,6 +1680,12 @@ public protocol NativeTranscriptLibraryProtocol: AnyObject, Sendable {
     -> NativeFileExportReceipt
 
   /**
+   * Opens a `.openscribe` package from another Mac as a new conversation.
+   * The package is verified in full before anything is copied.
+   */
+  func importPortablePackage(packagePath: String) throws -> NativePackageImportReceipt
+
+  /**
    * `None` restores the source-derived speaker name.
    */
   func renameSpeaker(sessionId: String, trackId: String, label: String?) throws
@@ -1989,6 +1995,21 @@ open class NativeTranscriptLibrary: NativeTranscriptLibraryProtocol, @unchecked 
           self.uniffiCloneHandle(),
           FfiConverterString.lower(sessionId),
           FfiConverterString.lower(destinationPath), uniffiCallStatus
+        )
+      })
+  }
+
+  /**
+   * Opens a `.openscribe` package from another Mac as a new conversation.
+   * The package is verified in full before anything is copied.
+   */
+  open func importPortablePackage(packagePath: String) throws -> NativePackageImportReceipt {
+    return try FfiConverterTypeNativePackageImportReceipt_lift(
+      try rustCallWithError(FfiConverterTypeNativeStorageError_lift) {
+        uniffiCallStatus in
+        uniffi_open_scribe_uniffi_fn_method_nativetranscriptlibrary_import_portable_package(
+          self.uniffiCloneHandle(),
+          FfiConverterString.lower(packagePath), uniffiCallStatus
         )
       })
   }
@@ -4024,6 +4045,80 @@ public func FfiConverterTypeNativeOriginalImportMetadata_lower(
   _ value: NativeOriginalImportMetadata
 ) -> RustBuffer {
   return FfiConverterTypeNativeOriginalImportMetadata.lower(value)
+}
+
+public struct NativePackageImportReceipt: Equatable, Hashable {
+  public let sessionId: String
+  public let sourceSessionId: String
+  public let title: String
+  public let mediaFiles: UInt32
+  public let transcriptTracks: UInt32
+  public let markers: UInt32
+
+  // Default memberwise initializers are never public by default, so we
+  // declare one manually.
+  public init(
+    sessionId: String, sourceSessionId: String, title: String, mediaFiles: UInt32,
+    transcriptTracks: UInt32, markers: UInt32
+  ) {
+    self.sessionId = sessionId
+    self.sourceSessionId = sourceSessionId
+    self.title = title
+    self.mediaFiles = mediaFiles
+    self.transcriptTracks = transcriptTracks
+    self.markers = markers
+  }
+
+}
+
+#if compiler(>=6)
+  extension NativePackageImportReceipt: Sendable {}
+#endif
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeNativePackageImportReceipt: FfiConverterRustBuffer {
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws
+    -> NativePackageImportReceipt
+  {
+    return
+      try NativePackageImportReceipt(
+        sessionId: FfiConverterString.read(from: &buf),
+        sourceSessionId: FfiConverterString.read(from: &buf),
+        title: FfiConverterString.read(from: &buf),
+        mediaFiles: FfiConverterUInt32.read(from: &buf),
+        transcriptTracks: FfiConverterUInt32.read(from: &buf),
+        markers: FfiConverterUInt32.read(from: &buf)
+      )
+  }
+
+  public static func write(_ value: NativePackageImportReceipt, into buf: inout [UInt8]) {
+    FfiConverterString.write(value.sessionId, into: &buf)
+    FfiConverterString.write(value.sourceSessionId, into: &buf)
+    FfiConverterString.write(value.title, into: &buf)
+    FfiConverterUInt32.write(value.mediaFiles, into: &buf)
+    FfiConverterUInt32.write(value.transcriptTracks, into: &buf)
+    FfiConverterUInt32.write(value.markers, into: &buf)
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativePackageImportReceipt_lift(_ buf: RustBuffer) throws
+  -> NativePackageImportReceipt
+{
+  return try FfiConverterTypeNativePackageImportReceipt.lift(buf)
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativePackageImportReceipt_lower(_ value: NativePackageImportReceipt)
+  -> RustBuffer
+{
+  return FfiConverterTypeNativePackageImportReceipt.lower(value)
 }
 
 public struct NativePortableSummary: Equatable, Hashable {
@@ -9370,6 +9465,11 @@ private let initializationResult: InitializationResult = {
   }
   if uniffi_open_scribe_uniffi_checksum_method_nativetranscriptlibrary_export_validated_mix()
     != 21468
+  {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_open_scribe_uniffi_checksum_method_nativetranscriptlibrary_import_portable_package()
+    != 22468
   {
     return InitializationResult.apiChecksumMismatch
   }

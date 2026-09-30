@@ -50,6 +50,7 @@ final class RuntimeLibraryStore: ObservableObject {
   typealias CompressedImportProvider =
     @Sendable (String, String, NativeCompressedImportMetadata) throws
     -> NativeImportedMediaEvidence
+  typealias PackageImportProvider = @Sendable (String) throws -> NativePackageImportReceipt
 
   @Published private(set) var currentSession: RuntimeSessionPresentation?
   @Published private(set) var savedSessions: [RuntimeSessionPresentation] = []
@@ -64,6 +65,7 @@ final class RuntimeLibraryStore: ObservableObject {
   nonisolated private let importProvider: ImportProvider?
   nonisolated private let normalizedImportProvider: NormalizedImportProvider?
   nonisolated private let compressedImportProvider: CompressedImportProvider?
+  nonisolated private let packageImportProvider: PackageImportProvider?
   private var pollingTask: Task<Void, Never>?
   private var refreshTask: Task<Void, Never>?
   private var refreshGeneration: UInt64 = 0
@@ -74,12 +76,14 @@ final class RuntimeLibraryStore: ObservableObject {
     importProvider: ImportProvider? = nil,
     normalizedImportProvider: NormalizedImportProvider? = nil,
     compressedImportProvider: CompressedImportProvider? = nil,
+    packageImportProvider: PackageImportProvider? = nil,
     startsPolling: Bool = true
   ) {
     self.snapshotProvider = snapshotProvider
     self.importProvider = importProvider
     self.normalizedImportProvider = normalizedImportProvider
     self.compressedImportProvider = compressedImportProvider
+    self.packageImportProvider = packageImportProvider
     refresh()
     if startsPolling {
       pollingTask = Task { [weak self] in
@@ -96,6 +100,7 @@ final class RuntimeLibraryStore: ObservableObject {
     let controller = try? managedRoot.map {
       try NativeRecordingPreparation.open(managedRoot: $0.path)
     }
+    let library = try? managedRoot.map { try NativeTranscriptLibrary.open(managedRoot: $0.path) }
     self.init(
       snapshotProvider: {
         guard let controller else {
@@ -124,6 +129,12 @@ final class RuntimeLibraryStore: ObservableObject {
         return try controller.importCompressedM4a(
           title: title, sourcePath: sourcePath, metadata: metadata
         )
+      },
+      packageImportProvider: { packagePath in
+        guard let library else {
+          throw RuntimeLibraryStoreError.managedRootUnavailable
+        }
+        return try library.importPortablePackage(packagePath: packagePath)
       }
     )
   }
@@ -174,6 +185,18 @@ final class RuntimeLibraryStore: ObservableObject {
     }
     Task { @MainActor [weak self] in self?.refresh() }
     return evidence
+  }
+
+  /// Opens a portable package from another Mac as a new saved conversation.
+  nonisolated func openPortablePackage(packageURL: URL) throws -> NativePackageImportReceipt {
+    guard let packageImportProvider else {
+      throw RuntimeLibraryStoreError.importUnavailable
+    }
+    let receipt = try packageImportProvider(packageURL.path)
+    Task { @MainActor [weak self] in
+      self?.refresh()
+    }
+    return receipt
   }
 
   @discardableResult

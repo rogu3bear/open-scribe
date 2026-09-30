@@ -128,6 +128,47 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
     }
   }
 
+  func testPortablePackagesNeedTheirExtensionIdleCaptureAndVerification() async {
+    let opener = PackageOpenerStub()
+    var selection = URL(fileURLWithPath: "/tmp/Call.zip")
+    let adapter = ImportedMediaAuthorityAdapter(
+      startSecurityScope: { _ in true },
+      stopSecurityScope: { _ in },
+      canBeginImport: { !opener.isRecording },
+      importer: { _, _ in acceptedEvidence() },
+      packagePicker: { selection },
+      packageOpener: { _ in try opener.open() }
+    )
+    adapter.chooseAndOpenPackage()
+    XCTAssertEqual(adapter.phase, .failed)
+    XCTAssertTrue(adapter.statusMessage?.contains("Finish the current recording") == true)
+
+    opener.finishRecording()
+    adapter.chooseAndOpenPackage()
+    XCTAssertEqual(adapter.phase, .failed)
+    XCTAssertTrue(adapter.statusMessage?.contains("ends in .openscribe") == true)
+    XCTAssertEqual(opener.count, 0)
+
+    selection = URL(fileURLWithPath: "/tmp/Call.openscribe", isDirectory: true)
+    adapter.chooseAndOpenPackage()
+    await assertEventually { adapter.phase == .failed }
+    XCTAssertEqual(opener.count, 1)
+    XCTAssertNil(adapter.importedSessionId)
+    XCTAssertTrue(adapter.statusMessage?.contains("did not verify") == true)
+
+    opener.fail(with: NativeStorageError.InvalidRequest)
+    adapter.chooseAndOpenPackage()
+    await assertEventually { adapter.phase == .failed && opener.count == 2 }
+    XCTAssertTrue(adapter.statusMessage?.contains("do not match its audio") == true)
+    XCTAssertEqual(
+      ImportedMediaAuthorityAdapter.packageSuccessMessage(
+        NativePackageImportReceipt(
+          sessionId: "restored", sourceSessionId: "source", title: "Planning",
+          mediaFiles: 3, transcriptTracks: 1, markers: 2)),
+      "Opened Planning from a portable package with 3 audio files and a transcript. It is a separate conversation on this Mac."
+    )
+  }
+
   func testSizeFailureExplainsPolicyWithoutAddingASession() async {
     let adapter = ImportedMediaAuthorityAdapter(
       picker: { URL(fileURLWithPath: "/tmp/large.m4a") },
@@ -753,5 +794,23 @@ private final class BlockingImportGate: @unchecked Sendable {
 
   func recordScopeClosed() {
     condition.withLock { didCloseScope = true }
+  }
+}
+
+private final class PackageOpenerStub: @unchecked Sendable {
+  private let lock = NSLock()
+  private var calls = 0
+  private var recording = true
+  private var failure: Error = NativeStorageError.IntegrityMismatch
+  var count: Int { lock.withLock { calls } }
+  var isRecording: Bool { lock.withLock { recording } }
+  func finishRecording() { lock.withLock { recording = false } }
+  func fail(with error: Error) { lock.withLock { failure = error } }
+  func open() throws -> NativePackageImportReceipt {
+    let error = lock.withLock {
+      calls += 1
+      return failure
+    }
+    throw error
   }
 }

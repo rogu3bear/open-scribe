@@ -178,7 +178,10 @@ impl SessionStore {
             // Recovered tracks have their own validated playback authority. The
             // ordinary saved-audio query deliberately excludes them.
             let has_capture_timeline: bool = transaction.query_row(
-                "SELECT EXISTS(SELECT 1 FROM session_events WHERE session_id = ?1 AND event_kind = 'capture_clock_anchored')",
+                "SELECT EXISTS(SELECT 1 FROM session_events WHERE session_id = ?1 AND event_kind = 'capture_clock_anchored')
+                    OR EXISTS(SELECT 1 FROM session_restorations JOIN sessions ON sessions.id = session_restorations.session_id
+                              WHERE session_restorations.session_id = ?1 AND session_restorations.state = 'restored'
+                                AND sessions.origin = 'capture')",
                 [&session_id], |row| row.get(0),
             )?;
             let playable_media = if recovered || has_capture_timeline {

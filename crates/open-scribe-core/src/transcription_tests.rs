@@ -138,7 +138,7 @@ pub(crate) fn imported(seconds: u64) -> Imported {
     }
 }
 
-fn write_burst_caf(path: &Path, frames: u64) {
+pub(crate) fn write_burst_caf(path: &Path, frames: u64) {
     let mut file = File::create(path).unwrap();
     file.write_all(b"caff\0\x01\0\0desc").unwrap();
     file.write_all(&32_i64.to_be_bytes()).unwrap();

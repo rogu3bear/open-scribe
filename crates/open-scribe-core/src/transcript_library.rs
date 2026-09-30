@@ -9,6 +9,7 @@ use crate::export::{
     TranscriptAvailability, TranscriptExport, TranscriptExportError, TranscriptExportFormat,
     TranscriptExportReceipt, write_transcript_export,
 };
+use crate::package_import::{PackageImportReceipt, import_portable_package};
 use crate::session_export::{
     FileExportReceipt, PortableSummary, SessionExportError, export_source_media, export_track_wav,
     export_validated_mix, write_portable_package, write_session_manifest,
@@ -219,6 +220,14 @@ impl TranscriptLibrary {
         destination: &Path,
     ) -> Result<PortableSummary, SessionExportError> {
         write_portable_package(&self.store, session, destination)
+    }
+
+    /// Opens a portable package from another Mac as a new conversation.
+    pub fn import_portable_package(
+        &mut self,
+        package: &Path,
+    ) -> Result<PackageImportReceipt, SessionExportError> {
+        import_portable_package(&mut self.store, package)
     }
 }
 

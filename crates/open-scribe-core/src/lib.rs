@@ -26,8 +26,12 @@ pub use session_export::{
     render_session_manifest, verify_portable_package, write_portable_package,
     write_session_manifest,
 };
+mod package_import;
 #[cfg(test)]
 mod session_export_tests;
+pub use package_import::{PackageImportReceipt, import_portable_package};
+#[cfg(test)]
+mod package_import_tests;
 mod speech;
 pub use open_scribe_asr::{WHISPER_ENGINE, WHISPER_ENGINE_VERSION};
 pub use speech::{

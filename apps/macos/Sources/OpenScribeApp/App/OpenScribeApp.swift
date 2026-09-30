@@ -91,6 +91,9 @@ struct OpenScribeApp: App {
       canBeginImport: { controller.canStart },
       importer: { title, sourceURL in
         try runtime.importManagedAudio(title: title, sourceURL: sourceURL)
+      },
+      packageOpener: { packageURL in
+        try runtime.openPortablePackage(packageURL: packageURL)
       }
     )
     _runtimeStore = StateObject(wrappedValue: runtime)

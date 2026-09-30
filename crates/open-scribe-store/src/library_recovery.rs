@@ -161,6 +161,7 @@ impl SessionStore {
 
     fn recover_library_pass(&mut self) -> Result<LibraryRecovery, StoreError> {
         self.settle_deletion_intents()?;
+        self.settle_package_restorations()?;
         let mut findings = self.recover_preparations()?;
         let blocked = blocked_sessions(&findings);
         for finding in self.recover_abandoned_preparations(&blocked)? {
@@ -191,6 +192,9 @@ impl SessionStore {
                 "SELECT id FROM sessions WHERE origin = 'capture' AND lifecycle = 'preparing'
                  AND journal_durable = 1 AND NOT EXISTS (
                     SELECT 1 FROM segments WHERE segments.session_id = sessions.id
+                 ) AND NOT EXISTS (
+                    SELECT 1 FROM session_restorations
+                    WHERE session_restorations.session_id = sessions.id
                  ) ORDER BY id",
             )?;
             query

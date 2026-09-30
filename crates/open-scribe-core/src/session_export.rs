@@ -94,7 +94,7 @@ pub struct PortableSummary {
     pub byte_length: u64,
 }
 
-fn schema_id(schema_json: &str) -> String {
+pub(crate) fn schema_id(schema_json: &str) -> String {
     serde_json::from_str::<Value>(schema_json)
         .ok()
         .and_then(|schema| schema.get("$id")?.as_str().map(str::to_owned))
@@ -619,6 +619,17 @@ fn replace_directory(staging: &Path, destination: &Path, parent: &Path) -> io::R
 /// with no symlink anywhere, regular files of the declared length and
 /// SHA-256, and no undeclared file.
 pub fn verify_portable_package(package: &Path) -> Result<PortableSummary, SessionExportError> {
+    Ok(verify_package(package)?.summary)
+}
+
+/// A verified package's manifest document and its own digest.
+pub(crate) struct VerifiedPackage {
+    pub manifest: Value,
+    pub manifest_sha256: String,
+    pub summary: PortableSummary,
+}
+
+pub(crate) fn verify_package(package: &Path) -> Result<VerifiedPackage, SessionExportError> {
     let invalid = SessionExportError::InvalidPackage;
     let root = fs::symlink_metadata(package)?;
     if !root.is_dir() {
@@ -687,7 +698,7 @@ pub fn verify_portable_package(package: &Path) -> Result<PortableSummary, Sessio
     if present != declared {
         return Err(invalid("the package holds an undeclared or missing file"));
     }
-    Ok(PortableSummary {
+    let summary = PortableSummary {
         source_session_id: manifest["source_session_id"]
             .as_str()
             .ok_or(invalid("source session is missing"))?
@@ -695,10 +706,15 @@ pub fn verify_portable_package(package: &Path) -> Result<PortableSummary, Sessio
         title: manifest["title"].as_str().unwrap_or_default().to_owned(),
         files: files.len() as u32,
         byte_length: total,
+    };
+    Ok(VerifiedPackage {
+        manifest_sha256: hex(&Sha256::digest(&bytes)),
+        manifest,
+        summary,
     })
 }
 
-fn normalized_relative(path: &str) -> Result<PathBuf, SessionExportError> {
+pub(crate) fn normalized_relative(path: &str) -> Result<PathBuf, SessionExportError> {
     let invalid = || SessionExportError::InvalidPackage("a file path is not a safe relative path");
     if path.is_empty() || path.contains('\\') || path.contains('\0') || path.contains("//") {
         return Err(invalid());
@@ -726,7 +742,7 @@ fn reject_symlinked_parents(package: &Path, relative: &Path) -> Result<(), Sessi
     Ok(())
 }
 
-fn open_regular(path: &Path) -> Result<File, SessionExportError> {
+pub(crate) fn open_regular(path: &Path) -> Result<File, SessionExportError> {
     let file = OpenOptions::new()
         .read(true)
         .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)

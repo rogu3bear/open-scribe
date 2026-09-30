@@ -123,7 +123,7 @@ pub struct TranscriptionRunIdentity {
 }
 
 impl TranscriptionRunIdentity {
-    fn digest(&self) -> String {
+    pub(super) fn digest(&self) -> String {
         digest_fields(
             b"open-scribe.transcription-run/v1",
             &[
@@ -777,7 +777,7 @@ fn require_running(
         .ok_or(StoreError::InvalidState("transcription run is not running"))
 }
 
-fn select_revision(
+pub(super) fn select_revision(
     transaction: &Transaction<'_>,
     session_id: &str,
     track_id: &str,

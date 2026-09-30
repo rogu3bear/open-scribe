@@ -559,7 +559,7 @@ fn schema_v4_fixture_migrates_without_rewriting_sealed_evidence() {
             .unwrap()
             .map(Result::unwrap)
             .collect();
-        assert_eq!(versions, [1, 2, 3, 4, 5, 6, 7, 8]);
+        assert_eq!(versions, [1, 2, 3, 4, 5, 6, 7, 8, 9]);
         let derived: i64 = store
             .connection
             .query_row(

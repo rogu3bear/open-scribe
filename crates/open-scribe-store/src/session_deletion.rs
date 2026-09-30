@@ -191,6 +191,7 @@ impl SessionStore {
             "DELETE FROM imports WHERE session_id = ?1",
             "DELETE FROM session_events WHERE session_id = ?1",
             "DELETE FROM recovery_runs WHERE session_id = ?1",
+            "DELETE FROM session_restorations WHERE session_id = ?1",
             "DELETE FROM session_deletion_intents WHERE session_id = ?1",
         ] {
             transaction.execute(statement, [&session.0])?;

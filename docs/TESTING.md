@@ -1093,7 +1093,8 @@ session state.
 
 Excluded:
 
-- importing a package back as a new session (round trip, still intended);
+- importing a package back as a new session (not part of this receipt; see
+  the next section);
 - sandboxed export staging (TD-011);
 - export of very long sessions;
 - a candidate-bound receipt.
@@ -1114,6 +1115,67 @@ is accepted only under the current active epoch while audio is recording.
 Its host times map onto the session clock and may not precede the latest
 pause boundary or the last event. Text that repeats the epoch's last
 reading is refused as a duplicate unless the user marked the moment. An
+### Opening a portable package from another Mac (ADR 0010 round trip)
+
+"Open Portable Package…" (toolbar, ⌘O, and the empty library) opens a
+`.openscribe` package as a new conversation. The core verifies the whole
+package and rereads `session.json` and `transcript.json` against the manifest
+digests. Store migration 9 then restores it:
+
+- new local session, track, and segment identities, keeping the source
+  session ID and manifest digest as provenance;
+- each media file rehashed as it is copied and checked for length, sample
+  count, and channels, with every placement journaled before projection;
+- a restored capture plays from those placements, not a synthesized clock;
+- a selected Final revision, with its corrections, speaker names, and
+  markers, only when its input digest, recomputed from the package's own
+  identities, names exactly those bytes.
+
+A restore that fails is removed at once or at the next launch and leaves a
+deletion tombstone. The evidence resolver now names a transcript segment by
+its revision in `record_id`, the convention `transcript.json` already
+exported.
+
+Proof on September 30, 2026, in a worktree that also held another session's
+uncommitted native build-policy edits (`.cargo/config.toml` GGML flags and
+the build-configuration audit):
+
+- `cargo clippy --workspace --all-targets -- -D warnings`: clean.
+- `cargo test --workspace`: store 172 passed, one ignored; core 25; uniffi 8;
+  no failures.
+- Five new store tests:
+  - a two-track capture restores with its gaps, digests, leases, marker,
+    corrected transcript, speaker name, search, and timeline snapshot, and
+    keeps them across a relaunch;
+  - a transcript that does not cite its media is refused before any file;
+  - changed package media discards the partial session with a tombstone;
+  - a crash-interrupted restore is removed at launch;
+  - an import keeps its origin and plays its original.
+- Three new core tests:
+  - export, open in a second library, and re-export: an import and a
+    capture keep identical semantics;
+  - the restored capture transcribes in place, and every reference the
+    second library exports resolves there;
+  - an edited document or a mismatched transcript input is refused.
+- `./script/build_and_run.sh --verify`: `NATIVE_FIXTURE_XCODE_GREEN`, 194
+  tests, four optional skips, no failures. New tests:
+  - a synthetic dual-source capture exported, then opened through the
+    toolbar path in another library, plays sample-identical audio on the same
+    timeline, and a changed file is refused;
+  - package opening requires the extension, an idle recorder, and
+    verification.
+- `./script/check.sh --scaffold`: `SCAFFOLD_GREEN`;
+  `script/check_native_contracts.sh`: `NATIVE_CONTRACT_GREEN`.
+
+Excluded:
+
+- packages holding a compressed M4A import (refused with a named reason);
+- a failed transcription state (restores as pending);
+- context events, which packages do not carry;
+- a two-hour round trip;
+- opening package media in independent applications;
+- a candidate-bound receipt.
+
 empty reading, or one larger than the 16 KiB journal bound (TD-012), is
 refused. Refusals are values, never durable effects.
 

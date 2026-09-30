@@ -25,6 +25,55 @@ const SPAN_GAP_NANOSECONDS: i64 = 1_000_000_000 / MEDIA_SAMPLE_RATE_HZ as i64 + 
 /// start and preceding gap in nanoseconds, frame count, and channel count.
 type PlacedSegment = (String, String, i64, i64, u64, u16);
 
+/// One sealed segment as the transcription input digest covers it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DigestedSegment {
+    pub segment_id: String,
+    pub digest_sha256: String,
+    pub start_nanoseconds: i64,
+    pub gap_nanoseconds: i64,
+    pub frames: u64,
+}
+
+/// The digest over one track's ordered sealed segments and placement. It
+/// names the session, track, and segment identities, so package restore
+/// recomputes a source transcript's input from the manifest with this same
+/// function rather than a copy of it.
+pub fn transcription_input_digest(
+    session_id: &str,
+    track_id: &str,
+    compressed: bool,
+    segments: &[DigestedSegment],
+) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"open-scribe.transcription-input/v1\n");
+    hasher.update(session_id.as_bytes());
+    hasher.update(b"\n");
+    hasher.update(track_id.as_bytes());
+    if compressed {
+        // PCM identities are unchanged; a compressed import names its path.
+        hasher.update(b"\ncompressed-import/decoded-companion/v1");
+    }
+    let mut span_start = 0;
+    for (index, segment) in segments.iter().enumerate() {
+        let starts_span = index == 0 || segment.gap_nanoseconds > SPAN_GAP_NANOSECONDS;
+        if starts_span {
+            span_start = segment.start_nanoseconds;
+        }
+        hasher.update(
+            format!(
+                "\n{}|{}|{}|{}|{span_start}",
+                usize::from(starts_span),
+                segment.segment_id,
+                segment.digest_sha256,
+                segment.frames
+            )
+            .as_bytes(),
+        );
+    }
+    hex(&hasher.finalize())
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TranscriptionInput {
     pub session_id: SessionId,
@@ -135,15 +184,7 @@ impl SessionStore {
         }
         let channels = placed[0].5;
         let mut spans: Vec<InputSpan> = Vec::new();
-        let mut hasher = Sha256::new();
-        hasher.update(b"open-scribe.transcription-input/v1\n");
-        hasher.update(session.0.as_bytes());
-        hasher.update(b"\n");
-        hasher.update(track_id.as_bytes());
-        if compressed {
-            // PCM identities are unchanged; a compressed import names its path.
-            hasher.update(b"\ncompressed-import/decoded-companion/v1");
-        }
+        let mut digested = Vec::with_capacity(placed.len());
         for (source_id, segment_id, start, gap, frames, segment_channels) in placed {
             if segment_channels != channels {
                 return Err(StoreError::IntegrityMismatch(
@@ -151,8 +192,7 @@ impl SessionStore {
                 ));
             }
             let digest = self.sealed_segment_digest(session, &segment_id)?;
-            let starts_span = spans.is_empty() || gap > SPAN_GAP_NANOSECONDS;
-            if starts_span {
+            if spans.is_empty() || gap > SPAN_GAP_NANOSECONDS {
                 spans.push(InputSpan {
                     start_nanoseconds: start,
                     frames: 0,
@@ -160,15 +200,14 @@ impl SessionStore {
                 });
             }
             let span = spans.last_mut().expect("span exists");
-            hasher.update(
-                format!(
-                    "\n{}|{segment_id}|{digest}|{frames}|{}",
-                    usize::from(starts_span),
-                    span.start_nanoseconds
-                )
-                .as_bytes(),
-            );
             span.frames += frames;
+            digested.push(DigestedSegment {
+                segment_id: segment_id.clone(),
+                digest_sha256: digest.clone(),
+                start_nanoseconds: start,
+                gap_nanoseconds: gap,
+                frames,
+            });
             span.segments.push(InputSegment {
                 source_id,
                 segment_id,
@@ -181,7 +220,7 @@ impl SessionStore {
             track_id: track_id.to_owned(),
             channels,
             compressed,
-            input_digest: hex(&hasher.finalize()),
+            input_digest: transcription_input_digest(&session.0, track_id, compressed, &digested),
             spans,
         })
     }

@@ -357,6 +357,25 @@ impl NativeTranscriptLibrary {
             .map(map_portable_summary)
             .map_err(map_session_export_error)
     }
+
+    /// Opens a `.openscribe` package from another Mac as a new conversation.
+    /// The package is verified in full before anything is copied.
+    pub fn import_portable_package(
+        &self,
+        package_path: String,
+    ) -> Result<NativePackageImportReceipt, NativeStorageError> {
+        self.library()?
+            .import_portable_package(Path::new(&package_path))
+            .map(|receipt| NativePackageImportReceipt {
+                session_id: receipt.session_id.0,
+                source_session_id: receipt.source_session_id,
+                title: receipt.title,
+                media_files: receipt.media_files,
+                transcript_tracks: receipt.transcript_tracks,
+                markers: receipt.markers,
+            })
+            .map_err(map_session_export_error)
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
@@ -378,6 +397,16 @@ pub struct NativePortableSummary {
     pub title: String,
     pub files: u32,
     pub byte_length: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct NativePackageImportReceipt {
+    pub session_id: String,
+    pub source_session_id: String,
+    pub title: String,
+    pub media_files: u32,
+    pub transcript_tracks: u32,
+    pub markers: u32,
 }
 
 /// Checks an untrusted `.openscribe` package without opening a library.

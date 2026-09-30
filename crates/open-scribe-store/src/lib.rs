@@ -46,6 +46,11 @@ pub use library_recovery::LibraryRecovery;
 mod media_recovery;
 mod mixdown;
 pub use mixdown::{MixdownAuthorization, MixdownReceipt, ValidatedMixdown};
+mod package_restore;
+pub use package_restore::{
+    PackageRestoreReceipt, PackageRestoreRequest, RestoredMarker, RestoredSegment, RestoredTrack,
+    RestoredTranscript, RestoredTranscriptSegment,
+};
 mod recorder;
 pub use recorder::{RecorderAction, RecorderDetail, RecorderEvent};
 mod runtime_snapshot;
@@ -56,7 +61,10 @@ mod source_failure;
 mod timeline;
 pub use timeline::{CaptureClock, TimelineSegment};
 mod transcript_input;
-pub use transcript_input::{InputSegment, InputSpan, SealedTrackReader, TranscriptionInput};
+pub use transcript_input::{
+    DigestedSegment, InputSegment, InputSpan, SealedTrackReader, TranscriptionInput,
+    transcription_input_digest,
+};
 mod evidence_resolution;
 pub use evidence_resolution::ResolvedEvidence;
 mod session_inventory;
@@ -2972,6 +2980,11 @@ fn apply_schema(connection: &mut Connection) -> Result<(), StoreError> {
         "INSERT OR IGNORE INTO schema_migrations (version, applied_at_ms) VALUES (?1, ?2)",
         params![context::CONTEXT_MIGRATION_VERSION, applied_at],
     )?;
+    package_restore::apply_restore_schema(&transaction)?;
+    transaction.execute(
+        "INSERT OR IGNORE INTO schema_migrations (version, applied_at_ms) VALUES (?1, ?2)",
+        params![package_restore::RESTORE_MIGRATION_VERSION, applied_at],
+    )?;
     transaction.commit()?;
     Ok(())
 }
@@ -3838,12 +3851,13 @@ mod tests {
             "context_scopes",
             "context_events",
             "session_declarations",
+            "session_restorations",
         ] {
             assert!(names.contains(required), "missing table {required}");
         }
         assert_eq!(
             database_value(&store, "SELECT MAX(version) FROM schema_migrations"),
-            8
+            9
         );
         let segment_columns: BTreeSet<String> = store
             .connection
@@ -3901,7 +3915,7 @@ mod tests {
         assert_eq!(channels, 1);
         assert_eq!(
             database_value(&store, "SELECT MAX(version) FROM schema_migrations"),
-            8
+            9
         );
     }
 

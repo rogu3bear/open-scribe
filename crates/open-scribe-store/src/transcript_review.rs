@@ -22,7 +22,7 @@ const MAX_SPEAKER_LABEL_BYTES: usize = 128;
 const MAX_QUERY_TERMS: usize = 16;
 const MAX_SEARCH_RESULTS: u32 = 200;
 /// The only speaker cluster before diarization: the whole source track.
-const SOURCE_CLUSTER: &str = "source";
+pub(super) const SOURCE_CLUSTER: &str = "source";
 
 const EFFECTIVE_TEXT: &str = "COALESCE(
     (SELECT corrections.text FROM transcript_corrections AS corrections

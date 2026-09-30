@@ -44,6 +44,9 @@ struct ContentView: View {
         captureButton
         RecorderControls(recorder: liveRecording, store: store)
         importButton
+        if importedMediaAuthority.canOpenPackages {
+          openPackageButton
+        }
       }
     }
     .onAppear {
@@ -200,7 +203,8 @@ struct ContentView: View {
           canImport: canImport,
           importIsBusy: importedMediaAuthority.isBusy,
           onRecord: startRecording,
-          onImport: importedMediaAuthority.chooseAndImport
+          onImport: importedMediaAuthority.chooseAndImport,
+          onOpenPackage: openPackageAction
         )
       }
     }
@@ -270,6 +274,25 @@ struct ContentView: View {
         : liveRecording.isLaunchRecoveryPending()
           ? "Wait for the check of recordings from the last session to finish before importing audio"
           : "Wait for the current recording action to finish before importing audio"
+    )
+  }
+
+  private var openPackageAction: (() -> Void)? {
+    guard importedMediaAuthority.canOpenPackages else { return nil }
+    let authority = importedMediaAuthority
+    return { authority.chooseAndOpenPackage() }
+  }
+
+  private var openPackageButton: some View {
+    Button("Open Portable Package…", systemImage: "shippingbox") {
+      importedMediaAuthority.chooseAndOpenPackage()
+    }
+    .keyboardShortcut("o", modifiers: .command)
+    .disabled(!canImport)
+    .help(
+      canImport
+        ? "Open a .openscribe package exported on another Mac as a new conversation"
+        : "Wait for the current recording or import to finish before opening a package"
     )
   }
 
@@ -812,6 +835,7 @@ private struct EmptyConversationWorkspace: View {
   let importIsBusy: Bool
   let onRecord: () -> Void
   let onImport: () -> Void
+  let onOpenPackage: (() -> Void)?
 
   var body: some View {
     VStack(spacing: 16) {
@@ -822,7 +846,7 @@ private struct EmptyConversationWorkspace: View {
         .font(.title2.weight(.semibold))
         .accessibilityAddTraits(.isHeader)
       Text(
-        "Record microphone and computer audio, or import supported local CAF or M4A audio. Open Scribe keeps the source on this Mac."
+        "Record microphone and computer audio, import local CAF or M4A audio, or open a portable package from another Mac. Open Scribe keeps the source on this Mac."
       )
       .foregroundStyle(.secondary)
       .multilineTextAlignment(.center)
@@ -833,6 +857,10 @@ private struct EmptyConversationWorkspace: View {
           .buttonStyle(.borderedProminent)
         Button(importIsBusy ? "Importing…" : "Import Audio…", action: onImport)
           .disabled(!canImport)
+        if let onOpenPackage {
+          Button("Open Portable Package…", action: onOpenPackage)
+            .disabled(!canImport)
+        }
       }
     }
     .padding(40)
