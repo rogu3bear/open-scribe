@@ -92,8 +92,8 @@
 
 ## Local verification
 
-- `./script/build_and_run.sh --verify`: `NATIVE_FIXTURE_XCODE_GREEN`; `./script/build_web.sh`: `WEB_BUILD_GREEN`.
-- Real-model speech: set `OPEN_SCRIBE_WHISPER_MODEL`, `OPEN_SCRIBE_WHISPER_SPEECH_WAV`, and `OPEN_SCRIBE_WHISPER_SPEECH_CAF` for `cargo test -p open-scribe-asr -p open-scribe-core`, or `TEST_RUNNER_`-prefixed for native verify; unset, they skip.
+- `./script/build_and_run.sh --verify`: `NATIVE_FIXTURE_XCODE_GREEN`; `./script/build_web.sh`: `WEB_BUILD_GREEN`; then `./script/check.sh --m4-local-only`: `M4_LOCAL_ONLY_GREEN`.
+- `OPEN_SCRIBE_WHISPER_MODEL`, `_SPEECH_WAV`, `_SPEECH_CAF` serve `cargo test -p open-scribe-asr -p open-scribe-core`, or `TEST_RUNNER_`-prefixed native verify; local-only takes `OPEN_SCRIBE_LOCAL_PROOF_MODEL`, `_SPEECH_CAF`. Unset: skip/hold.
 
 ## Admission rule
 

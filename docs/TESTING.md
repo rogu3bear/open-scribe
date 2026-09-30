@@ -1238,3 +1238,63 @@ Available; otherwise it states why not.
 Excluded: claim evidence navigation and adjudication (Milestone 4),
 resolution of stored references across app versions, and a candidate-bound
 receipt.
+
+### Local-only workflow with IP networking denied (M4)
+
+`./script/check.sh --m4-local-only` launches the development app with
+`--local-only-proof-root` as a direct child of `sandbox-exec`. The profile
+denies every outbound IP connection, inbound IP connection, and IP bind.
+The harness first confirms the profile refuses a `curl` to `1.1.1.1`.
+
+The proof uses its own library, never the user's, and runs this workflow:
+
+1. A synthetic two-source recording on the real writer.
+2. A declared participant and topic.
+3. One real display frame, captured and reduced in memory; its text is only
+   counted.
+4. One context event, accepted under an explicit scope.
+5. Recovery, and a full render of the playback timeline.
+6. A validated mix.
+7. Installation of the pinned model from a local file, then transcription
+   of a spoken import.
+8. A correction, found again by search.
+9. Transcript, manifest, WAV-mix, and portable-package exports; the package
+   verifies.
+10. Two-phase deletion into a proof-local Trash.
+
+The report holds counts only. The harness also checks:
+
+- Only Rust std's precompiled object references socket symbols.
+- The app imports no Foundation or Network networking API.
+- No networking API appears in Swift or Rust source.
+- No IP socket appeared in once-a-second `lsof` samples.
+- No sentinel string (title, participant, topic, context text, correction,
+  or spoken words) appears in stdout, stderr, or the app's unified log.
+- No image file exists in the library.
+
+Result on the build from the preceding `./script/build_and_run.sh --verify`
+(`NATIVE_FIXTURE_XCODE_GREEN`, 192 tests):
+
+```
+M4_LOCAL_ONLY_GREEN
+report={"context_events_accepted":1,"context_frame_pixels":4234240,"context_frame_text_blocks":26,"correction_search_hits":1,"declared_participants":1,"deleted_sessions":1,"package_files":7,"recovered_segments":4,"rendered_frames":1548000,"saved_context_events":1,"screen_recording_permission":"granted","transcript_segments":2,"validated_mix_bytes":95031}
+unified_log_lines=4757 ip_socket_samples=0 retained_images=0
+```
+
+The first run reported RED. The harness had counted `log show`'s own
+filter-header line as a network denial. A positive control then showed that
+unprivileged macOS logs neither sandbox denials nor sandbox reports, so
+detection by log was removed. Attempted connections are bounded by the
+socket samples and the static checks, not observed directly. `os_log`
+redacts non-public values, so the log scan catches public logging and
+prints, not redacted values.
+
+Excluded:
+
+- a candidate-bound run;
+- a signed App Sandbox build;
+- a system firewall;
+- a live microphone;
+- crash-report content;
+- deletion through the system Trash;
+- providers.

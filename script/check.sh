@@ -87,6 +87,10 @@ if [[ "$#" -eq 1 && "$1" == "--m3-complete" ]]; then
 	exec "$script_dir/check_m3_complete.sh"
 fi
 
+if [[ "$#" -eq 1 && "$1" == "--m4-local-only" ]]; then
+	exec "$script_dir/check_m4_local_only.sh"
+fi
+
 if [[ "$#" -eq 1 && "$1" == "--m4-complete" ]]; then
 	[[ -f "$script_dir/check_m4_complete.sh" && ! -L "$script_dir/check_m4_complete.sh" ]] || exit 2
 	exec "$script_dir/check_m4_complete.sh"

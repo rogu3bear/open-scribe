@@ -71,10 +71,12 @@ struct OpenScribeApp: App {
       "--m1-forced-termination-recovery-root",
       from: arguments
     )
+    let localOnlyRoot = Self.argumentRoot("--local-only-proof-root", from: arguments)
     let proofRoots: [URL?] = [
       injectedMediaRoot, injectedRoot, injectedRecoveryRoot, foundationReviewRoot,
       foundationLiveRecoveryRoot, timelineCaptureRoot, timelineRecoveryRoot,
       liveProofRoot, forcedCaptureRoot, forcedRecoveryRoot,
+      localOnlyRoot?.appendingPathComponent("Library", isDirectory: true),
     ]
     let managedRoot = proofRoots.compactMap { $0 }.first ?? Self.defaultRoot()
     let injectedProof = injectedRoot.map {
@@ -121,6 +123,9 @@ struct OpenScribeApp: App {
       Task { @MainActor in
         await Self.runForcedTerminationCaptureProof(controller: controller)
       }
+    } else if let root = localOnlyRoot {
+      // The proof owns its library; launch recovery never scans the user's.
+      Task { @MainActor in await LocalOnlyWorkflowProof.run(root: root) }
     } else {
       // Launch recovery scans the library off the main actor. A recording or
       // import begun during that scan could be recovered as abandoned, and a
