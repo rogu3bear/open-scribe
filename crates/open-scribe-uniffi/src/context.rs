@@ -1,7 +1,7 @@
 //! Coarse context scope and sparse event calls (ADR 0011, ADR 0012).
 //!
 //! Swift proposes only reduced text blocks and bounded names. Frames,
-//! pointer samples, fingerprints, and frame-rate values never cross here.
+//! cursor positions, fingerprints, and frame-rate values never cross here.
 //! Scope changes and proposals go through the recording controller, the one
 //! writer of the session journal.
 

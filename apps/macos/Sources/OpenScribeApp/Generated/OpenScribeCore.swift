@@ -1331,7 +1331,7 @@ public protocol NativeSpeechModelsProtocol: AnyObject, Sendable {
 
   /**
    * Whether the app must first decode the session's compressed import to a
-   * 48 kHz 16-bit PCM CAF companion and pass it to `transcribe_session`.
+   * 48 kHz 16-bit linear CAF companion and pass it to `transcribe_session`.
    */
   func needsDecodedCompanion(sessionId: String) throws -> Bool
 
@@ -1432,7 +1432,7 @@ open class NativeSpeechModels: NativeSpeechModelsProtocol, @unchecked Sendable {
 
   /**
    * Whether the app must first decode the session's compressed import to a
-   * 48 kHz 16-bit PCM CAF companion and pass it to `transcribe_session`.
+   * 48 kHz 16-bit linear CAF companion and pass it to `transcribe_session`.
    */
   open func needsDecodedCompanion(sessionId: String) throws -> Bool {
     return try FfiConverterBool.lift(
@@ -9289,7 +9289,7 @@ private let initializationResult: InitializationResult = {
   if uniffi_open_scribe_uniffi_checksum_method_nativespeechmodels_models() != 16715 {
     return InitializationResult.apiChecksumMismatch
   }
-  if uniffi_open_scribe_uniffi_checksum_method_nativespeechmodels_needs_decoded_companion() != 35891
+  if uniffi_open_scribe_uniffi_checksum_method_nativespeechmodels_needs_decoded_companion() != 16190
   {
     return InitializationResult.apiChecksumMismatch
   }

@@ -192,7 +192,7 @@ impl NativeSpeechModels {
     }
 
     /// Whether the app must first decode the session's compressed import to a
-    /// 48 kHz 16-bit PCM CAF companion and pass it to `transcribe_session`.
+    /// 48 kHz 16-bit linear CAF companion and pass it to `transcribe_session`.
     pub fn needs_decoded_companion(&self, session_id: String) -> Result<bool, NativeSpeechError> {
         self.models
             .needs_decoded_companion(&SessionId(session_id))
