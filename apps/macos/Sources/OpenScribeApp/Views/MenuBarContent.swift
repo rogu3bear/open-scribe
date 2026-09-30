@@ -7,19 +7,22 @@ struct MenuBarContent: View {
   @ObservedObject var importedMediaAuthority: ImportedMediaAuthorityAdapter
   @ObservedObject var liveRecording: LiveMicrophoneRecordingController
   @ObservedObject var recoveredSessions: RecoveredSessionController
+  @ObservedObject var context: ContextScopeModel
 
   @MainActor
   init(
     store: RuntimeLibraryStore,
     importedMediaAuthority: ImportedMediaAuthorityAdapter,
     liveRecording: LiveMicrophoneRecordingController? = nil,
-    recoveredSessions: RecoveredSessionController? = nil
+    recoveredSessions: RecoveredSessionController? = nil,
+    context: ContextScopeModel? = nil
   ) {
     self.store = store
     self.importedMediaAuthority = importedMediaAuthority
     self.liveRecording = liveRecording ?? LiveMicrophoneRecordingController()
     self.recoveredSessions =
       recoveredSessions ?? RecoveredSessionController(managedRoot: nil)
+    self.context = context ?? ContextScopeModel(binding: { nil })
   }
 
   var body: some View {
@@ -74,6 +77,7 @@ struct MenuBarContent: View {
       .keyboardShortcut("s", modifiers: [.command, .shift])
     }
     RecorderControls(recorder: liveRecording, store: store, sourcesPresentation: .menu)
+    ContextMenuSection(model: context)
     if let recovered = recoveredSessions.sessions.first {
       Divider()
       Label("Recovered conversation", systemImage: "waveform.badge.checkmark")

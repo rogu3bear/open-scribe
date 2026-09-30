@@ -112,6 +112,7 @@ fn deletion_states_its_scope_requires_trash_and_removes_every_owned_row() {
             human_corrections: 1,
             speaker_names: 1,
             markers: 0,
+            context_events: 0,
             export_files: 1,
             export_bytes: 8,
         }

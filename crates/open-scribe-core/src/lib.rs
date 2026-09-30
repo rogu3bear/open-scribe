@@ -41,6 +41,14 @@ pub use open_scribe_domain::{
     Command, Fixture, Presentation, SessionSnapshot, TimerBehavior, TransitionError, announcement,
 };
 pub use open_scribe_store::{
+    AcceptedContextEvent, CONTEXT_EVENT_SCHEMA, CONTEXT_EXCLUSIONS, CONTEXT_SCOPE_SCHEMA,
+    ContextAction, ContextBounds, ContextCondition, ContextDecision, ContextDetail,
+    ContextEventReason, ContextEventRecord, ContextFailureReason, ContextMode, ContextPauseReason,
+    ContextProposal, ContextRejection, ContextRetention, ContextScope, ContextScopeRequest,
+    ContextSource, ContextTarget, ContextTargetKind, ContextTextBlock, DisplayTopology,
+    ScreenPermission, SessionDeclaration,
+};
+pub use open_scribe_store::{
     AuthorizeMediaOpenRequest, CaptureClock, CompressedImportMetadata, FirstSampleEvidence,
     FirstSampleReceipt, ImportMediaRequest, ImportPolicy, ImportedMediaEvidence,
     ImportedPlaybackLease, InterruptSessionRequest, MediaOpenAuthorization, MediaOpenEvidence,
@@ -99,6 +107,39 @@ pub struct RecordingPreparationController {
 }
 
 impl RecordingPreparationController {
+    /// Scope changes share the recording writer, so context records and
+    /// media records never race for the session journal.
+    pub fn context_action(
+        &mut self,
+        session: open_scribe_types::SessionId,
+        action: ContextAction,
+    ) -> Result<ContextDetail, StoreError> {
+        self.store.context_action(session, action)
+    }
+
+    pub fn propose_context_event(
+        &mut self,
+        session: open_scribe_types::SessionId,
+        proposal: ContextProposal,
+    ) -> Result<ContextDecision, StoreError> {
+        self.store.propose_context_event(session, proposal)
+    }
+
+    pub fn context_detail(
+        &self,
+        session: &open_scribe_types::SessionId,
+    ) -> Result<ContextDetail, StoreError> {
+        self.store.context_detail(session)
+    }
+
+    pub fn declare_session(
+        &mut self,
+        session: open_scribe_types::SessionId,
+        declaration: SessionDeclaration,
+    ) -> Result<SessionDeclaration, StoreError> {
+        self.store.declare_session(session, declaration)
+    }
+
     pub fn recorder_action(
         &mut self,
         session: open_scribe_types::SessionId,

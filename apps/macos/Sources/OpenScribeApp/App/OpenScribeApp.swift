@@ -43,6 +43,7 @@ struct OpenScribeApp: App {
   @StateObject private var recoveredSessions: RecoveredSessionController
   @StateObject private var transcripts: TranscriptLibraryModel
   @StateObject private var speech: SpeechTranscriptionModel
+  @StateObject private var context: ContextScopeModel
 
   private let status = RustStatusSource.load()
 
@@ -96,6 +97,7 @@ struct OpenScribeApp: App {
     _recoveredSessions = StateObject(wrappedValue: recovery)
     _transcripts = StateObject(wrappedValue: TranscriptLibraryModel(managedRoot: managedRoot))
     _speech = StateObject(wrappedValue: SpeechTranscriptionModel(managedRoot: managedRoot))
+    _context = StateObject(wrappedValue: ContextScopeModel(recorder: controller))
     if let proof = injectedProof {
       Task { @MainActor in await proof.run(runtime: runtime) }
     } else if let root = injectedRecoveryRoot {
@@ -143,7 +145,8 @@ struct OpenScribeApp: App {
         liveRecording: liveRecording,
         recoveredSessions: recoveredSessions,
         transcripts: transcripts,
-        speech: speech
+        speech: speech,
+        context: context
       )
     }
     .defaultSize(width: 1040, height: 720)
@@ -153,7 +156,8 @@ struct OpenScribeApp: App {
         store: runtimeStore,
         importedMediaAuthority: importedMediaAuthority,
         liveRecording: liveRecording,
-        recoveredSessions: recoveredSessions
+        recoveredSessions: recoveredSessions,
+        context: context
       )
     } label: {
       MenuBarLabel(store: runtimeStore, liveRecording: liveRecording)

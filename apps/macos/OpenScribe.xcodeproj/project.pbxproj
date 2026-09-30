@@ -61,6 +61,17 @@
 		5E7C1A2B3D4F5061728394A5 /* SpeechTranscriptionModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E7C1A2B3D4F5061728394A6 /* SpeechTranscriptionModel.swift */; };
 		5E7C1A2B3D4F5061728394A7 /* SpeechModelSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E7C1A2B3D4F5061728394A8 /* SpeechModelSheet.swift */; };
 		EDDBA4832BEA98E75718E55F /* SymbolResolver.swift in Sources */ = {isa = PBXBuildFile; fileRef = 46B615557F7DEE8F964B69CE /* SymbolResolver.swift */; };
+		5E7C1A2B3D4F5061C0010002 /* ContextTopology.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E7C1A2B3D4F5061C0010003 /* ContextTopology.swift */; };
+		5E7C1A2B3D4F5061C0010004 /* PointerDwellDetector.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E7C1A2B3D4F5061C0010005 /* PointerDwellDetector.swift */; };
+		5E7C1A2B3D4F5061C0010006 /* ContextReducer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E7C1A2B3D4F5061C0010007 /* ContextReducer.swift */; };
+		5E7C1A2B3D4F5061C0010008 /* ContextWorker.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E7C1A2B3D4F5061C0010009 /* ContextWorker.swift */; };
+		5E7C1A2B3D4F5061C001000A /* ScreenContextCapture.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E7C1A2B3D4F5061C001000B /* ScreenContextCapture.swift */; };
+		5E7C1A2B3D4F5061C001000C /* ContextScopeModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E7C1A2B3D4F5061C001000D /* ContextScopeModel.swift */; };
+		5E7C1A2B3D4F5061C001000E /* ContextScopeSurfaces.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E7C1A2B3D4F5061C001000F /* ContextScopeSurfaces.swift */; };
+		5E7C1A2B3D4F5061C0010010 /* ContextOverlayController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E7C1A2B3D4F5061C0010011 /* ContextOverlayController.swift */; };
+		5E7C1A2B3D4F5061C0010012 /* ContextScopeSummary.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E7C1A2B3D4F5061C0010013 /* ContextScopeSummary.swift */; };
+		5E7C1A2B3D4F5061C0010014 /* ContextViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E7C1A2B3D4F5061C0010015 /* ContextViews.swift */; };
+		5E7C1A2B3D4F5061C0020001 /* ContextTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E7C1A2B3D4F5061C0020002 /* ContextTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -130,6 +141,17 @@
 		F999B06ACC1C80F559FDEF6B /* RustStatusSourceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RustStatusSourceTests.swift; sourceTree = "<group>"; };
 		FA0F0D94D6B878C1D7BCA3F7 /* CompactLiveView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CompactLiveView.swift; sourceTree = "<group>"; };
 		FF5F704250A82C972C63B8EC /* OpenScribeApp.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = OpenScribeApp.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		5E7C1A2B3D4F5061C0010003 /* ContextTopology.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContextTopology.swift; sourceTree = "<group>"; };
+		5E7C1A2B3D4F5061C0010005 /* PointerDwellDetector.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PointerDwellDetector.swift; sourceTree = "<group>"; };
+		5E7C1A2B3D4F5061C0010007 /* ContextReducer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContextReducer.swift; sourceTree = "<group>"; };
+		5E7C1A2B3D4F5061C0010009 /* ContextWorker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContextWorker.swift; sourceTree = "<group>"; };
+		5E7C1A2B3D4F5061C001000B /* ScreenContextCapture.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenContextCapture.swift; sourceTree = "<group>"; };
+		5E7C1A2B3D4F5061C001000D /* ContextScopeModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContextScopeModel.swift; sourceTree = "<group>"; };
+		5E7C1A2B3D4F5061C001000F /* ContextScopeSurfaces.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContextScopeSurfaces.swift; sourceTree = "<group>"; };
+		5E7C1A2B3D4F5061C0010011 /* ContextOverlayController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContextOverlayController.swift; sourceTree = "<group>"; };
+		5E7C1A2B3D4F5061C0010013 /* ContextScopeSummary.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContextScopeSummary.swift; sourceTree = "<group>"; };
+		5E7C1A2B3D4F5061C0010015 /* ContextViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContextViews.swift; sourceTree = "<group>"; };
+		5E7C1A2B3D4F5061C0020002 /* ContextTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContextTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
@@ -139,6 +161,7 @@
 				4CEC83BA4C2296F23519D224 /* App */,
 				ABE6BAAD9816151D47F181AD /* Generated */,
 				6A61A3F920D148E6A9BCE201 /* Media */,
+				5E7C1A2B3D4F5061C0010001 /* Context */,
 				3925FB7D95E16F7A5E141B08 /* Models */,
 				12C6110004107026CDFB4A6C /* Stores */,
 				4F036DA076828A4DAC45FCC5 /* Support */,
@@ -193,6 +216,23 @@
 			path = Support;
 			sourceTree = "<group>";
 		};
+		5E7C1A2B3D4F5061C0010001 /* Context */ = {
+			isa = PBXGroup;
+			children = (
+				5E7C1A2B3D4F5061C0010015 /* ContextViews.swift */,
+				5E7C1A2B3D4F5061C0010013 /* ContextScopeSummary.swift */,
+				5E7C1A2B3D4F5061C0010011 /* ContextOverlayController.swift */,
+				5E7C1A2B3D4F5061C001000F /* ContextScopeSurfaces.swift */,
+				5E7C1A2B3D4F5061C001000D /* ContextScopeModel.swift */,
+				5E7C1A2B3D4F5061C001000B /* ScreenContextCapture.swift */,
+				5E7C1A2B3D4F5061C0010009 /* ContextWorker.swift */,
+				5E7C1A2B3D4F5061C0010007 /* ContextReducer.swift */,
+				5E7C1A2B3D4F5061C0010005 /* PointerDwellDetector.swift */,
+				5E7C1A2B3D4F5061C0010003 /* ContextTopology.swift */,
+			);
+			path = Context;
+			sourceTree = "<group>";
+		};
 		6A61A3F920D148E6A9BCE201 /* Media */ = {
 			isa = PBXGroup;
 			children = (
@@ -222,6 +262,7 @@
 		709304684170899F88B322E6 /* OpenScribeAppTests */ = {
 			isa = PBXGroup;
 			children = (
+				5E7C1A2B3D4F5061C0020002 /* ContextTests.swift */,
 				AA0000050000000000000013 /* RecorderPauseResumeTests.swift */,
 				A22A3F920D148E6A9BCE201 /* ImportedMediaAuthorityAdapterTests.swift */,
 				F5696F23409FC2574DF65AD5 /* FixtureSessionTests.swift */,
@@ -384,6 +425,7 @@
 				CA63A3F920D148E6A9BCE201 /* SystemAudioCaptureAdapterTests.swift in Sources */,
 				AB61A3F920D148E6A9BCE304 /* TimelineWorkflowTests.swift in Sources */,
 				5E7C1A2B3D4F5061728394A9 /* SpeechTranscriptionModelTests.swift in Sources */,
+				5E7C1A2B3D4F5061C0020001 /* ContextTests.swift in Sources */,
 				5E7C1A2B3D4F5061728394B1 /* ConversationExportTests.swift in Sources */,
 				E29A4285E85FCA0A16EDD2F9 /* TranscriptLibraryModelTests.swift in Sources */,
 				E563A3F920D148E6A9BCE201 /* SingleInstanceGuardTests.swift in Sources */,
@@ -409,6 +451,16 @@
 				5E7C1A2B3D4F5061728394AB /* PlaybackByteSources.swift in Sources */,
 				5E7C1A2B3D4F5061728394AD /* RecoveredAudioPlayer.swift in Sources */,
 				C463A3F920D148E6A9BCE201 /* RecoveredSessionController.swift in Sources */,
+				5E7C1A2B3D4F5061C0010002 /* ContextTopology.swift in Sources */,
+				5E7C1A2B3D4F5061C0010004 /* PointerDwellDetector.swift in Sources */,
+				5E7C1A2B3D4F5061C0010006 /* ContextReducer.swift in Sources */,
+				5E7C1A2B3D4F5061C0010008 /* ContextWorker.swift in Sources */,
+				5E7C1A2B3D4F5061C001000A /* ScreenContextCapture.swift in Sources */,
+				5E7C1A2B3D4F5061C001000C /* ContextScopeModel.swift in Sources */,
+				5E7C1A2B3D4F5061C001000E /* ContextScopeSurfaces.swift in Sources */,
+				5E7C1A2B3D4F5061C0010010 /* ContextOverlayController.swift in Sources */,
+				5E7C1A2B3D4F5061C0010012 /* ContextScopeSummary.swift in Sources */,
+				5E7C1A2B3D4F5061C0010014 /* ContextViews.swift in Sources */,
 				5E7C1A2B3D4F5061728394B3 /* TimelineMixExporter.swift in Sources */,
 				5E7C1A2B3D4F5061728394AF /* TranscriptionCompanionDecoder.swift in Sources */,
 				4A61A3F920D148E6A9BCE201 /* ManagedCAFWriter.swift in Sources */,

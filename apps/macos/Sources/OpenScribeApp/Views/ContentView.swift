@@ -7,6 +7,7 @@ struct ContentView: View {
   @ObservedObject var recoveredSessions: RecoveredSessionController
   @ObservedObject var transcripts: TranscriptLibraryModel
   @ObservedObject var speech: SpeechTranscriptionModel
+  @ObservedObject var context: ContextScopeModel
   @StateObject private var navigation = MainWorkspaceNavigation()
   @State private var searchQuery = ""
 
@@ -180,7 +181,7 @@ struct ContentView: View {
       statusBanner
       if let selectedSession {
         if selectedSession.sessionId == store.currentSession?.sessionId {
-          CompactLiveView(store: store, liveRecording: liveRecording)
+          CompactLiveView(store: store, liveRecording: liveRecording, context: context)
         } else {
           ConversationWorkspaceView(
             session: selectedSession,
@@ -560,6 +561,9 @@ private struct ConversationWorkspaceView: View {
         if !session.sources.isEmpty {
           sourceSection
         }
+        ContextEventsSection(
+          detail: transcripts.sessionId == session.sessionId ? transcripts.contextDetail : nil,
+          events: transcripts.sessionId == session.sessionId ? transcripts.contextEvents : [])
         RecorderEventList(events: recorderEvents)
       }
       .frame(maxWidth: 760, alignment: .leading)

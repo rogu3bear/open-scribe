@@ -215,6 +215,15 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
   var canResume: Bool { segmentedCapture && phase == .paused }
   var canMark: Bool { segmentedCapture && (phase == .capturing || phase == .paused) }
 
+  /// The session journal's one writer and its open session, for context
+  /// scope changes and proposals (ADR 0011). `nil` when no capture is open.
+  var contextBinding: ContextBinding? {
+    guard let preparation, let activeSessionId,
+      [.starting, .capturing, .pausing, .paused].contains(phase)
+    else { return nil }
+    return ContextBinding(preparation: preparation, sessionId: activeSessionId)
+  }
+
   /// Idle wording. It never claims readiness while launch recovery holds capture.
   var readinessText: String {
     isLaunchRecoveryPending()

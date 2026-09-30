@@ -20,6 +20,9 @@ final class TranscriptLibraryModel: ObservableObject {
   /// Which audio exports the loaded session can offer.
   @Published private(set) var audioOptions: NativeAudioExportOptions?
   @Published private(set) var isExporting = false
+  /// Scope history, declared metadata, and accepted screen context, read-only.
+  @Published private(set) var contextDetail: NativeContextDetail?
+  @Published private(set) var contextEvents: [NativeContextEvent] = []
 
   private let library: NativeTranscriptLibrary?
   private let moveToTrash: TrashMover
@@ -97,6 +100,8 @@ final class TranscriptLibraryModel: ObservableObject {
       segments = try library.document(sessionId: sessionId)
       speakers = try library.speakers(sessionId: sessionId)
       audioOptions = try? library.audioExportOptions(sessionId: sessionId)
+      contextDetail = try? library.contextDetail(sessionId: sessionId)
+      contextEvents = (try? library.contextEvents(sessionId: sessionId)) ?? []
       report(nil)
     } catch {
       clear(message: Self.describe(error, action: "load the transcript"))
@@ -286,6 +291,8 @@ final class TranscriptLibraryModel: ObservableObject {
     availability = .unavailable
     segments = []
     speakers = []
+    contextDetail = nil
+    contextEvents = []
     report(message)
   }
 
@@ -318,6 +325,7 @@ enum SessionDeletionSummary {
       (inventory.humanCorrections, "correction"),
       (inventory.speakerNames, "speaker name"),
       (inventory.markers, "marker"),
+      (inventory.contextEvents, "screen context event"),
       (inventory.exportFiles, "file exported inside the conversation"),
     ] where value > 0 {
       removed.append(count(value, noun))

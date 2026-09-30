@@ -3,14 +3,17 @@ import SwiftUI
 struct CompactLiveView: View {
   @ObservedObject var store: RuntimeLibraryStore
   @ObservedObject var liveRecording: LiveMicrophoneRecordingController
+  @ObservedObject var context: ContextScopeModel
 
   @MainActor
   init(
     store: RuntimeLibraryStore,
-    liveRecording: LiveMicrophoneRecordingController
+    liveRecording: LiveMicrophoneRecordingController,
+    context: ContextScopeModel? = nil
   ) {
     self.store = store
     self.liveRecording = liveRecording
+    self.context = context ?? ContextScopeModel(binding: { nil })
   }
 
   var body: some View {
@@ -62,6 +65,10 @@ struct CompactLiveView: View {
           Label("Audio is being saved locally as you record.", systemImage: "lock.shield")
             .font(.callout)
             .foregroundStyle(.secondary)
+        }
+
+        if liveRecording.contextBinding != nil {
+          ContextInspector(model: context)
         }
 
         RecorderEventList(events: liveRecording.recorderDetail?.events ?? [])

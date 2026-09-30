@@ -1097,3 +1097,100 @@ Excluded:
 - sandboxed export staging (TD-011);
 - export of very long sessions;
 - a candidate-bound receipt.
+
+### Screen context: explicit scope, sparse events, no pixel retention (ADR 0011, 0012)
+
+Rust store migration 8 owns context state:
+
+- the scope receipt (`open-scribe.context-scope/v1`) and its epoch;
+- the scope's condition: active, paused, revoked, failed, superseded, or
+  ended with the recording;
+- declared participants and topic;
+- append-only `open-scribe.context-event/v1` events.
+
+Every change is journaled before it is projected, and replay is idempotent.
+Changing the scope issues a new epoch, and so does resuming it. A proposal
+is accepted only under the current active epoch while audio is recording.
+Its host times map onto the session clock and may not precede the latest
+pause boundary or the last event. Text that repeats the epoch's last
+reading is refused as a duplicate unless the user marked the moment. An
+empty reading, or one larger than the 16 KiB journal bound (TD-012), is
+refused. Refusals are values, never durable effects.
+
+On the Swift side:
+
+- One utility-priority worker holds a single candidate slot, counts what it
+  drops, and checks a local epoch token after every suspension.
+- Each frame is reduced to a 160×90 grayscale fingerprint with Accelerate.
+  The largest 10-pixel block-mean luma change must reach 3.0 before Vision
+  OCR runs. The first calibration, a whole-frame mean, missed a small text
+  change on a large frame; the fixture caught it before this receipt.
+- Follow Pointer requires a 16-point, 600 ms dwell and cancels above
+  600 pt/s.
+- ScreenCaptureKit takes one frame through the exact filter and excludes
+  Open Scribe. Topology names such as "Studio Display, right of Built-in
+  Display" come from actual display bounds.
+- Pointer-transparent perimeter panels use the ADR's exact values and are
+  excluded from capture.
+- The live window and the menu bar show the scope with Pause, Resume,
+  Mark Now, Narrow Scope, and Revoke. Saved conversations list accepted
+  context.
+
+Verification:
+
+- `cargo clippy` with warnings denied on store, core, and uniffi: clean.
+- `cargo test --offline -p open-scribe-store -p open-scribe-core -p open-scribe-uniffi`:
+  store 163 passed, one ignored; core 22; uniffi 8. The six new store tests
+  cover:
+  - refused authorizations: permission not granted, snapshot retention, no
+    self-exclusion, a mode mismatch, out-of-display region bounds, and a
+    display absent from the topology. None of them was journaled.
+  - pause, stale, and revoked rejections of queued work, and a new scope ID
+    after revocation;
+  - duplicate, empty, and backward-in-time refusals, user marks, and a
+    chained event digest;
+  - no acceptance outside Recording, and an unchanged recorder lifecycle;
+  - crash replay of scopes, events, and declarations exactly once;
+  - malformed and oversized proposals, none of them journaled.
+- `./script/build_and_run.sh --verify`: `NATIVE_FIXTURE_XCODE_GREEN`, 190
+  tests, four optional skips. `ContextTests` covered:
+  - a four-display topology with negative origins, one display above
+    another, and one rotated;
+  - fast pointer transit and brief pauses producing no candidate;
+  - unchanged or one-level-shifted frames running no OCR, and rendered text
+    recognized with top-left boxes;
+  - a worker run against real Rust authority: two readings accepted, the
+    duplicate refused by Rust, a text-free frame not proposed, a user mark
+    accepted, and a capture raced by revocation discarded. A late proposal
+    was refused as revoked, and no image file existed anywhere in the
+    managed root.
+  - the scope model never prompting when listing choices, then prompting
+    once when authorizing without permission. It paused on a moved display,
+    refused to simply resume that pause, and failed when a watched display
+    was removed, while the recording stayed `recording`.
+  - the perimeter style table and the scope summaries.
+- `TEST_RUNNER_OPEN_SCRIBE_CONTEXT_LIVE_CAPTURE=1`, opt-in, with Screen
+  Recording already granted to the test host (the test never prompts): one
+  real frame of the main display (2560×1654) and a half-display region crop
+  (2056×1329) were captured in memory and reduced locally (175 text blocks,
+  counted only; no text was logged or kept).
+- AppKit renders of the live inspector, the context-off state, the
+  preflight, and the saved review were inspected. The inspection moved the
+  scope, exclusion, retention, and permission statements out of the
+  scrolling form, beside Authorize, and named the region's area. The
+  affected test classes were rerun after that change: 61 tests, one optional
+  skip.
+
+Excluded:
+
+- the four-display hardware matrix;
+- live permission revocation during a recording;
+- a two-hour recording under full context load;
+- VoiceOver and Full Keyboard Access inspection;
+- rendered overlay review across appearances and accessibility settings;
+- snapshot retention;
+- the macOS 13 one-frame stream (TD-013);
+- context in exports;
+- a candidate-bound receipt.
+
+The capability manifest keeps `context-and-evidence-lineage` Unavailable.

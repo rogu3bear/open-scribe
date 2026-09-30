@@ -14,8 +14,8 @@ use crate::session_export::{
     export_validated_mix, write_portable_package, write_session_manifest,
 };
 use open_scribe_store::{
-    SessionDeletionInventory, SessionDeletionReceipt, SessionSpeaker, SessionStore, StoreError,
-    TranscriptDocumentSegment, TranscriptSearchHit,
+    ContextDetail, ContextEventRecord, SessionDeletionInventory, SessionDeletionReceipt,
+    SessionSpeaker, SessionStore, StoreError, TranscriptDocumentSegment, TranscriptSearchHit,
 };
 use open_scribe_types::SessionId;
 use std::path::Path;
@@ -47,6 +47,18 @@ impl TranscriptLibrary {
 
     pub fn speakers(&self, session: &SessionId) -> Result<Vec<SessionSpeaker>, StoreError> {
         self.store.session_speakers(session)
+    }
+
+    /// The scope receipts, declared metadata, and accepted-event count, read-only.
+    pub fn context_detail(&self, session: &SessionId) -> Result<ContextDetail, StoreError> {
+        self.store.context_detail(session)
+    }
+
+    pub fn context_events(
+        &self,
+        session: &SessionId,
+    ) -> Result<Vec<ContextEventRecord>, StoreError> {
+        self.store.context_events(session)
     }
 
     pub fn correct_segment(

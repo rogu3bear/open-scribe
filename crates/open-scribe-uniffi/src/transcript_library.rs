@@ -79,6 +79,7 @@ pub struct NativeSessionDeletionInventory {
     pub human_corrections: u32,
     pub speaker_names: u32,
     pub markers: u32,
+    pub context_events: u32,
     pub export_files: u32,
     pub export_bytes: u64,
 }
@@ -255,6 +256,7 @@ impl NativeTranscriptLibrary {
             human_corrections: inventory.human_corrections,
             speaker_names: inventory.speaker_names,
             markers: inventory.markers,
+            context_events: inventory.context_events,
             export_files: inventory.export_files,
             export_bytes: inventory.export_bytes,
         })
@@ -417,7 +419,9 @@ fn map_session_export_error(error: open_scribe_core::SessionExportError) -> Nati
 }
 
 impl NativeTranscriptLibrary {
-    fn library(&self) -> Result<std::sync::MutexGuard<'_, TranscriptLibrary>, NativeStorageError> {
+    pub(crate) fn library(
+        &self,
+    ) -> Result<std::sync::MutexGuard<'_, TranscriptLibrary>, NativeStorageError> {
         self.library
             .lock()
             .map_err(|_| NativeStorageError::InvalidState)

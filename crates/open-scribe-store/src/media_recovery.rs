@@ -15,6 +15,7 @@ impl SessionStore {
         };
         self.reconcile_clock(session_id, records)?;
         self.reconcile_recorder_events(session_id, records)?;
+        self.reconcile_context_events(session_id, records)?;
         // Reserve all journaled successors before replaying seals, so a seal
         // cannot accidentally finalize a source while its successor is missing
         // only from the SQLite projection.

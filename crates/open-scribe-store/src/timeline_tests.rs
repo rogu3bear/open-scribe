@@ -22,6 +22,9 @@ mod journal_replacement_tests;
 #[path = "storage_reserve_tests.rs"]
 mod storage_reserve_tests;
 
+#[path = "context_tests.rs"]
+mod context_tests;
+
 fn create_media(store: &mut SessionStore, a: &MediaOpenAuthorization) {
     let mut file = OpenOptions::new()
         .write(true)

@@ -25,7 +25,19 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
+mod context;
 mod conversation_identity;
+pub use context::{
+    CONTEXT_EXCLUSIONS, CONTEXT_SCOPE_SCHEMA, ContextAction, ContextBounds, ContextCondition,
+    ContextDetail, ContextFailureReason, ContextMode, ContextPauseReason, ContextRetention,
+    ContextScope, ContextScopeRequest, ContextTarget, ContextTargetKind, DisplayTopology,
+    ScreenPermission, SessionDeclaration,
+};
+mod context_events;
+pub use context_events::{
+    AcceptedContextEvent, CONTEXT_EVENT_SCHEMA, ContextDecision, ContextEventReason,
+    ContextEventRecord, ContextProposal, ContextRejection, ContextSource, ContextTextBlock,
+};
 mod import;
 mod journal_replacement;
 mod library_recovery;
@@ -2953,6 +2965,11 @@ fn apply_schema(connection: &mut Connection) -> Result<(), StoreError> {
         "INSERT OR IGNORE INTO schema_migrations (version, applied_at_ms) VALUES (?1, ?2)",
         params![session_deletion::DELETION_MIGRATION_VERSION, applied_at],
     )?;
+    context::apply_context_schema(&transaction)?;
+    transaction.execute(
+        "INSERT OR IGNORE INTO schema_migrations (version, applied_at_ms) VALUES (?1, ?2)",
+        params![context::CONTEXT_MIGRATION_VERSION, applied_at],
+    )?;
     transaction.commit()?;
     Ok(())
 }
@@ -3816,12 +3833,15 @@ mod tests {
             "speaker_adjudications",
             "transcript_search",
             "session_deletion_intents",
+            "context_scopes",
+            "context_events",
+            "session_declarations",
         ] {
             assert!(names.contains(required), "missing table {required}");
         }
         assert_eq!(
             database_value(&store, "SELECT MAX(version) FROM schema_migrations"),
-            7
+            8
         );
         let segment_columns: BTreeSet<String> = store
             .connection
@@ -3879,7 +3899,7 @@ mod tests {
         assert_eq!(channels, 1);
         assert_eq!(
             database_value(&store, "SELECT MAX(version) FROM schema_migrations"),
-            7
+            8
         );
     }
 

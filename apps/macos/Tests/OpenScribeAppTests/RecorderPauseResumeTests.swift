@@ -905,6 +905,22 @@ private final class RotationFailureInjectingPreparation: NativeRecordingPreparat
   func recorderDetail(sessionId: String) throws -> NativeRecorderDetail {
     try base.recorderDetail(sessionId: sessionId)
   }
+  func contextAction(sessionId: String, action: NativeContextAction) throws -> NativeContextDetail {
+    try base.contextAction(sessionId: sessionId, action: action)
+  }
+  func contextDetail(sessionId: String) throws -> NativeContextDetail {
+    try base.contextDetail(sessionId: sessionId)
+  }
+  func declareSession(sessionId: String, declaration: NativeSessionDeclaration) throws
+    -> NativeSessionDeclaration
+  {
+    try base.declareSession(sessionId: sessionId, declaration: declaration)
+  }
+  func proposeContextEvent(sessionId: String, proposal: NativeContextProposal) throws
+    -> NativeContextDecision
+  {
+    try base.proposeContextEvent(sessionId: sessionId, proposal: proposal)
+  }
   func abandonReservedSegment(sessionId: String, segmentId: String) throws {
     try base.abandonReservedSegment(sessionId: sessionId, segmentId: segmentId)
   }
