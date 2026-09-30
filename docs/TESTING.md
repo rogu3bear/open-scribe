@@ -804,3 +804,21 @@ temporary libraries; the Swift test injects its trash mover instead of the user'
 Trash. Excluded: a qualified candidate, live capture, Finder Trash, real TCC
 revocation, rendered inspection of the new transcript surface, transcription (no
 engine is integrated), signing, and release.
+
+### Transcript review screen audit and rendered inspection
+
+`8107406` fixed the screen-design findings on the saved-conversation
+transcript surface. On that tree, `disk-guard run --budget-gb 1 --volume "$PWD" -- ./script/build_and_run.sh --verify`
+printed `NATIVE_FIXTURE_XCODE_GREEN` (171 Swift tests, one optional skip, zero
+project compile warnings) and `./script/check_native_contracts.sh --all`
+printed `NATIVE_CONTRACT_GREEN`. With `TEST_RUNNER_OPEN_SCRIBE_RENDER_DIR`,
+`TranscriptLibraryModelTests/testTranscriptSectionRendersInsideTheDocumentMeasure`
+rendered fixed values through `ImageRenderer` at 760 and 480 points: aligned
+timestamp and text columns, first line wrapping at about 80 characters,
+correction provenance under corrected text, and the empty state. AppKit-hosted
+buttons and menus draw as placeholders in that renderer; a live window
+capture of the full workspace, dark mode, VoiceOver, and keyboard focus
+remain uninspected. Named, not fixed: two co-equal playback buttons in the
+audio section, Export in the transcript header rather than the intended
+inspector, a per-row `Correct…` action, disabled seek for imported audio, and
+a search empty state that does not distinguish "nothing transcribed".
