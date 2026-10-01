@@ -83,17 +83,17 @@
 ## Qualify one contributor build
 
 - Command: `disk-guard run --budget-gb 3 --volume "$PWD" -- ./script/check.sh --candidate RECORD`.
-- `c082a16` passed `CONTRIBUTOR_CANDIDATE_GREEN`. Use measured capacity and a new record path; runtime consumers never rebuild.
+- `10201d2` passed `CONTRIBUTOR_CANDIDATE_GREEN`. Use measured capacity and a new record path; runtime consumers never rebuild.
 
 ## Injected M1 failure cases
 
 - Command: `disk-guard run --budget-gb 0.25 --volume "$PWD" -- ./script/check.sh --m1-injected-failures --candidate RECORD --case CASE` (2 GB for `storage-exhaustion`; `live-pause-resume` uses real devices).
-- `c082a16` passed all fourteen; `--m1-complete --candidate RECORD` then held only on two-hour synchronization and the human matrix.
+- `10201d2` passed all fourteen; `--m1-complete --candidate RECORD` then held only on two-hour synchronization and the human matrix.
 
 ## Local verification
 
 - `./script/build_and_run.sh --verify`: `NATIVE_FIXTURE_XCODE_GREEN`; `./script/build_web.sh`: `WEB_BUILD_GREEN`; then `./script/check.sh --m4-local-only`: `M4_LOCAL_ONLY_GREEN`.
-- `OPEN_SCRIBE_WHISPER_MODEL`, `_SPEECH_WAV`, `_SPEECH_CAF` serve `cargo test -p open-scribe-asr -p open-scribe-core`, or `TEST_RUNNER_`-prefixed native verify; local-only takes `OPEN_SCRIBE_LOCAL_PROOF_MODEL`, `_SPEECH_CAF`. Unset: skip/hold.
+- `./script/stage_proof_inputs.sh /absolute/dir`: `PROOF_INPUTS_READY`; its `env.sh` feeds `cargo test -p open-scribe-asr -p open-scribe-core`, native verify, and local-only. Unset: skip/hold.
 
 ## Admission rule
 

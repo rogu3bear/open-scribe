@@ -1426,3 +1426,188 @@ Logs:
 This candidate supersedes `429ec94` for M1 regression evidence on the
 current feature set. It proves nothing about two-hour synchronization or
 the human matrix.
+
+### Package restore hardening after an independent review (`9647551`)
+
+An independent review of `405dfd3` found two P2 and two P3 defects; all
+four are fixed:
+
+- A silent track's Final revision with no segments refused the whole
+  package. It now restores.
+- The restore appended one journal record at a time. Each append rewrote the
+  whole journal, so a crafted package with many files or markers could stall
+  the import. The restore now journals every record in one atomic
+  replacement (`append_session_journal_batch`) and projects them in one
+  transaction.
+- Files are capped at 20,000 and markers at 10,000. Sequences and sample
+  counts must fit the store's signed columns.
+- The copy must fit above the 512 MiB capture floor plus 64 MiB on the
+  library's volume. A disk failure reports storage, not verification.
+
+After the commit the store reads back what it restored: every file of a
+capture must play on the timeline, and an import's original must lease, or
+the session is removed. The format and receipt docs now say what the
+transcript gate covers.
+
+Two new store tests:
+
+- a silent track's empty Final transcript restores, and the journal holds
+  `session_directory_ready`, `package_restore_started`, three
+  `segment_restored`, `marker_added`, and `package_restored` from one batch;
+- crafted counts, sequences, and sizes are refused before any file is
+  copied, and an impossible size reports `StorageFull`.
+
+### Two-hour synchronization instrument (`ee4ad31`), qualified synthetically
+
+ADR 0005 allows at most 100 ms of cross-track drift over two hours. The
+instrument has four parts:
+
+- `open-scribe-drift stimulus` writes a seeded, versioned stimulus
+  (`open-scribe.drift-stimulus/v1`): a 250 ms coded broadband chirp every
+  20 s after a 5 s lead-in. Each pulse has its own BPSK code, so a detection
+  cannot alias to a neighboring pulse.
+- The app's `--m1-drift-run-root ROOT --m1-drift-run-seconds N` records the
+  microphone and system audio into `ROOT/Library`. It stops at a monotonic
+  deadline and refuses durations outside 1 s to 3 h.
+- `open-scribe-drift analyze` finds each pulse in both tracks by normalized
+  cross-correlation, refined to sub-sample precision. It places each
+  detection on the capture clock through its segment's native start and
+  writes `open-scribe.drift-measurement/v1` with
+  `M1_TWO_HOUR_DRIFT_GREEN` or `_RED` and named reasons.
+- `./script/check.sh --m1-two-hour --candidate RECORD --attended` runs the
+  attended session. Without `--attended` it refuses, because it plays
+  audible chirps with `afplay` (system-audio capture excludes the app's own
+  output) and records the microphone. It writes a candidate-bound
+  `m1-two-hour.json` and never overwrites one. `--m1-complete` counts
+  two-hour synchronization as proven only from a GREEN receipt on its own
+  candidate covering at least 7,200 s.
+
+Proof on synthetic captures restored into a library:
+
+- Five core tests. With 3 ms injected latency, 12 frames of drift per pulse,
+  an echo, noise, and a native-start re-anchor, measured offsets match within
+  25 µs. A 150 ms drift is RED with `drift_over_limit`. A missing pulse,
+  short coverage, and a different stimulus each fail with their named
+  reason. A session without exactly one microphone and one computer track is
+  refused.
+- One Swift test: the bounded run records both sources until its deadline
+  and refuses an unbounded run.
+- A 7,260 s stimulus generated in 20 s in a debug build (695 MB).
+
+No hardware run has been measured. Real route latency, drift, sleep and
+wake, and route changes stay unproven until an attended run on a candidate.
+
+### Durable proof inputs, and the local-only proof opens its package (`4974fd6`, `1ce1f52`)
+
+The real-model and local-only inputs had lived in `/tmp` and were lost.
+`./script/stage_proof_inputs.sh DIR` stages them in a durable directory:
+
+- it fetches the pinned `ggml-small.en-q5_1.bin` over HTTPS from its
+  manifest origin and checks its length and SHA-256;
+- it regenerates the documented spoken samples with `say` and `afconvert`;
+- it writes `env.sh` for every variable those proofs read.
+
+The app itself never downloads.
+
+`10a7765` keys the development builder's Rust output by the Cargo policy
+digest, so the local-only gate was checking a stale library path. `4974fd6`
+points the gate at the digest-keyed directory. `1ce1f52` adds a step after
+package verification: the local-only workflow opens the exported package in
+a second library (`OtherMac`), offline, and counts the restored playback
+timeline.
+
+Proof on a clean tree at `10201d2`:
+
+- `./script/stage_proof_inputs.sh "$HOME/Library/Application Support/OpenScribeProofInputs"`
+  printed `PROOF_INPUTS_READY`. The staged model already matched its
+  manifest, so nothing was fetched.
+- With its `env.sh` sourced,
+  `cargo test --offline -p open-scribe-asr -p open-scribe-core -- --nocapture`
+  passed asr 10 and core 30. It printed `WHISPER_KNOWN_ANSWER_GREEN` and
+  `SPEECH_END_TO_END_GREEN`, both transcribing "openscribe keeps the
+  recording safe before it writes a transcript."
+- `./script/build_and_run.sh --verify` printed `NATIVE_FIXTURE_XCODE_GREEN`:
+  195 tests, no failures, two skips that need an operator (the live one-frame
+  screen capture and an operator-selected large M4A). Xcode found the app
+  current and relinked only the test bundle. The tests therefore ran on debug
+  dylib
+  `c99291e66d9e75e58f3051370fbf4a39167f080bde50bb06d00fcfbbe8729b3a` and Rust
+  library `b44c40d502233bfd1576cae734648c1f7a90af88e8ed9732b1e76a52a1627ccd`,
+  built at 22:05 and 22:00 before the final commits and accepted as current
+  by the clean-tree build.
+- `./script/check.sh --m4-local-only` on that same build:
+
+```
+M4_LOCAL_ONLY_GREEN
+report={"context_events_accepted":1,"context_frame_pixels":4234240,"context_frame_text_blocks":94,"correction_search_hits":1,"declared_participants":1,"deleted_sessions":1,"package_files":7,"recovered_segments":4,"rendered_frames":1548000,"restored_package_media_files":4,"restored_timeline_segments":4,"saved_context_events":1,"screen_recording_permission":"granted","transcript_segments":1,"validated_mix_bytes":95032}
+unified_log_lines=4911 ip_socket_samples=0 retained_images=0
+```
+
+A later Disk Guard admission for a repeat local-only run held: another
+session's reservation was waiting on an unattended prompt, and builds here
+had already consumed more than that reservation. The run was not forced.
+
+Logs under `artifacts/m1-automated/`, with SHA-256:
+
+- `cargo-real-model-10201d2.log`:
+  `7556cf979313822271c7fe187efd9e5866edb802171b6010822765dd0882e5a1`;
+- `verify-real-model-10201d2.log`:
+  `d6ed117f154a0da0f923f9eaf6b129c72e70bed76579a899ff26ef6cb99917e9`;
+- `local-only-10201d2.log`:
+  `7110fdce84641fc4268da4376d593c43f4608e399506dea12d874863317070a9`.
+
+These development builds are not candidate-bound. Their digests differ from
+the candidate's, which was built in its own root.
+
+### 10201d2: candidate, all fourteen automated M1 cases, and the M1 hold
+
+Committed source `10201d2e08c982774eb4906240637f962d6441d3`, tree
+`26683a464eec82fe506afd5f4ad48ea3d02b7c94`, passed
+`disk-guard run --budget-gb 3 --volume "$PWD" -- ./script/check.sh --candidate "$PWD/apps/macos/.build/candidates/10201d2e08c982774eb4906240637f962d6441d3/candidate.json"`
+on a clean tree: `CONTRIBUTOR_CANDIDATE_GREEN`. The run included:
+
+- `MACOS_BUILD_CONFIGURATION_GREEN`: GGML_NATIVE off and `-march=armv8-a`
+  on every ggml CPU source;
+- 195 Swift tests, four optional skips, no failures;
+- 82 recording-component tests.
+
+Record SHA-256
+`f8a1b3f103f24244b27afd7cf27754f8fe8f4594919c8323bd8c30306cfdc3ed`.
+
+| Artifact | SHA-256 |
+| --- | --- |
+| Executable | `104c2aee43dd1f4de6ec7a721de2ae48e0cd4b8703dc54eeaa5bb27648c79194` |
+| Debug dylib | `2c45e64084031940f7ad774000d1bb62b2c85a46fc7c6f8b32518b58e0367be5` |
+| Info.plist | `c103e34b917098d3964f5992f343fd5f8fd17306642ecafb0e4c23fbaa97acab` |
+| Rust library | `3a8be465ef093be29e423fcbca58436e9e5cbaadc4a4ceeef8df9f6793fd0ba3` |
+
+The executable is a stub that loads the debug dylib, so its digest matches
+`c082a16`; the dylib and the Rust library carry the changes.
+
+Each of the fourteen cases (the thirteen defaults and `live-pause-resume`)
+ran against this record with
+`disk-guard run --budget-gb 0.25 --volume "$PWD" -- ./script/check.sh --m1-injected-failures --candidate RECORD --case CASE`,
+using 2 GB for `storage-exhaustion`. Each printed its candidate-bound
+`M1_INJECTED_*_GREEN` receipt. `live-pause-resume` used real capture on this
+Mac's already-granted permissions.
+
+`./script/check.sh --m1-complete --candidate RECORD` prints
+`M1_COMPLETE_HOLD`:
+
+- `qualified_cases` lists all fourteen;
+- `missing_implementation_proof` is empty;
+- `missing_automated=two_hour_synchronization`, because this candidate has
+  no attended `m1-two-hour.json`;
+- the supported-platform human matrix is unchanged.
+
+Logs:
+
+- `artifacts/m1-automated/candidate-10201d2.log`, SHA-256
+  `b0f7c557e826bdb5e05cd0cf0ec0d2c04875af75fd273a5567a265c3792ca3fe`;
+- `injected-10201d2.log`, SHA-256
+  `9a1d4cc64b66bca73c852a6dfa7bd4c293b6caa46c6ef65d0809e2678760f899`.
+
+This candidate supersedes `c082a16` for M1 regression evidence. It carries
+the portable round trip, its hardening, and the drift instrument. It is the
+candidate-bound receipt the package section above lacked. It proves nothing
+about two-hour synchronization or the human matrix.
