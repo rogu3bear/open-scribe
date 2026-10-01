@@ -72,11 +72,16 @@ struct OpenScribeApp: App {
       from: arguments
     )
     let localOnlyRoot = Self.argumentRoot("--local-only-proof-root", from: arguments)
+    let driftRunRoot = Self.argumentRoot("--m1-drift-run-root", from: arguments)
+    let driftRunSeconds = arguments.firstIndex(of: "--m1-drift-run-seconds").flatMap { index in
+      arguments.indices.contains(index + 1) ? UInt64(arguments[index + 1]) : nil
+    } ?? 0
     let proofRoots: [URL?] = [
       injectedMediaRoot, injectedRoot, injectedRecoveryRoot, foundationReviewRoot,
       foundationLiveRecoveryRoot, timelineCaptureRoot, timelineRecoveryRoot,
       liveProofRoot, forcedCaptureRoot, forcedRecoveryRoot,
       localOnlyRoot?.appendingPathComponent("Library", isDirectory: true),
+      driftRunRoot?.appendingPathComponent("Library", isDirectory: true),
     ]
     let managedRoot = proofRoots.compactMap { $0 }.first ?? Self.defaultRoot()
     let injectedProof = injectedRoot.map {
@@ -129,6 +134,12 @@ struct OpenScribeApp: App {
     } else if let root = localOnlyRoot {
       // The proof owns its library; launch recovery never scans the user's.
       Task { @MainActor in await LocalOnlyWorkflowProof.run(root: root) }
+    } else if let root = driftRunRoot {
+      // The two-hour run owns its library and stops at its own deadline.
+      Task { @MainActor in
+        _ = await DriftRunProof.run(controller: controller, root: root, seconds: driftRunSeconds)
+        NSApp.terminate(nil)
+      }
     } else {
       // Launch recovery scans the library off the main actor. A recording or
       // import begun during that scan could be recovered as abandoned, and a

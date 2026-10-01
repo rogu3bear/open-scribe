@@ -26,6 +26,15 @@ pub use session_export::{
     render_session_manifest, verify_portable_package, write_portable_package,
     write_session_manifest,
 };
+mod drift_measurement;
+mod drift_stimulus;
+pub use drift_measurement::{
+    DRIFT_REPORT_SCHEMA, DriftOptions, DriftReport, TWO_HOURS_NANOSECONDS, measure_drift,
+};
+pub use drift_stimulus::{
+    DRIFT_STIMULUS_SCHEMA, DriftError, STIMULUS_SAMPLE_RATE, StimulusSpec, stimulus_sha256,
+    write_stimulus_wav,
+};
 mod package_import;
 #[cfg(test)]
 mod session_export_tests;

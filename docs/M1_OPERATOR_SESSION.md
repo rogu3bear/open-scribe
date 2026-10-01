@@ -145,10 +145,21 @@ absolute alignment over 100 ms. Fail if either supported measurement exceeds
 sources fail, or evidence/media identity differs. Show drift versus time and
 retain every raw detection and analysis command for rerunning the result.
 
-The detector/generator and scheduled stop still require implementation and
-qualification before an unattended run. This procedure alone is not a
-reproducible executed measurement. The agent must not leave an unbounded
-recording running or stamp a short proof as two-hour evidence.
+`./script/check.sh --m1-two-hour --candidate RECORD --attended` implements
+this procedure. It builds `open-scribe-drift` from the candidate's source,
+writes a seeded `open-scribe.drift-stimulus/v1` WAV (a 250 ms coded chirp every
+20 seconds, 7,245 s by default), and launches the candidate app with
+`--m1-drift-run-root`. The app records both sources and writes
+`capture-started.json`, and the script then plays the stimulus with
+`afplay`: system-audio capture excludes the app's own output. The app stops
+itself at its deadline (the stimulus plus 30 seconds, never more than three
+hours) and writes `run.json`. Rust then writes `drift-report.json`
+(`open-scribe.drift-measurement/v1`), and the script binds a
+`m1-two-hour.json` receipt that `--m1-complete` accepts only when the report
+is GREEN over at least 7,200 seconds. Synthetic captures qualify the
+generator, detector, and scheduled stop; no hardware run has been measured
+yet. The agent must not leave an unbounded recording running or stamp a short
+proof as two-hour evidence.
 
 For sizing, the current segmented writer uses 48 kHz Int16. At 7,200 seconds,
 mono microphone plus stereo computer audio requires 2,073,600,000 source bytes

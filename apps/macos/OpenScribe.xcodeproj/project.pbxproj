@@ -73,6 +73,7 @@
 		5E7C1A2B3D4F5061C0010014 /* ContextViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E7C1A2B3D4F5061C0010015 /* ContextViews.swift */; };
 		5E7C1A2B3D4F5061C0020001 /* ContextTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E7C1A2B3D4F5061C0020002 /* ContextTests.swift */; };
 		5E7C1A2B3D4F5061C0030001 /* LocalOnlyWorkflowProof.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E7C1A2B3D4F5061C0030002 /* LocalOnlyWorkflowProof.swift */; };
+		5E7C1A2B3D4F5061C0040001 /* DriftRunProof.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E7C1A2B3D4F5061C0040002 /* DriftRunProof.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -154,6 +155,7 @@
 		5E7C1A2B3D4F5061C0010015 /* ContextViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContextViews.swift; sourceTree = "<group>"; };
 		5E7C1A2B3D4F5061C0020002 /* ContextTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContextTests.swift; sourceTree = "<group>"; };
 		5E7C1A2B3D4F5061C0030002 /* LocalOnlyWorkflowProof.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalOnlyWorkflowProof.swift; sourceTree = "<group>"; };
+		5E7C1A2B3D4F5061C0040002 /* DriftRunProof.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DriftRunProof.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
@@ -239,6 +241,7 @@
 			isa = PBXGroup;
 			children = (
 				5E7C1A2B3D4F5061C0030002 /* LocalOnlyWorkflowProof.swift */,
+				5E7C1A2B3D4F5061C0040002 /* DriftRunProof.swift */,
 				AA0000050000000000000011 /* RecorderCaptureSelection.swift */,
 				A12A3F920D148E6A9BCE201 /* ImportedMediaAuthorityAdapter.swift */,
 				B01A3F920D148E6A9BCE201 /* BoundedAudioImport.swift */,
@@ -465,6 +468,7 @@
 				5E7C1A2B3D4F5061C0010012 /* ContextScopeSummary.swift in Sources */,
 				5E7C1A2B3D4F5061C0010014 /* ContextViews.swift in Sources */,
 				5E7C1A2B3D4F5061C0030001 /* LocalOnlyWorkflowProof.swift in Sources */,
+				5E7C1A2B3D4F5061C0040001 /* DriftRunProof.swift in Sources */,
 				5E7C1A2B3D4F5061728394B3 /* TimelineMixExporter.swift in Sources */,
 				5E7C1A2B3D4F5061728394AF /* TranscriptionCompanionDecoder.swift in Sources */,
 				4A61A3F920D148E6A9BCE201 /* ManagedCAFWriter.swift in Sources */,

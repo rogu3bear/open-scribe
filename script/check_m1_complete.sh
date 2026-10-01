@@ -36,8 +36,23 @@ proven=()
 for scenario in "${cases[@]}"; do
 	if has_case "$scenario"; then proven+=("$scenario"); else missing+=("$scenario"); fi
 done
-# A short or injected session never discharges PRD 11.4's two-hour measurement.
-missing+=(two_hour_synchronization)
+# Only an attended run of at least two hours on this candidate, measured
+# GREEN by the Rust analyzer, discharges PRD 11.4's synchronization target.
+has_two_hour() {
+	[[ "$qualified_candidate" == 1 ]] || return 1
+	local receipt="$candidate_root/m1-two-hour.json" root report
+	[[ -f "$receipt" && ! -L "$receipt" ]] || return 1
+	jq -e --arg candidate "$candidate_record_digest" \
+		'.schema == 1 and .candidate_sha256 == $candidate and .seconds >= 7200
+		and .result == "M1_TWO_HOUR_SYNCHRONIZATION_GREEN"' "$receipt" >/dev/null || return 1
+	root="$(jq -r '.proof_root' "$receipt")"
+	report="$root/drift-report.json"
+	[[ "$root" == "$candidate_root/m1-two-hour."* && -f "$report" && ! -L "$report" ]] || return 1
+	[[ "$(candidate_sha256 "$report")" == "$(jq -r '.report_sha256' "$receipt")" ]] || return 1
+	jq -e '.result == "M1_TWO_HOUR_DRIFT_GREEN" and .method.required_coverage_ns >= 7200000000000
+		and .summary.coverage_ns >= 7200000000000' "$report" >/dev/null
+}
+if has_two_hour; then proven+=(two_hour_synchronization); else missing+=(two_hour_synchronization); fi
 implementation=()
 if ! has_case storage-warning; then implementation+=(durable_markers validated_mixdown); fi
 if ! has_case storage-warning || ! has_case storage-critical || ! has_case storage-exhaustion; then

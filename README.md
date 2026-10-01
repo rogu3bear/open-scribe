@@ -51,9 +51,9 @@ segments, forced termination, unchanged recovered media) whose receipt names
 its exact tip, and one short live run with shared native playback on the
 September 25 artifact, which predates pause/resume and the review repairs. It
 does not close M1.
-`./script/check.sh --m1-complete` names remaining implementation and runtime
-gates, including pause/resume, markers, mixdown, storage-pressure policy,
-application selection, channel-layout fidelity, and the two-hour device run.
+`./script/check.sh --m1-complete --candidate RECORD` names what that candidate
+has qualified and what remains: the attended two-hour synchronization run
+(`--m1-two-hour`) and the supported-platform human matrix.
 
 Verify the Rust-owned live/library snapshot, fresh bindings, complete unsigned
 native test suite, and exact idle app launch without requesting capture access:

@@ -661,6 +661,54 @@ final class RecorderPauseResumeTests: XCTestCase {
     XCTAssertTrue(adapter.statusMessage?.contains("did not verify") == true)
   }
 
+  func testTheDriftRunRecordsBothSourcesUntilItsDeadlineAndRefusesUnboundedRuns() async throws {
+    let harness = try PauseHarness()
+    defer { harness.removeFiles() }
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    for seconds: UInt64 in [0, DriftRunProof.maximumSeconds + 1] {
+      let refused = await DriftRunProof.run(
+        controller: harness.controller, root: root, seconds: seconds)
+      XCTAssertEqual(refused.result, "refused")
+      XCTAssertEqual(harness.controller.phase, .idle)
+      XCTAssertTrue(harness.captures.microphones.isEmpty, "an unbounded run never opens a source")
+    }
+
+    var uptime: TimeInterval = 0
+    let outcome = await DriftRunProof.run(
+      controller: harness.controller, root: root, seconds: 3,
+      uptime: { uptime },
+      sleep: { nanoseconds in
+        // Every wait delivers that interval's audio from both sources.
+        let interval = Double(nanoseconds) / 1_000_000_000
+        if let microphone = harness.captures.microphones.last,
+          let system = harness.captures.systems.last
+        {
+          let frames = AVAudioFrameCount(interval * 48_000)
+          try? microphone.emit(frames: frames, hostTime: harness.clock.now, value: 8192)
+          try? system.emit(frames: frames, hostTime: harness.clock.now, value: 16384)
+        }
+        for _ in 0..<30 { await Task.yield() }
+        uptime += interval
+        harness.clock.advance(seconds: interval)
+      })
+    XCTAssertEqual(outcome.result, "saved", outcome.detail)
+    XCTAssertEqual(outcome.recordedSeconds, 3, accuracy: 0.001)
+    let sessionId = try XCTUnwrap(outcome.sessionId)
+    XCTAssertTrue(
+      FileManager.default.fileExists(
+        atPath: root.appendingPathComponent(DriftRunProof.startedName).path))
+    let written = try XCTUnwrap(
+      JSONSerialization.jsonObject(
+        with: Data(contentsOf: root.appendingPathComponent(DriftRunProof.outcomeName)))
+        as? [String: Any])
+    XCTAssertEqual(written["result"] as? String, "saved")
+    XCTAssertEqual(written["session_id"] as? String, sessionId)
+    let plan = try harness.preparation.playbackTimeline(sessionId: sessionId)
+    XCTAssertEqual(Set(plan.map(\.trackId)).count, 2, "both sources are on the saved timeline")
+  }
+
   private func settle() async {
     for _ in 0..<30 { await Task.yield() }
   }
