@@ -1749,6 +1749,53 @@ impl SessionStore {
         Ok(record)
     }
 
+    /// Appends records in one journal replacement, chained in order. Only for
+    /// a session no other writer can reach until the batch is projected.
+    fn append_session_journal_batch(
+        &self,
+        session_id: &str,
+        entries: Vec<(&str, Option<String>, Value)>,
+    ) -> Result<Vec<JournalRecord>, StoreError> {
+        let session_directory = self.session_directory(session_id)?;
+        let journal_path = session_directory.join(JOURNAL_NAME);
+        let mut previous = match validate_journal(&journal_path, session_id)? {
+            JournalValidation::Valid(mut records) if !records.is_empty() => {
+                records.pop().expect("validated non-empty journal")
+            }
+            _ => {
+                return Err(StoreError::IntegrityMismatch(
+                    "session journal is not a valid append target",
+                ));
+            }
+        };
+        let mut records = Vec::with_capacity(entries.len());
+        for (event_kind, relative_path, payload) in entries {
+            let body = JournalBody {
+                version: JOURNAL_VERSION,
+                sequence: previous.body.sequence + 1,
+                event_id: Uuid::now_v7().to_string(),
+                session_id: session_id.to_owned(),
+                event_kind: event_kind.to_owned(),
+                session_nanoseconds: payload
+                    .get("session_nanoseconds")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(0),
+                wall_time_milliseconds: wall_time_milliseconds(),
+                relative_path,
+                payload,
+                prior_digest: Some(previous.record_digest.clone()),
+            };
+            let record = JournalRecord {
+                record_digest: digest_json(&body)?,
+                body,
+            };
+            previous = record.clone();
+            records.push(record);
+        }
+        atomic_replace_journal_with_records(&journal_path, &session_directory, &records, None)?;
+        Ok(records)
+    }
+
     fn project_media_authorization(
         &mut self,
         session_id: &str,
@@ -3086,6 +3133,20 @@ fn atomic_replace_journal_with_record(
     record: &JournalRecord,
     failure: Option<JournalReplacementFailurePoint>,
 ) -> Result<(), StoreError> {
+    atomic_replace_journal_with_records(
+        journal_path,
+        session_directory,
+        std::slice::from_ref(record),
+        failure,
+    )
+}
+
+fn atomic_replace_journal_with_records(
+    journal_path: &Path,
+    session_directory: &Path,
+    records: &[JournalRecord],
+    failure: Option<JournalReplacementFailurePoint>,
+) -> Result<(), StoreError> {
     let metadata = fs::symlink_metadata(journal_path)?;
     if metadata.file_type().is_symlink() || !metadata.is_file() {
         return Err(StoreError::IntegrityMismatch(
@@ -3104,7 +3165,9 @@ fn atomic_replace_journal_with_record(
     let result = (|| {
         let mut temporary = journal_replacement::create_temporary(&temporary_path)?;
         temporary.write_all(&existing)?;
-        append_journal_record(&mut temporary, record)?;
+        for record in records {
+            append_journal_record(&mut temporary, record)?;
+        }
         interrupt_journal_replace_if(failure, JournalReplacementFailurePoint::TemporaryWrite)?;
         temporary.sync_all()?;
         interrupt_journal_replace_if(failure, JournalReplacementFailurePoint::TemporarySync)?;

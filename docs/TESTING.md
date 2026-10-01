@@ -1127,9 +1127,10 @@ digests. Store migration 9 then restores it:
 - each media file rehashed as it is copied and checked for length, sample
   count, and channels, with every placement journaled before projection;
 - a restored capture plays from those placements, not a synthesized clock;
-- a selected Final revision, with its corrections, speaker names, and
-  markers, only when its input digest, recomputed from the package's own
-  identities, names exactly those bytes.
+- markers and speaker names with the media, and a selected Final revision
+  with its corrections only when its input digest, recomputed from the
+  package's own identities, names exactly those bytes; otherwise the
+  package is refused.
 
 A restore that fails is removed at once or at the next launch and leaves a
 deletion tombstone. The evidence resolver now names a transcript segment by

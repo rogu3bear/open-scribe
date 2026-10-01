@@ -201,7 +201,7 @@ final class ImportedMediaAuthorityAdapter: ObservableObject {
     case .InvalidState:
       "This package holds something this version cannot open yet, such as a compressed import. Nothing was added."
     default:
-      "Open Scribe could not save a verified local copy of this package. Nothing was added."
+      "Open Scribe could not save a local copy of this package. Check that this Mac has enough free space, then try again. Nothing was added."
     }
   }
 

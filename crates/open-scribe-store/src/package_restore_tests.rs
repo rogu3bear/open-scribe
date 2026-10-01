@@ -403,3 +403,78 @@ fn a_restored_import_keeps_its_origin_and_plays_its_original() {
         Err(StoreError::InvalidRequest(_))
     ));
 }
+
+#[test]
+fn a_silent_tracks_empty_final_transcript_restores_and_journals_in_one_batch() {
+    let mut package = capture_package();
+    let system = &package.request.tracks[1];
+    let input = source_digest("track-sys", &system.segments);
+    package.request.tracks[1].transcript = Some(transcript(input, &[]));
+    let session = package
+        .store
+        .restore_portable_session(&package.request)
+        .unwrap()
+        .session_id;
+    let context = package.store.transcript_export_context(&session).unwrap();
+    assert_eq!(context.selected.len(), 2, "the silent track is Final too");
+    assert_eq!(
+        package.store.transcript_document(&session).unwrap().len(),
+        2
+    );
+
+    // One replacement holds the whole restore, after the two preparation records.
+    let journal = package
+        .root
+        .join(SESSIONS_DIRECTORY)
+        .join(&session.0)
+        .join(JOURNAL_NAME);
+    let JournalValidation::Valid(records) = validate_journal(&journal, &session.0).unwrap() else {
+        panic!("journal is invalid");
+    };
+    let kinds: Vec<&str> = records
+        .iter()
+        .map(|record| record.body.event_kind.as_str())
+        .collect();
+    assert_eq!(
+        kinds,
+        [
+            "session_directory_ready",
+            "package_restore_started",
+            "segment_restored",
+            "segment_restored",
+            "segment_restored",
+            "marker_added",
+            "package_restored",
+        ]
+    );
+}
+
+#[test]
+fn crafted_counts_sequences_and_sizes_are_refused_before_any_file() {
+    let mut package = capture_package();
+    package.request.markers = (0..=MAX_RESTORED_MARKERS)
+        .map(|index| RestoredMarker {
+            at_nanoseconds: index as i64,
+            label: String::new(),
+        })
+        .collect();
+    assert!(matches!(
+        package.store.restore_portable_session(&package.request),
+        Err(StoreError::InvalidRequest(_))
+    ));
+
+    let mut package = capture_package();
+    package.request.tracks[1].segments[0].sequence = u64::MAX;
+    assert!(matches!(
+        package.store.restore_portable_session(&package.request),
+        Err(StoreError::InvalidRequest(_))
+    ));
+    assert_eq!(session_directories(&package.root), 0);
+
+    // More media than the volume can hold above the capture floor.
+    assert!(matches!(
+        package.store.require_restore_space(u64::MAX / 2),
+        Err(StoreError::Io(error)) if error.kind() == ErrorKind::StorageFull
+    ));
+    package.store.require_restore_space(1).unwrap();
+}

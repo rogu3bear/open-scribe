@@ -484,7 +484,7 @@ impl SessionStore {
         Ok(())
     }
 
-    pub(super) fn project_recorder_event(
+    fn project_recorder_event(
         &mut self,
         session: &str,
         record: &JournalRecord,

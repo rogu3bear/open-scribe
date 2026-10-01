@@ -13,6 +13,7 @@
 use super::conversation_identity::{PrepareSessionRequest, SessionOrigin};
 use super::import::IMPORT_SOURCE_KIND;
 use super::library_recovery::isolated_disposition;
+use super::recorder::RESERVE_BYTES;
 use super::transcript_input::{DigestedSegment, transcription_input_digest};
 use super::transcript_review::{SOURCE_CLUSTER, reindex_session_search};
 use super::transcripts::{TRANSCRIPT_SCHEMA_VERSION, TranscriptionRunIdentity, select_revision};
@@ -40,7 +41,8 @@ pub(super) const RESTORE_MIGRATION_VERSION: i64 = 9;
 /// Names a restored revision's reconciliation and run options.
 const RESTORE_RECONCILIATION: &str = "open-scribe.package-restore/v1";
 const MAX_RESTORED_TRACKS: usize = 64;
-const MAX_RESTORED_SEGMENTS: usize = 100_000;
+const MAX_RESTORED_SEGMENTS: usize = 20_000;
+const MAX_RESTORED_MARKERS: usize = 10_000;
 const MAX_RESTORED_TRANSCRIPT_SEGMENTS: usize = 200_000;
 const MAX_RESTORED_MEDIA_BYTES: u64 = 8 << 30;
 const MAX_IDENTIFIER_BYTES: usize = 128;
@@ -49,6 +51,8 @@ const MAX_MARKER_LABEL_BYTES: usize = 512;
 const MAX_SPEAKER_LABEL_BYTES: usize = 128;
 const MAX_SEGMENT_TEXT_BYTES: usize = 64 * 1024;
 const MAX_CORRECTION_BYTES: usize = 4096;
+/// Journal and database growth a restore may need beyond its media.
+const RESTORE_OVERHEAD_BYTES: u64 = 64 << 20;
 /// The one-sample overlap a first-version capture timeline may carry.
 const MAX_OVERLAP_NANOSECONDS: i64 = 20_834;
 
@@ -186,7 +190,8 @@ impl SessionStore {
         &mut self,
         request: &PackageRestoreRequest,
     ) -> Result<PackageRestoreReceipt, StoreError> {
-        validate_restore(request)?;
+        let media_bytes = validate_restore(request)?;
+        self.require_restore_space(media_bytes)?;
         let prepared = self.prepare_session_recorded(
             PrepareSessionRequest {
                 title: request.title.clone(),
@@ -210,14 +215,31 @@ impl SessionStore {
         }
     }
 
+    /// The copy must leave the capture floor free on the library's volume.
+    fn require_restore_space(&self, media_bytes: u64) -> Result<(), StoreError> {
+        let volume = fd_fs::statvfs(&self.sessions_root)
+            .map_err(|error| StoreError::Io(std::io::Error::from(error)))?;
+        let available = volume.f_bavail.saturating_mul(volume.f_frsize);
+        if media_bytes
+            .saturating_add(RESERVE_BYTES)
+            .saturating_add(RESTORE_OVERHEAD_BYTES)
+            > available
+        {
+            return Err(StoreError::Io(std::io::Error::from(ErrorKind::StorageFull)));
+        }
+        Ok(())
+    }
+
+    /// Copies and checks every file, journals the whole restore in one
+    /// replacement, then projects it in one transaction. Nothing is visible
+    /// before that commit; a crash before it is swept at the next launch.
     fn restore_into(
         &mut self,
         session: &SessionId,
         request: &PackageRestoreRequest,
     ) -> Result<PackageRestoreReceipt, StoreError> {
         let media_files: usize = request.tracks.iter().map(|t| t.segments.len()).sum();
-        let started = self.append_session_journal(
-            &session.0,
+        let mut entries: Vec<(&str, Option<String>, Value)> = vec![(
             "package_restore_started",
             None,
             json!({
@@ -226,21 +248,17 @@ impl SessionStore {
                 "tracks": request.tracks.len(),
                 "media_files": media_files,
             }),
-        )?;
-        self.project_restore_event(&session.0, &started, None)?;
+        )];
         let audio = self.open_managed_audio_directory(&session.0)?;
         let import = request.origin == SessionOrigin::Import;
         let mut local_tracks = Vec::with_capacity(request.tracks.len());
         for track in &request.tracks {
             let source_id = Uuid::now_v7().to_string();
             let track_id = Uuid::now_v7().to_string();
-            fd_fs::mkdirat(&audio, &track_id, fd_fs::Mode::from_raw_mode(0o700)).map_err(|_| {
-                StoreError::IntegrityMismatch("restored track could not be created")
-            })?;
+            fd_fs::mkdirat(&audio, &track_id, fd_fs::Mode::from_raw_mode(0o700))
+                .map_err(|error| StoreError::Io(std::io::Error::from(error)))?;
             let directory = open_managed_directory_at(&audio, OsStr::new(&track_id))?;
-            fd_fs::fsync(&audio).map_err(|_| {
-                StoreError::IntegrityMismatch("audio directory was not synchronized")
-            })?;
+            fd_fs::fsync(&audio).map_err(|error| StoreError::Io(std::io::Error::from(error)))?;
             let mut placements = Vec::with_capacity(track.segments.len());
             for segment in &track.segments {
                 let segment_id = Uuid::now_v7().to_string();
@@ -265,29 +283,26 @@ impl SessionStore {
                         "restored media differs from its package entry",
                     ));
                 }
-                let payload = json!({
-                    "source_id": source_id,
-                    "source_kind": track.source_kind,
-                    "track_id": track_id,
-                    "segment_id": segment_id,
-                    "sequence": segment.sequence,
-                    "relative_path": relative_path,
-                    "start_nanoseconds": segment.start_nanoseconds,
-                    "sample_count": segment.sample_count,
-                    "channels": segment.channels,
-                    "byte_length": segment.byte_length,
-                    "digest_sha256": segment.digest_sha256,
-                    "file_device": validated.device,
-                    "file_inode": validated.inode,
-                    "source_segment_id": segment.source_segment_id,
-                });
-                let record = self.append_session_journal(
-                    &session.0,
+                entries.push((
                     "segment_restored",
-                    Some(&relative_path),
-                    payload,
-                )?;
-                self.project_restore_event(&session.0, &record, Some(request.origin))?;
+                    Some(relative_path.clone()),
+                    json!({
+                        "source_id": source_id,
+                        "source_kind": track.source_kind,
+                        "track_id": track_id,
+                        "segment_id": segment_id,
+                        "sequence": segment.sequence,
+                        "relative_path": relative_path,
+                        "start_nanoseconds": segment.start_nanoseconds,
+                        "sample_count": segment.sample_count,
+                        "channels": segment.channels,
+                        "byte_length": segment.byte_length,
+                        "digest_sha256": segment.digest_sha256,
+                        "file_device": validated.device,
+                        "file_inode": validated.inode,
+                        "source_segment_id": segment.source_segment_id,
+                    }),
+                ));
                 placements.push(DigestedSegment {
                     segment_id,
                     digest_sha256: segment.digest_sha256.clone(),
@@ -303,8 +318,7 @@ impl SessionStore {
             });
         }
         for marker in &request.markers {
-            let record = self.append_session_journal(
-                &session.0,
+            entries.push((
                 "marker_added",
                 None,
                 json!({
@@ -312,16 +326,14 @@ impl SessionStore {
                     "label": marker.label,
                     "session_nanoseconds": marker.at_nanoseconds,
                 }),
-            )?;
-            self.project_recorder_event(&session.0, &record, false)?;
+            ));
         }
         let transcript_tracks = request
             .tracks
             .iter()
             .filter(|track| track.transcript.is_some())
             .count();
-        let restored = self.append_session_journal(
-            &session.0,
+        entries.push((
             "package_restored",
             None,
             json!({
@@ -329,11 +341,95 @@ impl SessionStore {
                 "transcript_tracks": transcript_tracks,
                 "markers": request.markers.len(),
             }),
-        )?;
-        self.complete_restoration(&session.0, request, &local_tracks, &restored)?;
-        // The store's own reading of the restored timeline must name the
-        // same input the restored transcript cites.
-        for (track, local) in request.tracks.iter().zip(&local_tracks) {
+        ));
+        let records = self.append_session_journal_batch(&session.0, entries)?;
+        self.project_restoration(&session.0, request, &records, &local_tracks)?;
+        self.verify_restoration(session, request, &local_tracks)?;
+        Ok(PackageRestoreReceipt {
+            session_id: session.clone(),
+            media_files: media_files as u32,
+            transcript_tracks: transcript_tracks as u32,
+            markers: request.markers.len() as u32,
+        })
+    }
+
+    /// Projects every restore record in journal order in one transaction.
+    /// Transcripts, speaker names, search, and the lifecycle change commit
+    /// with the completion record.
+    fn project_restoration(
+        &mut self,
+        session: &str,
+        request: &PackageRestoreRequest,
+        records: &[JournalRecord],
+        local_tracks: &[LocalTrack],
+    ) -> Result<(), StoreError> {
+        let (mut sequence, mut prior) = next_database_event(&self.connection, session)?;
+        let now = wall_time_milliseconds();
+        let transaction = self.connection.transaction()?;
+        for record in records {
+            let kind = record.body.event_kind.as_str();
+            let payload = &record.body.payload;
+            match kind {
+                "segment_restored" => {
+                    project_restored_segment(&transaction, session, request.origin, payload)?;
+                }
+                "marker_added" => {
+                    transaction.execute(
+                        "INSERT INTO markers(id, schema_version, session_id, session_nanoseconds, label)
+                         VALUES(?1, ?2, ?3, ?4, ?5)",
+                        params![
+                            payload_string(payload, "marker_id")?,
+                            SCHEMA_VERSION,
+                            session,
+                            payload_i64(payload, "session_nanoseconds")?,
+                            payload_string(payload, "label")?
+                        ],
+                    )?;
+                }
+                "package_restored" => {
+                    complete_restoration(&transaction, session, request, local_tracks, now)?;
+                }
+                _ => {}
+            }
+            let digest = event_digest(session, sequence, kind, payload, prior.as_deref())?;
+            insert_event_with_id(
+                &transaction,
+                &record.body.event_id,
+                session,
+                sequence,
+                kind,
+                record.body.wall_time_milliseconds,
+                payload,
+                prior.as_deref(),
+                &digest,
+            )?;
+            prior = Some(digest);
+            sequence += 1;
+        }
+        transaction.commit()?;
+        Ok(())
+    }
+
+    /// The store's own reading of what it restored: a capture's timeline
+    /// plays every file, an import's original leases, and each restored
+    /// transcript cites the restored track's input.
+    fn verify_restoration(
+        &self,
+        session: &SessionId,
+        request: &PackageRestoreRequest,
+        local_tracks: &[LocalTrack],
+    ) -> Result<(), StoreError> {
+        let media_files: usize = request.tracks.iter().map(|t| t.segments.len()).sum();
+        if request.origin == SessionOrigin::Capture {
+            if self.playback_timeline(session)?.len() != media_files {
+                return Err(StoreError::IntegrityMismatch(
+                    "restored timeline does not play every file",
+                ));
+            }
+        } else {
+            self.lease_imported_playback(session)?;
+        }
+        for (track, local) in request.tracks.iter().zip(local_tracks) {
             if track.transcript.is_some()
                 && self
                     .transcription_input(session, &local.track_id)?
@@ -350,121 +446,6 @@ impl SessionStore {
                 ));
             }
         }
-        Ok(PackageRestoreReceipt {
-            session_id: session.clone(),
-            media_files: media_files as u32,
-            transcript_tracks: transcript_tracks as u32,
-            markers: request.markers.len() as u32,
-        })
-    }
-
-    /// Projects one restore journal record. A segment record also creates its
-    /// source, track, and segment rows, and an import's receipt.
-    fn project_restore_event(
-        &mut self,
-        session: &str,
-        record: &JournalRecord,
-        segment_origin: Option<SessionOrigin>,
-    ) -> Result<(), StoreError> {
-        let kind = record.body.event_kind.as_str();
-        let payload = &record.body.payload;
-        let (sequence, prior) = next_database_event(&self.connection, session)?;
-        let digest = event_digest(session, sequence, kind, payload, prior.as_deref())?;
-        let transaction = self.connection.transaction()?;
-        if let Some(origin) = segment_origin {
-            project_restored_segment(&transaction, session, origin, payload)?;
-        }
-        insert_event_with_id(
-            &transaction,
-            &record.body.event_id,
-            session,
-            sequence,
-            kind,
-            record.body.wall_time_milliseconds,
-            payload,
-            prior.as_deref(),
-            &digest,
-        )?;
-        transaction.commit()?;
-        Ok(())
-    }
-
-    /// Transcripts, speaker names, search, and the lifecycle change commit
-    /// together with the completion event.
-    fn complete_restoration(
-        &mut self,
-        session: &str,
-        request: &PackageRestoreRequest,
-        local_tracks: &[LocalTrack],
-        record: &JournalRecord,
-    ) -> Result<(), StoreError> {
-        let payload = &record.body.payload;
-        let (sequence, prior) = next_database_event(&self.connection, session)?;
-        let digest = event_digest(
-            session,
-            sequence,
-            "package_restored",
-            payload,
-            prior.as_deref(),
-        )?;
-        let now = wall_time_milliseconds();
-        let transaction = self.connection.transaction()?;
-        for (track, local) in request.tracks.iter().zip(local_tracks) {
-            if let Some(transcript) = &track.transcript {
-                insert_restored_transcript(
-                    &transaction,
-                    session,
-                    &request.source_session_id,
-                    track,
-                    local,
-                    transcript,
-                    now,
-                )?;
-            }
-            if let Some(label) = &track.human_speaker_label {
-                transaction.execute(
-                    "INSERT INTO speaker_adjudications(
-                        id, session_id, track_id, cluster, label, created_at_ms)
-                     VALUES(?1, ?2, ?3, ?4, ?5, ?6)",
-                    params![
-                        Uuid::now_v7().to_string(),
-                        session,
-                        local.track_id,
-                        SOURCE_CLUSTER,
-                        label,
-                        now
-                    ],
-                )?;
-            }
-        }
-        reindex_session_search(&transaction, session)?;
-        let ready = transaction.execute(
-            "UPDATE sessions SET lifecycle = 'ready_for_review', updated_at_ms = ?2
-             WHERE id = ?1 AND lifecycle = 'preparing'",
-            params![session, now],
-        )?;
-        let restored = transaction.execute(
-            "UPDATE session_restorations SET state = 'restored', updated_at_ms = ?2
-             WHERE session_id = ?1 AND state = 'restoring'",
-            params![session, now],
-        )?;
-        if ready != 1 || restored != 1 {
-            return Err(StoreError::InvalidState(
-                "restored session is not awaiting completion",
-            ));
-        }
-        insert_event_with_id(
-            &transaction,
-            &record.body.event_id,
-            session,
-            sequence,
-            "package_restored",
-            record.body.wall_time_milliseconds,
-            payload,
-            prior.as_deref(),
-            &digest,
-        )?;
-        transaction.commit()?;
         Ok(())
     }
 
@@ -615,6 +596,61 @@ impl SessionStore {
         }
         Ok(result)
     }
+}
+
+/// Transcripts, speaker names, search, and the move to reviewable.
+fn complete_restoration(
+    transaction: &Transaction<'_>,
+    session: &str,
+    request: &PackageRestoreRequest,
+    local_tracks: &[LocalTrack],
+    now: i64,
+) -> Result<(), StoreError> {
+    for (track, local) in request.tracks.iter().zip(local_tracks) {
+        if let Some(transcript) = &track.transcript {
+            insert_restored_transcript(
+                transaction,
+                session,
+                &request.source_session_id,
+                track,
+                local,
+                transcript,
+                now,
+            )?;
+        }
+        if let Some(label) = &track.human_speaker_label {
+            transaction.execute(
+                "INSERT INTO speaker_adjudications(
+                    id, session_id, track_id, cluster, label, created_at_ms)
+                 VALUES(?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    Uuid::now_v7().to_string(),
+                    session,
+                    local.track_id,
+                    SOURCE_CLUSTER,
+                    label,
+                    now
+                ],
+            )?;
+        }
+    }
+    reindex_session_search(transaction, session)?;
+    let ready = transaction.execute(
+        "UPDATE sessions SET lifecycle = 'ready_for_review', updated_at_ms = ?2
+         WHERE id = ?1 AND lifecycle = 'preparing'",
+        params![session, now],
+    )?;
+    let restored = transaction.execute(
+        "UPDATE session_restorations SET state = 'restored', updated_at_ms = ?2
+         WHERE session_id = ?1 AND state = 'restoring'",
+        params![session, now],
+    )?;
+    if ready != 1 || restored != 1 {
+        return Err(StoreError::InvalidState(
+            "restored session is not awaiting completion",
+        ));
+    }
+    Ok(())
 }
 
 fn project_restored_segment(
@@ -883,8 +919,9 @@ fn copy_restored_media(
     Ok(())
 }
 
-/// Checks everything the package claims before any file is written.
-fn validate_restore(request: &PackageRestoreRequest) -> Result<(), StoreError> {
+/// Checks everything the package claims before any file is written, and
+/// returns the media bytes the restore will copy.
+fn validate_restore(request: &PackageRestoreRequest) -> Result<u64, StoreError> {
     let invalid = StoreError::InvalidRequest;
     let bounded = |value: &str, limit: usize| {
         !value.trim().is_empty() && value.len() <= limit && !value.chars().any(char::is_control)
@@ -899,6 +936,7 @@ fn validate_restore(request: &PackageRestoreRequest) -> Result<(), StoreError> {
     if request.tracks.is_empty()
         || request.tracks.len() > MAX_RESTORED_TRACKS
         || media_files > MAX_RESTORED_SEGMENTS
+        || request.markers.len() > MAX_RESTORED_MARKERS
         || (import && (media_files != 1 || !request.markers.is_empty()))
     {
         return Err(invalid("package media layout is not restorable"));
@@ -923,6 +961,8 @@ fn validate_restore(request: &PackageRestoreRequest) -> Result<(), StoreError> {
         let mut placements = Vec::with_capacity(track.segments.len());
         for (index, segment) in track.segments.iter().enumerate() {
             if !bounded(&segment.source_segment_id, MAX_IDENTIFIER_BYTES)
+                || i64::try_from(segment.sequence).is_err()
+                || i64::try_from(segment.sample_count).is_err()
                 || (index > 0 && segment.sequence <= track.segments[index - 1].sequence)
                 || segment.start_nanoseconds < 0
                 || (import && segment.start_nanoseconds != 0)
@@ -966,7 +1006,12 @@ fn validate_restore(request: &PackageRestoreRequest) -> Result<(), StoreError> {
             return Err(invalid("a package marker is invalid"));
         }
     }
-    Ok(())
+    Ok(request
+        .tracks
+        .iter()
+        .flat_map(|track| &track.segments)
+        .map(|segment| segment.byte_length)
+        .sum())
 }
 
 fn validate_transcript(transcript: &RestoredTranscript) -> Result<(), StoreError> {
@@ -983,7 +1028,6 @@ fn validate_transcript(transcript: &RestoredTranscript) -> Result<(), StoreError
         && bounded(&transcript.model_sha256)
         && is_sha256(&transcript.input_digest)
         && transcript.language.as_deref().is_none_or(bounded)
-        && !transcript.segments.is_empty()
         && transcript.segments.len() <= MAX_RESTORED_TRANSCRIPT_SEGMENTS
         && transcript
             .segments
