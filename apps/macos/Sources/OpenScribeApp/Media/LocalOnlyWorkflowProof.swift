@@ -152,6 +152,14 @@ enum LocalOnlyWorkflowProof {
       throw ProofError.step("package export")
     }
     report["package_files"] = try verifyPortablePackage(packagePath: package.path).files
+    // Open the package as another Mac would: a second library, verified first.
+    let otherRoot = root.appendingPathComponent("OtherMac", isDirectory: true)
+    let opened = try NativeTranscriptLibrary.open(managedRoot: otherRoot.path)
+      .importPortablePackage(packagePath: package.path)
+    report["restored_package_media_files"] = Int(opened.mediaFiles)
+    report["restored_timeline_segments"] = try NativeRecordingPreparation.open(
+      managedRoot: otherRoot.path
+    ).playbackTimeline(sessionId: opened.sessionId).count
     report["saved_context_events"] = review.contextEvents.count
     report["declared_participants"] = review.contextDetail?.declaration.participants.count ?? 0
 

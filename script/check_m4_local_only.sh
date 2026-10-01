@@ -89,6 +89,7 @@ fi
 jq -e '
 	.recovered_segments == 4 and .rendered_frames == 1548000 and .validated_mix_bytes > 0
 	and .transcript_segments >= 1 and .correction_search_hits == 1 and .package_files == 7
+	and .restored_package_media_files == 4 and .restored_timeline_segments == 4
 	and .deleted_sessions == 1 and .declared_participants == 1
 	and (.screen_recording_permission != "granted"
 		or (.context_events_accepted == 1 and .saved_context_events == 1
@@ -114,5 +115,5 @@ printf '%s\n' \
 	'M4_LOCAL_ONLY_GREEN' \
 	"report=$(jq -c . "$report")" \
 	"unified_log_lines=$(wc -l <"$root/unified.log" | tr -d ' ') ip_socket_samples=0 retained_images=0" \
-	'proof=no_network_symbols_outside_rust_std,no_networking_api_in_source,ip_denied_process,no_ip_socket_in_one_second_samples,recording,declaration,context_frame_and_event,recovery,playback_render,validated_mix,model_install,transcription,correction,search,exports,package_verification,two_phase_deletion,content_free_stdout_stderr_unified_log' \
+	'proof=no_network_symbols_outside_rust_std,no_networking_api_in_source,ip_denied_process,no_ip_socket_in_one_second_samples,recording,declaration,context_frame_and_event,recovery,playback_render,validated_mix,model_install,transcription,correction,search,exports,package_verification,package_open_in_a_second_library,two_phase_deletion,content_free_stdout_stderr_unified_log' \
 	'excludes=candidate_binding,signed_sandbox,system_firewall,live_microphone,crash_reports,providers'
