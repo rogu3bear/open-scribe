@@ -378,13 +378,13 @@ final class ContextTests: XCTestCase {
   func testTheModelAsksForPermissionOnlyToAuthorizeAndStopsOnPlatformSignals() async throws {
     let fixture = try RecordingFixture()
     defer { try? FileManager.default.removeItem(at: fixture.root) }
-    var permission = NativeScreenPermission.denied
+    let permission = ScreenPermissionStub()
     var requests = 0
     var displays = RecordingFixture.displays
     let model = ContextScopeModel(
       binding: { fixture.binding }, frames: FrameScript(), recognize: { _ in [] },
-      permissionCheck: { permission },
-      permissionRequest: { requests += 1; return permission },
+      permissionCheck: { permission.current },
+      permissionRequest: { requests += 1; return permission.current },
       topology: { displays })
     await model.refreshChoices()
     XCTAssertEqual(requests, 0, "listing choices never prompts")
@@ -398,7 +398,7 @@ final class ContextTests: XCTestCase {
     XCTAssertNil(model.current)
     XCTAssertNotNil(model.message)
 
-    permission = .granted
+    permission.grant()
     XCTAssertTrue(model.authorize())
     XCTAssertEqual(model.current?.condition, .active)
     XCTAssertEqual(model.current?.request.targets.first?.description, "Studio Display, right of Built-in Display")
@@ -446,10 +446,10 @@ final class ContextTests: XCTestCase {
   func testContextSurfacesRenderForInspection() async throws {
     let fixture = try RecordingFixture()
     defer { try? FileManager.default.removeItem(at: fixture.root) }
-    var permission = NativeScreenPermission.denied
+    let permission = ScreenPermissionStub()
     let model = ContextScopeModel(
       binding: { fixture.binding }, frames: FrameScript(), recognize: { _ in [] },
-      permissionCheck: { permission }, permissionRequest: { permission },
+      permissionCheck: { permission.current }, permissionRequest: { permission.current },
       topology: { RecordingFixture.displays })
     let off = ContextInspector(
       model: ContextScopeModel(binding: { fixture.binding }, permissionCheck: { .denied }))
@@ -462,7 +462,7 @@ final class ContextTests: XCTestCase {
       mode: .watchRegion, choiceId: "display-2", region: CGRect(x: 0.1, y: 0.2, width: 0.5, height: 0.4))
     let sheet = ContextScopeSheet(model: preflight, dismiss: {})
     await model.refreshChoices()
-    permission = .granted
+    permission.grant()
     model.selection = ContextSelection(mode: .watchDisplay, choiceId: "display-2")
     XCTAssertTrue(model.authorize())
     model.overlay.hide()
@@ -543,4 +543,12 @@ private final class ProposalCounter: @unchecked Sendable {
   private var value = 0
   var count: Int { lock.withLock { value } }
   func increment() { lock.withLock { value += 1 } }
+}
+
+/// Screen permission a test changes after handing its checks to the model.
+private final class ScreenPermissionStub: @unchecked Sendable {
+  private let lock = NSLock()
+  private var state = NativeScreenPermission.denied
+  var current: NativeScreenPermission { lock.withLock { state } }
+  func grant() { lock.withLock { state = .granted } }
 }
