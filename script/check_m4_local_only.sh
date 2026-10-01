@@ -31,7 +31,9 @@ fail() {
 }
 
 [[ -x "$app" ]] || hold "development_app_not_built next=./script/build_and_run.sh --verify"
-rust_lib="$repo_root/apps/macos/.build/rust-macos13/aarch64-apple-darwin/debug/libopen_scribe_uniffi.a"
+# The development builder keys its Rust output by the Cargo policy digest.
+native_policy_digest="$(shasum -a 256 "$repo_root/.cargo/config.toml" | cut -d ' ' -f 1)"
+rust_lib="$repo_root/apps/macos/.build/rust-macos13-${native_policy_digest:0:12}/aarch64-apple-darwin/debug/libopen_scribe_uniffi.a"
 [[ -f "$rust_lib" ]] || hold "rust_static_library_not_built"
 [[ -f "${OPEN_SCRIBE_LOCAL_PROOF_MODEL:-}" ]] || hold "OPEN_SCRIBE_LOCAL_PROOF_MODEL_unset"
 [[ -f "${OPEN_SCRIBE_LOCAL_PROOF_SPEECH_CAF:-}" ]] || hold "OPEN_SCRIBE_LOCAL_PROOF_SPEECH_CAF_unset"
