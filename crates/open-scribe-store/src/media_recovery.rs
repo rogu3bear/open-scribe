@@ -68,6 +68,8 @@ impl SessionStore {
         let first_sample_record =
             journal_record_for_segment(records, "first_sample_captured", segment_id)?;
         let sealed_record = journal_record_for_segment(records, "segment_sealed", segment_id)?;
+        let recovered_record =
+            journal_record_for_segment(records, "playable_media_recovered", segment_id)?;
         let projected: bool = self.connection.query_row(
             "SELECT EXISTS(SELECT 1 FROM segments WHERE id = ?1 AND session_id = ?2)",
             params![segment_id, session_id],
@@ -99,13 +101,52 @@ impl SessionStore {
             };
             let expected_device = payload_u64(&opened_record.body.payload, "file_device")?;
             let expected_inode = payload_u64(&opened_record.body.payload, "file_inode")?;
-            if validated.device != expected_device
-                || validated.inode != expected_inode
+            if validated.inode != expected_inode
                 || validated
                     .channels
                     .is_some_and(|actual| actual != channels as u16)
             {
                 return Ok(RecoveryDisposition::InvalidMediaFile);
+            }
+            if validated.device != expected_device {
+                // A mount can renumber its device. Only already sealed evidence
+                // can reconcile it; an active or partial writer remains strict.
+                let accepted = sealed_record.or(recovered_record);
+                let Some(accepted) = accepted else {
+                    return Ok(RecoveryDisposition::InvalidMediaFile);
+                };
+                let payload = &accepted.body.payload;
+                if accepted.body.relative_path.as_deref() != Some(relative_path)
+                    || payload_string(payload, "relative_path")? != relative_path
+                    || payload_string(payload, "segment_id")? != segment_id
+                    || payload_string(payload, "source_id")?
+                        != payload_string(&authorization_record.body.payload, "source_id")?
+                    || payload_string(payload, "track_id")?
+                        != payload_string(&authorization_record.body.payload, "track_id")?
+                    || payload_u64(payload, "file_device")? != expected_device
+                    || payload_u64(payload, "file_inode")? != expected_inode
+                {
+                    return Ok(RecoveryDisposition::IntegrityMismatch);
+                }
+                let length = payload_u64(payload, "final_byte_length")?;
+                let digest = payload_string(payload, "digest_sha256")?;
+                let sealed = match self.validate_media_file(
+                    session_id,
+                    relative_path,
+                    MediaLengthRequirement::Exact(length),
+                    true,
+                ) {
+                    Ok(sealed) => sealed,
+                    Err(_) => return Ok(RecoveryDisposition::InvalidMediaFile),
+                };
+                if !sealed.matches_sealed_identity(expected_device, expected_inode, length, digest)
+                    || sealed.digest_sha256.as_deref() != Some(digest)
+                    || sealed.channels != Some(channels as u16)
+                    || sealed.recoverable_sample_count
+                        != Some(payload_u64(payload, "sample_count")?)
+                {
+                    return Ok(RecoveryDisposition::IntegrityMismatch);
+                }
             }
             let lifecycle: String = self.connection.query_row(
                 "SELECT lifecycle FROM segments WHERE id = ?1",
@@ -135,8 +176,15 @@ impl SessionStore {
                     Ok(sealed) => sealed,
                     Err(_) => return Ok(RecoveryDisposition::InvalidMediaFile),
                 };
-                if sealed.digest_sha256.as_deref()
-                    != Some(payload_string(payload, "digest_sha256")?)
+                if !sealed.matches_sealed_identity(
+                    expected_device,
+                    expected_inode,
+                    final_byte_length,
+                    payload_string(payload, "digest_sha256")?,
+                ) || sealed.recoverable_sample_count
+                    != Some(payload_u64(payload, "sample_count")?)
+                    || sealed.digest_sha256.as_deref()
+                        != Some(payload_string(payload, "digest_sha256")?)
                     || sealed.channels != Some(channels as u16)
                 {
                     return Ok(RecoveryDisposition::IntegrityMismatch);
@@ -175,19 +223,46 @@ impl SessionStore {
                     return Ok(RecoveryDisposition::IntegrityMismatch);
                 }
                 let observed_byte_length = payload_u64(payload, "observed_byte_length")?;
-                if self
-                    .validate_media_file(
+                let first_media = if let Some(recovered) = recovered_record {
+                    self.validate_media_file(
+                        session_id,
+                        relative_path,
+                        MediaLengthRequirement::Exact(payload_u64(
+                            &recovered.body.payload,
+                            "final_byte_length",
+                        )?),
+                        true,
+                    )
+                } else {
+                    self.validate_media_file(
                         session_id,
                         relative_path,
                         MediaLengthRequirement::AtLeast(observed_byte_length),
                         false,
                     )
-                    .map_or(true, |validated| {
-                        validated
+                };
+                if first_media.map_or(true, |validated| {
+                    let identity_matches = if let Some(recovered) = recovered_record {
+                        let payload = &recovered.body.payload;
+                        payload_u64(payload, "final_byte_length")
+                            .ok()
+                            .zip(payload_string(payload, "digest_sha256").ok())
+                            .is_some_and(|(length, digest)| {
+                                validated.matches_sealed_identity(
+                                    expected_device,
+                                    expected_inode,
+                                    length,
+                                    digest,
+                                ) && validated.digest_sha256.as_deref() == Some(digest)
+                            })
+                    } else {
+                        validated.device == expected_device && validated.inode == expected_inode
+                    };
+                    !identity_matches
+                        || validated
                             .channels
                             .is_some_and(|actual| actual != channels as u16)
-                    })
-                {
+                }) {
                     return Ok(RecoveryDisposition::InvalidMediaFile);
                 }
                 let segment_lifecycle: String = self.connection.query_row(

@@ -16,7 +16,7 @@ use super::{
     RecoveryDisposition, SCHEMA_VERSION, SessionOrigin, SessionStore, StoreError,
     ValidatedMediaFile, event_digest, insert_event_with_id, inspect_pcm_caf, next_database_event,
     open_managed_directory, open_managed_directory_at, payload_string, payload_u64,
-    validate_request, wall_time_milliseconds,
+    sealed_media_identity, validate_request, wall_time_milliseconds,
 };
 
 const MAX_IMPORTED_PLAYBACK_SNAPSHOT_BYTES: u64 = 256 * 1024 * 1024;
@@ -553,10 +553,13 @@ impl SessionStore {
             media_format,
             true,
         )?;
-        if validated.device != u64::try_from(*stored_device).unwrap_or(0)
-            || validated.inode != u64::try_from(*stored_inode).unwrap_or(0)
-            || (media_format == IMPORT_MEDIA_FORMAT
-                && validated.recoverable_sample_count != Some(sample_count))
+        if !validated.matches_sealed_identity(
+            u64::try_from(*stored_device).unwrap_or(0),
+            u64::try_from(*stored_inode).unwrap_or(0),
+            byte_length,
+            import_digest,
+        ) || (media_format == IMPORT_MEDIA_FORMAT
+            && validated.recoverable_sample_count != Some(sample_count))
             || validated.digest_sha256.as_deref() != Some(import_digest.as_str())
         {
             return Err(StoreError::IntegrityMismatch(
@@ -644,9 +647,12 @@ impl SessionStore {
             MediaLengthRequirement::Exact(byte_length),
             true,
         )?;
-        if validated.device != u64::try_from(stored_device).unwrap_or(0)
-            || validated.inode != u64::try_from(stored_inode).unwrap_or(0)
-            || validated.recoverable_sample_count != Some(sample_count)
+        if !validated.matches_sealed_identity(
+            u64::try_from(stored_device).unwrap_or(0),
+            u64::try_from(stored_inode).unwrap_or(0),
+            byte_length,
+            &digest,
+        ) || validated.recoverable_sample_count != Some(sample_count)
             || validated.digest_sha256.as_deref() != Some(digest.as_str())
         {
             return Err(StoreError::IntegrityMismatch(
@@ -1543,6 +1549,15 @@ impl SessionStore {
         let stat = fd_fs::fstat(&file).map_err(|_| {
             StoreError::IntegrityMismatch("compressed managed media identity is unavailable")
         })?;
+        let identity = sealed_media_identity::media_identity(&file)?;
+        if identity.0 != stat.st_dev as u64
+            || identity.1 != stat.st_ino as u64
+            || identity.2 != byte_length
+        {
+            return Err(StoreError::IntegrityMismatch(
+                "compressed media changed before hashing",
+            ));
+        }
         if fd_fs::FileType::from_raw_mode(stat.st_mode) != fd_fs::FileType::RegularFile
             || stat.st_size != byte_length as i64
             || !has_m4a_file_type(&mut file)?
@@ -1571,8 +1586,20 @@ impl SessionStore {
                 "compressed managed media grew",
             ));
         }
+        if calculate_digest {
+            self.digest_memo.borrow_mut().computed();
+        }
+        #[cfg(test)]
+        self.run_media_validation_hook();
+        if sealed_media_identity::media_identity(&file)? != identity {
+            return Err(StoreError::IntegrityMismatch(
+                "compressed media changed during hashing",
+            ));
+        }
+        let current_audio = self.open_managed_audio_directory(session_id)?;
+        let current_track = open_managed_directory_at(&current_audio, track)?;
         let rebound = fd_fs::openat(
-            &track_directory,
+            &current_track,
             *name,
             fd_fs::OFlags::RDONLY | fd_fs::OFlags::CLOEXEC | fd_fs::OFlags::NOFOLLOW,
             fd_fs::Mode::empty(),
@@ -1586,6 +1613,7 @@ impl SessionStore {
         if after.st_dev != stat.st_dev
             || after.st_ino != stat.st_ino
             || after.st_size != stat.st_size
+            || sealed_media_identity::media_identity(&File::from(rebound))? != identity
         {
             return Err(StoreError::IntegrityMismatch(
                 "compressed managed media was replaced",
@@ -1594,6 +1622,7 @@ impl SessionStore {
         file.rewind()?;
         Ok(ValidatedMediaFile {
             file,
+            identity,
             byte_length,
             device: stat.st_dev as u64,
             inode: stat.st_ino as u64,

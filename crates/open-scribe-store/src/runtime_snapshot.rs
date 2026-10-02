@@ -452,34 +452,71 @@ impl SessionStore {
             }
             Ok(_) => {}
         }
-        let validated = if origin == "import" {
-            // Polling checks sealed identity and length; playback rehashes the full object.
-            self.validate_import_media_file(
-                session_id,
-                relative_path,
-                byte_length,
-                media_format,
-                false,
-            )
-        } else {
-            self.validate_media_file(
-                session_id,
-                relative_path,
-                MediaLengthRequirement::Exact(byte_length),
-                true,
-            )
+        // Probe the complete managed path and CAF layout before recalling a
+        // digest. The import validator always hashes CAF, so dispatch locally
+        // rather than changing validation for playback or other consumers.
+        let validate = |calculate_digest| {
+            if media_format == "caf-pcm-s16le" {
+                self.validate_media_file(
+                    session_id,
+                    relative_path,
+                    MediaLengthRequirement::Exact(byte_length),
+                    calculate_digest,
+                )
+            } else {
+                self.validate_import_media_file(
+                    session_id,
+                    relative_path,
+                    byte_length,
+                    media_format,
+                    calculate_digest,
+                )
+            }
+        };
+        let validated = match validate(false) {
+            Ok(mut media)
+                if (media_format == "caf-pcm-s16le"
+                    || media.device != u64::try_from(*stored_device).unwrap_or(0))
+                    && media.digest_sha256.is_none() =>
+            {
+                let cached = self
+                    .snapshot_digest_memo
+                    .borrow()
+                    .get(&media.identity)
+                    .cloned();
+                if let Some(digest) = cached {
+                    media.digest_sha256 = Some(digest);
+                    Ok(media)
+                } else {
+                    validate(true)
+                }
+            }
+            other => other,
         };
         let Ok(validated) = validated else {
             return Ok(Some(base(RuntimePlayableMediaAvailability::Corrupt)));
         };
-        if validated.device != u64::try_from(*stored_device).unwrap_or(0)
-            || validated.inode != u64::try_from(*stored_inode).unwrap_or(0)
-            || (media_format == "caf-pcm-s16le"
-                && validated.recoverable_sample_count != Some(sample_count))
+        if !validated.matches_sealed_identity(
+            u64::try_from(*stored_device).unwrap_or(0),
+            u64::try_from(*stored_inode).unwrap_or(0),
+            byte_length,
+            import_digest_sha256,
+        ) || (media_format == "caf-pcm-s16le"
+            && validated.recoverable_sample_count != Some(sample_count))
             || (media_format == "caf-pcm-s16le"
                 && validated.digest_sha256.as_deref() != Some(import_digest_sha256.as_str()))
         {
             return Ok(Some(base(RuntimePlayableMediaAvailability::Corrupt)));
+        }
+        if let Some(digest) = validated.digest_sha256 {
+            // This cache belongs only to read-only UI polling. A fresh nofollow
+            // path rebind and full change-timestamp fingerprint precede lookup;
+            // insertion follows all sealed receipt comparisons above.
+            let mut memo = self.snapshot_digest_memo.borrow_mut();
+            if memo.len() >= 64 && !memo.contains_key(&validated.identity) {
+                memo.pop_first();
+            }
+            memo.insert(validated.identity, digest);
         }
         Ok(Some(base(RuntimePlayableMediaAvailability::Available)))
     }

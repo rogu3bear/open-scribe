@@ -27,6 +27,7 @@ use uuid::Uuid;
 
 mod context;
 mod conversation_identity;
+mod sealed_media_identity;
 pub use context::{
     CONTEXT_EXCLUSIONS, CONTEXT_SCOPE_SCHEMA, ContextAction, ContextBounds, ContextCondition,
     ContextDetail, ContextFailureReason, ContextMode, ContextPauseReason, ContextRetention,
@@ -530,6 +531,7 @@ struct PlayableRecoveryProjection {
 
 struct ValidatedMediaFile {
     file: File,
+    identity: sealed_media_identity::MediaIdentity,
     byte_length: u64,
     device: u64,
     inode: u64,
@@ -557,6 +559,12 @@ pub struct SessionStore {
     sessions_root: PathBuf,
     connection: Connection,
     digest_memo: std::cell::RefCell<library_recovery::DigestMemo>,
+    // UI polling alone may reuse a verified sealed digest. Every lease,
+    // transcript input, export and recovery still validates independently.
+    snapshot_digest_memo:
+        std::cell::RefCell<BTreeMap<sealed_media_identity::MediaIdentity, String>>,
+    #[cfg(test)]
+    media_validation_hook: std::cell::RefCell<Option<Box<dyn FnOnce()>>>,
 }
 
 impl SessionStore {
@@ -583,6 +591,9 @@ impl SessionStore {
             sessions_root,
             connection,
             digest_memo: std::cell::RefCell::default(),
+            snapshot_digest_memo: std::cell::RefCell::default(),
+            #[cfg(test)]
+            media_validation_hook: std::cell::RefCell::default(),
         })
     }
 
@@ -1013,9 +1024,12 @@ impl SessionStore {
                 MediaLengthRequirement::Exact(byte_length),
                 true,
             )?;
-            if validated.device != file_device
-                || validated.inode != file_inode
-                || validated.recoverable_sample_count != Some(sample_count)
+            if !validated.matches_sealed_identity(
+                file_device,
+                file_inode,
+                byte_length,
+                &digest_sha256,
+            ) || validated.recoverable_sample_count != Some(sample_count)
                 || validated.channels != Some(channels)
                 || validated.digest_sha256.as_deref() != Some(digest_sha256.as_str())
             {
@@ -1103,9 +1117,12 @@ impl SessionStore {
                             MediaLengthRequirement::Exact(byte_length),
                             true,
                         )?;
-                        if validated.device != file_device
-                            || validated.inode != file_inode
-                            || validated.recoverable_sample_count != Some(sample_count)
+                        if !validated.matches_sealed_identity(
+                            file_device,
+                            file_inode,
+                            byte_length,
+                            &digest_sha256,
+                        ) || validated.recoverable_sample_count != Some(sample_count)
                             || validated.channels != Some(channels)
                             || validated.digest_sha256.as_deref() != Some(digest_sha256.as_str())
                         {
@@ -2506,10 +2523,20 @@ impl SessionStore {
         if &header != CAF_HEADER {
             return Err(StoreError::IntegrityMismatch("media header is not CAF"));
         }
-        let media_identity = (stat.st_dev as u64, stat.st_ino as u64, byte_length);
+        let media_identity = sealed_media_identity::media_identity(&file)?;
+        if media_identity.0 != stat.st_dev as u64
+            || media_identity.1 != stat.st_ino as u64
+            || media_identity.2 != byte_length
+        {
+            return Err(StoreError::IntegrityMismatch(
+                "media changed before hashing",
+            ));
+        }
+        let cached_digest = self.digest_memo.borrow().recall(media_identity);
+        let reused_digest = cached_digest.is_some();
         let digest_sha256 = if !calculate_digest {
             None
-        } else if let Some(known) = self.digest_memo.borrow().recall(media_identity) {
+        } else if let Some(known) = cached_digest {
             Some(known)
         } else {
             file.rewind()?;
@@ -2535,26 +2562,31 @@ impl SessionStore {
                 ));
             }
             let digest = format!("{:x}", hasher.finalize());
-            self.digest_memo
-                .borrow_mut()
-                .record(media_identity, &digest);
+            self.digest_memo.borrow_mut().computed();
             Some(digest)
         };
         file.rewind()?;
         let inspection = inspect_pcm_caf(&mut file, byte_length)?;
+        #[cfg(test)]
+        self.run_media_validation_hook();
         let post_read_stat = fd_fs::fstat(&file).map_err(|_| {
             StoreError::IntegrityMismatch("sealed media identity could not be revalidated")
         })?;
         if post_read_stat.st_dev != stat.st_dev
             || post_read_stat.st_ino != stat.st_ino
             || post_read_stat.st_size != stat.st_size
+            || sealed_media_identity::media_identity(&file)? != media_identity
         {
             return Err(StoreError::IntegrityMismatch(
                 "media file changed while Rust validated it",
             ));
         }
+        // Reopen the complete managed path: the retained track descriptor can
+        // still name a directory that was replaced while the file was hashed.
+        let current_audio = self.open_managed_audio_directory(session_id)?;
+        let current_track = open_managed_directory_at(&current_audio, track_component)?;
         let rebound_fd = fd_fs::openat(
-            &track,
+            &current_track,
             *file_component,
             fd_fs::OFlags::RDWR | fd_fs::OFlags::CLOEXEC | fd_fs::OFlags::NOFOLLOW,
             fd_fs::Mode::empty(),
@@ -2566,6 +2598,7 @@ impl SessionStore {
         if rebound_stat.st_dev != stat.st_dev
             || rebound_stat.st_ino != stat.st_ino
             || rebound_stat.st_size != stat.st_size
+            || sealed_media_identity::media_identity(&File::from(rebound_fd))? != media_identity
         {
             return Err(StoreError::IntegrityMismatch(
                 "media path no longer names the validated file",
@@ -2574,8 +2607,12 @@ impl SessionStore {
         fd_fs::fsync(&track).map_err(|_| {
             StoreError::IntegrityMismatch("media directory could not be synchronized")
         })?;
+        if !reused_digest && let Some(digest) = &digest_sha256 {
+            self.digest_memo.borrow_mut().record(media_identity, digest);
+        }
         Ok(ValidatedMediaFile {
             file,
+            identity: media_identity,
             byte_length,
             device: stat.st_dev as u64,
             inode: stat.st_ino as u64,
@@ -5131,4 +5168,5 @@ mod tests {
     }
 
     mod runtime_library_snapshot_tests;
+    mod sealed_identity_tests;
 }

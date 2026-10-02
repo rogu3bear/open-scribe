@@ -25,8 +25,8 @@ pub(super) const RECOVERED_SESSION_EVIDENCE_SQL: &str = "(EXISTS (
           AND recovery_runs.disposition IN ('playable_media_recovered', 'timeline_recovered')
     ))";
 
-/// A media file's identity for one launch: device, inode, and byte length.
-pub(super) type MediaIdentity = (u64, u64, u64);
+/// Descriptor identity and change timestamps for one launch.
+type MediaIdentity = sealed_media_identity::MediaIdentity;
 
 /// One reviewable recovered segment's session and its own validation result.
 pub(super) type RecoveredPlayableRow = (String, Result<RecoveredPlayableSession, StoreError>);
@@ -55,10 +55,13 @@ impl DigestMemo {
     }
 
     pub(super) fn record(&mut self, identity: MediaIdentity, digest: &str) {
-        self.computations += 1;
         if let Some(launch) = self.launch.as_mut() {
             launch.insert(identity, digest.to_owned());
         }
+    }
+
+    pub(super) fn computed(&mut self) {
+        self.computations += 1;
     }
 
     pub(super) fn computations(&self) -> u64 {
@@ -352,6 +355,52 @@ impl SessionStore {
             };
             let observed_byte_length =
                 payload_u64(&first_sample.body.payload, "observed_byte_length")?;
+            if let Some(accepted) = journal_record_for_segment(
+                &records,
+                "playable_media_recovered",
+                &candidate.segment_id,
+            )? {
+                // A crash after the durable recovery receipt can leave only
+                // its projection unfinished. Reuse the exact accepted receipt.
+                let payload = &accepted.body.payload;
+                let length = payload_u64(payload, "final_byte_length")?;
+                let digest = payload_string(payload, "digest_sha256")?;
+                if accepted.body.relative_path.as_deref() != Some(candidate.relative_path.as_str())
+                    || payload_string(payload, "relative_path")? != candidate.relative_path
+                    || payload_string(payload, "source_id")? != candidate.source_id
+                    || payload_string(payload, "track_id")? != candidate.track_id
+                    || payload_string(payload, "segment_id")? != candidate.segment_id
+                    || payload_u64(payload, "file_device")? != candidate.file_device
+                    || payload_u64(payload, "file_inode")? != candidate.file_inode
+                    || payload_u64(payload, "truncated_bytes")? != 0
+                    || length < observed_byte_length
+                {
+                    return Err(StoreError::IntegrityMismatch(
+                        "recovery receipt changed accepted identity",
+                    ));
+                }
+                let validated = self.validate_media_file(
+                    &candidate.session_id,
+                    &candidate.relative_path,
+                    MediaLengthRequirement::Exact(length),
+                    true,
+                )?;
+                if !validated.matches_sealed_identity(
+                    candidate.file_device,
+                    candidate.file_inode,
+                    length,
+                    digest,
+                ) || validated.digest_sha256.as_deref() != Some(digest)
+                    || validated.recoverable_sample_count
+                        != Some(payload_u64(payload, "sample_count")?)
+                {
+                    return Err(StoreError::IntegrityMismatch(
+                        "recovery receipt no longer matches media",
+                    ));
+                }
+                plans.push((payload.clone(), validated));
+                continue;
+            }
             let Ok(validated) = self.validate_media_file(
                 &candidate.session_id,
                 &candidate.relative_path,
