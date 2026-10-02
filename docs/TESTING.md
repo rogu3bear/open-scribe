@@ -1611,3 +1611,102 @@ This candidate supersedes `c082a16` for M1 regression evidence. It carries
 the portable round trip, its hardening, and the drift instrument. It is the
 candidate-bound receipt the package section above lacked. It proves nothing
 about two-hour synchronization or the human matrix.
+
+### Sealed media identity across a device renumber (`7463f34`–`f1d0aaa`)
+
+A remount or reboot can bring a volume back with a different `st_dev`.
+Every consumer of sealed evidence compared device and inode strictly, so a
+saved recording on that volume read as corrupt. This work came in as an
+uncommitted change set from another writer. The maintainer had it adopted,
+and it was committed in logical groups:
+
+- `7463f34`: sealed evidence accepts a changed device only with the
+  recorded inode, exact length, and full SHA-256. That covers saved
+  playback and leases, recovered rows, imports, receipt replay, and the
+  runtime snapshot. Writers and unsealed recovery still compare device and
+  inode strictly.
+  - Launch recovery reuses a journaled `playable_media_recovered` receipt
+    when a crash interrupted only its projection.
+  - The launch digest memo records only after the file and its whole
+    managed path are revalidated, keyed by device, inode, length, mtime,
+    and ctime.
+  - Read-only polling reuses a verified digest from a bounded 64-entry
+    memo; leases, transcription input, exports, and recovery still hash.
+- `40fa34b`, `026b60c`: a capture with sources but no saved timing says it
+  cannot be transcribed or exported, and export options are scoped to the
+  session that loaded them.
+- `015a71c`: the playback-lease termination test records the lease's own
+  close instead of probing a descriptor number another open can reuse.
+- `46dcc94`: candidate builds set `CARGO_INCREMENTAL=0`.
+
+An independent read-only review found no P0–P2 defects. Two of its P3
+findings were acted on: a capture rejection test (`b72311a`) and the export
+wording (`026b60c`). It kept the 64-entry memo's smallest-key eviction:
+polling cycles through sessions in order, and LRU would then get no hits.
+
+Known limit, by design: if a crash during capture is followed by a reboot
+that renumbers the volume, the unsealed final segment is not recovered. It
+has no digest that could bind it.
+
+The first workspace run on `b72311a` failed twice, both in test code:
+
+- The new test asked the runtime snapshot about a timed capture. A timed
+  capture reports no playable media because it plays through its timeline.
+- Clippy's `manual_range_patterns` refused `2 | 3 | 4` in an adopted test.
+
+`f1d0aaa` fixes both. Proof on a clean tree at `f1d0aaa`:
+
+- `cargo clippy --workspace --all-targets --locked -- -D warnings`: clean.
+- `cargo test --workspace --locked`: store 188 passed, one ignored; core 30;
+  asr 10; uniffi 8; no failures. That includes 14 sealed-identity tests.
+- With `stage_proof_inputs.sh`'s `env.sh` sourced,
+  `./script/build_and_run.sh --verify` printed `NATIVE_FIXTURE_XCODE_GREEN`:
+  197 tests, two operator-only skips, no failures.
+- `./script/check.sh --m4-local-only` on that build:
+
+```
+M4_LOCAL_ONLY_GREEN
+report={"context_events_accepted":1,"context_frame_pixels":4234240,"context_frame_text_blocks":134,"correction_search_hits":1,"declared_participants":1,"deleted_sessions":1,"package_files":7,"recovered_segments":4,"rendered_frames":1548000,"restored_package_media_files":4,"restored_timeline_segments":4,"saved_context_events":1,"screen_recording_permission":"granted","transcript_segments":1,"validated_mix_bytes":95032}
+unified_log_lines=5123 ip_socket_samples=0 retained_images=0
+```
+
+Before this run, the six commits from `7463f34` to `b72311a` were pushed
+unbuilt. Disk Guard was holding every build at about 91 GB free, and a
+bypass was denied. They are proven only from `f1d0aaa`.
+
+The native verify and the local-only run used a development build: debug
+dylib `b035411f80e55dd193ec97ce3cb8ff3f8bc5b57dc5fb4121a8c62b445bd2dd99` and
+Rust library `930398aefe2d10847bc70fb00b3bce88f937f0d7cd674ddf3ae4e74bc02706e4`.
+Both digests were recorded before that regenerable build output was removed
+to free disk. The build is not candidate-bound.
+
+Logs under `artifacts/m1-automated/`, with SHA-256:
+
+- `b72311a-test.log` (the failing run):
+  `77a94e612418da363aeb8755e2840fb6f0cb9b9f5f8a41cbd4523ae606469581`;
+- `clippy2.log`:
+  `85c15723ac30f422069091307fa3bf4b4a6da3a1280007a54134ebbaf836423f`;
+- `test2.log`:
+  `bc9392ac1be22c5f2a594ff70808851f4f83c80ebb1c1369e4c5b4fa1e9462e0`;
+- `verify-f1d0aaa.log`:
+  `1cbc12e392808632e72b065e583fd30b82eed93a66f224e3b39c938f80beb559`;
+- `local-only-f1d0aaa.log`:
+  `62bc6fe00f113467b516d11995e34856557898371652b2e0432969b8cc37431e`.
+
+The first candidate attempt on `f1d0aaa` ran
+`disk-guard run --budget-gb 3 --volume "$PWD" -- ./script/check.sh --candidate "$PWD/apps/macos/.build/candidates/f1d0aaab3f19635bd6a409b64cbb0d9062014f94/candidate.json"`.
+Its source-test fixtures passed. Then it stopped with `DISK GUARD HOLD:
+Inherited reservation is smaller than the nested build allowance`. The
+scaffold's Cargo phases request their documented 10 GB planning allowance,
+and Disk Guard now refuses a nested request larger than the outer
+reservation. `10201d2` had passed with 3 GB.
+
+The next candidate therefore declares `--budget-gb 10` at a new record path,
+which needs 110 GB free. The allowance stays at 10 GB: the script documents
+it as covering target, registry and temp writes, not as a measured footprint.
+
+That attempt's directory holds only its source-check log:
+`artifacts/m1-automated/candidate-f1d0aaa-attempt1.log`, SHA-256
+`4fa593fa724b5ba4b5e23de45542b15aa66102d5786ab918090898e5437f3726`.
+No candidate qualifies `f1d0aaa` yet, so `10201d2` remains the latest M1
+regression evidence.
