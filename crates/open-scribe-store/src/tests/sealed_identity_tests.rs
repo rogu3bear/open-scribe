@@ -497,7 +497,7 @@ fn sealed_identity_snapshot_memo_rejects_cached_path_changes_and_never_caches_fa
                     std::os::unix::fs::symlink(original.with_extension("original"), original)
                         .unwrap();
                 }
-                2 | 3 | 4 => {
+                2..=4 => {
                     let ancestor = original.ancestors().nth(change - 1).unwrap();
                     fs::rename(ancestor, ancestor.with_extension("original")).unwrap();
                     std::os::unix::fs::symlink(ancestor.with_extension("original"), ancestor)
@@ -745,6 +745,12 @@ fn sealed_identity_renumbered_capture_with_changed_content_is_refused() {
             .and_then(|input| store.open_transcription_input(&input).map(drop))
             .is_err()
     );
+
+    // The runtime snapshot validates media only for an untimed capture.
+    let temp = TempDir::new().unwrap();
+    let (store, session, a) = captured_with_clock(&temp, true, false);
+    renumber_receipts(&store, &session);
+    change_first_sample(&a.absolute_path);
     assert_ne!(
         available(&store, &session),
         RuntimePlayableMediaAvailability::Available
