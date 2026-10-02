@@ -7,6 +7,89 @@ import XCTest
 
 @MainActor
 final class TranscriptLibraryModelTests: XCTestCase {
+  private func session(
+    _ id: String, calibrated: Bool, sources: [NativeMediaSourceKind], recovered: Bool = false
+  ) -> RuntimeSessionPresentation {
+    RuntimeSessionPresentation(
+      native: NativeRuntimeSessionSnapshot(
+        sessionId: id, title: id, lifecycle: "ready_for_review", health: "healthy",
+        elapsedSeconds: 1, journalDurable: true, mediaFilesOpen: false,
+        interruptionReason: nil, recovered: recovered, hasCaptureTimeline: calibrated,
+        sources: sources.map {
+          NativeRuntimeSourceSnapshot(kind: $0, displayName: "Fixture", lifecycle: "sealed")
+        }, playableMedia: nil))
+  }
+
+  func testMissingCaptureTimingDoesNotBlockImportsOrCalibratedCaptures() {
+    XCTAssertNil(session("import", calibrated: false, sources: []).transcriptionUnavailableReason)
+    XCTAssertNil(
+      session("capture", calibrated: true, sources: [.microphone, .systemAudio])
+        .transcriptionUnavailableReason)
+    XCTAssertNil(
+      session("restored", calibrated: true, sources: [.microphone], recovered: true)
+        .transcriptionUnavailableReason)
+    XCTAssertNotNil(
+      session("single-source", calibrated: false, sources: [.microphone])
+        .transcriptionUnavailableReason)
+    XCTAssertNotNil(
+      session("two-source", calibrated: false, sources: [.microphone, .systemAudio])
+        .transcriptionUnavailableReason)
+  }
+
+  func testMissingTimingClearsPriorTranscriptAndRetainsAvailableMetadata() {
+    let library = TranscriptTimingLibraryFake()
+    let model = TranscriptLibraryModel(library: library)
+    let valid = session("valid", calibrated: false, sources: [])
+    let historical = session("historical", calibrated: false, sources: [.microphone])
+    model.load(session: valid)
+    model.search("fixture")
+    XCTAssertEqual(model.availability, .final)
+    XCTAssertEqual(model.segments.first?.trackId, "valid")
+    XCTAssertFalse(model.searchResults.isEmpty)
+    XCTAssertEqual(model.audioOptions?.originalExtension, "caf")
+    XCTAssertEqual(library.transcriptReads, 2)
+
+    model.load(session: historical)
+    XCTAssertEqual(model.sessionId, "historical")
+    XCTAssertEqual(model.availability, .unavailable)
+    XCTAssertTrue(model.segments.isEmpty)
+    XCTAssertTrue(model.searchResults.isEmpty)
+    XCTAssertEqual(model.availabilityText, historical.transcriptionUnavailableReason)
+    XCTAssertNil(model.message)
+    XCTAssertFalse(model.messageIsFailure)
+    XCTAssertEqual(model.speakers.first?.trackId, "historical")
+    XCTAssertEqual(model.audioOptions?.pcmTracks, ["historical"])
+    XCTAssertNil(model.audioOptions?.originalExtension)
+    XCTAssertEqual(library.transcriptReads, 2, "missing timing must not invoke transcript collection")
+
+    XCTAssertTrue(model.renameSpeaker(trackId: "historical", label: "Fixture"))
+    XCTAssertEqual(model.availabilityText, historical.transcriptionUnavailableReason)
+    XCTAssertEqual(library.transcriptReads, 2, "same-session edit reload retains the timing gate")
+
+    model.load(session: valid)
+    XCTAssertNil(model.transcriptionUnavailableReason)
+    XCTAssertEqual(model.availabilityText, "Final transcript")
+    XCTAssertEqual(model.segments.first?.trackId, "valid")
+    XCTAssertEqual(library.transcriptReads, 4)
+
+    // Calibration can become available without changing the selected ID.
+    model.load(session: historical)
+    model.load(session: session("historical", calibrated: true, sources: [.microphone]))
+    XCTAssertNil(model.transcriptionUnavailableReason)
+    XCTAssertEqual(model.availability, .final)
+    XCTAssertEqual(library.transcriptReads, 6)
+
+    // Current untimed capture inventories cannot supply export options.
+    // An unsuccessful metadata read must not keep the prior import's options.
+    let limited = TranscriptLibraryModel(
+      library: TranscriptTimingLibraryFake(rejectsHistoricalAudioOptions: true))
+    limited.load(session: valid)
+    XCTAssertNotNil(limited.audioOptions)
+    limited.load(session: historical)
+    XCTAssertNil(limited.audioOptions)
+    XCTAssertNil(limited.message)
+  }
+
   private func capturedSession() throws -> (
     root: URL, sessionId: String, capture: TimelineRuntimeProof.Capture
   ) {
@@ -25,7 +108,7 @@ final class TranscriptLibraryModelTests: XCTestCase {
     XCTAssertTrue(model.segments.isEmpty)
     XCTAssertEqual(
       model.availabilityText,
-      "No transcript yet. The recorded audio above is complete.")
+      "No transcript yet.")
     XCTAssertFalse(model.speakers.isEmpty)
     XCTAssertTrue(model.speakers.allSatisfy { !$0.namedByUser })
     let track = try XCTUnwrap(model.speakers.first)
@@ -165,5 +248,67 @@ final class TranscriptLibraryModelTests: XCTestCase {
     XCTAssertEqual(TranscriptSection.timestamp(3_725_000_000_000), "1:02:05")
     XCTAssertEqual(TranscriptSection.fileName("Team: sync/notes", type: .json), "Team- sync-notes.json")
     XCTAssertEqual(TranscriptSection.fileName(" .hidden", type: .plainText), "Transcript.txt")
+  }
+}
+
+/// No Rust handle or media access: exercises the model's selection and
+/// capability handling, including reads that must not run for untimed capture.
+private final class TranscriptTimingLibraryFake: NativeTranscriptLibrary, @unchecked Sendable {
+  private let lock = NSLock()
+  private let rejectsHistoricalAudioOptions: Bool
+  private var reads = 0
+  var transcriptReads: Int { lock.withLock { reads } }
+
+  init(rejectsHistoricalAudioOptions: Bool = false) {
+    self.rejectsHistoricalAudioOptions = rejectsHistoricalAudioOptions
+    super.init(noHandle: NoHandle())
+  }
+  required init(unsafeFromHandle handle: UInt64) {
+    rejectsHistoricalAudioOptions = false
+    super.init(unsafeFromHandle: handle)
+  }
+
+  override func availability(sessionId: String) throws -> NativeTranscriptAvailability {
+    lock.withLock { reads += 1 }
+    return .final
+  }
+
+  override func document(sessionId: String) throws -> [NativeTranscriptSegment] {
+    lock.withLock { reads += 1 }
+    return [
+      NativeTranscriptSegment(
+        revisionId: "fixture", trackId: sessionId, sequence: 0, startNanoseconds: 0,
+        endNanoseconds: 1_000_000_000, verbatimText: "Fixture", effectiveText: "Fixture",
+        corrected: false, speakerLabel: "Fixture", speakerNamedByUser: false)
+    ]
+  }
+
+  override func speakers(sessionId: String) throws -> [NativeSessionSpeaker] {
+    [NativeSessionSpeaker(
+      trackId: sessionId, sourceKind: "microphone", label: "Fixture", namedByUser: false)]
+  }
+
+  override func audioExportOptions(sessionId: String) throws -> NativeAudioExportOptions {
+    if rejectsHistoricalAudioOptions, sessionId == "historical" {
+      throw NativeStorageError.InvalidState
+    }
+    return NativeAudioExportOptions(
+      hasValidatedMix: false, originalExtension: sessionId == "valid" ? "caf" : nil,
+      pcmTracks: [sessionId])
+  }
+
+  override func contextDetail(sessionId: String) throws -> NativeContextDetail {
+    throw NativeStorageError.InvalidState
+  }
+
+  override func contextEvents(sessionId: String) throws -> [NativeContextEvent] { [] }
+  override func renameSpeaker(sessionId: String, trackId: String, label: String?) throws {}
+
+  override func search(query: String, sessionId: String?, limit: UInt32) throws
+    -> [NativeTranscriptSearchHit]
+  {
+    [NativeTranscriptSearchHit(
+      sessionId: "valid", sessionTitle: "Fixture", revisionId: "fixture", trackId: "valid",
+      sequence: 0, startNanoseconds: 0, endNanoseconds: 1_000_000_000, effectiveText: "Fixture")]
   }
 }

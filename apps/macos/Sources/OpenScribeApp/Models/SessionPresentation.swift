@@ -136,6 +136,13 @@ struct RuntimeSessionPresentation: Equatable, Sendable, Identifiable {
 
   var id: String { sessionId }
 
+  /// Imports have no required capture sources. Captures need Rust's saved
+  /// clock calibration before their transcripts can use a shared timeline.
+  var transcriptionUnavailableReason: String? {
+    guard !hasCaptureTimeline, !sources.isEmpty else { return nil }
+    return "This recording has no saved timing for its audio sources. Transcription is unavailable."
+  }
+
   var isRecording: Bool {
     lifecycle == "recording" && health == "healthy" && journalDurable && mediaFilesOpen
   }

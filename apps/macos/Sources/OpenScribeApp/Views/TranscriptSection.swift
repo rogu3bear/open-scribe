@@ -29,13 +29,16 @@ struct TranscriptSection: View {
         Spacer()
         exportMenu
       }
-      Text(transcripts.availabilityText)
+      Text(session.transcriptionUnavailableReason ?? transcripts.availabilityText)
         .font(.callout)
         .foregroundStyle(.secondary)
-      if transcripts.availability != .final {
+      if transcripts.availability != .final || speech.transcribingSessionId == session.sessionId {
         transcriptionControls
       }
-      if let message = speech.message, !showingModels {
+      if let message = speech.message, !showingModels,
+        session.transcriptionUnavailableReason == nil
+          || speech.transcribingSessionId == session.sessionId
+      {
         Label(
           message,
           systemImage: speech.messageIsFailure ? "exclamationmark.triangle" : "checkmark.circle"
@@ -43,7 +46,7 @@ struct TranscriptSection: View {
         .font(.callout)
         .foregroundStyle(speech.messageIsFailure ? Color.red : Color.secondary)
       }
-      if !transcripts.segments.isEmpty {
+      if session.transcriptionUnavailableReason == nil, !transcripts.segments.isEmpty {
         speakerList
         // Long sessions hold thousands of segments; build only visible rows.
         LazyVStack(alignment: .leading, spacing: 12) {
@@ -53,8 +56,11 @@ struct TranscriptSection: View {
         }
       }
     }
-    .task(id: session.sessionId) {
-      transcripts.load(sessionId: session.sessionId)
+    .task(
+      id: session.sessionId
+        + (session.transcriptionUnavailableReason == nil ? ":timed" : ":untimed")
+    ) {
+      transcripts.load(session: session)
     }
     .sheet(item: $editing) { segment in
       correctionSheet(segment)
@@ -81,12 +87,12 @@ struct TranscriptSection: View {
         Button("Cancel Transcription") { speech.cancel() }
       }
       .frame(maxWidth: 420, alignment: .leading)
-    } else if speech.installedModel != nil {
+    } else if session.transcriptionUnavailableReason == nil, speech.installedModel != nil {
       HStack(spacing: 12) {
         Button("Transcribe on This Mac") {
           Task {
             await speech.transcribe(sessionId: session.sessionId)
-            transcripts.load(sessionId: session.sessionId)
+            transcripts.load(session: session)
           }
         }
         .disabled(speech.transcribingSessionId != nil)
@@ -100,7 +106,7 @@ struct TranscriptSection: View {
         }
         .buttonStyle(.link)
       }
-    } else {
+    } else if session.transcriptionUnavailableReason == nil {
       VStack(alignment: .leading, spacing: 6) {
         Text("Transcription needs a verified local speech model.")
           .font(.callout)
@@ -201,14 +207,16 @@ struct TranscriptSection: View {
             }
             Button("Transcript JSON…") { export(.transcriptJson, type: .json) }
           }
-          .disabled(transcripts.segments.isEmpty)
+          .disabled(session.transcriptionUnavailableReason != nil || transcripts.segments.isEmpty)
         }
         Section("Audio") { audioExports }
         Section("Conversation") {
           Button("Session Manifest (JSON)…") {
             exportConversation(.sessionManifest, type: .json, suffix: " manifest")
           }
+          .disabled(session.transcriptionUnavailableReason != nil)
           Button("Portable Package…") { exportPackage() }
+            .disabled(session.transcriptionUnavailableReason != nil)
         }
       }
       .fixedSize()
@@ -218,21 +226,25 @@ struct TranscriptSection: View {
   }
 
   /// Only exports the session can honestly produce are offered.
+  private var loadedAudioOptions: NativeAudioExportOptions? {
+    transcripts.sessionId == session.sessionId ? transcripts.audioOptions : nil
+  }
+
   @ViewBuilder
   private var audioExports: some View {
-    if transcripts.audioOptions?.hasValidatedMix == true {
+    if loadedAudioOptions?.hasValidatedMix == true {
       Button("Verified Mix (M4A)…") { exportConversation(.validatedMix, type: .mpeg4Audio) }
     }
     if session.hasCaptureTimeline {
       Button("Lossless Mix (WAV)…") { exportConversation(.mixWAV, type: .wav) }
     }
-    ForEach(transcripts.audioOptions?.pcmTracks ?? [], id: \.self) { track in
+    ForEach(loadedAudioOptions?.pcmTracks ?? [], id: \.self) { track in
       let label = transcripts.speakers.first { $0.trackId == track }?.label ?? "Track"
       Button("\(label) Track (WAV)…") {
         exportConversation(.track(track), type: .wav, suffix: " - \(label)")
       }
     }
-    if let fileExtension = transcripts.audioOptions?.originalExtension {
+    if let fileExtension = loadedAudioOptions?.originalExtension {
       Button("Original Audio…") {
         exportConversation(
           .original, type: UTType(filenameExtension: fileExtension) ?? .audio)

@@ -10,6 +10,7 @@ final class TranscriptLibraryModel: ObservableObject {
 
   @Published private(set) var sessionId: String?
   @Published private(set) var availability: NativeTranscriptAvailability = .unavailable
+  @Published private(set) var transcriptionUnavailableReason: String?
   @Published private(set) var segments: [NativeTranscriptSegment] = []
   @Published private(set) var speakers: [NativeSessionSpeaker] = []
   @Published private(set) var searchResults: [NativeTranscriptSearchHit] = []
@@ -76,23 +77,50 @@ final class TranscriptLibraryModel: ObservableObject {
   }
 
   var availabilityText: String {
-    switch availability {
+    if let transcriptionUnavailableReason { return transcriptionUnavailableReason }
+    return switch availability {
     case .final: "Final transcript"
     case .draft: "Draft — some tracks do not have a Final transcript yet"
     case .failed: "Transcription failed. The recorded audio is unaffected."
     case .unavailable:
-      "No transcript yet. The recorded audio above is complete."
+      "No transcript yet."
     }
   }
 
   func load(sessionId: String) {
+    load(
+      sessionId: sessionId,
+      transcriptionUnavailableReason:
+        self.sessionId == sessionId ? transcriptionUnavailableReason : nil)
+  }
+
+  func load(session: RuntimeSessionPresentation) {
+    load(
+      sessionId: session.sessionId,
+      transcriptionUnavailableReason: session.transcriptionUnavailableReason)
+  }
+
+  private func load(sessionId: String, transcriptionUnavailableReason: String?) {
     self.sessionId = sessionId
+    self.transcriptionUnavailableReason = transcriptionUnavailableReason
     #if DEBUG
       if isFixedPreview { return }
     #endif
     guard let library else {
       clear(message: "The conversation library is unavailable.")
       messageIsFailure = true
+      return
+    }
+    if let transcriptionUnavailableReason {
+      clear(message: nil)
+      self.transcriptionUnavailableReason = transcriptionUnavailableReason
+      searchResults = []
+      // Load metadata independently of transcript collection, keeping only
+      // export options Rust can provide. Untimed captures may have none.
+      speakers = (try? library.speakers(sessionId: sessionId)) ?? []
+      audioOptions = try? library.audioExportOptions(sessionId: sessionId)
+      contextDetail = try? library.contextDetail(sessionId: sessionId)
+      contextEvents = (try? library.contextEvents(sessionId: sessionId)) ?? []
       return
     }
     do {
@@ -319,8 +347,10 @@ final class TranscriptLibraryModel: ObservableObject {
 
   private func clear(message: String?) {
     availability = .unavailable
+    transcriptionUnavailableReason = nil
     segments = []
     speakers = []
+    audioOptions = nil
     contextDetail = nil
     contextEvents = []
     report(message)
