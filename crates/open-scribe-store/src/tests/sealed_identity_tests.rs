@@ -711,6 +711,63 @@ fn sealed_identity_unsealed_device_renumber_remains_rejected() {
 }
 
 #[test]
+fn sealed_identity_renumbered_capture_with_changed_content_is_refused() {
+    // Inode and length stay the same, so only the recorded digest can catch it.
+    fn change_first_sample(path: &Path) {
+        File::options()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .write_at(&[1], 68)
+            .unwrap();
+    }
+
+    let temp = TempDir::new().unwrap();
+    let (store, session, a) = captured(&temp, true);
+    renumber_receipts(&store, &session);
+    change_first_sample(&a.absolute_path);
+    let source: String = store
+        .connection
+        .query_row(
+            "SELECT source_id FROM tracks WHERE id = ?1",
+            [&a.track_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(
+        store
+            .lease_capture_playback(&session, &source, &a.track_id, &a.segment_id, true)
+            .is_err()
+    );
+    assert!(
+        store
+            .transcription_input(&session, &a.track_id)
+            .and_then(|input| store.open_transcription_input(&input).map(drop))
+            .is_err()
+    );
+    assert_ne!(
+        available(&store, &session),
+        RuntimePlayableMediaAvailability::Available
+    );
+
+    // Replaying a seal receipt whose projection crashed takes the same rule.
+    let temp = TempDir::new().unwrap();
+    let (mut store, session, a) = captured(&temp, false);
+    let mut receipt = seal_receipt(&a, 68 + 960 * 2);
+    receipt.final_sample_host_time = 20_042_000;
+    assert!(matches!(
+        store.seal_segment_inner(receipt, Some(MediaFailurePoint::SegmentSealJournalSync)),
+        Err(StoreError::InjectedInterruption)
+    ));
+    renumber_receipts(&store, &session);
+    change_first_sample(&a.absolute_path);
+    assert_eq!(
+        store.recover_preparations().unwrap()[0].disposition,
+        RecoveryDisposition::IntegrityMismatch
+    );
+}
+
+#[test]
 fn sealed_identity_rejects_replacement_digest_length_and_symlink_changes() {
     for compressed in [false, true] {
         for change in 0..6 {
