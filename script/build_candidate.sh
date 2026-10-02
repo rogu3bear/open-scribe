@@ -20,6 +20,9 @@ if pgrep -x OpenScribeApp >/dev/null; then
 fi
 
 build_native() {
+	# Fresh candidate targets cannot reuse compiler incremental sessions.
+	# Preserve final artifacts and proof; avoid retaining disposable session caches.
+	export CARGO_INCREMENTAL=0
 	"$script_dir/check_apple_toolchain.sh"
 	rust_library="$(bash "$script_dir/build_rust_macos.sh" "$rust_target_dir")"
 	CARGO_TARGET_DIR="$rust_target_dir" cargo run --locked -p open-scribe-uniffi \
