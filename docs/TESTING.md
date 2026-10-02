@@ -1710,3 +1710,47 @@ That attempt's directory holds only its source-check log:
 `4fa593fa724b5ba4b5e23de45542b15aa66102d5786ab918090898e5437f3726`.
 No candidate qualifies `f1d0aaa` yet, so `10201d2` remains the latest M1
 regression evidence.
+
+### Production qualification at 4887e86: release preparation holds on owned blockers, with no drift
+
+`./script/release.sh prepare 0.1.0` ran on a clean tree at
+`4887e869b5fd4679ed99b92e45153169e4ab1d0b`, tree
+`95df408203f92f14067d4a064649a480e1d7efe9`. This stage is read-only: it wrote
+no receipt, allocated no version, and signed, packaged, and published
+nothing. It printed `RELEASE_PREPARE_HOLD` with 16 blockers, grouped here by
+who can close them:
+
+- **Release decision:** `version_allocation` (workspace `0.0.0`, candidate
+  `0.1.0`).
+- **Milestone evidence:** `milestone_0`–`milestone_4_evidence_admission`, and
+  `p0_ledger_open`. All 15 P0 entries close only with receipts on the exact
+  artifact, starting with `M1_COMPLETE_GREEN`, which still holds on the
+  attended two-hour run and the human matrix.
+- **Unbuilt by design:** `evidence_authentication_policy` (no authenticated
+  canonical verifier is active, so historical and unsigned receipts stay
+  advisory) and `non_secret_execution_required` (structural claims never
+  admit).
+- **Maintainer adoption:** `legal_sources_unadopted` and `legal_adoption`
+  (privacy and terms are drafts); `security_adoption` (no verified private
+  channel); `third_party_adoption` and `supply_chain_manifest_open` (all 291
+  components await license review).
+- **Release operator:** `signing_policy` (no Developer ID team, certificate
+  hash, or Sparkle key) and `release_plan_claim_structure` (no per-candidate
+  release-plan claim inputs).
+
+Alignment the gate checks found no drift:
+
+- the checked capability manifest equals the Rust-embedded runtime
+  registry;
+- the component inventory binds the current `Cargo.lock`;
+- the model manifest, release-input schemas, and predecessor gates validated.
+
+Separately, the public claims match proof. The website renders capability
+status from the checked manifest, says "Development build — no public
+release", and its download page says "No public release is available." The
+README says M1 remains incomplete. Portable handoff and the exports add no
+capability claim: they belong to "Conversations", which stays `Unavailable`
+until `M2_COMPLETE_GREEN`.
+
+Log: `artifacts/m1-automated/release-prepare-4887e86.log`, SHA-256
+`5ad96f036e2ca635bedd98351eb2bcfecc0a2b2ae5f887309b0086664bb058b8`.
