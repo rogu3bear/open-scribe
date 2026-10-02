@@ -7,40 +7,8 @@ cd "$repo_root"
 
 "$script_dir/check_m1_media_open.sh"
 
-info_plist="apps/macos/Support/Info.plist"
-entitlements="apps/macos/Support/OpenScribe.entitlements"
 project="apps/macos/OpenScribe.xcodeproj"
-
-plutil -lint "$info_plist" "$entitlements" >/dev/null
-if [[ "$(/usr/libexec/PlistBuddy -c 'Print :com.apple.security.app-sandbox' "$entitlements")" != true ]] ||
-	[[ "$(/usr/libexec/PlistBuddy -c 'Print :com.apple.security.device.audio-input' "$entitlements")" != true ]] ||
-	[[ "$(/usr/libexec/PlistBuddy -c 'Print :com.apple.security.files.user-selected.read-only' "$entitlements")" != true ]]; then
-	printf '%s\n' 'M1_MICROPHONE_FOUNDATION_RED: required least-privilege entitlement is absent' >&2
-	exit 1
-fi
-if [[ "$(plutil -p "$entitlements" | rg -c '=>')" -ne 3 ]]; then
-	printf '%s\n' 'M1_MICROPHONE_FOUNDATION_RED: unexpected entitlement entered the development target' >&2
-	exit 1
-fi
-if [[ "$(/usr/libexec/PlistBuddy -c 'Print :NSMicrophoneUsageDescription' "$info_plist")" != "Open Scribe uses the microphone only when you explicitly start a recording that includes it." ]]; then
-	printf '%s\n' 'M1_MICROPHONE_FOUNDATION_RED: microphone disclosure drifted' >&2
-	exit 1
-fi
-
-build_settings="$(xcodebuild \
-	-project "$project" \
-	-target OpenScribeApp \
-	-configuration Debug \
-	-showBuildSettings)"
-for expected in \
-	'CODE_SIGN_ENTITLEMENTS = Support/OpenScribe.entitlements' \
-	'ENABLE_APP_SANDBOX = YES' \
-	'ENABLE_HARDENED_RUNTIME = YES'; do
-	if ! rg -Fq "$expected" <<<"$build_settings"; then
-		printf 'M1_MICROPHONE_FOUNDATION_RED: effective Xcode setting absent: %s\n' "$expected" >&2
-		exit 1
-	fi
-done
+"$script_dir/check_native_contracts.sh" --entitlements
 
 proof_root="$(mktemp -d "$repo_root/apps/macos/.build/m1-microphone-check.XXXXXX")"
 trap 'rm -rf "$proof_root"' EXIT
@@ -66,10 +34,7 @@ if rg -n '/Sources/.*warning:' "$xcode_log"; then
 	exit 1
 fi
 
-if rg -ni '\b(pcm|cmsamplebuffer|waveform|meter|pointer)\b' crates/open-scribe-uniffi/src; then
-	printf '%s\n' 'M1_MICROPHONE_FOUNDATION_RED: hot-path media or telemetry crossed UniFFI' >&2
-	exit 1
-fi
+"$script_dir/check_native_contracts.sh" --coarse
 
 git diff --check
 

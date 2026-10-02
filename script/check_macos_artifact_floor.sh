@@ -4,13 +4,14 @@ set -euo pipefail
 deployment_target="13.0"
 expected_arch="arm64"
 
-if [[ "$#" -ne 2 ]]; then
-	printf 'usage: %s <static-library> <app-binary>\n' "$0" >&2
+if [[ "$#" -lt 2 ]]; then
+	printf 'usage: %s <static-library> <app-binary> [additional-macho...]\n' "$0" >&2
 	exit 64
 fi
 
 static_library="$1"
 app_binary="$2"
+shift
 
 for tool in ar file lipo rg vtool; do
 	command -v "$tool" >/dev/null || {
@@ -111,7 +112,9 @@ done
 	exit 1
 }
 
-audit_macho "$app_binary" "$(basename "$app_binary")"
+for app_binary in "$@"; do
+	audit_macho "$app_binary" "$(basename "$app_binary")"
+done
 
 printf '%s\n' \
 	'MACOS_ARTIFACT_FLOOR_GREEN' \

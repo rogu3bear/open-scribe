@@ -254,8 +254,10 @@ final class MicrophoneCaptureAdapter: @unchecked Sendable {
     qos: .userInitiated
   )
   private let stateLock = NSLock()
+  private let acceptedCallbacks = DispatchGroup()
   private let observationLock = NSLock()
   private var started = false
+  private var acceptingCallbacks = false
   private var hasStarted = false
   private var failureReported = false
   private var firstSampleReported = false
@@ -333,6 +335,7 @@ final class MicrophoneCaptureAdapter: @unchecked Sendable {
       throw MicrophoneCaptureAdapterError.bufferLayoutMismatch
     }
     started = true
+    acceptingCallbacks = true
     hasStarted = true
     failureReported = false
     firstSampleReported = false
@@ -353,6 +356,13 @@ final class MicrophoneCaptureAdapter: @unchecked Sendable {
 
     backend.installTap(bufferSize: Self.bufferSize) { [weak self] buffer, time in
       guard let self else { return }
+      let accepted = self.stateLock.withLock {
+        guard self.acceptingCallbacks else { return false }
+        self.acceptedCallbacks.enter()
+        return true
+      }
+      guard accepted else { return }
+      defer { self.acceptedCallbacks.leave() }
       self.recordCallbackProgress()
       let copy: AVAudioPCMBuffer
       switch pool.copyWithoutWaiting(buffer) {
@@ -387,12 +397,12 @@ final class MicrophoneCaptureAdapter: @unchecked Sendable {
         self.stateLock.unlock()
         guard stillStarted else { return }
         do {
-          let writtenFrames = try self.writer.writeCapturedBuffer(copy)
+          let writtenFrames = try self.writer.writeCapturedBuffer(copy, hostTime: hostTime)
           guard writtenFrames > 0 else { return }
           self.recordWrittenProgress(UInt64(writtenFrames))
           self.stateLock.lock()
           self.lastWrittenSampleHostTime = hostTime
-          let shouldReport = self.started && !self.firstSampleReported
+          let shouldReport = self.started && self.acceptingCallbacks && !self.firstSampleReported
           if shouldReport {
             self.firstSampleReported = true
           }
@@ -428,17 +438,20 @@ final class MicrophoneCaptureAdapter: @unchecked Sendable {
 
   private func stopIsolated() -> UInt64? {
     stateLock.lock()
-    started = false
+    acceptingCallbacks = false
     stateLock.unlock()
     if backendActive {
       backend.stop()
       backendActive = false
     }
     backend.setRouteEventHandler(nil)
-    // A writer that passed its last state check before stop is allowed to
-    // finish, but stop does not return until every previously queued write has
-    // completed. No capture callback waits on this barrier.
-    writerQueue.sync {}
+    // Close callback admission first, then preserve every buffer already
+    // accepted, including a callback still copying into the bounded pool.
+    // Only the lifecycle queue waits; the capture callback never waits here.
+    acceptedCallbacks.wait()
+    writerQueue.sync {
+      stateLock.withLock { started = false }
+    }
     stateLock.lock()
     let lastHostTime = lastWrittenSampleHostTime
     stateLock.unlock()
@@ -546,6 +559,7 @@ final class MicrophoneCaptureAdapter: @unchecked Sendable {
     let shouldReport = !failureReported
     if shouldReport {
       failureReported = true
+      acceptingCallbacks = false
       started = false
     }
     stateLock.unlock()
@@ -562,6 +576,7 @@ final class MicrophoneCaptureAdapter: @unchecked Sendable {
     let shouldReport = !failureReported
     if shouldReport {
       failureReported = true
+      acceptingCallbacks = false
       started = false
     }
     stateLock.unlock()

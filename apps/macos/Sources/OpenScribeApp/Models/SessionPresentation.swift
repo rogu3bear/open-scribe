@@ -115,6 +115,7 @@ struct RuntimeSessionPresentation: Equatable, Sendable, Identifiable {
   let mediaFilesOpen: Bool
   let interruptionReason: String?
   let recovered: Bool
+  let hasCaptureTimeline: Bool
   let sources: [RuntimeSourcePresentation]
   let playableMedia: RuntimePlayableMediaPresentation?
 
@@ -128,11 +129,20 @@ struct RuntimeSessionPresentation: Equatable, Sendable, Identifiable {
     mediaFilesOpen = native.mediaFilesOpen
     interruptionReason = native.interruptionReason
     recovered = native.recovered
+    hasCaptureTimeline = native.hasCaptureTimeline
     sources = native.sources.map(RuntimeSourcePresentation.init(native:))
     playableMedia = native.playableMedia.map(RuntimePlayableMediaPresentation.init(native:))
   }
 
   var id: String { sessionId }
+
+  /// Imports have no required capture sources. Captures need Rust's saved
+  /// clock calibration before transcripts or exports can use a shared timeline.
+  var transcriptionUnavailableReason: String? {
+    guard !hasCaptureTimeline, !sources.isEmpty else { return nil }
+    return
+      "This recording has no saved timing for its audio sources, so it cannot be transcribed or exported."
+  }
 
   var isRecording: Bool {
     lifecycle == "recording" && health == "healthy" && journalDurable && mediaFilesOpen
@@ -144,6 +154,13 @@ struct RuntimeSessionPresentation: Equatable, Sendable, Identifiable {
 
   var needsAttention: Bool {
     lifecycle == "interrupted" || health == "degraded"
+  }
+
+  /// The sources capturing now, joined for speech: only what this session
+  /// records, never a source the selection excluded.
+  var capturingSourcesText: String {
+    let names = sources.filter { $0.lifecycle == "capturing" }.map(\.name)
+    return names.isEmpty ? "audio" : ListFormatter.localizedString(byJoining: names)
   }
 
   func recoveredTracks(
@@ -187,6 +204,8 @@ struct RuntimeSessionPresentation: Equatable, Sendable, Identifiable {
     case "first_sample_rejected": "First-sample evidence was rejected; recording was not claimed."
     case "stop_without_durable_sample": "A required source had no durable final sample."
     case "segment_seal_failed": "Audio could not be sealed; recovery state was preserved."
+    case "permission_revoked":
+      "Capture permission was withdrawn; the audio recorded before that was preserved."
     default: "Capture was interrupted; recovery state was preserved."
     }
   }

@@ -7,19 +7,22 @@ struct MenuBarContent: View {
   @ObservedObject var importedMediaAuthority: ImportedMediaAuthorityAdapter
   @ObservedObject var liveRecording: LiveMicrophoneRecordingController
   @ObservedObject var recoveredSessions: RecoveredSessionController
+  @ObservedObject var context: ContextScopeModel
 
   @MainActor
   init(
     store: RuntimeLibraryStore,
     importedMediaAuthority: ImportedMediaAuthorityAdapter,
     liveRecording: LiveMicrophoneRecordingController? = nil,
-    recoveredSessions: RecoveredSessionController? = nil
+    recoveredSessions: RecoveredSessionController? = nil,
+    context: ContextScopeModel? = nil
   ) {
     self.store = store
     self.importedMediaAuthority = importedMediaAuthority
     self.liveRecording = liveRecording ?? LiveMicrophoneRecordingController()
     self.recoveredSessions =
       recoveredSessions ?? RecoveredSessionController(managedRoot: nil)
+    self.context = context ?? ContextScopeModel(binding: { nil })
   }
 
   var body: some View {
@@ -55,7 +58,7 @@ struct MenuBarContent: View {
       .foregroundStyle(.secondary)
     }
     if liveRecording.canStart {
-      Button("Record Microphone + System Audio") {
+      Button("Record — \(liveRecording.captureSelection.name)") {
         Task {
           await liveRecording.start()
           store.refresh()
@@ -73,6 +76,8 @@ struct MenuBarContent: View {
       }
       .keyboardShortcut("s", modifiers: [.command, .shift])
     }
+    RecorderControls(recorder: liveRecording, store: store, sourcesPresentation: .menu)
+    ContextMenuSection(model: context)
     if let recovered = recoveredSessions.sessions.first {
       Divider()
       Label("Recovered conversation", systemImage: "waveform.badge.checkmark")
@@ -140,13 +145,15 @@ struct MenuBarContent: View {
     case .requestingPermission, .preparing, .starting: liveRecording.statusText
     case .capturing: "Confirming durable recording…"
     case .stopping: "Securing recording…"
+    case .saved: liveRecording.statusText
     case .failed: "Recording needs attention"
-    default: "Ready to record microphone + system audio"
+    default: liveRecording.readinessText
     }
   }
 }
 
 struct MenuBarLabel: View {
+  @Environment(\.openWindow) private var openWindow
   @ObservedObject var store: RuntimeLibraryStore
   @ObservedObject var liveRecording: LiveMicrophoneRecordingController
 
@@ -162,6 +169,13 @@ struct MenuBarLabel: View {
       .onAppear {
         store.refresh()
         AppTelemetry.runtimeSceneAppeared("menu-bar", session: store.currentSession)
+        #if DEBUG
+          // The explicit scene proof must also work after macOS restores a
+          // menu-bar-only launch. Its primary scene opens Settings in turn.
+          if ProcessInfo.processInfo.arguments.contains("--m0-proof-settings") {
+            openWindow(id: "main")
+          }
+        #endif
       }
   }
 
@@ -193,7 +207,7 @@ struct MenuBarLabel: View {
         return (
           "Recording · \(session.timerText)",
           "record.circle.fill",
-          "Recording microphone and system audio, \(session.timerText)"
+          "Recording \(session.capturingSourcesText), \(session.timerText)"
         )
       }
       return (
@@ -206,11 +220,13 @@ struct MenuBarLabel: View {
     case .capturing:
       ("Confirming recording", "waveform", "Confirming durable recording")
     case .starting:
-      ("Starting microphone + system audio", "waveform", liveStatus)
+      (liveStatus, "waveform", liveStatus)
+    case .pausing, .paused:
+      (liveStatus, "pause.circle", liveStatus)
     case .failed:
       ("Recording needs attention", "exclamationmark.circle", liveStatus)
     case .saved:
-      ("Conversation audio saved", "waveform.badge.checkmark", liveStatus)
+      (liveStatus, "waveform.badge.checkmark", liveStatus)
     case .requestingPermission, .preparing, .stopping:
       (liveStatus, "waveform", liveStatus)
     case .idle:

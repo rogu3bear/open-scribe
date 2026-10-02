@@ -3,14 +3,17 @@ import SwiftUI
 struct CompactLiveView: View {
   @ObservedObject var store: RuntimeLibraryStore
   @ObservedObject var liveRecording: LiveMicrophoneRecordingController
+  @ObservedObject var context: ContextScopeModel
 
   @MainActor
   init(
     store: RuntimeLibraryStore,
-    liveRecording: LiveMicrophoneRecordingController
+    liveRecording: LiveMicrophoneRecordingController,
+    context: ContextScopeModel? = nil
   ) {
     self.store = store
     self.liveRecording = liveRecording
+    self.context = context ?? ContextScopeModel(binding: { nil })
   }
 
   var body: some View {
@@ -63,6 +66,12 @@ struct CompactLiveView: View {
             .font(.callout)
             .foregroundStyle(.secondary)
         }
+
+        if liveRecording.contextBinding != nil {
+          ContextInspector(model: context)
+        }
+
+        RecorderEventList(events: liveRecording.recorderDetail?.events ?? [])
       } else {
         Text(
           "Start deliberately from this window or the menu bar. Open Scribe will show Recording only after both required sources are durably active."
@@ -85,6 +94,7 @@ struct CompactLiveView: View {
     case .requestingPermission, .preparing, .starting: liveRecording.statusText
     case .capturing: "Confirming durable recording…"
     case .stopping: "Securing recording…"
+    case .saved: liveRecording.statusText
     case .failed: "Recording needs attention"
     default: "Ready to record"
     }

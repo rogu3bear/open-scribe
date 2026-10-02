@@ -21,3 +21,9 @@ license = "MIT"
 repository = "https://github.com/rogu3bear/open-scribe"
 authors = ["Open Scribe contributors"]
 publish = false
+
+# Rust 1.93.1's debuginfo stripping can misalign proc-macro Mach-O LINKEDIT
+# on macOS 27 (rust-lang/rust#157750). Keep host build dependencies loadable
+# without changing the optimization or stripping of shipped release code.
+[profile.release.build-override]
+strip = "none"

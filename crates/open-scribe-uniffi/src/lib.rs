@@ -43,11 +43,13 @@ pub enum NativeSessionInterruptionReason {
     FirstSampleRejected,
     StopWithoutDurableSample,
     SegmentSealFailed,
+    PermissionRevoked,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, uniffi::Enum)]
 pub enum NativeSourceFailureReason {
     CaptureFailed,
+    PermissionRevoked,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
@@ -82,6 +84,7 @@ pub struct NativeMediaOpenAuthorization {
     pub writer_generation: u64,
     pub relative_path: String,
     pub absolute_path: String,
+    pub channels: u16,
     pub mapped_start_nanoseconds: i64,
 }
 
@@ -93,6 +96,7 @@ pub struct NativeMediaOpenReceipt {
     pub open_token: String,
     pub writer_generation: u64,
     pub relative_path: String,
+    pub channels: u16,
     pub initial_byte_length: u64,
 }
 
@@ -226,6 +230,7 @@ pub struct NativeRuntimeSessionSnapshot {
     pub media_files_open: bool,
     pub interruption_reason: Option<String>,
     pub recovered: bool,
+    pub has_capture_timeline: bool,
     pub sources: Vec<NativeRuntimeSourceSnapshot>,
     pub playable_media: Option<NativeRuntimePlayableMediaSnapshot>,
 }
@@ -249,12 +254,68 @@ pub struct NativeImportedMediaEvidence {
     pub ready_for_review: bool,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct NativeImportPolicy {
+    pub maximum_source_bytes: u64,
+    pub maximum_managed_bytes: u64,
+    pub maximum_duration_nanoseconds: u64,
+    pub maximum_managed_samples: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct NativeCompressedImportMetadata {
+    pub original: NativeOriginalImportMetadata,
+    pub sample_count: u64,
+    pub digest_sha256: String,
+}
+
+#[uniffi::export]
+pub fn native_import_policy() -> NativeImportPolicy {
+    let policy = open_scribe_core::import_policy();
+    NativeImportPolicy {
+        maximum_source_bytes: policy.maximum_source_bytes,
+        maximum_managed_bytes: policy.maximum_managed_bytes,
+        maximum_duration_nanoseconds: policy.maximum_duration_nanoseconds,
+        maximum_managed_samples: policy.maximum_managed_samples,
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct NativeOriginalImportMetadata {
+    pub display_name: String,
+    pub byte_length: u64,
+    pub duration_nanoseconds: u64,
+    pub sample_rate_hz: u32,
+    pub channel_count: u32,
+    pub media_format: String,
+}
+
+impl From<open_scribe_core::ImportedMediaEvidence> for NativeImportedMediaEvidence {
+    fn from(evidence: open_scribe_core::ImportedMediaEvidence) -> Self {
+        Self {
+            session_id: evidence.session_id.0,
+            relative_path: evidence.relative_path,
+            byte_length: evidence.byte_length,
+            sample_count: evidence.sample_count,
+            digest_sha256: evidence.digest_sha256,
+            journal_version: evidence.journal_version,
+            last_journal_sequence: evidence.last_journal_sequence,
+            original_untouched: evidence.original_untouched,
+            ready_for_review: evidence.ready_for_review,
+        }
+    }
+}
+
 #[derive(Debug, thiserror::Error, uniffi::Error)]
 pub enum NativeStorageError {
     #[error("The storage root is invalid.")]
     InvalidManagedRoot,
     #[error("The preparation request is invalid.")]
     InvalidRequest,
+    #[error("The import exceeds the size limit.")]
+    ImportSizeLimit,
+    #[error("The import exceeds the duration limit.")]
+    ImportDurationLimit,
     #[error("The durable session is not in the required preparation state.")]
     InvalidState,
     #[error("Media or journal evidence does not match Rust authority.")]
@@ -265,7 +326,7 @@ pub enum NativeStorageError {
 
 #[derive(uniffi::Object)]
 pub struct NativeRecordingPreparation {
-    controller: Mutex<open_scribe_core::RecordingPreparationController>,
+    controller: Arc<Mutex<open_scribe_core::RecordingPreparationController>>,
 }
 
 #[derive(uniffi::Object)]
@@ -276,7 +337,79 @@ pub struct NativeImportedPlaybackLease {
 
 enum NativePlaybackLeaseStrategy {
     ImportedSnapshot,
+    ImportedCompressed,
     RecoveredVerifiedChunks,
+}
+
+#[derive(uniffi::Record)]
+pub struct NativeTimelineSegment {
+    pub track_id: String,
+    pub segment_id: String,
+    pub sequence: u64,
+    pub start_nanoseconds: i64,
+    pub native_start_nanoseconds: i64,
+    pub clock_adjustment_nanoseconds: i64,
+    pub sample_count: u64,
+    pub channels: u16,
+    pub gap_nanoseconds: i64,
+    pub media: Arc<NativeTimelineMedia>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct NativeMixdownAuthorization {
+    pub session_id: String,
+    pub relative_path: String,
+    pub absolute_path: String,
+    pub expected_frame_count: u64,
+    pub source_digest_sha256: String,
+    pub write_floor_bytes: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct NativeMixdownReceipt {
+    pub session_id: String,
+    pub relative_path: String,
+    pub byte_length: u64,
+    pub decoded_frame_count: u64,
+    pub sample_rate_hz: u32,
+    pub channels: u16,
+    pub codec: String,
+    pub boundary_frames_readable: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct NativeValidatedMixdown {
+    pub session_id: String,
+    pub relative_path: String,
+    pub byte_length: u64,
+    pub decoded_frame_count: u64,
+    pub expected_frame_count: u64,
+    pub digest_sha256: String,
+    pub source_digest_sha256: String,
+}
+
+/// A bounded lease factory. Planning a long recording does not open every CAF
+/// at once; the native decoder holds only the segments it currently reads.
+#[derive(uniffi::Object)]
+pub struct NativeTimelineMedia {
+    controller: Arc<Mutex<open_scribe_core::RecordingPreparationController>>,
+    segment: open_scribe_core::TimelineSegment,
+}
+
+#[uniffi::export]
+impl NativeTimelineMedia {
+    pub fn lease(&self) -> Result<Arc<NativeImportedPlaybackLease>, NativeStorageError> {
+        let lease = self
+            .controller
+            .lock()
+            .map_err(|_| NativeStorageError::StorageFailure)?
+            .lease_timeline_segment(&self.segment)
+            .map_err(map_storage_error)?;
+        Ok(Arc::new(NativeImportedPlaybackLease {
+            lease,
+            strategy: NativePlaybackLeaseStrategy::RecoveredVerifiedChunks,
+        }))
+    }
 }
 
 #[uniffi::export]
@@ -296,18 +429,172 @@ impl NativeImportedPlaybackLease {
                 self.lease.byte_length(),
                 self.lease.digest_sha256(),
             ),
+            NativePlaybackLeaseStrategy::ImportedCompressed => format!(
+                "v3;fd={};byte_length={};sha256={};chunk_byte_length=65536;format=m4a",
+                self.lease.raw_file_descriptor(),
+                self.lease.byte_length(),
+                self.lease.digest_sha256(),
+            ),
         }
     }
 }
 
 #[uniffi::export]
 impl NativeRecordingPreparation {
+    pub fn anchor_capture_clock(
+        &self,
+        session_id: String,
+        host_anchor: u64,
+        numerator: u32,
+        denominator: u32,
+    ) -> Result<(), NativeStorageError> {
+        self.controller()?
+            .anchor_capture_clock(
+                open_scribe_types::SessionId(session_id),
+                open_scribe_core::CaptureClock {
+                    host_anchor,
+                    numerator,
+                    denominator,
+                },
+            )
+            .map_err(map_storage_error)
+    }
+
+    pub fn authorize_next_segment(
+        &self,
+        session_id: String,
+        previous_segment_id: String,
+    ) -> Result<NativeMediaOpenAuthorization, NativeStorageError> {
+        let a = self
+            .controller()?
+            .authorize_next_segment(
+                open_scribe_types::SessionId(session_id),
+                previous_segment_id,
+            )
+            .map_err(map_storage_error)?;
+        Ok(NativeMediaOpenAuthorization {
+            session_id: a.session_id.0,
+            source_id: a.source_id,
+            track_id: a.track_id,
+            segment_id: a.segment_id,
+            open_token: a.open_token,
+            writer_generation: a.writer_generation,
+            relative_path: a.relative_path,
+            absolute_path: a.absolute_path.to_string_lossy().into_owned(),
+            channels: a.channels,
+            mapped_start_nanoseconds: a.mapped_start_nanoseconds,
+        })
+    }
+
+    pub fn abandon_reserved_segment(
+        &self,
+        session_id: String,
+        segment_id: String,
+    ) -> Result<(), NativeStorageError> {
+        self.controller()?
+            .abandon_reserved_segment(open_scribe_types::SessionId(session_id), segment_id)
+            .map_err(map_storage_error)
+    }
+
+    pub fn playback_timeline(
+        &self,
+        session_id: String,
+    ) -> Result<Vec<NativeTimelineSegment>, NativeStorageError> {
+        self.controller()?
+            .playback_timeline(open_scribe_types::SessionId(session_id))
+            .map_err(map_storage_error)
+            .map(|segments| {
+                segments
+                    .into_iter()
+                    .map(|segment| NativeTimelineSegment {
+                        track_id: segment.track_id.clone(),
+                        segment_id: segment.segment_id.clone(),
+                        sequence: segment.sequence,
+                        start_nanoseconds: segment.start_nanoseconds,
+                        native_start_nanoseconds: segment.native_start_nanoseconds,
+                        clock_adjustment_nanoseconds: segment.clock_adjustment_nanoseconds,
+                        sample_count: segment.sample_count,
+                        channels: segment.channels,
+                        gap_nanoseconds: segment.gap_nanoseconds,
+                        media: Arc::new(NativeTimelineMedia {
+                            controller: Arc::clone(&self.controller),
+                            segment,
+                        }),
+                    })
+                    .collect()
+            })
+    }
+
+    pub fn authorize_mixdown(
+        &self,
+        session_id: String,
+        available_bytes: u64,
+    ) -> Result<NativeMixdownAuthorization, NativeStorageError> {
+        self.controller()?
+            .authorize_mixdown(open_scribe_types::SessionId(session_id), available_bytes)
+            .map_err(map_storage_error)
+            .map(|value| NativeMixdownAuthorization {
+                session_id: value.session_id.0,
+                relative_path: value.relative_path,
+                absolute_path: value.absolute_path.to_string_lossy().into_owned(),
+                expected_frame_count: value.expected_frame_count,
+                source_digest_sha256: value.source_digest_sha256,
+                write_floor_bytes: value.write_floor_bytes,
+            })
+    }
+
+    pub fn accept_mixdown(
+        &self,
+        receipt: NativeMixdownReceipt,
+    ) -> Result<NativeValidatedMixdown, NativeStorageError> {
+        self.controller()?
+            .accept_mixdown(open_scribe_core::MixdownReceipt {
+                session_id: open_scribe_types::SessionId(receipt.session_id),
+                relative_path: receipt.relative_path,
+                byte_length: receipt.byte_length,
+                decoded_frame_count: receipt.decoded_frame_count,
+                sample_rate_hz: receipt.sample_rate_hz,
+                channels: receipt.channels,
+                codec: receipt.codec,
+                boundary_frames_readable: receipt.boundary_frames_readable,
+            })
+            .map_err(map_storage_error)
+            .map(map_validated_mixdown)
+    }
+
+    pub fn validated_mixdown(
+        &self,
+        session_id: String,
+    ) -> Result<Option<NativeValidatedMixdown>, NativeStorageError> {
+        self.controller()?
+            .validated_mixdown(&open_scribe_types::SessionId(session_id))
+            .map_err(map_storage_error)
+            .map(|value| value.map(map_validated_mixdown))
+    }
+
+    pub fn lease_validated_mixdown(
+        &self,
+        session_id: String,
+    ) -> Result<Option<Arc<NativeImportedPlaybackLease>>, NativeStorageError> {
+        self.controller()?
+            .lease_validated_mixdown(&open_scribe_types::SessionId(session_id))
+            .map_err(map_storage_error)
+            .map(|value| {
+                value.map(|lease| {
+                    Arc::new(NativeImportedPlaybackLease {
+                        lease,
+                        strategy: NativePlaybackLeaseStrategy::ImportedCompressed,
+                    })
+                })
+            })
+    }
+
     #[uniffi::constructor]
     pub fn open(managed_root: String) -> Result<Arc<Self>, NativeStorageError> {
         let controller = open_scribe_core::RecordingPreparationController::open(managed_root)
             .map_err(map_storage_error)?;
         Ok(Arc::new(Self {
-            controller: Mutex::new(controller),
+            controller: Arc::new(Mutex::new(controller)),
         }))
     }
 
@@ -406,6 +693,7 @@ impl NativeRecordingPreparation {
             writer_generation: authorization.writer_generation,
             relative_path: authorization.relative_path,
             absolute_path: authorization.absolute_path.to_string_lossy().into_owned(),
+            channels: authorization.channels,
             mapped_start_nanoseconds: authorization.mapped_start_nanoseconds,
         })
     }
@@ -423,6 +711,7 @@ impl NativeRecordingPreparation {
                 open_token: receipt.open_token,
                 writer_generation: receipt.writer_generation,
                 relative_path: receipt.relative_path,
+                channels: receipt.channels,
                 initial_byte_length: receipt.initial_byte_length,
             })
             .map_err(map_storage_error)?;
@@ -583,17 +872,60 @@ impl NativeRecordingPreparation {
             .controller()?
             .import_recoverable_caf(title, source_path.into())
             .map_err(map_storage_error)?;
-        Ok(NativeImportedMediaEvidence {
-            session_id: evidence.session_id.0,
-            relative_path: evidence.relative_path,
-            byte_length: evidence.byte_length,
-            sample_count: evidence.sample_count,
-            digest_sha256: evidence.digest_sha256,
-            journal_version: evidence.journal_version,
-            last_journal_sequence: evidence.last_journal_sequence,
-            original_untouched: evidence.original_untouched,
-            ready_for_review: evidence.ready_for_review,
-        })
+        Ok(evidence.into())
+    }
+
+    pub fn import_normalized_caf(
+        &self,
+        title: String,
+        normalized_path: String,
+        original: NativeOriginalImportMetadata,
+    ) -> Result<NativeImportedMediaEvidence, NativeStorageError> {
+        let evidence = self
+            .controller()?
+            .import_normalized_caf(
+                title,
+                normalized_path.into(),
+                open_scribe_core::OriginalImportMetadata {
+                    display_name: original.display_name,
+                    byte_length: original.byte_length,
+                    duration_nanoseconds: original.duration_nanoseconds,
+                    sample_rate_hz: original.sample_rate_hz,
+                    channel_count: original.channel_count,
+                    media_format: original.media_format,
+                },
+            )
+            .map_err(map_storage_error)?;
+        Ok(evidence.into())
+    }
+
+    pub fn import_compressed_m4a(
+        &self,
+        title: String,
+        source_path: String,
+        metadata: NativeCompressedImportMetadata,
+    ) -> Result<NativeImportedMediaEvidence, NativeStorageError> {
+        let original = metadata.original;
+        let evidence = self
+            .controller()?
+            .import_compressed_m4a(
+                title,
+                source_path.into(),
+                open_scribe_core::CompressedImportMetadata {
+                    original: open_scribe_core::OriginalImportMetadata {
+                        display_name: original.display_name,
+                        byte_length: original.byte_length,
+                        duration_nanoseconds: original.duration_nanoseconds,
+                        sample_rate_hz: original.sample_rate_hz,
+                        channel_count: original.channel_count,
+                        media_format: original.media_format,
+                    },
+                    sample_count: metadata.sample_count,
+                    digest_sha256: metadata.digest_sha256,
+                },
+            )
+            .map_err(map_storage_error)?;
+        Ok(evidence.into())
     }
 
     pub fn lease_imported_playback(
@@ -605,8 +937,12 @@ impl NativeRecordingPreparation {
             .lease_imported_playback(open_scribe_types::SessionId(session_id))
             .map_err(map_storage_error)?;
         Ok(Arc::new(NativeImportedPlaybackLease {
+            strategy: if lease.media_format() == "m4a-alac-or-aac" {
+                NativePlaybackLeaseStrategy::ImportedCompressed
+            } else {
+                NativePlaybackLeaseStrategy::ImportedSnapshot
+            },
             lease,
-            strategy: NativePlaybackLeaseStrategy::ImportedSnapshot,
         }))
     }
 
@@ -704,6 +1040,9 @@ const fn map_session_interruption_reason(
         NativeSessionInterruptionReason::SegmentSealFailed => {
             open_scribe_core::SessionInterruptionReason::SegmentSealFailed
         }
+        NativeSessionInterruptionReason::PermissionRevoked => {
+            open_scribe_core::SessionInterruptionReason::PermissionRevoked
+        }
     }
 }
 
@@ -714,6 +1053,21 @@ const fn map_source_failure_reason(
         NativeSourceFailureReason::CaptureFailed => {
             open_scribe_core::SourceFailureReason::CaptureFailed
         }
+        NativeSourceFailureReason::PermissionRevoked => {
+            open_scribe_core::SourceFailureReason::PermissionRevoked
+        }
+    }
+}
+
+fn map_validated_mixdown(value: open_scribe_core::ValidatedMixdown) -> NativeValidatedMixdown {
+    NativeValidatedMixdown {
+        session_id: value.session_id.0,
+        relative_path: value.relative_path,
+        byte_length: value.byte_length,
+        decoded_frame_count: value.decoded_frame_count,
+        expected_frame_count: value.expected_frame_count,
+        digest_sha256: value.digest_sha256,
+        source_digest_sha256: value.source_digest_sha256,
     }
 }
 
@@ -743,10 +1097,14 @@ fn map_runtime_session_snapshot(
                 open_scribe_core::SessionInterruptionReason::SegmentSealFailed => {
                     "segment_seal_failed"
                 }
+                open_scribe_core::SessionInterruptionReason::PermissionRevoked => {
+                    "permission_revoked"
+                }
             }
             .to_owned()
         }),
         recovered: snapshot.recovered,
+        has_capture_timeline: snapshot.has_capture_timeline,
         sources: snapshot
             .sources
             .into_iter()
@@ -779,11 +1137,34 @@ fn map_runtime_session_snapshot(
 }
 
 fn map_storage_error(error: open_scribe_core::StoreError) -> NativeStorageError {
+    #[cfg(debug_assertions)]
+    if std::env::var_os("OPEN_SCRIBE_M1_PROOF_DIAGNOSTICS").as_deref()
+        == Some(std::ffi::OsStr::new("1"))
+    {
+        // Explicit development proofs retain only error classes, never paths,
+        // SQL payloads, titles, or media. Normal app runs emit nothing here.
+        let class = match &error {
+            open_scribe_core::StoreError::Io(value) => {
+                format!("io_errno:{:?}", value.raw_os_error())
+            }
+            open_scribe_core::StoreError::Sqlite(value) => {
+                format!("sqlite_code:{:?}", value.sqlite_error_code())
+            }
+            open_scribe_core::StoreError::InvalidState(_) => "invalid_state".to_owned(),
+            open_scribe_core::StoreError::IntegrityMismatch(_) => "integrity_mismatch".to_owned(),
+            _ => "other_rejection".to_owned(),
+        };
+        eprintln!("M1_STORAGE_DIAGNOSTIC {class}");
+    }
     match error {
         open_scribe_core::StoreError::InvalidManagedRoot(_) => {
             NativeStorageError::InvalidManagedRoot
         }
         open_scribe_core::StoreError::InvalidRequest(_) => NativeStorageError::InvalidRequest,
+        open_scribe_core::StoreError::ImportSizeLimit => NativeStorageError::ImportSizeLimit,
+        open_scribe_core::StoreError::ImportDurationLimit => {
+            NativeStorageError::ImportDurationLimit
+        }
         open_scribe_core::StoreError::InvalidState(_) => NativeStorageError::InvalidState,
         open_scribe_core::StoreError::IntegrityMismatch(_) => NativeStorageError::IntegrityMismatch,
         open_scribe_core::StoreError::Io(_)
@@ -1096,6 +1477,16 @@ const fn permission_name(permission: open_scribe_types::PermissionState) -> &'st
     }
 }
 
+mod context;
+pub use context::*;
+mod evidence;
+pub use evidence::*;
+mod recorder;
+pub use recorder::*;
+mod speech;
+pub use speech::*;
+mod transcript_library;
+pub use transcript_library::*;
 uniffi::setup_scaffolding!();
 
 #[cfg(test)]
@@ -1293,6 +1684,7 @@ mod tests {
                 open_token: authorization.open_token.clone(),
                 writer_generation: authorization.writer_generation,
                 relative_path: authorization.relative_path.clone(),
+                channels: authorization.channels,
                 initial_byte_length: byte_length,
             })
             .unwrap();
@@ -1399,6 +1791,7 @@ mod tests {
                 open_token: authorization.open_token.clone(),
                 writer_generation: authorization.writer_generation,
                 relative_path: authorization.relative_path.clone(),
+                channels: authorization.channels,
                 initial_byte_length,
             })
             .unwrap();

@@ -1,5 +1,5 @@
 use open_scribe_types::SessionId;
-use rusqlite::params;
+use rusqlite::{OptionalExtension, params};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
@@ -13,18 +13,22 @@ use super::{
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SourceFailureReason {
     CaptureFailed,
+    /// The operating system withdrew capture permission for this source.
+    PermissionRevoked,
 }
 
 impl SourceFailureReason {
     const fn as_str(self) -> &'static str {
         match self {
             Self::CaptureFailed => "capture_failed",
+            Self::PermissionRevoked => "permission_revoked",
         }
     }
 
     fn from_str(value: &str) -> Result<Self, StoreError> {
         match value {
             "capture_failed" => Ok(Self::CaptureFailed),
+            "permission_revoked" => Ok(Self::PermissionRevoked),
             _ => Err(StoreError::IntegrityMismatch(
                 "source failure reason is unsupported",
             )),
@@ -52,10 +56,14 @@ pub struct SourceFailureEvidence {
     pub last_journal_sequence: u64,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct ParsedSourceFailure {
     source_kind: MediaSourceKind,
     reason: SourceFailureReason,
+    /// The failed source row. A source re-added after a failure is a new row of
+    /// the same kind (ADR 0005 source-added), so the kind alone is not an
+    /// identity. Records written before this field bind by kind.
+    source_id: Option<String>,
 }
 
 struct SourceFailureProjectionState {
@@ -75,8 +83,12 @@ impl SessionStore {
         if Uuid::parse_str(&request.session_id.0).is_err() {
             return Err(StoreError::InvalidRequest("session ID is not a UUID"));
         }
-        let state =
-            self.source_failure_projection_state(&request.session_id.0, request.source_kind)?;
+        let source_id = self.failure_target_source(&request.session_id.0, request.source_kind)?;
+        let state = self.source_failure_projection_state(
+            &request.session_id.0,
+            request.source_kind,
+            &source_id,
+        )?;
         let journal_path = self
             .session_directory(&request.session_id.0)?
             .join(JOURNAL_NAME);
@@ -91,6 +103,7 @@ impl SessionStore {
         {
             let parsed = parse_source_failure_payload(&record.body.payload)?;
             if parsed.source_kind == request.source_kind
+                && self.bound_failure_source(&request.session_id.0, &parsed)? == source_id
                 && accepted.replace((record, parsed)).is_some()
             {
                 return Err(StoreError::IntegrityMismatch(
@@ -112,9 +125,15 @@ impl SessionStore {
                     &request.session_id.0,
                     &accepted.body.payload,
                     accepted,
+                    &source_id,
                 )?;
             }
-            self.validate_projected_source_failure(&request.session_id.0, parsed, accepted)?;
+            self.validate_projected_source_failure(
+                &request.session_id.0,
+                parsed,
+                accepted,
+                &source_id,
+            )?;
             return Ok(source_failure_evidence(request, accepted.body.sequence));
         }
         if state.session_lifecycle != "recording"
@@ -133,6 +152,7 @@ impl SessionStore {
 
         let payload = json!({
             "source_kind": request.source_kind.as_str(),
+            "source_id": source_id,
             "reason": request.reason.as_str(),
             "recording_continues": true,
         });
@@ -142,14 +162,16 @@ impl SessionStore {
             None,
             payload.clone(),
         )?;
-        self.project_source_failure(&request.session_id.0, &payload, &journal_record)?;
+        self.project_source_failure(&request.session_id.0, &payload, &journal_record, &source_id)?;
         self.validate_projected_source_failure(
             &request.session_id.0,
             ParsedSourceFailure {
                 source_kind: request.source_kind,
                 reason: request.reason,
+                source_id: Some(source_id.clone()),
             },
             &journal_record,
+            &source_id,
         )?;
 
         Ok(source_failure_evidence(
@@ -163,6 +185,7 @@ impl SessionStore {
         session_id: &str,
         payload: &Value,
         journal_record: &JournalRecord,
+        source_id: &str,
     ) -> Result<(), StoreError> {
         let parsed = parse_source_failure_payload(payload)?;
         let source_kind = parsed.source_kind.as_str();
@@ -177,8 +200,8 @@ impl SessionStore {
         let transaction = self.connection.transaction()?;
         let source_changed = transaction.execute(
             "UPDATE sources SET lifecycle = 'failed'
-             WHERE session_id = ?1 AND kind = ?2 AND lifecycle = 'sealed'",
-            params![session_id, source_kind],
+             WHERE session_id = ?1 AND id = ?2 AND kind = ?3 AND lifecycle = 'sealed'",
+            params![session_id, source_id, source_kind],
         )?;
         let required_changed = transaction.execute(
             "UPDATE required_sources SET lifecycle = 'failed'
@@ -221,10 +244,74 @@ impl SessionStore {
         Ok(())
     }
 
+    /// The source row a failure of `source_kind` applies to now: the newest row
+    /// of that kind that has not ended.
+    fn failure_target_source(
+        &self,
+        session_id: &str,
+        source_kind: MediaSourceKind,
+    ) -> Result<String, StoreError> {
+        self.connection
+            .query_row(
+                "SELECT id FROM sources
+                 WHERE session_id = ?1 AND kind = ?2 AND lifecycle != 'ended'
+                 ORDER BY id DESC LIMIT 1",
+                params![session_id, source_kind.as_str()],
+                |row| row.get(0),
+            )
+            .map_err(|error| match error {
+                rusqlite::Error::QueryReturnedNoRows => {
+                    StoreError::InvalidState("required source projection does not exist")
+                }
+                other => StoreError::Sqlite(other),
+            })
+    }
+
+    /// The source row a journaled failure names. A record without a source
+    /// identity predates re-added sources and binds to the earliest row of its
+    /// kind that has not ended, the only row such a session could hold.
+    fn bound_failure_source(
+        &self,
+        session_id: &str,
+        parsed: &ParsedSourceFailure,
+    ) -> Result<String, StoreError> {
+        if let Some(source_id) = &parsed.source_id {
+            let kind: Option<String> = self
+                .connection
+                .query_row(
+                    "SELECT kind FROM sources WHERE session_id = ?1 AND id = ?2",
+                    params![session_id, source_id],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            return match kind {
+                Some(kind) if kind == parsed.source_kind.as_str() => Ok(source_id.clone()),
+                _ => Err(StoreError::IntegrityMismatch(
+                    "source failure names a different source",
+                )),
+            };
+        }
+        self.connection
+            .query_row(
+                "SELECT id FROM sources
+                 WHERE session_id = ?1 AND kind = ?2 AND lifecycle != 'ended'
+                 ORDER BY id LIMIT 1",
+                params![session_id, parsed.source_kind.as_str()],
+                |row| row.get(0),
+            )
+            .map_err(|error| match error {
+                rusqlite::Error::QueryReturnedNoRows => {
+                    StoreError::IntegrityMismatch("source failure has no source")
+                }
+                other => StoreError::Sqlite(other),
+            })
+    }
+
     fn source_failure_projection_state(
         &self,
         session_id: &str,
         source_kind: MediaSourceKind,
+        source_id: &str,
     ) -> Result<SourceFailureProjectionState, StoreError> {
         self.connection
             .query_row(
@@ -238,8 +325,8 @@ impl SessionStore {
                  JOIN required_sources required ON required.session_id = sessions.id
                  JOIN sources ON sources.session_id = sessions.id
                              AND sources.kind = required.kind
-                 WHERE sessions.id = ?1 AND required.kind = ?2",
-                params![session_id, source_kind.as_str()],
+                 WHERE sessions.id = ?1 AND required.kind = ?2 AND sources.id = ?3",
+                params![session_id, source_kind.as_str(), source_id],
                 |row| {
                     Ok(SourceFailureProjectionState {
                         session_lifecycle: row.get(0)?,
@@ -263,8 +350,10 @@ impl SessionStore {
         session_id: &str,
         parsed: ParsedSourceFailure,
         journal_record: &JournalRecord,
+        source_id: &str,
     ) -> Result<(), StoreError> {
-        let state = self.source_failure_projection_state(session_id, parsed.source_kind)?;
+        let state =
+            self.source_failure_projection_state(session_id, parsed.source_kind, source_id)?;
         if state.session_lifecycle != "recording"
             || state.session_health != "degraded"
             || state.source_lifecycle != "failed"
@@ -311,22 +400,16 @@ impl SessionStore {
         if failures.is_empty() {
             return Ok(base);
         }
-        let last_failure = failures.last().expect("non-empty source failures");
-        let trailing = &records[last_failure.body.sequence as usize..];
-        if trailing.len() > 1
-            || trailing
-                .first()
-                .is_some_and(|record| record.body.event_kind != "session_interrupted")
-        {
-            return Ok(RecoveryDisposition::IntegrityMismatch);
-        }
-
-        let required_source_count: i64 = self.connection.query_row(
-            "SELECT COUNT(*) FROM required_sources WHERE session_id = ?1",
+        // Recording continues after a projected failure (rotation, pause, resume
+        // on the remaining sources, a scope change, stop), so later records are
+        // ordinary. The plan must still hold a source that did not fail.
+        let continuing_plan: i64 = self.connection.query_row(
+            "SELECT COUNT(*) FROM required_sources
+             WHERE session_id = ?1 AND lifecycle != 'failed'",
             [session_id],
             |row| row.get(0),
         )?;
-        if failures.len() >= usize::try_from(required_source_count).unwrap_or(0) {
+        if continuing_plan == 0 {
             return Ok(RecoveryDisposition::IntegrityMismatch);
         }
 
@@ -335,23 +418,27 @@ impl SessionStore {
         for (index, failure) in failures.iter().enumerate() {
             let parsed = parse_source_failure_payload(&failure.body.payload)?;
             let source_kind = parsed.source_kind;
-            if !seen.insert(source_kind.as_str()) {
+            let source_id = self.bound_failure_source(session_id, &parsed)?;
+            if !seen.insert(source_id.clone()) {
                 return Ok(RecoveryDisposition::IntegrityMismatch);
             }
+            // The required row may have been retired or re-added by a later
+            // scope change; the failed source row itself stays failed.
             let (session_lifecycle, session_health, source_lifecycle, required_lifecycle): (
                 String,
                 String,
                 String,
-                String,
+                Option<String>,
             ) = self.connection.query_row(
                 "SELECT sessions.lifecycle, sessions.health, sources.lifecycle,
                             required.lifecycle
                      FROM sessions
-                     JOIN required_sources required ON required.session_id = sessions.id
                      JOIN sources ON sources.session_id = sessions.id
-                                 AND sources.kind = required.kind
-                     WHERE sessions.id = ?1 AND required.kind = ?2",
-                params![session_id, source_kind.as_str()],
+                                 AND sources.id = ?3
+                     LEFT JOIN required_sources required ON required.session_id = sessions.id
+                                 AND required.kind = ?2
+                     WHERE sessions.id = ?1",
+                params![session_id, source_kind.as_str(), source_id],
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
             )?;
             let event_projected: bool = self.connection.query_row(
@@ -363,27 +450,37 @@ impl SessionStore {
                 |row| row.get(0),
             )?;
             if event_projected {
-                if !matches!(session_lifecycle.as_str(), "recording" | "interrupted")
-                    || session_health != "degraded"
+                // A projected failure is durable whatever the recorder did next:
+                // the session stays degraded and the source stays failed.
+                if !matches!(
+                    session_lifecycle.as_str(),
+                    "recording" | "finalizing" | "paused" | "preparing" | "interrupted"
+                ) || session_health != "degraded"
                     || source_lifecycle != "failed"
-                    || required_lifecycle != "failed"
                 {
                     return Ok(RecoveryDisposition::IntegrityMismatch);
                 }
                 continue;
             }
+            // An unprojected failure was the last recorder step before exit:
+            // only an interruption may follow it in the journal.
+            let trailing = &records[failure.body.sequence as usize..];
             if index + 1 != failures.len()
                 || unprojected.is_some()
+                || trailing.len() > 1
+                || trailing
+                    .first()
+                    .is_some_and(|record| record.body.event_kind != "session_interrupted")
                 || session_lifecycle != "recording"
                 || source_lifecycle != "sealed"
-                || required_lifecycle != "sealed"
+                || required_lifecycle.as_deref() != Some("sealed")
             {
                 return Ok(RecoveryDisposition::IntegrityMismatch);
             }
-            unprojected = Some(*failure);
+            unprojected = Some((*failure, source_id));
         }
-        if let Some(failure) = unprojected {
-            self.project_source_failure(session_id, &failure.body.payload, failure)?;
+        if let Some((failure, source_id)) = &unprojected {
+            self.project_source_failure(session_id, &failure.body.payload, failure, source_id)?;
         }
         Ok(if unprojected.is_some() {
             RecoveryDisposition::SourceFailureProjectionRepaired
@@ -401,9 +498,19 @@ fn parse_source_failure_payload(payload: &Value) -> Result<ParsedSourceFailure, 
             "source failure continuation evidence is invalid",
         ));
     }
+    let source_id = match payload.get("source_id") {
+        None => None,
+        Some(Value::String(id)) if Uuid::parse_str(id).is_ok() => Some(id.clone()),
+        Some(_) => {
+            return Err(StoreError::IntegrityMismatch(
+                "source failure source identity is invalid",
+            ));
+        }
+    };
     Ok(ParsedSourceFailure {
         source_kind,
         reason,
+        source_id,
     })
 }
 
@@ -485,6 +592,59 @@ mod tests {
         );
         assert!(microphone.absolute_path.is_file());
         assert_eq!(source_failure_event_count(&store, &session_id.0), 2);
+    }
+
+    #[test]
+    fn permission_revocation_is_its_own_durable_reason_through_interruption() {
+        let temp = TempDir::new().unwrap();
+        let mut store = SessionStore::open(temp.path().join("Open Scribe")).unwrap();
+        let (session_id, _, _, system) = prepared_three_sources(&mut store);
+        seal_source(&mut store, &system);
+        let revoked = SourceFailureRequest {
+            session_id: session_id.clone(),
+            source_kind: MediaSourceKind::SystemAudio,
+            reason: SourceFailureReason::PermissionRevoked,
+        };
+        let evidence = store.record_source_failure(revoked.clone()).unwrap();
+        assert_eq!(evidence.reason, SourceFailureReason::PermissionRevoked);
+        assert!(evidence.recording_continues && evidence.session_degraded);
+        assert_eq!(store.record_source_failure(revoked).unwrap(), evidence);
+        let reason: String = store
+            .connection
+            .query_row(
+                "SELECT json_extract(payload_json, '$.reason') FROM session_events
+                 WHERE session_id = ?1 AND event_kind = 'source_failed'",
+                [&session_id.0],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(reason, "permission_revoked");
+        assert!(matches!(
+            store.record_source_failure(SourceFailureRequest {
+                session_id: session_id.clone(),
+                source_kind: MediaSourceKind::SystemAudio,
+                reason: SourceFailureReason::CaptureFailed,
+            }),
+            Err(StoreError::IntegrityMismatch(_))
+        ));
+
+        store
+            .interrupt_session(InterruptSessionRequest {
+                session_id: session_id.clone(),
+                reason: SessionInterruptionReason::PermissionRevoked,
+            })
+            .unwrap();
+        let snapshot = store.runtime_library_snapshot().unwrap();
+        let interrupted = snapshot
+            .current_session
+            .into_iter()
+            .chain(snapshot.saved_sessions)
+            .find(|session| session.session_id == session_id)
+            .unwrap();
+        assert_eq!(
+            interrupted.interruption_reason,
+            Some(SessionInterruptionReason::PermissionRevoked)
+        );
     }
 
     #[test]
@@ -818,15 +978,22 @@ mod tests {
         file.write_all(&48_000_f64.to_bits().to_be_bytes()).unwrap();
         file.write_all(b"lpcm").unwrap();
         file.write_all(&2_u32.to_be_bytes()).unwrap();
-        file.write_all(&2_u32.to_be_bytes()).unwrap();
+        file.write_all(&(2 * u32::from(authorization.channels)).to_be_bytes())
+            .unwrap();
         file.write_all(&1_u32.to_be_bytes()).unwrap();
-        file.write_all(&1_u32.to_be_bytes()).unwrap();
+        file.write_all(&u32::from(authorization.channels).to_be_bytes())
+            .unwrap();
         file.write_all(&16_u32.to_be_bytes()).unwrap();
         file.write_all(b"data").unwrap();
         file.write_all(&(-1_i64).to_be_bytes()).unwrap();
         file.write_all(&0_u32.to_be_bytes()).unwrap();
-        file.write_all(&vec![0_u8; sample_count as usize * 2])
-            .unwrap();
+        file.write_all(&vec![
+            0_u8;
+            sample_count as usize
+                * 2
+                * usize::from(authorization.channels)
+        ])
+        .unwrap();
         file.sync_all().unwrap();
     }
 

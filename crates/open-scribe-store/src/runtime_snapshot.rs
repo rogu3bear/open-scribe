@@ -48,6 +48,7 @@ pub struct RuntimeSessionSnapshot {
     pub media_files_open: bool,
     pub interruption_reason: Option<SessionInterruptionReason>,
     pub recovered: bool,
+    pub has_capture_timeline: bool,
     pub sources: Vec<RuntimeSourceSnapshot>,
     pub playable_media: Option<RuntimePlayableMediaSnapshot>,
 }
@@ -92,7 +93,12 @@ impl SessionStore {
     where
         F: FnOnce(),
     {
-        let transaction = self.connection.unchecked_transaction()?;
+        // One read snapshot; deferred so it never holds the write lock that
+        // store connections otherwise take at BEGIN.
+        let transaction = rusqlite::Transaction::new_unchecked(
+            &self.connection,
+            rusqlite::TransactionBehavior::Deferred,
+        )?;
         let sessions = {
             let mut statement = transaction.prepare(
                 "SELECT sessions.id, sessions.title, sessions.origin, sessions.lifecycle, sessions.health,
@@ -112,18 +118,18 @@ impl SessionStore {
                          WHERE interrupted.session_id = sessions.id
                            AND interrupted.event_kind = 'session_interrupted'
                          ORDER BY interrupted.sequence DESC LIMIT 1),
-                        (SELECT MAX(segments.sample_count)
+                        (SELECT CAST(MAX(segments.mapped_start_ns / 1000000000.0 * 48000 + segments.sample_count) AS INTEGER)
                          FROM segments
                          WHERE segments.session_id = sessions.id
                            AND segments.lifecycle = 'sealed'
-                           AND segments.media_format = 'caf-pcm-s16le'
+                           AND segments.media_format IN ('caf-pcm-s16le', 'm4a-alac-or-aac')
                            AND segments.sample_count > 0
                            AND segments.byte_length > 0
                            AND segments.digest IS NOT NULL),
                         EXISTS(
                           SELECT 1 FROM recovery_runs
                           WHERE recovery_runs.session_id = sessions.id
-                            AND recovery_runs.disposition = 'playable_media_recovered'
+                            AND recovery_runs.disposition IN ('playable_media_recovered', 'timeline_recovered')
                         )
                  FROM sessions
                  WHERE sessions.lifecycle != 'deleted'
@@ -171,7 +177,14 @@ impl SessionStore {
             let sources = Self::runtime_source_snapshots(&transaction, &session_id, &lifecycle)?;
             // Recovered tracks have their own validated playback authority. The
             // ordinary saved-audio query deliberately excludes them.
-            let playable_media = if recovered {
+            let has_capture_timeline: bool = transaction.query_row(
+                "SELECT EXISTS(SELECT 1 FROM session_events WHERE session_id = ?1 AND event_kind = 'capture_clock_anchored')
+                    OR EXISTS(SELECT 1 FROM session_restorations JOIN sessions ON sessions.id = session_restorations.session_id
+                              WHERE session_restorations.session_id = ?1 AND session_restorations.state = 'restored'
+                                AND sessions.origin = 'capture')",
+                [&session_id], |row| row.get(0),
+            )?;
+            let playable_media = if recovered || has_capture_timeline {
                 None
             } else {
                 self.runtime_playable_media_snapshot(
@@ -195,11 +208,11 @@ impl SessionStore {
             } else {
                 health
             };
-            let elapsed_seconds = playable_media
+            let mut elapsed_seconds = playable_media
                 .as_ref()
                 .map(|media| media.duration_nanoseconds / 1_000_000_000)
                 .or_else(|| {
-                    recovered
+                    (lifecycle == "ready_for_review")
                         .then_some(recovered_sample_count)
                         .flatten()
                         .map(|sample_count| {
@@ -220,6 +233,21 @@ impl SessionStore {
                             / 1_000
                     })
                 });
+            if matches!(lifecycle.as_str(), "paused" | "recording" | "preparing") {
+                let mut boundary = transaction.prepare("SELECT event_kind, session_nanoseconds, wall_time_ms FROM session_events WHERE session_id = ?1 AND event_kind IN ('capture_paused', 'capture_resumed') ORDER BY sequence DESC LIMIT 1")?;
+                let mut rows = boundary.query([&session_id])?;
+                if let Some(row) = rows.next()? {
+                    let kind: String = row.get(0)?;
+                    let position: i64 = row.get(1)?;
+                    let wall: i64 = row.get(2)?;
+                    let advancing = if lifecycle == "recording" && kind == "capture_resumed" {
+                        now_milliseconds.saturating_sub(wall).max(0) / 1000
+                    } else {
+                        0
+                    };
+                    elapsed_seconds = (position.max(0) / 1_000_000_000 + advancing) as u64;
+                }
+            }
             let snapshot = RuntimeSessionSnapshot {
                 session_id: SessionId(session_id),
                 title,
@@ -230,6 +258,7 @@ impl SessionStore {
                 media_files_open,
                 interruption_reason,
                 recovered,
+                has_capture_timeline,
                 sources,
                 playable_media,
             };
@@ -263,7 +292,7 @@ impl SessionStore {
                       (SELECT sources.display_name FROM sources
                        WHERE sources.session_id = required.session_id
                          AND sources.kind = required.kind
-                       ORDER BY sources.id LIMIT 1),
+                       ORDER BY sources.id DESC LIMIT 1),
                       CASE required.kind
                         WHEN 'microphone' THEN 'Mac microphone'
                         WHEN 'application_audio' THEN 'Selected application audio'
@@ -311,7 +340,8 @@ impl SessionStore {
             let mut statement = connection.prepare(
                 "SELECT sources.display_name, segments.relative_path,
                         segments.sample_count, segments.byte_length, segments.digest,
-                        imports.source_digest, segments.file_device, segments.file_inode
+                        imports.source_digest, segments.file_device, segments.file_inode,
+                        segments.media_format
                  FROM imports
                  JOIN segments ON segments.session_id = imports.session_id
                               AND segments.relative_path = imports.relative_path
@@ -321,7 +351,7 @@ impl SessionStore {
                               AND sources.session_id = tracks.session_id
                  WHERE imports.session_id = ?1
                    AND segments.lifecycle = 'sealed'
-                   AND segments.media_format = 'caf-pcm-s16le'
+                   AND segments.media_format IN ('caf-pcm-s16le', 'm4a-alac-or-aac')
                  ORDER BY segments.sequence",
             )?;
             statement
@@ -331,7 +361,8 @@ impl SessionStore {
             let mut statement = connection.prepare(
                 "SELECT sources.display_name, segments.relative_path,
                         segments.sample_count, segments.byte_length, segments.digest,
-                        segments.digest, segments.file_device, segments.file_inode
+                        segments.digest, segments.file_device, segments.file_inode,
+                        segments.media_format
                  FROM sessions
                  JOIN segments ON segments.session_id = sessions.id
                  JOIN tracks ON tracks.id = segments.track_id
@@ -386,6 +417,7 @@ impl SessionStore {
             import_digest_sha256,
             stored_device,
             stored_inode,
+            media_format,
         ) = &rows[0];
         let sample_count = u64::try_from(*stored_sample_count).unwrap_or(0);
         let byte_length = u64::try_from(*stored_byte_length).unwrap_or(0);
@@ -398,7 +430,11 @@ impl SessionStore {
             sample_count,
             byte_length,
         };
-        if !valid_media_relative_path(relative_path)
+        if !(valid_media_relative_path(relative_path)
+            || (origin == "import"
+                && media_format == "m4a-alac-or-aac"
+                && relative_path.starts_with("audio/")
+                && relative_path.ends_with("/000000-import.m4a")))
             || sample_count == 0
             || byte_length == 0
             || digest_sha256.len() != 64
@@ -416,26 +452,77 @@ impl SessionStore {
             }
             Ok(_) => {}
         }
-        let Ok(validated) = self.validate_media_file(
-            session_id,
-            relative_path,
-            MediaLengthRequirement::Exact(byte_length),
-            true,
-        ) else {
+        // Probe the complete managed path and CAF layout before recalling a
+        // digest. The import validator always hashes CAF, so dispatch locally
+        // rather than changing validation for playback or other consumers.
+        let validate = |calculate_digest| {
+            if media_format == "caf-pcm-s16le" {
+                self.validate_media_file(
+                    session_id,
+                    relative_path,
+                    MediaLengthRequirement::Exact(byte_length),
+                    calculate_digest,
+                )
+            } else {
+                self.validate_import_media_file(
+                    session_id,
+                    relative_path,
+                    byte_length,
+                    media_format,
+                    calculate_digest,
+                )
+            }
+        };
+        let validated = match validate(false) {
+            Ok(mut media)
+                if (media_format == "caf-pcm-s16le"
+                    || media.device != u64::try_from(*stored_device).unwrap_or(0))
+                    && media.digest_sha256.is_none() =>
+            {
+                let cached = self
+                    .snapshot_digest_memo
+                    .borrow()
+                    .get(&media.identity)
+                    .cloned();
+                if let Some(digest) = cached {
+                    media.digest_sha256 = Some(digest);
+                    Ok(media)
+                } else {
+                    validate(true)
+                }
+            }
+            other => other,
+        };
+        let Ok(validated) = validated else {
             return Ok(Some(base(RuntimePlayableMediaAvailability::Corrupt)));
         };
-        if validated.device != u64::try_from(*stored_device).unwrap_or(0)
-            || validated.inode != u64::try_from(*stored_inode).unwrap_or(0)
-            || validated.recoverable_sample_count != Some(sample_count)
-            || validated.digest_sha256.as_deref() != Some(import_digest_sha256.as_str())
+        if !validated.matches_sealed_identity(
+            u64::try_from(*stored_device).unwrap_or(0),
+            u64::try_from(*stored_inode).unwrap_or(0),
+            byte_length,
+            import_digest_sha256,
+        ) || (media_format == "caf-pcm-s16le"
+            && validated.recoverable_sample_count != Some(sample_count))
+            || (media_format == "caf-pcm-s16le"
+                && validated.digest_sha256.as_deref() != Some(import_digest_sha256.as_str()))
         {
             return Ok(Some(base(RuntimePlayableMediaAvailability::Corrupt)));
+        }
+        if let Some(digest) = validated.digest_sha256 {
+            // This cache belongs only to read-only UI polling. A fresh nofollow
+            // path rebind and full change-timestamp fingerprint precede lookup;
+            // insertion follows all sealed receipt comparisons above.
+            let mut memo = self.snapshot_digest_memo.borrow_mut();
+            if memo.len() >= 64 && !memo.contains_key(&validated.identity) {
+                memo.pop_first();
+            }
+            memo.insert(validated.identity, digest);
         }
         Ok(Some(base(RuntimePlayableMediaAvailability::Available)))
     }
 }
 
-type PlayableMediaRow = (String, String, i64, i64, String, String, i64, i64);
+type PlayableMediaRow = (String, String, i64, i64, String, String, i64, i64, String);
 
 fn playable_media_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<PlayableMediaRow> {
     Ok((
@@ -447,5 +534,6 @@ fn playable_media_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<PlayableMedia
         row.get(5)?,
         row.get(6)?,
         row.get(7)?,
+        row.get(8)?,
     ))
 }

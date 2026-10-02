@@ -41,11 +41,27 @@ struct OpenScribeApp: App {
   @StateObject private var importedMediaAuthority: ImportedMediaAuthorityAdapter
   @StateObject private var liveRecording: LiveMicrophoneRecordingController
   @StateObject private var recoveredSessions: RecoveredSessionController
+  @StateObject private var transcripts: TranscriptLibraryModel
+  @StateObject private var speech: SpeechTranscriptionModel
+  @StateObject private var context: ContextScopeModel
 
   private let status = RustStatusSource.load()
 
   init() {
     let arguments = ProcessInfo.processInfo.arguments
+    let injectedRoot = Self.argumentRoot("--m1-injected-proof-root", from: arguments)
+    let injectedRecoveryRoot = Self.argumentRoot("--m1-injected-recovery-root", from: arguments)
+    let injectedMediaRoot = Self.argumentRoot("--m1-proof-media-root", from: arguments)
+    let injectedScenario = arguments.firstIndex(of: "--m1-injected-case").flatMap { index in
+      arguments.indices.contains(index + 1) ? arguments[index + 1] : nil
+    } ?? "invalid"
+    let foundationReviewRoot = Self.argumentRoot("--foundation-review-root", from: arguments)
+    let foundationLiveRecoveryRoot = Self.argumentRoot(
+      "--foundation-live-recovery-root", from: arguments)
+    let timelineCaptureRoot = Self.argumentRoot(
+      "--foundation-synthetic-capture-root", from: arguments)
+    let timelineRecoveryRoot = Self.argumentRoot(
+      "--foundation-synthetic-recovery-root", from: arguments)
     let liveProofRoot = Self.argumentRoot("--m1-live-microphone-proof-root", from: arguments)
     let forcedCaptureRoot = Self.argumentRoot(
       "--m1-forced-termination-capture-root",
@@ -55,20 +71,59 @@ struct OpenScribeApp: App {
       "--m1-forced-termination-recovery-root",
       from: arguments
     )
-    let managedRoot = liveProofRoot ?? forcedCaptureRoot ?? forcedRecoveryRoot ?? Self.defaultRoot()
-    let controller =
-      managedRoot.map(LiveMicrophoneRecordingController.init(managedRoot:))
+    let localOnlyRoot = Self.argumentRoot("--local-only-proof-root", from: arguments)
+    let driftRunRoot = Self.argumentRoot("--m1-drift-run-root", from: arguments)
+    let driftRunSeconds = arguments.firstIndex(of: "--m1-drift-run-seconds").flatMap { index in
+      arguments.indices.contains(index + 1) ? UInt64(arguments[index + 1]) : nil
+    } ?? 0
+    let proofRoots: [URL?] = [
+      injectedMediaRoot, injectedRoot, injectedRecoveryRoot, foundationReviewRoot,
+      foundationLiveRecoveryRoot, timelineCaptureRoot, timelineRecoveryRoot,
+      liveProofRoot, forcedCaptureRoot, forcedRecoveryRoot,
+      localOnlyRoot?.appendingPathComponent("Library", isDirectory: true),
+      driftRunRoot?.appendingPathComponent("Library", isDirectory: true),
+    ]
+    let managedRoot = proofRoots.compactMap { $0 }.first ?? Self.defaultRoot()
+    let injectedProof = injectedRoot.map {
+      M1FailureRuntimeProof(root: $0, mediaRoot: injectedMediaRoot ?? $0, scenario: injectedScenario)
+    }
+    let controller = injectedProof?.controller
+      ?? managedRoot.map(LiveMicrophoneRecordingController.init(managedRoot:))
       ?? LiveMicrophoneRecordingController(managedRoot: nil)
     let recovery = RecoveredSessionController(managedRoot: managedRoot)
     let runtime = RuntimeLibraryStore(managedRoot: managedRoot)
-    let importAuthority = ImportedMediaAuthorityAdapter { title, sourceURL in
-      try runtime.importManagedCaf(title: title, sourceURL: sourceURL)
-    }
+    let importAuthority = ImportedMediaAuthorityAdapter(
+      canBeginImport: { controller.canStart },
+      importer: { title, sourceURL in
+        try runtime.importManagedAudio(title: title, sourceURL: sourceURL)
+      },
+      packageOpener: { packageURL in
+        try runtime.openPortablePackage(packageURL: packageURL)
+      }
+    )
     _runtimeStore = StateObject(wrappedValue: runtime)
     _importedMediaAuthority = StateObject(wrappedValue: importAuthority)
     _liveRecording = StateObject(wrappedValue: controller)
     _recoveredSessions = StateObject(wrappedValue: recovery)
-    if liveProofRoot != nil {
+    _transcripts = StateObject(wrappedValue: TranscriptLibraryModel(managedRoot: managedRoot))
+    _speech = StateObject(wrappedValue: SpeechTranscriptionModel(managedRoot: managedRoot))
+    _context = StateObject(wrappedValue: ContextScopeModel(recorder: controller))
+    if let proof = injectedProof {
+      Task { @MainActor in await proof.run(runtime: runtime) }
+    } else if let root = injectedRecoveryRoot {
+      controller.isLaunchRecoveryPending = { recovery.phase == .scanning }
+      runtime.isLaunchRecoveryPending = { recovery.phase == .scanning }
+      Task { @MainActor in
+        await M1FailureRuntimeProof.recover(root: root, mediaRoot: injectedMediaRoot ?? root,
+          recovery: recovery, runtime: runtime)
+      }
+    } else if let root = foundationLiveRecoveryRoot {
+      Task { @MainActor in await TimelineRuntimeProof.verifyLive(root: root) }
+    } else if let root = timelineCaptureRoot ?? timelineRecoveryRoot {
+      Task { @MainActor in
+        await TimelineRuntimeProof.run(root: root, captureMode: timelineCaptureRoot != nil)
+      }
+    } else if liveProofRoot != nil {
       Task { @MainActor in
         await Self.runLiveMicrophoneProof(controller: controller)
       }
@@ -76,7 +131,21 @@ struct OpenScribeApp: App {
       Task { @MainActor in
         await Self.runForcedTerminationCaptureProof(controller: controller)
       }
+    } else if let root = localOnlyRoot {
+      // The proof owns its library; launch recovery never scans the user's.
+      Task { @MainActor in await LocalOnlyWorkflowProof.run(root: root) }
+    } else if let root = driftRunRoot {
+      // The two-hour run owns its library and stops at its own deadline.
+      Task { @MainActor in
+        _ = await DriftRunProof.run(controller: controller, root: root, seconds: driftRunSeconds)
+        NSApp.terminate(nil)
+      }
     } else {
+      // Launch recovery scans the library off the main actor. A recording or
+      // import begun during that scan could be recovered as abandoned, and a
+      // session the scan has not recovered yet is not a live recording.
+      controller.isLaunchRecoveryPending = { recovery.phase == .scanning }
+      runtime.isLaunchRecoveryPending = { recovery.phase == .scanning }
       Task { @MainActor in
         recovery.recoverOnLaunch()
         runtime.refresh()
@@ -93,7 +162,10 @@ struct OpenScribeApp: App {
         store: runtimeStore,
         importedMediaAuthority: importedMediaAuthority,
         liveRecording: liveRecording,
-        recoveredSessions: recoveredSessions
+        recoveredSessions: recoveredSessions,
+        transcripts: transcripts,
+        speech: speech,
+        context: context
       )
     }
     .defaultSize(width: 1040, height: 720)
@@ -103,7 +175,8 @@ struct OpenScribeApp: App {
         store: runtimeStore,
         importedMediaAuthority: importedMediaAuthority,
         liveRecording: liveRecording,
-        recoveredSessions: recoveredSessions
+        recoveredSessions: recoveredSessions,
+        context: context
       )
     } label: {
       MenuBarLabel(store: runtimeStore, liveRecording: liveRecording)
@@ -184,6 +257,10 @@ struct OpenScribeApp: App {
   private static func runForcedTerminationRecoveryProof(
     controller: RecoveredSessionController
   ) async {
+    // Launch recovery scans off the main actor; wait for it to publish.
+    for _ in 0..<600 where controller.phase == .scanning {
+      try? await Task.sleep(nanoseconds: 100_000_000)
+    }
     guard let recovered = controller.sessions.first else {
       let stage = controller.phase == .none ? "recovery-empty" : "recovery-failed"
       AppTelemetry.recoveryProof(stage: stage, detail: "no-playable-session")

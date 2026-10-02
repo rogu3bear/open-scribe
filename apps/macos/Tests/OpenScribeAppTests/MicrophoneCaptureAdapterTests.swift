@@ -17,6 +17,7 @@ private final class FakeMicrophoneBackend: MicrophoneCaptureBackend, @unchecked 
   private var handler: ((AVAudioPCMBuffer, AVAudioTime) -> Void)?
   private var routeEventHandler: MicrophoneRouteEventHandler?
   private(set) var started = false
+  let stopped = DispatchSemaphore(value: 0)
 
   init(
     inputFormat: AVAudioFormat,
@@ -49,6 +50,7 @@ private final class FakeMicrophoneBackend: MicrophoneCaptureBackend, @unchecked 
   func stop() {
     started = false
     handler = nil
+    stopped.signal()
   }
 
   func setRouteEventHandler(_ handler: MicrophoneRouteEventHandler?) {
@@ -563,6 +565,31 @@ final class MicrophoneCaptureAdapterTests: XCTestCase {
     writer.allowWrite.signal()
 
     XCTAssertEqual(adapter.stop(), 42_000)
+  }
+
+  func testStopPreservesEveryBufferAcceptedBeforeTheStopBoundary() throws {
+    let format = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 1))
+    let backend = FakeMicrophoneBackend(inputFormat: format)
+    let writer = BlockingCapturedWriter()
+    let adapter = MicrophoneCaptureAdapter(backend: backend, writer: writer)
+    try adapter.start(onFirstSample: { _ in }, onFailure: { _ in })
+    let buffer = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 64))
+    buffer.frameLength = 64
+    backend.emit(buffer, hostTime: 1)
+    XCTAssertEqual(writer.writeEntered.wait(timeout: .now() + 1), .success)
+    backend.emit(buffer, hostTime: 2)
+    backend.emit(buffer, hostTime: 3)
+
+    let stopped = expectation(description: "All accepted microphone buffers drained")
+    DispatchQueue.global().async {
+      XCTAssertEqual(adapter.stop(), 3)
+      stopped.fulfill()
+    }
+    // Hold the first write while Stop closes admission and waits for the queue.
+    XCTAssertEqual(backend.stopped.wait(timeout: .now() + 1), .success)
+    writer.allowWrite.signal()
+    wait(for: [stopped], timeout: 2)
+    XCTAssertEqual(writer.writeCount, 3)
   }
 
   func testCallbackProgressIsObservableBeforeABlockedWriteWithoutBlockingTheCallback() throws {

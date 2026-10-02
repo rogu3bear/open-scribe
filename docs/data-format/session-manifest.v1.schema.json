@@ -1,0 +1,133 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://open-scribe.app/schema/session-manifest/v1",
+  "title": "Open Scribe session manifest v1",
+  "description": "One saved session's identity, sources, sealed media, markers, and transcript selection. Paths are relative to the session directory; times are session nanoseconds.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "schema_version",
+    "exporter",
+    "session",
+    "exported_at",
+    "timeline_unit",
+    "duration_ns",
+    "tracks",
+    "markers",
+    "transcript"
+  ],
+  "properties": {
+    "schema": { "const": "https://open-scribe.app/schema/session-manifest/v1" },
+    "schema_version": { "const": 1 },
+    "exporter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "version"],
+      "properties": {
+        "name": { "type": "string" },
+        "version": { "type": "string" }
+      }
+    },
+    "session": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "title", "origin", "created_at_ms", "lifecycle"],
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string" },
+        "origin": { "enum": ["capture", "import"] },
+        "created_at_ms": { "type": "integer" },
+        "lifecycle": { "type": "string" }
+      }
+    },
+    "exported_at": { "type": "string", "format": "date-time" },
+    "timeline_unit": { "const": "nanoseconds" },
+    "duration_ns": { "type": "integer", "minimum": 0 },
+    "tracks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["track_id", "source_id", "source_kind", "speaker", "segments"],
+        "properties": {
+          "track_id": { "type": "string" },
+          "source_id": { "type": "string" },
+          "source_kind": { "type": "string" },
+          "speaker": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["label", "named_by_user"],
+            "properties": {
+              "label": { "type": "string" },
+              "named_by_user": { "type": "boolean" }
+            }
+          },
+          "segments": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "segment_id",
+                "sequence",
+                "relative_path",
+                "media_format",
+                "start_ns",
+                "sample_count",
+                "channels",
+                "byte_length",
+                "sha256"
+              ],
+              "properties": {
+                "segment_id": { "type": "string" },
+                "sequence": { "type": "integer", "minimum": 0 },
+                "relative_path": { "type": "string" },
+                "media_format": { "type": "string" },
+                "start_ns": { "type": "integer", "minimum": 0 },
+                "sample_count": { "type": "integer", "minimum": 1 },
+                "channels": { "type": "integer", "minimum": 1, "maximum": 2 },
+                "byte_length": { "type": "integer", "minimum": 1 },
+                "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "markers": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["marker_id", "at_ns", "label"],
+        "properties": {
+          "marker_id": { "type": "string" },
+          "at_ns": { "type": "integer", "minimum": 0 },
+          "label": { "type": "string" }
+        }
+      }
+    },
+    "transcript": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["availability", "revisions"],
+      "properties": {
+        "availability": { "enum": ["final", "draft", "failed", "unavailable"] },
+        "revisions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["track_id", "revision_id", "finality"],
+            "properties": {
+              "track_id": { "type": "string" },
+              "revision_id": { "type": "string" },
+              "finality": { "enum": ["final", "draft"] }
+            }
+          }
+        }
+      }
+    }
+  }
+}

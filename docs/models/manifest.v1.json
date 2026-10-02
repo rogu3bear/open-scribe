@@ -1,5 +1,102 @@
 {
   "schema": "open-scribe.models/v1",
   "bundled_large_weights": false,
-  "models": []
+  "models": [
+    {
+      "id": "whisper-small.en-q5_1",
+      "profile": "balanced-en",
+      "version": "1.0.0",
+      "purpose": "asr",
+      "source": "https://huggingface.co/ggerganov/whisper.cpp",
+      "upstream": "https://github.com/openai/whisper",
+      "revision": "5359861c739e955e79d9a303bcbc70fb988958b1",
+      "publisher": "OpenAI (weights); ggml-org/whisper.cpp (GGML conversion and q5_1 quantization)",
+      "license": "MIT",
+      "license_resource": "https://github.com/openai/whisper/blob/main/LICENSE",
+      "redistribution": "MIT permits redistribution with notice; runtime downloads only from the pinned upstream revision; no mirror or bundle",
+      "review_state": "Pending",
+      "engine": "whisper.cpp",
+      "format": "ggml-whisper",
+      "compatibility": "whisper.cpp 1.8.3 (2eeeba56e9edd762b4b38467bab96c2517163158) GGML loader",
+      "header": {
+        "magic": 1734831468,
+        "n_vocab": 51864,
+        "n_audio_ctx": 1500,
+        "n_audio_state": 768,
+        "n_audio_head": 12,
+        "n_audio_layer": 12,
+        "n_text_ctx": 448,
+        "n_text_state": 768,
+        "n_text_head": 12,
+        "n_text_layer": 12,
+        "n_mels": 80,
+        "ftype": 1009
+      },
+      "languages": ["en"],
+      "quality_posture": "English-only small model, q5_1 quantized; accuracy is unmeasured in this repository",
+      "resources": {
+        "architectures": ["arm64"],
+        "minimum_macos": "13.0",
+        "memory": "unmeasured"
+      },
+      "file_name": "ggml-small.en-q5_1.bin",
+      "download_origins": [
+        "https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-small.en-q5_1.bin"
+      ],
+      "prompt_compatibility": "not applicable: no prompt template",
+      "calibration_compatibility": "not applicable: no calibration artifact",
+      "removal_group": "asr",
+      "sha256": "bfdff4894dcb76bbf647d56263ea2a96645423f1669176f4844a1bf8e478ad30",
+      "byte_length": 190098681,
+      "bundled": false
+    },
+    {
+      "id": "whisper-small-q5_1",
+      "profile": "balanced-multilingual",
+      "version": "1.0.0",
+      "purpose": "asr",
+      "source": "https://huggingface.co/ggerganov/whisper.cpp",
+      "upstream": "https://github.com/openai/whisper",
+      "revision": "5359861c739e955e79d9a303bcbc70fb988958b1",
+      "publisher": "OpenAI (weights); ggml-org/whisper.cpp (GGML conversion and q5_1 quantization)",
+      "license": "MIT",
+      "license_resource": "https://github.com/openai/whisper/blob/main/LICENSE",
+      "redistribution": "MIT permits redistribution with notice; runtime downloads only from the pinned upstream revision; no mirror or bundle",
+      "review_state": "Pending",
+      "engine": "whisper.cpp",
+      "format": "ggml-whisper",
+      "compatibility": "whisper.cpp 1.8.3 (2eeeba56e9edd762b4b38467bab96c2517163158) GGML loader",
+      "header": {
+        "magic": 1734831468,
+        "n_vocab": 51865,
+        "n_audio_ctx": 1500,
+        "n_audio_state": 768,
+        "n_audio_head": 12,
+        "n_audio_layer": 12,
+        "n_text_ctx": 448,
+        "n_text_state": 768,
+        "n_text_head": 12,
+        "n_text_layer": 12,
+        "n_mels": 80,
+        "ftype": 1009
+      },
+      "languages": ["multilingual"],
+      "quality_posture": "Multilingual small model, q5_1 quantized; accuracy is unmeasured in this repository",
+      "resources": {
+        "architectures": ["arm64"],
+        "minimum_macos": "13.0",
+        "memory": "unmeasured"
+      },
+      "file_name": "ggml-small-q5_1.bin",
+      "download_origins": [
+        "https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-small-q5_1.bin"
+      ],
+      "prompt_compatibility": "not applicable: no prompt template",
+      "calibration_compatibility": "not applicable: no calibration artifact",
+      "removal_group": "asr",
+      "sha256": "ae85e4a935d7a567bd102fe55afc16bb595bdb618e11b2fc7591bc08120411bb",
+      "byte_length": 190085487,
+      "bundled": false
+    }
+  ]
 }

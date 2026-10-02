@@ -1,4 +1,5 @@
 import AVFoundation
+import Darwin
 import XCTest
 
 @testable import OpenScribeApp
@@ -107,6 +108,7 @@ final class MediaOpenProtocolTests: XCTestCase {
       openToken: UUID().uuidString.lowercased(),
       writerGeneration: valid.writerGeneration,
       relativePath: valid.relativePath,
+      channels: valid.channels,
       initialByteLength: valid.initialByteLength
     )
     XCTAssertThrowsError(try controller.acceptMediaOpen(receipt: stale)) { error in
@@ -116,11 +118,103 @@ final class MediaOpenProtocolTests: XCTestCase {
     XCTAssertFalse(accepted.recordingStarted)
   }
 
+  /// F11: first-sample receipts must name the segment that holds the sample.
+  /// After a rotation the receipt for the later host time belongs to segment 1.
+  func testSegmentedWriterFirstSampleReceiptsAreSegmentSpecificAfterRotation() throws {
+    let (_, writer, first) = try makeSegmentedWriter(confirmRecording: true)
+    let second = first + AVAudioTime.hostTime(forSeconds: 2)
+    _ = try writer.writeCapturedBuffer(
+      TimelineRuntimeProof.buffer(frames: 480, value: 8192), hostTime: second)
+    XCTAssertEqual(
+      writer.authorization.writerGeneration, 2, "a host-time gap rotated into a second segment")
+
+    let late = try writer.firstSampleReceipt(hostTime: second, frameCount: 480)
+    XCTAssertEqual(late.writerGeneration, 2)
+    XCTAssertEqual(late.segmentId, writer.authorization.segmentId)
+    XCTAssertEqual(late.firstSampleHostTime, second)
+    let early = try writer.firstSampleReceipt(hostTime: first, frameCount: 480)
+    XCTAssertEqual(early.writerGeneration, 1)
+    XCTAssertEqual(early.firstSampleHostTime, first)
+  }
+
+  /// F8: the main actor reads `authorization` (storage watch, health observations)
+  /// while the writer queue rotates segments. The assertions cannot observe an
+  /// unsynchronized swap deterministically; ThreadSanitizer reports it.
+  func testSegmentedWriterAuthorizationIsReadableWhileRotating() throws {
+    let (_, writer, first) = try makeSegmentedWriter(confirmRecording: true)
+    let reader = ConcurrentAuthorizationReader(writer: writer)
+    reader.start()
+    var hostTime = first
+    for _ in 0..<12 {
+      hostTime += AVAudioTime.hostTime(forSeconds: 2)
+      _ = try writer.writeCapturedBuffer(
+        TimelineRuntimeProof.buffer(frames: 480, value: 8192), hostTime: hostTime)
+    }
+    let observed = reader.stop()
+    XCTAssertEqual(writer.authorization.writerGeneration, 13)
+    XCTAssertFalse(observed.isEmpty)
+    XCTAssertTrue(
+      observed.isSubset(of: Set(1...13)), "every published generation names a real segment")
+  }
+
   private func makeController() throws -> (NativeRecordingPreparation, URL) {
     let root = FileManager.default.temporaryDirectory
       .appendingPathComponent("open-scribe-media-open-tests", isDirectory: true)
       .appendingPathComponent(UUID().uuidString.lowercased(), isDirectory: true)
     managedRoots.append(root)
     return (try NativeRecordingPreparation.open(managedRoot: root.path), root)
+  }
+
+  /// One microphone session with a calibrated clock and an open segmented writer
+  /// holding its first accepted sample at `first`. Rust admits rotations only
+  /// while Recording, so callers choose whether Recording is confirmed.
+  private func makeSegmentedWriter(confirmRecording: Bool) throws
+    -> (NativeRecordingPreparation, SegmentedCAFWriter, UInt64)
+  {
+    let (controller, _) = try makeController()
+    let prepared = try controller.prepareSession(title: "Segmented writer proof")
+    let anchor = mach_absolute_time()
+    try SegmentedCAFWriter.anchor(
+      preparation: controller, sessionId: prepared.sessionId, hostAnchor: anchor)
+    let authorization = try controller.authorizeInitialMedia(
+      sessionId: prepared.sessionId, sourceKind: .microphone,
+      sourceDisplayName: "Synthetic microphone")
+    let file = try ManagedCAFWriter(authorization: authorization)
+    _ = try controller.acceptMediaOpen(receipt: file.receipt())
+    let writer = SegmentedCAFWriter(current: file, preparation: controller)
+    let first = anchor + AVAudioTime.hostTime(forSeconds: 1)
+    _ = try writer.writeCapturedBuffer(
+      TimelineRuntimeProof.buffer(frames: 480, value: 8192), hostTime: first)
+    if confirmRecording {
+      _ = try controller.confirmRecording(sessionId: prepared.sessionId)
+    }
+    return (controller, writer, first)
+  }
+}
+
+/// Reads the writer's published authorization from another thread until stopped.
+private final class ConcurrentAuthorizationReader: @unchecked Sendable {
+  private let writer: SegmentedCAFWriter
+  private let lock = NSLock()
+  private var running = false
+  private var generations: Set<UInt64> = []
+  private let finished = DispatchGroup()
+
+  init(writer: SegmentedCAFWriter) { self.writer = writer }
+
+  func start() {
+    lock.withLock { running = true }
+    DispatchQueue.global(qos: .userInitiated).async(group: finished) { [self] in
+      while lock.withLock({ running }) {
+        let generation = writer.authorization.writerGeneration
+        lock.withLock { _ = generations.insert(generation) }
+      }
+    }
+  }
+
+  func stop() -> Set<UInt64> {
+    lock.withLock { running = false }
+    finished.wait()
+    return lock.withLock { generations }
   }
 }

@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://open-scribe.app/schema/portable/v1",
+  "title": "Open Scribe portable package v1",
+  "description": "manifest.json at the root of a <name>.openscribe package directory. Every other file in the package is listed exactly once with its length and SHA-256; paths are relative, normalized, and never escape the package.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "schema_version",
+    "exporter",
+    "exported_at",
+    "source_session_id",
+    "title",
+    "files"
+  ],
+  "properties": {
+    "schema": { "const": "https://open-scribe.app/schema/portable/v1" },
+    "schema_version": { "const": 1 },
+    "exporter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "version"],
+      "properties": {
+        "name": { "type": "string" },
+        "version": { "type": "string" }
+      }
+    },
+    "exported_at": { "type": "string", "format": "date-time" },
+    "source_session_id": { "type": "string" },
+    "title": { "type": "string" },
+    "files": {
+      "type": "array",
+      "minItems": 2,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "role", "media_type", "byte_length", "sha256"],
+        "properties": {
+          "path": { "type": "string", "pattern": "^(?!/)(?!.*(^|/)\\.\\.?(/|$)).+$" },
+          "role": { "enum": ["session_manifest", "transcript", "source_media", "derived_media"] },
+          "media_type": { "type": "string" },
+          "byte_length": { "type": "integer", "minimum": 0 },
+          "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+        }
+      }
+    }
+  }
+}

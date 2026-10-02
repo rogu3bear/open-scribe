@@ -44,14 +44,28 @@ enum StructuredNativeIO {
 final class RuntimeLibraryStore: ObservableObject {
   typealias SnapshotProvider = @Sendable () throws -> NativeRuntimeLibrarySnapshot
   typealias ImportProvider = @Sendable (String, String) throws -> NativeImportedMediaEvidence
+  typealias NormalizedImportProvider =
+    @Sendable (String, String, NativeOriginalImportMetadata) throws
+    -> NativeImportedMediaEvidence
+  typealias CompressedImportProvider =
+    @Sendable (String, String, NativeCompressedImportMetadata) throws
+    -> NativeImportedMediaEvidence
+  typealias PackageImportProvider = @Sendable (String) throws -> NativePackageImportReceipt
 
   @Published private(set) var currentSession: RuntimeSessionPresentation?
   @Published private(set) var savedSessions: [RuntimeSessionPresentation] = []
   @Published private(set) var isSnapshotStale = false
   @Published private(set) var errorMessage: String?
+  /// The app sets this while launch recovery scans the library. Capture waits
+  /// for that scan, so a current session read meanwhile is a terminated one
+  /// awaiting recovery and is never presented as live.
+  var isLaunchRecoveryPending: @MainActor () -> Bool = { false }
 
   private let snapshotProvider: SnapshotProvider
   nonisolated private let importProvider: ImportProvider?
+  nonisolated private let normalizedImportProvider: NormalizedImportProvider?
+  nonisolated private let compressedImportProvider: CompressedImportProvider?
+  nonisolated private let packageImportProvider: PackageImportProvider?
   private var pollingTask: Task<Void, Never>?
   private var refreshTask: Task<Void, Never>?
   private var refreshGeneration: UInt64 = 0
@@ -60,10 +74,16 @@ final class RuntimeLibraryStore: ObservableObject {
   init(
     snapshotProvider: @escaping SnapshotProvider,
     importProvider: ImportProvider? = nil,
+    normalizedImportProvider: NormalizedImportProvider? = nil,
+    compressedImportProvider: CompressedImportProvider? = nil,
+    packageImportProvider: PackageImportProvider? = nil,
     startsPolling: Bool = true
   ) {
     self.snapshotProvider = snapshotProvider
     self.importProvider = importProvider
+    self.normalizedImportProvider = normalizedImportProvider
+    self.compressedImportProvider = compressedImportProvider
+    self.packageImportProvider = packageImportProvider
     refresh()
     if startsPolling {
       pollingTask = Task { [weak self] in
@@ -80,6 +100,7 @@ final class RuntimeLibraryStore: ObservableObject {
     let controller = try? managedRoot.map {
       try NativeRecordingPreparation.open(managedRoot: $0.path)
     }
+    let library = try? managedRoot.map { try NativeTranscriptLibrary.open(managedRoot: $0.path) }
     self.init(
       snapshotProvider: {
         guard let controller else {
@@ -92,6 +113,28 @@ final class RuntimeLibraryStore: ObservableObject {
           throw RuntimeLibraryStoreError.managedRootUnavailable
         }
         return try controller.importRecoverableCaf(title: title, sourcePath: sourcePath)
+      },
+      normalizedImportProvider: { title, normalizedPath, original in
+        guard let controller else {
+          throw RuntimeLibraryStoreError.managedRootUnavailable
+        }
+        return try controller.importNormalizedCaf(
+          title: title, normalizedPath: normalizedPath, original: original
+        )
+      },
+      compressedImportProvider: { title, sourcePath, metadata in
+        guard let controller else {
+          throw RuntimeLibraryStoreError.managedRootUnavailable
+        }
+        return try controller.importCompressedM4a(
+          title: title, sourcePath: sourcePath, metadata: metadata
+        )
+      },
+      packageImportProvider: { packagePath in
+        guard let library else {
+          throw RuntimeLibraryStoreError.managedRootUnavailable
+        }
+        return try library.importPortablePackage(packagePath: packagePath)
       }
     )
   }
@@ -108,6 +151,52 @@ final class RuntimeLibraryStore: ObservableObject {
     }
     refreshGeneration &+= 1
     startRefresh(generation: refreshGeneration)
+  }
+
+  @discardableResult
+  nonisolated func importManagedAudio(
+    title: String,
+    sourceURL: URL
+  ) throws -> NativeImportedMediaEvidence {
+    let prepared = try BoundedAudioImport.prepare(
+      sourceURL: sourceURL, policy: nativeImportPolicy()
+    )
+    defer { prepared.removeTemporaryCopy() }
+    if let compressed = prepared.compressed {
+      guard let compressedImportProvider else {
+        throw RuntimeLibraryStoreError.importUnavailable
+      }
+      let evidence = try compressedImportProvider(title, prepared.cafURL.path, compressed)
+      guard evidence.originalUntouched, evidence.readyForReview else {
+        throw RuntimeLibraryStoreError.importEvidenceRejected
+      }
+      Task { @MainActor [weak self] in self?.refresh() }
+      return evidence
+    }
+    guard let original = prepared.original else {
+      return try importManagedCaf(title: title, sourceURL: prepared.cafURL)
+    }
+    guard let normalizedImportProvider else {
+      throw RuntimeLibraryStoreError.importUnavailable
+    }
+    let evidence = try normalizedImportProvider(title, prepared.cafURL.path, original)
+    guard evidence.originalUntouched, evidence.readyForReview else {
+      throw RuntimeLibraryStoreError.importEvidenceRejected
+    }
+    Task { @MainActor [weak self] in self?.refresh() }
+    return evidence
+  }
+
+  /// Opens a portable package from another Mac as a new saved conversation.
+  nonisolated func openPortablePackage(packageURL: URL) throws -> NativePackageImportReceipt {
+    guard let packageImportProvider else {
+      throw RuntimeLibraryStoreError.importUnavailable
+    }
+    let receipt = try packageImportProvider(packageURL.path)
+    Task { @MainActor [weak self] in
+      self?.refresh()
+    }
+    return receipt
   }
 
   @discardableResult
@@ -130,6 +219,9 @@ final class RuntimeLibraryStore: ObservableObject {
 
   private func startRefresh(generation: UInt64) {
     let snapshotProvider = snapshotProvider
+    // A snapshot read during the scan may predate its recovery even if the
+    // scan has finished by the time the read returns.
+    let readDuringRecovery = isLaunchRecoveryPending()
     refreshTask = Task { [weak self] in
       let result: Result<NativeRuntimeLibrarySnapshot, Error>
       do {
@@ -138,19 +230,23 @@ final class RuntimeLibraryStore: ObservableObject {
         result = .failure(error)
       }
       guard let self else { return }
-      self.finishRefresh(result, generation: generation)
+      self.finishRefresh(
+        result, generation: generation, readDuringRecovery: readDuringRecovery)
     }
   }
 
   private func finishRefresh(
     _ result: Result<NativeRuntimeLibrarySnapshot, Error>,
-    generation: UInt64
+    generation: UInt64,
+    readDuringRecovery: Bool
   ) {
     refreshTask = nil
     if generation == refreshGeneration {
       switch result {
       case .success(let native):
-        currentSession = native.currentSession.map(RuntimeSessionPresentation.init(native:))
+        currentSession =
+          readDuringRecovery || isLaunchRecoveryPending()
+          ? nil : native.currentSession.map(RuntimeSessionPresentation.init(native:))
         savedSessions = native.savedSessions.map(RuntimeSessionPresentation.init(native:))
         isSnapshotStale = false
         errorMessage = nil

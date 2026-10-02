@@ -169,7 +169,8 @@ final class RecoveredAudioPlaybackTests: RecoveredSessionTestCase {
       lifecycle: NativePlaybackLifecycleHooks(
         observer: lifecycle.record,
         recoveredCompletionDelivery: completionGate.deliver
-      )
+      ),
+      outputMode: .silent
     )
     let termination = PlaybackTerminationRecorder()
     player.setPlaybackTerminationHandler { termination.record($0) }
@@ -228,7 +229,8 @@ final class RecoveredAudioPlaybackTests: RecoveredSessionTestCase {
     let replacementDescriptor = try XCTUnwrap(replacementLease?.fileDescriptor)
     let lifecycle = NativePlaybackLifecycleRecorder()
     let player = RecoveredAudioPlayer(
-      lifecycle: NativePlaybackLifecycleHooks(observer: lifecycle.record)
+      lifecycle: NativePlaybackLifecycleHooks(observer: lifecycle.record),
+      outputMode: .silent
     )
     let firstGeneration = UUID()
     let replacementGeneration = UUID()
@@ -297,7 +299,8 @@ final class RecoveredAudioPlaybackTests: RecoveredSessionTestCase {
     let descriptor = try XCTUnwrap(lease?.fileDescriptor)
     let lifecycle = NativePlaybackLifecycleRecorder()
     let player = RecoveredAudioPlayer(
-      lifecycle: NativePlaybackLifecycleHooks(observer: lifecycle.record)
+      lifecycle: NativePlaybackLifecycleHooks(observer: lifecycle.record),
+      outputMode: .silent
     )
     let termination = PlaybackTerminationRecorder()
     player.setPlaybackTerminationHandler { termination.record($0) }

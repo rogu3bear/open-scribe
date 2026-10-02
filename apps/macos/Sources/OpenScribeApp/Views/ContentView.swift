@@ -5,7 +5,11 @@ struct ContentView: View {
   @ObservedObject var importedMediaAuthority: ImportedMediaAuthorityAdapter
   @ObservedObject var liveRecording: LiveMicrophoneRecordingController
   @ObservedObject var recoveredSessions: RecoveredSessionController
+  @ObservedObject var transcripts: TranscriptLibraryModel
+  @ObservedObject var speech: SpeechTranscriptionModel
+  @ObservedObject var context: ContextScopeModel
   @StateObject private var navigation = MainWorkspaceNavigation()
+  @State private var searchQuery = ""
 
   private var selectedSessionId: String? {
     navigation.selectedSessionId
@@ -38,7 +42,11 @@ struct ContentView: View {
     .toolbar {
       ToolbarItemGroup(placement: .primaryAction) {
         captureButton
+        RecorderControls(recorder: liveRecording, store: store)
         importButton
+        if importedMediaAuthority.canOpenPackages {
+          openPackageButton
+        }
       }
     }
     .onAppear {
@@ -62,6 +70,30 @@ struct ContentView: View {
         savedSessionIds: store.savedSessions.map(\.sessionId)
       )
     }
+    .onChange(of: searchQuery) { query in
+      transcripts.search(query)
+    }
+    .confirmationDialog(
+      "Move this conversation to Trash?",
+      isPresented: Binding(
+        get: { transcripts.pendingDeletion != nil },
+        set: { presented in
+          if !presented { transcripts.cancelDeletion() }
+        }
+      ),
+      presenting: transcripts.pendingDeletion
+    ) { _ in
+      Button("Move to Trash", role: .destructive) {
+        if transcripts.confirmDeletion() {
+          store.refresh()
+        }
+      }
+      Button("Cancel", role: .cancel) {
+        transcripts.cancelDeletion()
+      }
+    } message: { inventory in
+      Text(SessionDeletionSummary.text(inventory))
+    }
     .onChange(of: selectedSessionId) { selectedSessionId in
       if MainWorkspaceSelection.shouldStopDetachedPlayback(
         activePlaybackSessionId: recoveredSessions.activePlaybackSessionId,
@@ -83,6 +115,30 @@ struct ContentView: View {
 
   private var conversationSidebar: some View {
     List(selection: selectedSessionBinding) {
+      if !searchQuery.trimmingCharacters(in: .whitespaces).isEmpty {
+        Section("Transcript Matches") {
+          if transcripts.searchResults.isEmpty {
+            Text("No matching transcript text")
+              .foregroundStyle(.secondary)
+          }
+          ForEach(transcripts.searchResults, id: \.self) { hit in
+            Button {
+              openSearchHit(hit)
+            } label: {
+              VStack(alignment: .leading, spacing: 2) {
+                Text(hit.sessionTitle)
+                  .font(.caption)
+                  .foregroundStyle(.secondary)
+                Text(hit.effectiveText)
+                  .lineLimit(2)
+              }
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("\(hit.sessionTitle): \(hit.effectiveText)")
+          }
+        }
+      }
+
       if let current = store.currentSession {
         Section("Now") {
           ConversationSidebarRow(session: current, isCurrent: true)
@@ -98,11 +154,26 @@ struct ContentView: View {
           ForEach(store.savedSessions) { session in
             ConversationSidebarRow(session: session, isCurrent: false)
               .tag(session.sessionId)
+              .contextMenu {
+                Button("Move to Trash…", role: .destructive) {
+                  requestDeletion(session)
+                }
+                .disabled(!liveRecording.canStart)
+              }
           }
         }
       }
     }
     .listStyle(.sidebar)
+    .searchable(text: $searchQuery, placement: .sidebar, prompt: "Search transcripts")
+    .onDeleteCommand {
+      // Delete (or Edit > Delete) moves the selected saved conversation to
+      // Trash through the same confirmation as the context menu.
+      guard liveRecording.canStart,
+        let session = store.savedSessions.first(where: { $0.sessionId == selectedSessionId })
+      else { return }
+      requestDeletion(session)
+    }
     .navigationTitle("Library")
     .navigationSplitViewColumnWidth(min: 220, ideal: 260, max: 340)
   }
@@ -113,11 +184,14 @@ struct ContentView: View {
       statusBanner
       if let selectedSession {
         if selectedSession.sessionId == store.currentSession?.sessionId {
-          CompactLiveView(store: store, liveRecording: liveRecording)
+          CompactLiveView(store: store, liveRecording: liveRecording, context: context)
         } else {
           ConversationWorkspaceView(
             session: selectedSession,
-            playbackController: recoveredSessions
+            playbackController: recoveredSessions,
+            transcripts: transcripts,
+            speech: speech,
+            loadRecorderEvents: { (try? liveRecording.detail(sessionId: $0).events) ?? [] }
           )
         }
       } else {
@@ -129,7 +203,8 @@ struct ContentView: View {
           canImport: canImport,
           importIsBusy: importedMediaAuthority.isBusy,
           onRecord: startRecording,
-          onImport: importedMediaAuthority.chooseAndImport
+          onImport: importedMediaAuthority.chooseAndImport,
+          onOpenPackage: openPackageAction
         )
       }
     }
@@ -180,7 +255,7 @@ struct ContentView: View {
           )
         )
         .keyboardShortcut("r", modifiers: [.command, .shift])
-        .help("Record microphone and computer audio")
+        .help("Record \(liveRecording.captureSelection.recordedAudio)")
       }
     }
   }
@@ -195,8 +270,29 @@ struct ContentView: View {
     .disabled(!canImport)
     .help(
       canImport
-        ? "Add a supported local CAF recording"
-        : "Wait for the current recording action to finish before importing audio"
+        ? "Add local CAF or M4A audio (M4A up to 1 GiB and four hours)"
+        : liveRecording.isLaunchRecoveryPending()
+          ? "Wait for the check of recordings from the last session to finish before importing audio"
+          : "Wait for the current recording action to finish before importing audio"
+    )
+  }
+
+  private var openPackageAction: (() -> Void)? {
+    guard importedMediaAuthority.canOpenPackages else { return nil }
+    let authority = importedMediaAuthority
+    return { authority.chooseAndOpenPackage() }
+  }
+
+  private var openPackageButton: some View {
+    Button("Open Portable Package…", systemImage: "shippingbox") {
+      importedMediaAuthority.chooseAndOpenPackage()
+    }
+    .keyboardShortcut("o", modifiers: .command)
+    .disabled(!canImport)
+    .help(
+      canImport
+        ? "Open a .openscribe package exported on another Mac as a new conversation"
+        : "Wait for the current recording or import to finish before opening a package"
     )
   }
 
@@ -227,6 +323,16 @@ struct ContentView: View {
     } else if notices.isEmpty, let message = importedMediaAuthority.statusMessage {
       notices.append(.init(id: "import", message: message, isFailure: false))
     }
+    if let message = transcripts.message {
+      notices.append(
+        .init(id: "transcripts", message: message, isFailure: transcripts.messageIsFailure))
+    }
+    if notices.isEmpty, liveRecording.phase == .saved,
+      selectedSessionId == liveRecording.lastSavedSessionId,
+      let message = liveRecording.mixdownStatus
+    {
+      notices.append(.init(id: "mixdown", message: message, isFailure: false))
+    }
     return notices
   }
 
@@ -236,6 +342,21 @@ struct ContentView: View {
       store.refresh()
       synchronizeSelection(preferCurrentSession: true)
     }
+  }
+
+  private func openSearchHit(_ hit: NativeTranscriptSearchHit) {
+    navigation.select(hit.sessionId)
+    if store.savedSessions.contains(where: { $0.sessionId == hit.sessionId && $0.hasCaptureTimeline }) {
+      recoveredSessions.playSynchronized(
+        sessionId: hit.sessionId, startNanoseconds: hit.startNanoseconds)
+    }
+  }
+
+  private func requestDeletion(_ session: RuntimeSessionPresentation) {
+    if recoveredSessions.activePlaybackSessionId == session.sessionId {
+      recoveredSessions.stopPlayback()
+    }
+    transcripts.requestDeletion(sessionId: session.sessionId)
   }
 
   private func synchronizeSelection(preferCurrentSession: Bool) {
@@ -385,15 +506,10 @@ enum PlaybackControlAction: Equatable, Sendable {
 
 enum ImportedPlaybackEligibility {
   static func canPlay(_ media: RuntimePlayableMediaPresentation) -> Bool {
-    media.isPlayable && media.byteLength <= ImportedPlaybackMemoryPolicy.maximumSnapshotByteLength
+    media.isPlayable
   }
 
   static func status(_ media: RuntimePlayableMediaPresentation) -> String {
-    if media.isPlayable
-      && media.byteLength > ImportedPlaybackMemoryPolicy.maximumSnapshotByteLength
-    {
-      return "Too large for safe playback"
-    }
     return media.statusText
   }
 }
@@ -431,6 +547,10 @@ private struct ConversationSidebarRow: View {
 private struct ConversationWorkspaceView: View {
   let session: RuntimeSessionPresentation
   @ObservedObject var playbackController: RecoveredSessionController
+  @ObservedObject var transcripts: TranscriptLibraryModel
+  @ObservedObject var speech: SpeechTranscriptionModel
+  let loadRecorderEvents: @MainActor (String) -> [NativeRecorderEvent]
+  @State private var recorderEvents: [NativeRecorderEvent] = []
 
   private var recoveredTracks: [RecoveredTrackPresentation] {
     session.recoveredTracks(from: playbackController.sessions)
@@ -444,15 +564,46 @@ private struct ConversationWorkspaceView: View {
           attentionNotice
         }
         audioSection
+        if session.lifecycle == "ready_for_review" {
+          TranscriptSection(
+            session: session,
+            transcripts: transcripts,
+            speech: speech,
+            canSeek: session.hasCaptureTimeline || session.playableMedia?.isPlayable == true,
+            onSeek: { position in
+              // Captures seek on the shared timeline; imports within their media.
+              if session.hasCaptureTimeline {
+                playbackController.playSynchronized(
+                  sessionId: session.sessionId, startNanoseconds: position)
+              } else {
+                playbackController.play(session, startNanoseconds: position)
+              }
+            }
+          )
+        }
         if !session.sources.isEmpty {
           sourceSection
         }
+        ContextEventsSection(
+          detail: transcripts.sessionId == session.sessionId ? transcripts.contextDetail : nil,
+          events: transcripts.sessionId == session.sessionId ? transcripts.contextEvents : [],
+          canSeek: session.hasCaptureTimeline,
+          onSeek: { event in
+            // Navigation follows Rust evidence resolution, never the row alone.
+            if let start = transcripts.contextEvidenceStart(event) {
+              playbackController.playSynchronized(sessionId: session.sessionId, startNanoseconds: start)
+            }
+          })
+        RecorderEventList(events: recorderEvents)
       }
       .frame(maxWidth: 760, alignment: .leading)
       .padding(32)
       .frame(maxWidth: .infinity, alignment: .top)
     }
     .navigationTitle(session.title)
+    .task(id: "\(session.sessionId)|\(session.lifecycle)") {
+      recorderEvents = loadRecorderEvents(session.sessionId)
+    }
   }
 
   private var header: some View {
@@ -494,6 +645,50 @@ private struct ConversationWorkspaceView: View {
       Text("Audio")
         .font(.title2.weight(.semibold))
         .accessibilityAddTraits(.isHeader)
+
+      if session.lifecycle == "ready_for_review", session.hasCaptureTimeline {
+        let active =
+          playbackController.activePlaybackSessionId == session.sessionId
+          && playbackController.pendingRecoveredMediaIdentity == nil
+          && playbackController.playingRecoveredMediaIdentity == nil
+        let mixActive = active && playbackController.activeMixdownSessionId == session.sessionId
+        let timelineActive = active && !mixActive
+        Button(mixActive ? "Stop stereo mix" : "Play stereo mix") {
+          if mixActive {
+            playbackController.stopPlayback()
+          } else {
+            playbackController.playMixdown(sessionId: session.sessionId)
+          }
+        }
+        .disabled(active && !mixActive)
+        Text("The mix is made from the saved source tracks and checked before playback.")
+          .font(.caption)
+          .foregroundStyle(.secondary)
+        Button(timelineActive ? "Stop synchronized playback" : "Play all sources together") {
+          if timelineActive {
+            playbackController.stopPlayback()
+          } else {
+            playbackController.playSynchronized(sessionId: session.sessionId)
+          }
+        }
+        .disabled(playbackController.activePlaybackSessionId != nil && !timelineActive)
+        Text("Uses the recorded timeline, including source offsets and gaps.")
+          .font(.caption)
+          .foregroundStyle(.secondary)
+        if timelineActive, playbackController.timelineClockAdjustmentNanoseconds > 0 {
+          Text(
+            "Source clock alignment: up to \(Double(playbackController.timelineClockAdjustmentNanoseconds) / 1_000_000, specifier: "%.1f") ms. All recorded samples are preserved."
+          )
+          .font(.caption)
+          .foregroundStyle(.secondary)
+        }
+        if playbackController.errorSessionId == session.sessionId,
+          playbackController.errorRecoveredMediaIdentity == nil,
+          let message = playbackController.errorMessage
+        {
+          Text(message).foregroundStyle(.orange)
+        }
+      }
 
       if let media = session.playableMedia {
         let canPlay = ImportedPlaybackEligibility.canPlay(media)
@@ -555,7 +750,7 @@ private struct ConversationWorkspaceView: View {
             }
           )
         }
-      } else {
+      } else if !session.hasCaptureTimeline {
         Label("No verified playable audio is available.", systemImage: "waveform.slash")
           .foregroundStyle(.secondary)
       }
@@ -640,6 +835,7 @@ private struct EmptyConversationWorkspace: View {
   let importIsBusy: Bool
   let onRecord: () -> Void
   let onImport: () -> Void
+  let onOpenPackage: (() -> Void)?
 
   var body: some View {
     VStack(spacing: 16) {
@@ -650,7 +846,7 @@ private struct EmptyConversationWorkspace: View {
         .font(.title2.weight(.semibold))
         .accessibilityAddTraits(.isHeader)
       Text(
-        "Record microphone and computer audio, or import a supported local CAF recording. Open Scribe keeps the source on this Mac."
+        "Record microphone and computer audio, import local CAF or M4A audio, or open a portable package from another Mac. Open Scribe keeps the source on this Mac."
       )
       .foregroundStyle(.secondary)
       .multilineTextAlignment(.center)
@@ -661,6 +857,10 @@ private struct EmptyConversationWorkspace: View {
           .buttonStyle(.borderedProminent)
         Button(importIsBusy ? "Importing…" : "Import Audio…", action: onImport)
           .disabled(!canImport)
+        if let onOpenPackage {
+          Button("Open Portable Package…", action: onOpenPackage)
+            .disabled(!canImport)
+        }
       }
     }
     .padding(40)

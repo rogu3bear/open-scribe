@@ -25,6 +25,12 @@ let package = Package(
             linkerSettings: [
                 .unsafeFlags(["-L", rustLibraryDirectory]),
                 .linkedLibrary("open_scribe_uniffi"),
+                // The in-process whisper.cpp engine (ADR 0008).
+                .linkedLibrary("c++"),
+                .linkedFramework("Accelerate"),
+                .linkedFramework("Metal"),
+                .linkedFramework("MetalKit"),
+                .linkedFramework("Foundation"),
             ]
         ),
         .testTarget(

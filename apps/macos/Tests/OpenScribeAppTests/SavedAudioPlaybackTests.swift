@@ -48,9 +48,25 @@ final class SavedAudioPlaybackTests: RecoveredSessionTestCase {
     XCTAssertEqual(controller.playingSessionId, imported.sessionId)
     XCTAssertEqual(controller.activePlaybackSessionId, imported.sessionId)
     XCTAssertEqual(player.importedReceipt, descriptorReceipt())
+    XCTAssertEqual(player.importedStartNanoseconds, 0)
     XCTAssertNil(player.recoveredReceipt)
     XCTAssertTrue(player.retainedLease === lease)
     XCTAssertNil(controller.errorMessage)
+  }
+
+  func testImportedPlaybackStartsFromTheRequestedMediaPosition() async {
+    let player = RecoveredAudioPlayerFake()
+    let controller = RecoveredSessionController(
+      recoveryFactory: { RecoveryPreparationFake() },
+      importedPlaybackLeaseProvider: { _ in ImportedPlaybackLeaseFake(path: descriptorReceipt()) },
+      player: player
+    )
+    let imported = savedSession(availability: "available", absolutePath: "/tmp/imported.m4a")
+
+    controller.play(imported, startNanoseconds: 12_500_000_000)
+    await assertEventually { controller.playingSessionId == imported.sessionId }
+
+    XCTAssertEqual(player.importedStartNanoseconds, 12_500_000_000)
   }
 
   func testPendingImportedPlaybackIsSelectionBoundAndCannotStartAfterDetachment() async {
@@ -168,7 +184,9 @@ final class SavedAudioPlaybackTests: RecoveredSessionTestCase {
         player: player
       )
 
-      let captured = savedSession(sessionId: "session-captured", availability: availability, absolutePath: nil, sourceDisplayName: "Mac microphone")
+      let captured = savedSession(
+        sessionId: "session-captured", availability: availability, absolutePath: nil,
+        sourceDisplayName: "Mac microphone")
       controller.play(captured)
 
       XCTAssertNil(controller.playingSessionId)
@@ -176,12 +194,16 @@ final class SavedAudioPlaybackTests: RecoveredSessionTestCase {
       XCTAssertNil(player.recoveredReceipt)
       XCTAssertEqual(player.stopCount, 1)
       XCTAssertFalse(leaseRequested.value)
-      XCTAssertEqual(controller.errorMessage, availability == "corrupt" ? "Saved audio appears corrupt and was not opened." : "Saved audio is unavailable and was not opened.")
+      XCTAssertEqual(
+        controller.errorMessage,
+        availability == "corrupt"
+          ? "Saved audio appears corrupt and was not opened."
+          : "Saved audio is unavailable and was not opened.")
       XCTAssertEqual(controller.errorSessionId, captured.sessionId)
     }
   }
 
-  func testCapturedPlaybackOpenFailureUsesNeutralSavedAudioMessaging() {
+  func testCapturedPlaybackOpenFailureUsesNeutralSavedAudioMessaging() async {
     let player = RecoveredAudioPlayerFake()
     let controller = RecoveredSessionController(
       recoveryFactory: { RecoveryPreparationFake() },
@@ -189,11 +211,15 @@ final class SavedAudioPlaybackTests: RecoveredSessionTestCase {
       player: player
     )
 
-    controller.play(savedSession(sessionId: "session-captured", availability: "available", absolutePath: nil, sourceDisplayName: "Mac microphone"))
+    controller.play(
+      savedSession(
+        sessionId: "session-captured", availability: "available", absolutePath: nil,
+        sourceDisplayName: "Mac microphone"))
+    await assertEventually { controller.errorSessionId == "session-captured" }
 
     XCTAssertNil(controller.playingSessionId)
     XCTAssertNil(player.recoveredReceipt)
-    XCTAssertEqual(player.stopCount, 1)
+    XCTAssertEqual(player.stopCount, 2)
     XCTAssertEqual(controller.errorMessage, "Saved audio could not be opened for playback.")
     XCTAssertEqual(controller.errorSessionId, "session-captured")
   }
@@ -226,6 +252,7 @@ final class SavedAudioPlaybackTests: RecoveredSessionTestCase {
         mediaFilesOpen: false,
         interruptionReason: nil,
         recovered: false,
+        hasCaptureTimeline: false,
         sources: [],
         playableMedia: NativeRuntimePlayableMediaSnapshot(
           sourceDisplayName: "replacement.caf",
@@ -427,7 +454,8 @@ final class SavedAudioPlaybackTests: RecoveredSessionTestCase {
     let descriptor = try XCTUnwrap(lease?.fileDescriptor)
     let lifecycle = NativePlaybackLifecycleRecorder()
     let player = RecoveredAudioPlayer(
-      lifecycle: NativePlaybackLifecycleHooks(observer: lifecycle.record)
+      lifecycle: NativePlaybackLifecycleHooks(observer: lifecycle.record),
+      outputMode: .silent
     )
     let termination = PlaybackTerminationRecorder()
     player.setPlaybackTerminationHandler { termination.record($0) }
@@ -481,7 +509,8 @@ final class SavedAudioPlaybackTests: RecoveredSessionTestCase {
       lifecycle: NativePlaybackLifecycleHooks(
         observer: lifecycle.record,
         importedCompletionDelivery: completionGate.deliver
-      )
+      ),
+      outputMode: .silent
     )
     let termination = PlaybackTerminationRecorder()
     player.setPlaybackTerminationHandler { termination.record($0) }
@@ -530,7 +559,8 @@ final class SavedAudioPlaybackTests: RecoveredSessionTestCase {
     let descriptor = try XCTUnwrap(lease?.fileDescriptor)
     let lifecycle = NativePlaybackLifecycleRecorder()
     let player = RecoveredAudioPlayer(
-      lifecycle: NativePlaybackLifecycleHooks(observer: lifecycle.record)
+      lifecycle: NativePlaybackLifecycleHooks(observer: lifecycle.record),
+      outputMode: .silent
     )
     let termination = PlaybackTerminationRecorder()
     player.setPlaybackTerminationHandler { termination.record($0) }
@@ -567,14 +597,17 @@ final class SavedAudioPlaybackTests: RecoveredSessionTestCase {
     let mediaURL = try nativePlaybackCAF(frameCount: 24_000)
     defer { try? FileManager.default.removeItem(at: mediaURL.deletingLastPathComponent()) }
     let leaseReleased = SendableFlag()
+    let closeRecorder = DescriptorCloseRecorder()
     var lease: DescriptorPlaybackLeaseProbe? = try DescriptorPlaybackLeaseProbe(
       url: mediaURL,
-      released: leaseReleased
+      released: leaseReleased,
+      closeRecorder: closeRecorder
     )
-    let descriptor = try XCTUnwrap(lease?.fileDescriptor)
+    let identity = try XCTUnwrap(lease?.fileIdentity)
     let lifecycle = NativePlaybackLifecycleRecorder()
     let player = RecoveredAudioPlayer(
-      lifecycle: NativePlaybackLifecycleHooks(observer: lifecycle.record)
+      lifecycle: NativePlaybackLifecycleHooks(observer: lifecycle.record),
+      outputMode: .silent
     )
     let termination = PlaybackTerminationRecorder()
     player.setPlaybackTerminationHandler { termination.record($0) }
@@ -594,7 +627,12 @@ final class SavedAudioPlaybackTests: RecoveredSessionTestCase {
     XCTAssertTrue(terminated)
     let released = await waitUntil { leaseReleased.value }
     XCTAssertTrue(released)
-    XCTAssertEqual(fcntl(descriptor, F_GETFD), -1)
+    let observations = closeRecorder.observations
+    XCTAssertEqual(observations.count, 1)
+    let closed = try XCTUnwrap(observations.first)
+    XCTAssertEqual(closed.metadataResult, 0, "pre-close fstat errno: \(closed.metadataErrno)")
+    XCTAssertEqual(closed.identity, identity)
+    XCTAssertEqual(closed.closeResult, 0, "close errno: \(closed.closeErrno)")
     XCTAssertTrue(
       lifecycle.occursInOrder([
         .outputConfigurationChanged(generation),
@@ -610,6 +648,7 @@ final class SavedAudioPlaybackTests: RecoveredSessionTestCase {
     XCTAssertTrue(
       termination.contains(generation: generation, outcome: .outputRouteChanged)
     )
+    XCTAssertEqual(closeRecorder.observations.count, 1)
   }
 
   func testRecoveryAndAsyncDecodeFailureReleaseImportedPlayingTruth() async {
@@ -715,7 +754,7 @@ final class SavedAudioPlaybackTests: RecoveredSessionTestCase {
     XCTAssertNil(controller.errorMessage)
   }
 
-  func testPlaybackAboveSafeCapReportsTruthWithoutChangingLibrarySession() async {
+  func testLargeMediaRequestsTheAuthoritativeLeaseBeforePlayback() async {
     let player = RecoveredAudioPlayerFake()
     let leaseRequested = SendableFlag()
     let controller = RecoveredSessionController(
@@ -735,14 +774,10 @@ final class SavedAudioPlaybackTests: RecoveredSessionTestCase {
     )
 
     controller.play(captured)
-
-    XCTAssertNil(controller.playingSessionId)
-    XCTAssertNil(player.retainedLease)
-    XCTAssertFalse(leaseRequested.value)
-    XCTAssertEqual(
-      controller.errorMessage,
-      "Saved audio is too large for safe playback on this version of Open Scribe."
-    )
+    await assertEventually { controller.playingSessionId == captured.sessionId }
+    XCTAssertNotNil(player.retainedLease)
+    XCTAssertTrue(leaseRequested.value)
+    XCTAssertNil(controller.errorMessage)
     XCTAssertEqual(captured.playableMedia?.sourceDisplayName, "Mac microphone")
     XCTAssertTrue(captured.playableMedia?.isPlayable == true)
   }

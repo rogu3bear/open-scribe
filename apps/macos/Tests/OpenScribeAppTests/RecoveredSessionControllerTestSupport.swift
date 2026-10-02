@@ -10,6 +10,8 @@ import XCTest
 final class RecoveryPreparationFake: NativeRecordingPreparation, @unchecked Sendable {
   var recovered: [NativeRecoveredPlayableSession] = []
   var recoveryError: Error?
+  private let lock = NSLock()
+  private var mainThreadObservation: Bool?
 
   init() {
     super.init(noHandle: NoHandle())
@@ -19,7 +21,13 @@ final class RecoveryPreparationFake: NativeRecordingPreparation, @unchecked Send
     super.init(unsafeFromHandle: handle)
   }
 
+  /// Whether the last scan ran on the main thread; nil before any scan.
+  var recoveredOnMainThread: Bool? {
+    lock.withLock { mainThreadObservation }
+  }
+
   override func recoverPlayableSessions() throws -> [NativeRecoveredPlayableSession] {
+    lock.withLock { mainThreadObservation = Thread.isMainThread }
     if let recoveryError {
       throw recoveryError
     }
@@ -31,6 +39,7 @@ final class RecoveryPreparationFake: NativeRecordingPreparation, @unchecked Send
 final class RecoveredAudioPlayerFake: RecoveredAudioPlaying {
   private(set) var recoveredReceipt: String?
   private(set) var importedReceipt: String?
+  private(set) var importedStartNanoseconds: Int64?
   private(set) var retainedLease: AnyObject?
   private(set) var importedGeneration: UUID?
   private(set) var stopCount = 0
@@ -60,10 +69,12 @@ final class RecoveredAudioPlayerFake: RecoveredAudioPlaying {
   func playImported(
     receipt: String,
     retaining lease: AnyObject,
-    generation: UUID
+    generation: UUID,
+    startNanoseconds: Int64
   ) async throws {
     if let playError { throw playError }
     importedReceipt = receipt
+    importedStartNanoseconds = startNanoseconds
     retainedLease = lease
     importedGeneration = generation
     if holdImportedPlayback {
@@ -238,27 +249,61 @@ final class DescriptorBytesFake: @unchecked Sendable {
   }
 }
 
+struct DescriptorCloseObservation: Sendable {
+  let identity: PlaybackDescriptorIdentity?
+  let metadataResult: Int32
+  let metadataErrno: Int32
+  let closeResult: Int32
+  let closeErrno: Int32
+}
+
+final class DescriptorCloseRecorder: @unchecked Sendable {
+  private let lock = NSLock()
+  private var storage: [DescriptorCloseObservation] = []
+
+  var observations: [DescriptorCloseObservation] { lock.withLock { storage } }
+
+  func record(_ observation: DescriptorCloseObservation) {
+    lock.withLock { storage.append(observation) }
+  }
+}
+
 final class DescriptorPlaybackLeaseProbe: ImportedPlaybackLeaseHolding,
   @unchecked Sendable
 {
   let fileDescriptor: Int32
+  let fileIdentity: PlaybackDescriptorIdentity
 
   private let byteLength: Int
   private let digestSha256: String
   private let released: SendableFlag
   private let recovered: Bool
+  private let closeRecorder: DescriptorCloseRecorder?
 
-  init(url: URL, released: SendableFlag, recovered: Bool = false) throws {
+  init(
+    url: URL, released: SendableFlag, recovered: Bool = false,
+    closeRecorder: DescriptorCloseRecorder? = nil
+  ) throws {
     let bytes = try Data(contentsOf: url)
     let descriptor = open(url.path, O_RDONLY | O_CLOEXEC)
     guard descriptor >= 0 else {
       throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
     }
+    var metadata = stat()
+    guard fstat(descriptor, &metadata) == 0, metadata.st_size >= 0 else {
+      let error = errno
+      _ = close(descriptor)
+      throw POSIXError(POSIXErrorCode(rawValue: error) ?? .EIO)
+    }
     fileDescriptor = descriptor
+    fileIdentity = PlaybackDescriptorIdentity(
+      device: UInt64(metadata.st_dev), inode: UInt64(metadata.st_ino),
+      byteLength: UInt64(metadata.st_size))
     byteLength = bytes.count
     digestSha256 = SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
     self.released = released
     self.recovered = recovered
+    self.closeRecorder = closeRecorder
   }
 
   func playbackPath() -> String {
@@ -268,7 +313,21 @@ final class DescriptorPlaybackLeaseProbe: ImportedPlaybackLeaseHolding,
   }
 
   deinit {
-    _ = close(fileDescriptor)
+    var metadata = stat()
+    let metadataResult = fstat(fileDescriptor, &metadata)
+    let metadataErrno = errno
+    errno = 0
+    let closeResult = close(fileDescriptor)
+    let closeErrno = errno
+    let identity = metadataResult == 0 && metadata.st_size >= 0
+      ? PlaybackDescriptorIdentity(
+        device: UInt64(metadata.st_dev), inode: UInt64(metadata.st_ino),
+        byteLength: UInt64(metadata.st_size))
+      : nil
+    closeRecorder?.record(
+      DescriptorCloseObservation(
+        identity: identity, metadataResult: metadataResult, metadataErrno: metadataErrno,
+        closeResult: closeResult, closeErrno: closeErrno))
     released.set()
   }
 }
@@ -532,6 +591,7 @@ class RecoveredSessionTestCase: XCTestCase {
         mediaFilesOpen: false,
         interruptionReason: nil,
         recovered: false,
+        hasCaptureTimeline: false,
         sources: [],
         playableMedia: NativeRuntimePlayableMediaSnapshot(
           sourceDisplayName: sourceDisplayName,

@@ -1,6 +1,6 @@
 # Architecture Decision Register
 
-`/ARCHITECTURE.md` describes current repository fact and the intended founding shape. Decisions that materially refine or supersede that shape belong in numbered ADRs here.
+[ARCHITECTURE.md](../../ARCHITECTURE.md) describes current source, recorded proof, and the intended founding shape. Decisions that materially refine or supersede that shape belong in numbered ADRs here.
 
 ADR 0001 is accepted only for the Milestone 0 native development proof. It does
 not settle distribution or later product capabilities.
@@ -19,20 +19,18 @@ ADRs 0005–0007 admit Milestone 1 implementation: Swift capture/media hot
 paths with Rust policy, recoverable segmented media and serialized SQLite/journal
 storage, and the macOS 13 sandboxed permission/playback/import boundary. They
 remain architecture decisions until real artifact and failure-matrix proof exists.
-The first ADR 0006 slices now provide native SQLite schema v2, durable session
-intent, a synchronized bounded journal, deterministic restart classification,
-and one Rust-authorized initial CAF path. A Swift-owned harness creates and
-retains a real 48 kHz mono PCM CAF; only coarse authorization and media-open
-receipts cross UniFFI. Rust independently validates the managed path, regular
-file identity, byte length, and CAF header before projecting `media_files_open`.
-The admitted live-microphone slice closes one Swift-written CAF before a coarse
-seal receipt, then lets Rust revalidate file identity, exact byte length, and
-header, compute SHA-256, and journal/project the named segment only. An explicit
-local gate also captures a short real-device segment and validates CAF
-playability before deleting the proof media. Writer-reported sample totals are
-bound to the digest but are not independently derived. The durable lifecycle
-remains `preparing`: this does not capture a system source, authorize Recording,
-finalize sessions, or prove recovery after real process termination.
+Current schema and migration authority resides in the
+[Rust store](../../crates/open-scribe-store/src/lib.rs). Its implementation now
+includes required-source planning, durable first-sample evidence before
+`Recording`, a bounded journal, shared capture timing, segment-local integrity
+and recovery, and live/library projections. Swift owns capture buffers, segmented
+CAF writers, and playback; coarse control and boundary receipts cross UniFFI.
+[Dated runtime evidence](../TESTING.md#foundational-recording-workflow) records
+short synthetic/live dual-source rotation, external kill, unchanged recovered
+media, and shared playback on a named unsigned artifact. Those historical
+receipts do not qualify a new candidate. The
+[M1 completion gate](../../script/check_m1_complete.sh) still holds on remaining
+recorder implementation and the exact-candidate failure/long-session matrix.
 
 ADRs 0008–0010 admit Milestone 2 implementation: pinned local ASR and licensed
 model supply, authoritative transcript/diarization semantics, and versioned
@@ -56,8 +54,8 @@ channel, and staged release authority through canonical readback. They prove no 
 |---|---|
 | SwiftUI + Rust + Leptos ownership | native slice recorded by ADR 0001; website foundation recorded by ADR 0003 |
 | UniFFI control boundary and binding lifecycle | ADR 0001, M0 development lifecycle only |
-| capture ownership and hot-path boundary | ADR 0005; short microphone runtime proven, system/multi-source proof open |
-| persistence/event/recovery model | ADR 0006; implementation and forced-termination proof open |
+| capture ownership and hot-path boundary | ADR 0005; dated short dual-source receipts; failure/long-session qualification open |
+| persistence/event/recovery model | ADR 0006; segmented storage and dated forced-termination receipts; full M1 qualification open |
 | local ASR/model engine | ADR 0008; installed-model and offline runtime proof open |
 | diarization model and calibration | ADR 0009; exact weight/calibration and runtime proof open |
 | context scope, attention, and overlay semantics | ADR 0011; four-display and accessibility runtime proof open |

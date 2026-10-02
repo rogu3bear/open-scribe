@@ -178,7 +178,7 @@ final class FixtureSessionTests: XCTestCase {
     )
   }
 
-  func testImportedPlaybackEligibilityShowsTheHardCapBeforeTheUserPressesPlay() {
+  func testImportedPlaybackEligibilityAllowsVerifiedLargeMedia() {
     func media(byteLength: UInt64) -> RuntimePlayableMediaPresentation {
       RuntimePlayableMediaPresentation(
         native: NativeRuntimePlayableMediaSnapshot(
@@ -197,10 +197,10 @@ final class FixtureSessionTests: XCTestCase {
     XCTAssertEqual(ImportedPlaybackEligibility.status(exactCap), "Ready to play")
 
     let overCap = media(byteLength: 268_435_457)
-    XCTAssertFalse(ImportedPlaybackEligibility.canPlay(overCap))
+    XCTAssertTrue(ImportedPlaybackEligibility.canPlay(overCap))
     XCTAssertEqual(
       ImportedPlaybackEligibility.status(overCap),
-      "Too large for safe playback"
+      "Ready to play"
     )
   }
 
@@ -277,6 +277,7 @@ final class FixtureSessionTests: XCTestCase {
       mediaFilesOpen: true,
       interruptionReason: nil,
       recovered: false,
+      hasCaptureTimeline: false,
       sources: [
         NativeRuntimeSourceSnapshot(
           kind: .microphone,
@@ -301,6 +302,7 @@ final class FixtureSessionTests: XCTestCase {
       mediaFilesOpen: false,
       interruptionReason: nil,
       recovered: true,
+      hasCaptureTimeline: false,
       sources: current.sources.map {
         NativeRuntimeSourceSnapshot(
           kind: $0.kind,
@@ -390,6 +392,7 @@ final class FixtureSessionTests: XCTestCase {
         mediaFilesOpen: true,
         interruptionReason: "capture_failed",
         recovered: false,
+        hasCaptureTimeline: false,
         sources: [
           NativeRuntimeSourceSnapshot(
             kind: .microphone,
@@ -429,6 +432,7 @@ final class FixtureSessionTests: XCTestCase {
         mediaFilesOpen: true,
         interruptionReason: nil,
         recovered: false,
+        hasCaptureTimeline: false,
         sources: [
           NativeRuntimeSourceSnapshot(
             kind: .microphone,
@@ -460,6 +464,112 @@ final class FixtureSessionTests: XCTestCase {
     )
   }
 
+  /// G7: VoiceOver names the sources this session captures, never system
+  /// audio a microphone-and-application recording excluded.
+  func testRecordingVoiceOverNamesOnlyTheCapturingSources() {
+    let recording = RuntimeSessionPresentation(
+      native: NativeRuntimeSessionSnapshot(
+        sessionId: "session-application",
+        title: "Application call",
+        lifecycle: "recording",
+        health: "healthy",
+        elapsedSeconds: 65,
+        journalDurable: true,
+        mediaFilesOpen: true,
+        interruptionReason: nil,
+        recovered: false,
+        hasCaptureTimeline: true,
+        sources: [
+          NativeRuntimeSourceSnapshot(
+            kind: .microphone,
+            displayName: "Mac microphone",
+            lifecycle: "capturing"
+          ),
+          NativeRuntimeSourceSnapshot(
+            kind: .applicationAudio,
+            displayName: "Example Call",
+            lifecycle: "capturing"
+          ),
+          NativeRuntimeSourceSnapshot(
+            kind: .systemAudio,
+            displayName: "Mac system audio",
+            lifecycle: "ended"
+          ),
+        ],
+        playableMedia: nil
+      )
+    )
+
+    XCTAssertTrue(recording.isRecording)
+    let spoken = MenuBarLabel.accessibilityStatus(
+      session: recording,
+      snapshotStale: false,
+      livePhase: .capturing,
+      liveStatus: "Recording microphone + Example Call"
+    )
+    XCTAssertTrue(spoken.hasPrefix("Recording "), spoken)
+    XCTAssertTrue(spoken.hasSuffix(", 00:01:05"), spoken)
+    XCTAssertTrue(spoken.contains("Mac microphone"), spoken)
+    XCTAssertTrue(spoken.contains("Example Call"), spoken)
+    XCTAssertFalse(spoken.localizedCaseInsensitiveContains("system audio"), spoken)
+  }
+
+  /// A session a terminated process left recording is not live while launch
+  /// recovery scans (capture waits for the scan), so it is never presented as
+  /// the current recording until recovery has run.
+  func testLaunchRecoveryHidesAnUnrecoveredCurrentSession() async {
+    let leftover = NativeRuntimeSessionSnapshot(
+      sessionId: "session-left-recording",
+      title: "Interrupted conversation",
+      lifecycle: "recording",
+      health: "healthy",
+      elapsedSeconds: 65,
+      journalDurable: true,
+      mediaFilesOpen: true,
+      interruptionReason: nil,
+      recovered: false,
+      hasCaptureTimeline: true,
+      sources: [
+        NativeRuntimeSourceSnapshot(
+          kind: .microphone,
+          displayName: "Mac microphone",
+          lifecycle: "capturing"
+        )
+      ],
+      playableMedia: nil
+    )
+    let saved = NativeRuntimeSessionSnapshot(
+      sessionId: "session-saved",
+      title: "Saved conversation",
+      lifecycle: "ready_for_review",
+      health: "healthy",
+      elapsedSeconds: 120,
+      journalDurable: true,
+      mediaFilesOpen: false,
+      interruptionReason: nil,
+      recovered: false,
+      hasCaptureTimeline: false,
+      sources: [],
+      playableMedia: nil
+    )
+    let scan = RecoveryScanFlag()
+    let store = RuntimeLibraryStore(
+      snapshotProvider: {
+        NativeRuntimeLibrarySnapshot(currentSession: leftover, savedSessions: [saved])
+      },
+      startsPolling: false
+    )
+    store.isLaunchRecoveryPending = { scan.pending }
+
+    store.refresh()
+    await assertEventually { store.savedSessions.map(\.sessionId) == ["session-saved"] }
+    XCTAssertNil(store.currentSession, "an unrecovered session is not shown as live")
+
+    scan.pending = false
+    store.refresh()
+    await assertEventually { store.currentSession?.sessionId == "session-left-recording" }
+  }
+
   func testRecoveredPartialSessionRetainsAttentionTruthAndExactSourceDurations() {
     let partial = RuntimeSessionPresentation(
       native: NativeRuntimeSessionSnapshot(
@@ -472,6 +582,7 @@ final class FixtureSessionTests: XCTestCase {
         mediaFilesOpen: false,
         interruptionReason: "capture_failed",
         recovered: true,
+        hasCaptureTimeline: false,
         sources: [
           NativeRuntimeSourceSnapshot(
             kind: .microphone,
@@ -631,6 +742,7 @@ final class FixtureSessionTests: XCTestCase {
         mediaFilesOpen: false,
         interruptionReason: nil,
         recovered: true,
+        hasCaptureTimeline: false,
         sources: [
           NativeRuntimeSourceSnapshot(
             kind: .microphone,
@@ -668,7 +780,7 @@ final class FixtureSessionTests: XCTestCase {
               sessionId: "slow-saved-session", title: "Slow saved meeting",
               lifecycle: "ready_for_review", health: "healthy", elapsedSeconds: 2,
               journalDurable: true, mediaFilesOpen: false, interruptionReason: nil,
-              recovered: true, sources: [], playableMedia: nil
+              recovered: true, hasCaptureTimeline: false, sources: [], playableMedia: nil
             )
           ]
         )
@@ -693,6 +805,7 @@ final class FixtureSessionTests: XCTestCase {
       mediaFilesOpen: true,
       interruptionReason: nil,
       recovered: false,
+      hasCaptureTimeline: false,
       sources: [
         NativeRuntimeSourceSnapshot(
           kind: .microphone,
@@ -712,6 +825,7 @@ final class FixtureSessionTests: XCTestCase {
       mediaFilesOpen: false,
       interruptionReason: nil,
       recovered: false,
+      hasCaptureTimeline: false,
       sources: [
         NativeRuntimeSourceSnapshot(
           kind: .microphone,
@@ -785,6 +899,7 @@ final class FixtureSessionTests: XCTestCase {
         mediaFilesOpen: false,
         interruptionReason: "capture_failed",
         recovered: true,
+        hasCaptureTimeline: false,
         sources: [
           NativeRuntimeSourceSnapshot(
             kind: .microphone,
@@ -870,4 +985,10 @@ private final class FixtureBlockingGate: @unchecked Sendable {
     condition.broadcast()
     condition.unlock()
   }
+}
+
+/// Stands in for the launch recovery scan's phase.
+@MainActor
+private final class RecoveryScanFlag {
+  var pending = true
 }

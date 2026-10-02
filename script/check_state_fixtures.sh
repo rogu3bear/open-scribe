@@ -17,12 +17,7 @@ cargo check --locked --target wasm32-unknown-unknown \
 	-p open-scribe-domain \
 	-p open-scribe-evidence
 
-if rg -n \
-	'effective_frame|audio_buffer|video_frame|pointer_sample|meter_value|waveform_value|sample_rate' \
-	crates/open-scribe-uniffi/src apps/macos/Sources/OpenScribeApp/Generated/OpenScribeCore.swift; then
-	printf '%s\n' 'STATE_FIXTURES_RED: frame-rate or media payload vocabulary crossed the coarse UniFFI surface' >&2
-	exit 1
-fi
+"$script_dir/check_native_contracts.sh" --fixtures
 
 "$script_dir/build_and_run.sh" --verify
 git diff --check

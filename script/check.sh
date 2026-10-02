@@ -3,6 +3,24 @@ set -euo pipefail
 
 script_dir="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
 
+if [[ "$#" == 2 && "$1" == --candidate ]]; then
+	exec "$script_dir/check_candidate.sh" "$2"
+fi
+if [[ "$#" -ge 3 && "$2" == --candidate ]]; then
+	gate="$1"
+	shift
+	case "$gate" in
+	--verify-recording) exec "$script_dir/build_and_run.sh" --verify-recording "$@" ;;
+	--foundational-workflow) exec "$script_dir/check_foundational_workflow.sh" "$@" ;;
+	--m1-dual-source-runtime | --m1-live-microphone) exec "$script_dir/build_and_run.sh" --m1-dual-source-runtime-proof "$@" ;;
+	--m1-forced-termination-recovery) exec "$script_dir/check_m1_forced_termination_recovery.sh" "$@" ;;
+	--m1-injected-failures) exec "$script_dir/check_m1_injected.sh" "$@" ;;
+	--m1-live-controls) exec "$script_dir/check_m1_injected.sh" "$@" --case live-pause-resume ;;
+	--m1-two-hour) exec "$script_dir/check_m1_two_hour.sh" "$@" ;;
+	--m1-complete) exec "$script_dir/check_m1_complete.sh" "$@" ;;
+	esac
+fi
+
 if [[ "$#" -eq 1 && "$1" == "--scaffold" ]]; then
 	exec "$script_dir/check_scaffold.sh"
 fi
@@ -70,6 +88,10 @@ if [[ "$#" -eq 1 && "$1" == "--m3-complete" ]]; then
 	exec "$script_dir/check_m3_complete.sh"
 fi
 
+if [[ "$#" -eq 1 && "$1" == "--m4-local-only" ]]; then
+	exec "$script_dir/check_m4_local_only.sh"
+fi
+
 if [[ "$#" -eq 1 && "$1" == "--m4-complete" ]]; then
 	[[ -f "$script_dir/check_m4_complete.sh" && ! -L "$script_dir/check_m4_complete.sh" ]] || exit 2
 	exec "$script_dir/check_m4_complete.sh"
@@ -92,6 +114,7 @@ fi
 
 printf '%s\n' \
 	"NOT_IMPLEMENTED: full repository check" \
+	"Use './script/check.sh --candidate /absolute/new-directory/candidate.json' for the canonical contributor source/build/test gate. The four runtime consumers require '--candidate /absolute/path/candidate.json' and never rebuild." \
 	"Use './script/check.sh --scaffold' for founding structure, './script/check.sh --m0-native' for the bounded native proof, './script/check.sh --m0' for complete Milestone 0, './script/check.sh --state-fixtures' for deterministic post-M0 state truth, './script/check.sh --m1-xcode-fixture' for the pre-capture Xcode checkpoint, './script/check.sh --m1-storage' for durable session preparation, './script/check.sh --m1-media-open' for the pre-capture media-writer protocol and native macOS 13 build metadata, './script/check.sh --m1-microphone-foundation' for the deterministic first-sample and production-shaped microphone-adapter boundary, './script/check.sh --m1-segment-sealing' for closed synthetic CAF integrity evidence, './script/check.sh --m1-interruption-state' for durable post-preparation failure state and restart discovery, './script/check.sh --m1-dual-source-runtime' for explicit real-device microphone plus system-audio capture and independent playable-CAF proof, './script/check.sh --m1-forced-termination-recovery' for real dual-source external-kill recovery and native playback proof, './script/check.sh --m1-complete' through '--m4-complete' for the fail-closed milestone completion owners, './script/check.sh --release-evidence' for authenticated-receipt contract checks, './script/check.sh --release-claim-structure' for non-admitting claim-shape checks, or './script/check.sh --release-prepare' for the read-only release-preparation contract." \
 	"Neither receipt proves source-loss handling, degraded continuation, permission revocation, long-session synchronization, transcription, website deployment, signing, distribution, or release." >&2
 exit 64

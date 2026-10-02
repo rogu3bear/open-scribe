@@ -1,24 +1,89 @@
 //! Native session authority for Open Scribe.
 //!
 //! The current tranche keeps deterministic fixture commands and adds native
-//! durable session/media-open preparation. It performs no capture, playback,
-//! model, provider, or network work and never starts Recording.
+//! durable session/media-open preparation, review, and local transcription
+//! through a manifest-verified model. It performs no capture, playback,
+//! provider, or network work and never starts Recording.
 
 use std::path::{Path, PathBuf};
+
+mod export;
+pub use export::{
+    TRANSCRIPT_V1_SCHEMA_JSON, TranscriptAvailability, TranscriptExport, TranscriptExportError,
+    TranscriptExportFormat, TranscriptExportReceipt, write_transcript_export,
+};
+mod transcript_library;
+pub use transcript_library::{AudioExportOptions, TranscriptLibrary};
+mod transcription;
+pub use transcription::{
+    TrackRequest, TranscriptionError, TranscriptionOutcome, TranscriptionProgress,
+    TranscriptionStage, transcribe_request, transcribe_track,
+};
+mod session_export;
+pub use session_export::{
+    FileExportReceipt, PORTABLE_V1_SCHEMA_JSON, PortableSummary, SESSION_MANIFEST_V1_SCHEMA_JSON,
+    SessionExportError, export_source_media, export_track_wav, export_validated_mix,
+    render_session_manifest, verify_portable_package, write_portable_package,
+    write_session_manifest,
+};
+mod drift_measurement;
+mod drift_stimulus;
+pub use drift_measurement::{
+    DRIFT_REPORT_SCHEMA, DriftOptions, DriftReport, TWO_HOURS_NANOSECONDS, measure_drift,
+};
+pub use drift_stimulus::{
+    DRIFT_STIMULUS_SCHEMA, DriftError, STIMULUS_SAMPLE_RATE, StimulusSpec, stimulus_sha256,
+    write_stimulus_wav,
+};
+mod package_import;
+#[cfg(test)]
+mod session_export_tests;
+pub use package_import::{PackageImportReceipt, import_portable_package};
+#[cfg(test)]
+mod package_import_tests;
+mod speech;
+pub use open_scribe_asr::{WHISPER_ENGINE, WHISPER_ENGINE_VERSION};
+pub use speech::{
+    SpeechError, SpeechModelError, SpeechModelStatus, SpeechModels, decode_language,
+    transcribe_session,
+};
+#[cfg(test)]
+mod speech_tests;
 
 pub use open_scribe_domain::{
     Command, Fixture, Presentation, SessionSnapshot, TimerBehavior, TransitionError, announcement,
 };
+pub use open_scribe_evidence::{EvidenceKind, EvidenceRef, EvidenceRefError, ResolutionState};
+pub use open_scribe_store::ResolvedEvidence;
+
+/// Canonical `open-scribe.evidence-ref/v1` JSON for a Rust-derived reference.
+pub fn encode_evidence_ref(reference: &EvidenceRef) -> Result<String, StoreError> {
+    serde_json::to_string(reference).map_err(StoreError::Json)
+}
 pub use open_scribe_store::{
-    AuthorizeMediaOpenRequest, FirstSampleEvidence, FirstSampleReceipt, ImportMediaRequest,
-    ImportedMediaEvidence, ImportedPlaybackLease, InterruptSessionRequest, MediaOpenAuthorization,
-    MediaOpenEvidence, MediaOpenReceipt, MediaSourceKind, PrepareSessionRequest,
-    PreparedSessionReceipt, RecordingStartedEvidence, RecoveredPlayableSession,
+    AcceptedContextEvent, CONTEXT_EVENT_SCHEMA, CONTEXT_EXCLUSIONS, CONTEXT_SCOPE_SCHEMA,
+    ContextAction, ContextBounds, ContextCondition, ContextDecision, ContextDetail,
+    ContextEventReason, ContextEventRecord, ContextFailureReason, ContextMode, ContextPauseReason,
+    ContextProposal, ContextRejection, ContextRetention, ContextScope, ContextScopeRequest,
+    ContextSource, ContextTarget, ContextTargetKind, ContextTextBlock, DisplayTopology,
+    ScreenPermission, SessionDeclaration,
+};
+pub use open_scribe_store::{
+    AuthorizeMediaOpenRequest, CaptureClock, CompressedImportMetadata, FirstSampleEvidence,
+    FirstSampleReceipt, ImportMediaRequest, ImportPolicy, ImportedMediaEvidence,
+    ImportedPlaybackLease, InterruptSessionRequest, MediaOpenAuthorization, MediaOpenEvidence,
+    MediaOpenReceipt, MediaSourceKind, MixdownAuthorization, MixdownReceipt,
+    OriginalImportMetadata, PrepareSessionRequest, PreparedSessionReceipt, RecorderAction,
+    RecorderDetail, RecorderEvent, RecordingStartedEvidence, RecoveredPlayableSession,
     RequiredSourcePlanEvidence, RuntimeLibrarySnapshot, RuntimePlayableMediaAvailability,
     RuntimePlayableMediaSnapshot, RuntimeSessionSnapshot, RuntimeSourceSnapshot,
     SealSegmentReceipt, SealedSegmentEvidence, SessionInterruptionEvidence,
     SessionInterruptionReason, SessionOrigin, SourceFailureEvidence, SourceFailureReason,
-    SourceFailureRequest, StoreError,
+    SourceFailureRequest, StoreError, TimelineSegment, ValidatedMixdown, import_policy,
+};
+pub use open_scribe_store::{
+    SelectedRevisionProvenance, SessionDeletionInventory, SessionDeletionReceipt, SessionSpeaker,
+    SpeakerLabelOrigin, TranscriptDocumentSegment, TranscriptExportContext, TranscriptSearchHit,
 };
 
 pub struct CoarseMediaOpenReceipt {
@@ -28,6 +93,7 @@ pub struct CoarseMediaOpenReceipt {
     pub open_token: String,
     pub writer_generation: u64,
     pub relative_path: String,
+    pub channels: u16,
     pub initial_byte_length: u64,
 }
 
@@ -61,6 +127,125 @@ pub struct RecordingPreparationController {
 }
 
 impl RecordingPreparationController {
+    /// Scope changes share the recording writer, so context records and
+    /// media records never race for the session journal.
+    pub fn context_action(
+        &mut self,
+        session: open_scribe_types::SessionId,
+        action: ContextAction,
+    ) -> Result<ContextDetail, StoreError> {
+        self.store.context_action(session, action)
+    }
+
+    pub fn propose_context_event(
+        &mut self,
+        session: open_scribe_types::SessionId,
+        proposal: ContextProposal,
+    ) -> Result<ContextDecision, StoreError> {
+        self.store.propose_context_event(session, proposal)
+    }
+
+    pub fn context_detail(
+        &self,
+        session: &open_scribe_types::SessionId,
+    ) -> Result<ContextDetail, StoreError> {
+        self.store.context_detail(session)
+    }
+
+    pub fn declare_session(
+        &mut self,
+        session: open_scribe_types::SessionId,
+        declaration: SessionDeclaration,
+    ) -> Result<SessionDeclaration, StoreError> {
+        self.store.declare_session(session, declaration)
+    }
+
+    pub fn recorder_action(
+        &mut self,
+        session: open_scribe_types::SessionId,
+        action: RecorderAction,
+    ) -> Result<RecorderDetail, StoreError> {
+        self.store.recorder_action(session, action)
+    }
+
+    pub fn recorder_detail(
+        &self,
+        session: open_scribe_types::SessionId,
+    ) -> Result<RecorderDetail, StoreError> {
+        self.store.recorder_detail(&session)
+    }
+    pub fn anchor_capture_clock(
+        &mut self,
+        session_id: open_scribe_types::SessionId,
+        clock: CaptureClock,
+    ) -> Result<(), StoreError> {
+        self.store.anchor_capture_clock(session_id, clock)
+    }
+
+    pub fn authorize_next_segment(
+        &mut self,
+        session_id: open_scribe_types::SessionId,
+        previous: String,
+    ) -> Result<MediaOpenAuthorization, StoreError> {
+        self.store.authorize_next_segment(session_id, previous)
+    }
+
+    pub fn playback_timeline(
+        &self,
+        session_id: open_scribe_types::SessionId,
+    ) -> Result<Vec<TimelineSegment>, StoreError> {
+        self.store.playback_timeline(&session_id)
+    }
+
+    pub fn abandon_reserved_segment(
+        &mut self,
+        session_id: open_scribe_types::SessionId,
+        segment_id: String,
+    ) -> Result<(), StoreError> {
+        self.store.abandon_reserved_segment(session_id, segment_id)
+    }
+
+    pub fn lease_timeline_segment(
+        &self,
+        segment: &TimelineSegment,
+    ) -> Result<ImportedPlaybackLease, StoreError> {
+        self.store.lease_capture_playback(
+            &segment.session_id,
+            &segment.source_id,
+            &segment.track_id,
+            &segment.segment_id,
+            true,
+        )
+    }
+
+    pub fn authorize_mixdown(
+        &mut self,
+        session_id: open_scribe_types::SessionId,
+        available_bytes: u64,
+    ) -> Result<MixdownAuthorization, StoreError> {
+        self.store.authorize_mixdown(session_id, available_bytes)
+    }
+
+    pub fn accept_mixdown(
+        &mut self,
+        receipt: MixdownReceipt,
+    ) -> Result<ValidatedMixdown, StoreError> {
+        self.store.accept_mixdown(receipt)
+    }
+
+    pub fn validated_mixdown(
+        &self,
+        session_id: &open_scribe_types::SessionId,
+    ) -> Result<Option<ValidatedMixdown>, StoreError> {
+        self.store.validated_mixdown(session_id)
+    }
+
+    pub fn lease_validated_mixdown(
+        &self,
+        session_id: &open_scribe_types::SessionId,
+    ) -> Result<Option<ImportedPlaybackLease>, StoreError> {
+        self.store.lease_validated_mixdown(session_id)
+    }
     pub fn open(managed_root: impl AsRef<Path>) -> Result<Self, StoreError> {
         Ok(Self {
             store: open_scribe_store::SessionStore::open(managed_root)?,
@@ -124,7 +309,7 @@ impl RecordingPreparationController {
             relative_path: receipt.relative_path,
             media_format: "caf-pcm-s16le".to_owned(),
             sample_rate_hz: 48_000,
-            channels: 1,
+            channels: receipt.channels,
             initial_byte_length: receipt.initial_byte_length,
         })
     }
@@ -198,6 +383,26 @@ impl RecordingPreparationController {
     ) -> Result<ImportedMediaEvidence, StoreError> {
         self.store
             .import_recoverable_caf(ImportMediaRequest { title, source_path })
+    }
+
+    pub fn import_normalized_caf(
+        &mut self,
+        title: String,
+        source_path: PathBuf,
+        original: OriginalImportMetadata,
+    ) -> Result<ImportedMediaEvidence, StoreError> {
+        self.store
+            .import_normalized_caf(ImportMediaRequest { title, source_path }, original)
+    }
+
+    pub fn import_compressed_m4a(
+        &mut self,
+        title: String,
+        source_path: PathBuf,
+        metadata: CompressedImportMetadata,
+    ) -> Result<ImportedMediaEvidence, StoreError> {
+        self.store
+            .import_compressed_m4a(ImportMediaRequest { title, source_path }, metadata)
     }
 
     pub fn lease_imported_playback(

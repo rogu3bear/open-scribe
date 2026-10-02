@@ -13,17 +13,20 @@ use uuid::Uuid;
 
 use super::{
     CAF_HEADER, JOURNAL_VERSION, JournalRecord, MediaLengthRequirement, PrepareSessionRequest,
-    RecoveryDisposition, SCHEMA_VERSION, SessionOrigin, SessionStore, StoreError, event_digest,
-    insert_event_with_id, inspect_recoverable_pcm_caf, next_database_event, open_managed_directory,
-    open_managed_directory_at, payload_string, payload_u64, validate_request,
-    wall_time_milliseconds,
+    RecoveryDisposition, SCHEMA_VERSION, SessionOrigin, SessionStore, StoreError,
+    ValidatedMediaFile, event_digest, insert_event_with_id, inspect_pcm_caf, next_database_event,
+    open_managed_directory, open_managed_directory_at, payload_string, payload_u64,
+    sealed_media_identity, validate_request, wall_time_milliseconds,
 };
 
 const MAX_IMPORTED_PLAYBACK_SNAPSHOT_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_IMPORT_BYTES: u64 = MAX_IMPORTED_PLAYBACK_SNAPSHOT_BYTES;
+const MAX_COMPRESSED_IMPORT_BYTES: u64 = 1024 * 1024 * 1024;
 const MAX_IMPORT_SAMPLES: u64 = 4 * 60 * 60 * 48_000;
-const IMPORT_SOURCE_KIND: &str = "imported_audio";
+const MAX_IMPORT_DURATION_NANOSECONDS: u64 = 4 * 60 * 60 * 1_000_000_000;
+pub(super) const IMPORT_SOURCE_KIND: &str = "imported_audio";
 const IMPORT_MEDIA_FORMAT: &str = "caf-pcm-s16le";
+pub(super) const COMPRESSED_IMPORT_MEDIA_FORMAT: &str = "m4a-alac-or-aac";
 const PLAYBACK_SNAPSHOT_PREFIX: &str = ".playback-";
 const PLAYBACK_SNAPSHOT_SUFFIX: &str = ".caf";
 const PLAYBACK_QUARANTINE_PREFIX: &str = ".playback-recovery-";
@@ -33,6 +36,44 @@ const PLAYBACK_QUARANTINE_PREFIX: &str = ".playback-recovery-";
 pub struct ImportMediaRequest {
     pub title: String,
     pub source_path: PathBuf,
+}
+
+/// Native-probed details of an original compressed file. Rust independently
+/// validates managed bytes before any library entry becomes visible.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OriginalImportMetadata {
+    pub display_name: String,
+    pub byte_length: u64,
+    pub duration_nanoseconds: u64,
+    pub sample_rate_hz: u32,
+    pub channel_count: u32,
+    pub media_format: String,
+}
+
+/// Platform decoder evidence, bound to the exact source bytes by SHA-256.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CompressedImportMetadata {
+    pub original: OriginalImportMetadata,
+    pub sample_count: u64,
+    pub digest_sha256: String,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ImportPolicy {
+    pub maximum_source_bytes: u64,
+    pub maximum_managed_bytes: u64,
+    pub maximum_duration_nanoseconds: u64,
+    pub maximum_managed_samples: u64,
+}
+
+#[must_use]
+pub const fn import_policy() -> ImportPolicy {
+    ImportPolicy {
+        maximum_source_bytes: MAX_COMPRESSED_IMPORT_BYTES,
+        maximum_managed_bytes: MAX_IMPORT_BYTES,
+        maximum_duration_nanoseconds: MAX_IMPORT_DURATION_NANOSECONDS,
+        maximum_managed_samples: MAX_IMPORT_SAMPLES,
+    }
 }
 
 /// Content-free admission evidence for one managed imported conversation.
@@ -52,17 +93,31 @@ pub struct ImportedMediaEvidence {
 /// Open descriptor lease for one revalidated managed media object.
 ///
 /// Native playback must match `digest_sha256` before exposing playback and retain this lease for
-/// the full decoder lifetime. Imported playback copies the bounded object into anonymous memory;
-/// recovered playback verifies bounded chunks again whenever AudioToolbox reads them. The
+/// the full decoder lifetime. Imported PCM CAF uses a bounded anonymous snapshot; compressed
+/// imports and recovered playback verify bounded chunks whenever AudioToolbox reads them. The
 /// descriptor keeps the identity-bound managed object open and is never represented to the native
 /// adapter by a pathname.
 pub struct ImportedPlaybackLease {
     file: File,
     byte_length: u64,
     digest_sha256: String,
+    media_format: String,
 }
 
 impl ImportedPlaybackLease {
+    pub(super) fn verified_derived_m4a(
+        file: File,
+        byte_length: u64,
+        digest_sha256: String,
+    ) -> Self {
+        Self {
+            file,
+            byte_length,
+            digest_sha256,
+            media_format: COMPRESSED_IMPORT_MEDIA_FORMAT.to_owned(),
+        }
+    }
+
     #[must_use]
     pub fn raw_file_descriptor(&self) -> RawFd {
         self.file.as_raw_fd()
@@ -79,8 +134,18 @@ impl ImportedPlaybackLease {
     }
 
     #[must_use]
+    pub fn media_format(&self) -> &str {
+        &self.media_format
+    }
+
+    #[must_use]
     pub const fn maximum_snapshot_byte_length() -> u64 {
         MAX_IMPORTED_PLAYBACK_SNAPSHOT_BYTES
+    }
+
+    /// The identity-bound descriptor, for in-crate readers of sealed bytes.
+    pub(crate) fn file(&self) -> &File {
+        &self.file
     }
 }
 
@@ -96,6 +161,7 @@ struct ValidatedImportSource {
 struct ImportPaths {
     track_id: String,
     relative_path: String,
+    media_format: &'static str,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -114,19 +180,118 @@ impl SessionStore {
         &mut self,
         request: ImportMediaRequest,
     ) -> Result<ImportedMediaEvidence, StoreError> {
-        self.import_recoverable_caf_inner(request, None)
+        self.import_recoverable_caf_inner(request, None, None)
+    }
+
+    pub fn import_normalized_caf(
+        &mut self,
+        request: ImportMediaRequest,
+        original: OriginalImportMetadata,
+    ) -> Result<ImportedMediaEvidence, StoreError> {
+        if original.byte_length > MAX_IMPORT_BYTES {
+            return Err(StoreError::ImportSizeLimit);
+        }
+        if original.duration_nanoseconds > MAX_IMPORT_DURATION_NANOSECONDS {
+            return Err(StoreError::ImportDurationLimit);
+        }
+        if original.display_name.is_empty()
+            || original.display_name.len() > 255
+            || original
+                .display_name
+                .chars()
+                .any(|character| matches!(character, '/' | '\\' | '\0'))
+            || original.media_format != "m4a"
+            || original.byte_length == 0
+            || original.duration_nanoseconds == 0
+            || original.sample_rate_hz == 0
+            || original.channel_count != 1
+        {
+            return Err(StoreError::InvalidRequest(
+                "original import metadata is invalid",
+            ));
+        }
+        self.import_recoverable_caf_inner(request, Some(original), None)
+    }
+
+    pub fn import_compressed_m4a(
+        &mut self,
+        request: ImportMediaRequest,
+        metadata: CompressedImportMetadata,
+    ) -> Result<ImportedMediaEvidence, StoreError> {
+        validate_compressed_import_bounds(metadata.original.byte_length, metadata.sample_count)?;
+        if metadata.original.duration_nanoseconds > MAX_IMPORT_DURATION_NANOSECONDS {
+            return Err(StoreError::ImportDurationLimit);
+        }
+        if metadata.original.media_format != "m4a"
+            || metadata.original.sample_rate_hz != 48_000
+            || !matches!(metadata.original.channel_count, 1 | 2)
+            || metadata.original.byte_length == 0
+            || metadata.original.byte_length > MAX_COMPRESSED_IMPORT_BYTES
+            || metadata.sample_count == 0
+            || metadata.sample_count > MAX_IMPORT_SAMPLES
+            || metadata.original.duration_nanoseconds == 0
+            || metadata.original.duration_nanoseconds > MAX_IMPORT_DURATION_NANOSECONDS
+            || metadata.original.display_name.is_empty()
+            || metadata.original.display_name.len() > 255
+            || metadata
+                .original
+                .display_name
+                .chars()
+                .any(|c| matches!(c, '/' | '\\' | '\0'))
+            || metadata.digest_sha256.len() != 64
+            || !metadata
+                .digest_sha256
+                .bytes()
+                .all(|b| b.is_ascii_hexdigit())
+        {
+            return Err(StoreError::InvalidRequest(
+                "compressed import metadata is invalid",
+            ));
+        }
+        let expected_duration = metadata.sample_count.saturating_mul(1_000_000_000) / 48_000;
+        if expected_duration.abs_diff(metadata.original.duration_nanoseconds) > 1_000_000 {
+            return Err(StoreError::InvalidRequest(
+                "compressed import duration disagrees with frames",
+            ));
+        }
+        self.import_inner(
+            request,
+            Some(metadata.original.clone()),
+            Some(metadata),
+            None,
+        )
     }
 
     fn import_recoverable_caf_inner(
         &mut self,
         request: ImportMediaRequest,
+        original: Option<OriginalImportMetadata>,
+        failure: Option<ImportFailurePoint>,
+    ) -> Result<ImportedMediaEvidence, StoreError> {
+        self.import_inner(request, original, None, failure)
+    }
+
+    fn import_inner(
+        &mut self,
+        request: ImportMediaRequest,
+        original: Option<OriginalImportMetadata>,
+        compressed: Option<CompressedImportMetadata>,
         failure: Option<ImportFailurePoint>,
     ) -> Result<ImportedMediaEvidence, StoreError> {
         validate_request(&PrepareSessionRequest {
             title: request.title.clone(),
             origin: SessionOrigin::Import,
         })?;
-        let mut source = validate_import_source(&request.source_path)?;
+        let mut source = match compressed.as_ref() {
+            Some(metadata) => validate_compressed_import_source(&request.source_path, metadata)?,
+            None => validate_import_source(&request.source_path)?,
+        };
+        let media_format = if compressed.is_some() {
+            COMPRESSED_IMPORT_MEDIA_FORMAT
+        } else {
+            IMPORT_MEDIA_FORMAT
+        };
+        let suffix = if compressed.is_some() { "m4a" } else { "caf" };
         let prepared = self.prepare_session_inner(
             PrepareSessionRequest {
                 title: request.title,
@@ -142,8 +307,8 @@ impl SessionStore {
             let source_id = Uuid::now_v7().to_string();
             let track_id = Uuid::now_v7().to_string();
             let segment_id = Uuid::now_v7().to_string();
-            let staging_relative_path = format!("audio/{track_id}/.importing.caf");
-            let relative_path = format!("audio/{track_id}/000000-import.caf");
+            let staging_relative_path = format!("audio/{track_id}/.importing.{suffix}");
+            let relative_path = format!("audio/{track_id}/000000-import.{suffix}");
             let audio_directory = self.open_managed_audio_directory(&prepared.session_id.0)?;
             fd_fs::mkdirat(
                 &audio_directory,
@@ -158,7 +323,11 @@ impl SessionStore {
             source.file.rewind()?;
             let staging_fd = fd_fs::openat(
                 &track_directory,
-                OsStr::new(".importing.caf"),
+                OsStr::new(if compressed.is_some() {
+                    ".importing.m4a"
+                } else {
+                    ".importing.caf"
+                }),
                 fd_fs::OFlags::WRONLY
                     | fd_fs::OFlags::CREATE
                     | fd_fs::OFlags::EXCL
@@ -204,14 +373,16 @@ impl SessionStore {
                 StoreError::IntegrityMismatch("managed import track was not synchronized")
             })?;
 
-            let staged = self.validate_media_file(
+            let staged = self.validate_import_media_file(
                 &prepared.session_id.0,
                 &staging_relative_path,
-                MediaLengthRequirement::Exact(source.byte_length),
+                source.byte_length,
+                media_format,
                 true,
             )?;
             if staged.digest_sha256.as_deref() != Some(source.digest_sha256.as_str())
-                || staged.recoverable_sample_count != Some(source.sample_count)
+                || (compressed.is_none()
+                    && staged.recoverable_sample_count != Some(source.sample_count))
             {
                 return Err(StoreError::IntegrityMismatch(
                     "managed import copy does not match the validated source",
@@ -223,12 +394,22 @@ impl SessionStore {
             let payload = json!({
                 "source_id": source_id,
                 "source_kind": IMPORT_SOURCE_KIND,
-                "source_display_name": request.source_path.file_name().and_then(OsStr::to_str).unwrap_or("Imported audio"),
+                "source_display_name": original.as_ref().map_or_else(
+                    || request.source_path.file_name().and_then(OsStr::to_str).unwrap_or("Imported audio"),
+                    |metadata| metadata.display_name.as_str(),
+                ),
+                "original_media": original.as_ref().map(|metadata| json!({
+                    "format": metadata.media_format,
+                    "byte_length": metadata.byte_length,
+                    "duration_nanoseconds": metadata.duration_nanoseconds,
+                    "sample_rate_hz": metadata.sample_rate_hz,
+                    "channel_count": metadata.channel_count,
+                })),
                 "track_id": track_id,
                 "segment_id": segment_id,
                 "staging_relative_path": staging_relative_path,
                 "relative_path": relative_path,
-                "media_format": IMPORT_MEDIA_FORMAT,
+                "media_format": media_format,
                 "byte_length": source.byte_length,
                 "sample_count": source.sample_count,
                 "digest_sha256": source.digest_sha256,
@@ -241,7 +422,7 @@ impl SessionStore {
             )?;
             interrupt_import_if(failure, ImportFailurePoint::StagedJournalDurable)?;
 
-            rename_import_entry(&track_directory)?;
+            rename_import_entry(&track_directory, media_format)?;
             fd_fs::fsync(&track_directory).map_err(|_| {
                 StoreError::IntegrityMismatch("managed import rename was not synchronized")
             })?;
@@ -280,7 +461,7 @@ impl SessionStore {
                         segments.digest,
                         CASE WHEN sessions.origin = 'import'
                              THEN imports.source_digest ELSE segments.digest END,
-                        segments.file_device, segments.file_inode
+                        segments.file_device, segments.file_inode, segments.media_format
                  FROM sessions
                  JOIN segments ON segments.session_id = sessions.id
                  JOIN tracks ON tracks.id = segments.track_id
@@ -292,7 +473,8 @@ impl SessionStore {
                    AND sessions.lifecycle = 'ready_for_review'
                    AND segments.lifecycle = 'sealed'
                    AND segments.seal_state = 'sealed'
-                   AND segments.media_format = 'caf-pcm-s16le'
+                   AND (segments.media_format = 'caf-pcm-s16le'
+                        OR (sessions.origin = 'import' AND segments.media_format = 'm4a-alac-or-aac'))
                    AND (
                      (sessions.origin = 'import'
                       AND segments.relative_path = imports.relative_path)
@@ -326,6 +508,7 @@ impl SessionStore {
                         row.get::<_, String>(4)?,
                         row.get::<_, i64>(5)?,
                         row.get::<_, i64>(6)?,
+                        row.get::<_, String>(7)?,
                     ))
                 })?
                 .collect::<Result<Vec<_>, _>>()?
@@ -343,12 +526,17 @@ impl SessionStore {
             import_digest,
             stored_device,
             stored_inode,
+            media_format,
         ) = &rows[0];
         let sample_count = u64::try_from(*stored_sample_count)
             .map_err(|_| StoreError::IntegrityMismatch("managed sample count is invalid"))?;
         let byte_length = u64::try_from(*stored_byte_length)
             .map_err(|_| StoreError::IntegrityMismatch("managed byte length is invalid"))?;
-        if byte_length > MAX_IMPORTED_PLAYBACK_SNAPSHOT_BYTES {
+        if media_format == COMPRESSED_IMPORT_MEDIA_FORMAT {
+            validate_compressed_import_bounds(byte_length, sample_count)?;
+        }
+        if media_format == IMPORT_MEDIA_FORMAT && byte_length > MAX_IMPORTED_PLAYBACK_SNAPSHOT_BYTES
+        {
             return Err(StoreError::InvalidState(
                 "managed media exceeds the safe playback snapshot limit",
             ));
@@ -358,15 +546,20 @@ impl SessionStore {
                 "managed media receipt and segment digest disagree",
             ));
         }
-        let mut validated = self.validate_media_file(
+        let mut validated = self.validate_import_media_file(
             &session_id.0,
             relative_path,
-            MediaLengthRequirement::Exact(byte_length),
+            byte_length,
+            media_format,
             true,
         )?;
-        if validated.device != u64::try_from(*stored_device).unwrap_or(0)
-            || validated.inode != u64::try_from(*stored_inode).unwrap_or(0)
-            || validated.recoverable_sample_count != Some(sample_count)
+        if !validated.matches_sealed_identity(
+            u64::try_from(*stored_device).unwrap_or(0),
+            u64::try_from(*stored_inode).unwrap_or(0),
+            byte_length,
+            import_digest,
+        ) || (media_format == IMPORT_MEDIA_FORMAT
+            && validated.recoverable_sample_count != Some(sample_count))
             || validated.digest_sha256.as_deref() != Some(import_digest.as_str())
         {
             return Err(StoreError::IntegrityMismatch(
@@ -378,6 +571,7 @@ impl SessionStore {
             file: validated.file,
             byte_length,
             digest_sha256: import_digest.clone(),
+            media_format: media_format.clone(),
         })
     }
 
@@ -389,10 +583,22 @@ impl SessionStore {
         track_id: &str,
         segment_id: &str,
     ) -> Result<ImportedPlaybackLease, StoreError> {
+        self.lease_capture_playback(session_id, source_id, track_id, segment_id, false)
+    }
+
+    pub fn lease_capture_playback(
+        &self,
+        session_id: &SessionId,
+        source_id: &str,
+        track_id: &str,
+        segment_id: &str,
+        allow_saved: bool,
+    ) -> Result<ImportedPlaybackLease, StoreError> {
         let row = self
             .connection
             .query_row(
-                "SELECT segments.relative_path, segments.sample_count, segments.byte_length,
+                &format!(
+                    "SELECT segments.relative_path, segments.sample_count, segments.byte_length,
                     segments.digest, segments.file_device, segments.file_inode
              FROM sessions
              JOIN sources ON sources.session_id = sessions.id
@@ -408,17 +614,10 @@ impl SessionStore {
                AND segments.seal_state = 'sealed'
                AND segments.recovery_state IN ('recovered', 'not_required')
                AND segments.media_format = 'caf-pcm-s16le'
-               AND EXISTS (
-                   SELECT 1 FROM session_events recovery_events
-                   WHERE recovery_events.session_id = sessions.id
-                     AND recovery_events.event_kind = 'playable_media_recovered'
-               )
-               AND EXISTS (
-                   SELECT 1 FROM recovery_runs
-                   WHERE recovery_runs.session_id = sessions.id
-                     AND recovery_runs.disposition = 'playable_media_recovered'
-               )",
-                params![&session_id.0, source_id, track_id, segment_id],
+               AND (?5 = 1 OR {})",
+                    super::library_recovery::RECOVERED_SESSION_EVIDENCE_SQL
+                ),
+                params![&session_id.0, source_id, track_id, segment_id, allow_saved],
                 |row| {
                     Ok((
                         row.get::<_, String>(0)?,
@@ -448,9 +647,12 @@ impl SessionStore {
             MediaLengthRequirement::Exact(byte_length),
             true,
         )?;
-        if validated.device != u64::try_from(stored_device).unwrap_or(0)
-            || validated.inode != u64::try_from(stored_inode).unwrap_or(0)
-            || validated.recoverable_sample_count != Some(sample_count)
+        if !validated.matches_sealed_identity(
+            u64::try_from(stored_device).unwrap_or(0),
+            u64::try_from(stored_inode).unwrap_or(0),
+            byte_length,
+            &digest,
+        ) || validated.recoverable_sample_count != Some(sample_count)
             || validated.digest_sha256.as_deref() != Some(digest.as_str())
         {
             return Err(StoreError::IntegrityMismatch(
@@ -462,6 +664,7 @@ impl SessionStore {
             file: validated.file,
             byte_length,
             digest_sha256: digest,
+            media_format: IMPORT_MEDIA_FORMAT.to_owned(),
         })
     }
 
@@ -594,11 +797,22 @@ impl SessionStore {
         let payload = &record.body.payload;
         let paths = validate_import_paths(payload)?;
         let track_directory = self.managed_import_track_directory(session_id, &paths.track_id)?;
-        if !managed_import_entry_exists(&track_directory, OsStr::new("000000-import.caf"))? {
-            if !managed_import_entry_exists(&track_directory, OsStr::new(".importing.caf"))? {
+        let suffix = if paths.media_format == COMPRESSED_IMPORT_MEDIA_FORMAT {
+            "m4a"
+        } else {
+            "caf"
+        };
+        if !managed_import_entry_exists(
+            &track_directory,
+            OsStr::new(&format!("000000-import.{suffix}")),
+        )? {
+            if !managed_import_entry_exists(
+                &track_directory,
+                OsStr::new(&format!(".importing.{suffix}")),
+            )? {
                 return self.tombstone_import(session_id, "staged_media_missing");
             }
-            rename_import_entry(&track_directory)?;
+            rename_import_entry(&track_directory, paths.media_format)?;
             fd_fs::fsync(&track_directory).map_err(|_| {
                 StoreError::IntegrityMismatch("recovered import rename was not synchronized")
             })?;
@@ -668,10 +882,29 @@ impl SessionStore {
         let track_directory = open_managed_directory_at(&audio_directory, &track_name)?;
         let track_path = audio_path.join(&track_name);
         let track_entries = fs::read_dir(&track_path)?.collect::<Result<Vec<_>, _>>()?;
+        let staging_name = if let Some(intent) = intents.first() {
+            let staged = payload_string(&intent.body.payload, "staging_relative_path")?;
+            if staged == format!("audio/{track_id}/.importing.m4a") {
+                ".importing.m4a"
+            } else if staged == format!("audio/{track_id}/.importing.caf") {
+                ".importing.caf"
+            } else {
+                return Err(StoreError::IntegrityMismatch(
+                    "unstaged import path is invalid",
+                ));
+            }
+        } else if track_entries
+            .first()
+            .is_some_and(|entry| entry.file_name() == OsStr::new(".importing.m4a"))
+        {
+            ".importing.m4a"
+        } else {
+            ".importing.caf"
+        };
         if track_entries.len() > 1
             || track_entries
                 .first()
-                .is_some_and(|entry| entry.file_name() != OsStr::new(".importing.caf"))
+                .is_some_and(|entry| entry.file_name() != OsStr::new(staging_name))
         {
             return Err(StoreError::IntegrityMismatch(
                 "unstaged import track contains unexpected media",
@@ -682,7 +915,7 @@ impl SessionStore {
             let payload = &intent.body.payload;
             if payload_string(payload, "track_id")? != track_id
                 || payload_string(payload, "staging_relative_path")?
-                    != format!("audio/{track_id}/.importing.caf")
+                    != format!("audio/{track_id}/{staging_name}")
             {
                 return Err(StoreError::IntegrityMismatch(
                     "unstaged import cleanup intent does not match its target",
@@ -705,7 +938,7 @@ impl SessionStore {
             }
             let staging_fd = fd_fs::openat(
                 &track_directory,
-                OsStr::new(".importing.caf"),
+                OsStr::new(staging_name),
                 fd_fs::OFlags::RDONLY | fd_fs::OFlags::CLOEXEC | fd_fs::OFlags::NOFOLLOW,
                 fd_fs::Mode::empty(),
             )
@@ -735,7 +968,7 @@ impl SessionStore {
         if !track_entries.is_empty() {
             fd_fs::unlinkat(
                 &track_directory,
-                OsStr::new(".importing.caf"),
+                OsStr::new(staging_name),
                 fd_fs::AtFlags::empty(),
             )
             .map_err(|_| {
@@ -816,14 +1049,17 @@ impl SessionStore {
         let byte_length = payload_u64(payload, "byte_length")?;
         let sample_count = payload_u64(payload, "sample_count")?;
         let digest_sha256 = payload_string(payload, "digest_sha256")?;
-        let validated = self.validate_media_file(
+        let media_format = payload_string(payload, "media_format")?;
+        let validated = self.validate_import_media_file(
             session_id,
             relative_path,
-            MediaLengthRequirement::Exact(byte_length),
+            byte_length,
+            media_format,
             true,
         )?;
         if validated.digest_sha256.as_deref() != Some(digest_sha256)
-            || validated.recoverable_sample_count != Some(sample_count)
+            || (media_format == IMPORT_MEDIA_FORMAT
+                && validated.recoverable_sample_count != Some(sample_count))
         {
             return Err(StoreError::IntegrityMismatch(
                 "managed import evidence does not match its file",
@@ -880,7 +1116,7 @@ impl SessionStore {
                 session_id,
                 track_id,
                 relative_path,
-                IMPORT_MEDIA_FORMAT,
+                media_format,
                 sample_count as i64,
                 byte_length as i64,
                 digest_sha256,
@@ -1053,15 +1289,24 @@ fn validate_import_paths(payload: &Value) -> Result<ImportPaths, StoreError> {
             "managed import identity is invalid",
         ));
     }
+    let media_format = payload_string(payload, "media_format")?;
     if payload_string(payload, "source_kind")? != IMPORT_SOURCE_KIND
-        || payload_string(payload, "media_format")? != IMPORT_MEDIA_FORMAT
+        || !matches!(
+            media_format,
+            IMPORT_MEDIA_FORMAT | COMPRESSED_IMPORT_MEDIA_FORMAT
+        )
     {
         return Err(StoreError::IntegrityMismatch(
             "managed import kind or format is invalid",
         ));
     }
-    let staging_relative_path = format!("audio/{track_id}/.importing.caf");
-    let relative_path = format!("audio/{track_id}/000000-import.caf");
+    let suffix = if media_format == COMPRESSED_IMPORT_MEDIA_FORMAT {
+        "m4a"
+    } else {
+        "caf"
+    };
+    let staging_relative_path = format!("audio/{track_id}/.importing.{suffix}");
+    let relative_path = format!("audio/{track_id}/000000-import.{suffix}");
     if payload_string(payload, "staging_relative_path")? != staging_relative_path
         || payload_string(payload, "relative_path")? != relative_path
     {
@@ -1069,10 +1314,17 @@ fn validate_import_paths(payload: &Value) -> Result<ImportPaths, StoreError> {
             "managed import path is not the generated destination",
         ));
     }
-    validate_import_bounds(
-        payload_u64(payload, "byte_length")?,
-        payload_u64(payload, "sample_count")?,
-    )?;
+    if media_format == IMPORT_MEDIA_FORMAT {
+        validate_import_bounds(
+            payload_u64(payload, "byte_length")?,
+            payload_u64(payload, "sample_count")?,
+        )?;
+    } else {
+        validate_compressed_import_bounds(
+            payload_u64(payload, "byte_length")?,
+            payload_u64(payload, "sample_count")?,
+        )?;
+    }
     let digest = payload_string(payload, "digest_sha256")?;
     if digest.len() != 64 || !digest.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return Err(StoreError::IntegrityMismatch(
@@ -1082,6 +1334,11 @@ fn validate_import_paths(payload: &Value) -> Result<ImportPaths, StoreError> {
     Ok(ImportPaths {
         track_id: track_id.to_owned(),
         relative_path,
+        media_format: if media_format == COMPRESSED_IMPORT_MEDIA_FORMAT {
+            COMPRESSED_IMPORT_MEDIA_FORMAT
+        } else {
+            IMPORT_MEDIA_FORMAT
+        },
     })
 }
 
@@ -1113,29 +1370,267 @@ fn managed_import_entry_exists(
     Ok(true)
 }
 
-fn rename_import_entry(track_directory: &OwnedFd) -> Result<(), StoreError> {
+fn rename_import_entry(track_directory: &OwnedFd, media_format: &str) -> Result<(), StoreError> {
+    let suffix = if media_format == COMPRESSED_IMPORT_MEDIA_FORMAT {
+        "m4a"
+    } else {
+        "caf"
+    };
     fd_fs::renameat_with(
         track_directory,
-        OsStr::new(".importing.caf"),
+        OsStr::new(&format!(".importing.{suffix}")),
         track_directory,
-        OsStr::new("000000-import.caf"),
+        OsStr::new(&format!("000000-import.{suffix}")),
         fd_fs::RenameFlags::NOREPLACE,
     )
     .map_err(|_| StoreError::IntegrityMismatch("managed import rename could not be completed"))
 }
 
 fn validate_import_bounds(byte_length: u64, sample_count: u64) -> Result<(), StoreError> {
-    if byte_length < CAF_HEADER.len() as u64 || byte_length > MAX_IMPORT_BYTES {
+    if byte_length > MAX_IMPORT_BYTES {
+        return Err(StoreError::ImportSizeLimit);
+    }
+    if byte_length < CAF_HEADER.len() as u64 {
         return Err(StoreError::InvalidRequest(
-            "import source exceeds the CAF size bounds",
+            "import source is too short to be a CAF",
         ));
     }
-    if sample_count == 0 || sample_count > MAX_IMPORT_SAMPLES {
+    if sample_count > MAX_IMPORT_SAMPLES {
+        return Err(StoreError::ImportDurationLimit);
+    }
+    if sample_count == 0 {
         return Err(StoreError::InvalidRequest(
-            "import source exceeds the CAF duration bounds",
+            "import source contains no audio samples",
         ));
     }
     Ok(())
+}
+
+fn validate_compressed_import_bounds(
+    byte_length: u64,
+    sample_count: u64,
+) -> Result<(), StoreError> {
+    if byte_length > MAX_COMPRESSED_IMPORT_BYTES {
+        return Err(StoreError::ImportSizeLimit);
+    }
+    if byte_length < 12 || sample_count == 0 {
+        return Err(StoreError::InvalidRequest(
+            "compressed import has no supported audio",
+        ));
+    }
+    if sample_count > MAX_IMPORT_SAMPLES {
+        return Err(StoreError::ImportDurationLimit);
+    }
+    Ok(())
+}
+
+fn has_m4a_file_type(file: &mut File) -> Result<bool, StoreError> {
+    file.rewind()?;
+    let mut header = [0_u8; 12];
+    file.read_exact(&mut header)?;
+    Ok(&header[4..8] == b"ftyp" && matches!(&header[8..12], b"M4A " | b"mp42" | b"isom"))
+}
+
+fn validate_compressed_import_source(
+    path: &Path,
+    metadata: &CompressedImportMetadata,
+) -> Result<ValidatedImportSource, StoreError> {
+    if path.as_os_str().is_empty() || fs::symlink_metadata(path)?.file_type().is_symlink() {
+        return Err(StoreError::InvalidRequest(
+            "compressed import must be a regular file",
+        ));
+    }
+    let fd = fd_fs::open(
+        path,
+        fd_fs::OFlags::RDONLY | fd_fs::OFlags::CLOEXEC | fd_fs::OFlags::NOFOLLOW,
+        fd_fs::Mode::empty(),
+    )
+    .map_err(|_| StoreError::InvalidRequest("compressed import could not be opened safely"))?;
+    let mut file = File::from(fd);
+    let stat = fd_fs::fstat(&file)
+        .map_err(|_| StoreError::IntegrityMismatch("compressed source identity is unavailable"))?;
+    if fd_fs::FileType::from_raw_mode(stat.st_mode) != fd_fs::FileType::RegularFile {
+        return Err(StoreError::InvalidRequest(
+            "compressed import must be a regular file",
+        ));
+    }
+    let byte_length = u64::try_from(stat.st_size)
+        .map_err(|_| StoreError::InvalidRequest("compressed source length is invalid"))?;
+    validate_compressed_import_bounds(byte_length, metadata.sample_count)?;
+    if byte_length != metadata.original.byte_length || !has_m4a_file_type(&mut file)? {
+        return Err(StoreError::InvalidRequest(
+            "compressed source does not match its M4A probe",
+        ));
+    }
+    file.rewind()?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    revalidate_stat(&file, stat.st_dev as u64, stat.st_ino as u64, byte_length)?;
+    let digest_sha256 = format!("{:x}", hasher.finalize());
+    if digest_sha256 != metadata.digest_sha256 {
+        return Err(StoreError::IntegrityMismatch(
+            "compressed source changed since its native decode probe",
+        ));
+    }
+    Ok(ValidatedImportSource {
+        file,
+        byte_length,
+        sample_count: metadata.sample_count,
+        digest_sha256,
+        device: stat.st_dev as u64,
+        inode: stat.st_ino as u64,
+    })
+}
+
+impl SessionStore {
+    pub(super) fn validate_import_media_file(
+        &self,
+        session_id: &str,
+        relative_path: &str,
+        byte_length: u64,
+        media_format: &str,
+        calculate_digest: bool,
+    ) -> Result<ValidatedMediaFile, StoreError> {
+        if media_format == IMPORT_MEDIA_FORMAT {
+            return self.validate_media_file(
+                session_id,
+                relative_path,
+                MediaLengthRequirement::Exact(byte_length),
+                true,
+            );
+        }
+        if media_format != COMPRESSED_IMPORT_MEDIA_FORMAT
+            || !relative_path.starts_with("audio/")
+            || !relative_path.ends_with(".m4a")
+            || Path::new(relative_path).components().count() != 3
+        {
+            return Err(StoreError::IntegrityMismatch(
+                "compressed import path or format is invalid",
+            ));
+        }
+        validate_compressed_import_bounds(byte_length, 1)?;
+        let parts: Vec<_> = Path::new(relative_path).components().collect();
+        let [
+            std::path::Component::Normal(audio),
+            std::path::Component::Normal(track),
+            std::path::Component::Normal(name),
+        ] = parts.as_slice()
+        else {
+            return Err(StoreError::IntegrityMismatch(
+                "compressed import path is invalid",
+            ));
+        };
+        if audio != &OsStr::new("audio")
+            || (name != &OsStr::new(".importing.m4a") && name != &OsStr::new("000000-import.m4a"))
+        {
+            return Err(StoreError::IntegrityMismatch(
+                "compressed import destination is invalid",
+            ));
+        }
+        let audio_directory = self.open_managed_audio_directory(session_id)?;
+        let track_directory = open_managed_directory_at(&audio_directory, track)?;
+        let fd = fd_fs::openat(
+            &track_directory,
+            *name,
+            fd_fs::OFlags::RDONLY | fd_fs::OFlags::CLOEXEC | fd_fs::OFlags::NOFOLLOW,
+            fd_fs::Mode::empty(),
+        )
+        .map_err(|_| {
+            StoreError::IntegrityMismatch("compressed managed media is missing or replaced")
+        })?;
+        let mut file = File::from(fd);
+        let stat = fd_fs::fstat(&file).map_err(|_| {
+            StoreError::IntegrityMismatch("compressed managed media identity is unavailable")
+        })?;
+        let identity = sealed_media_identity::media_identity(&file)?;
+        if identity.0 != stat.st_dev as u64
+            || identity.1 != stat.st_ino as u64
+            || identity.2 != byte_length
+        {
+            return Err(StoreError::IntegrityMismatch(
+                "compressed media changed before hashing",
+            ));
+        }
+        if fd_fs::FileType::from_raw_mode(stat.st_mode) != fd_fs::FileType::RegularFile
+            || stat.st_size != byte_length as i64
+            || !has_m4a_file_type(&mut file)?
+        {
+            return Err(StoreError::IntegrityMismatch(
+                "compressed managed media format or length changed",
+            ));
+        }
+        file.rewind()?;
+        let mut hasher = Sha256::new();
+        let mut buffer = [0_u8; 64 * 1024];
+        let mut remaining = if calculate_digest { byte_length } else { 0 };
+        while remaining > 0 {
+            let read_limit = usize::try_from(remaining.min(buffer.len() as u64)).unwrap();
+            let read = file.read(&mut buffer[..read_limit])?;
+            if read == 0 {
+                return Err(StoreError::IntegrityMismatch(
+                    "compressed managed media ended early",
+                ));
+            }
+            hasher.update(&buffer[..read]);
+            remaining -= read as u64;
+        }
+        if calculate_digest && file.read(&mut buffer[..1])? != 0 {
+            return Err(StoreError::IntegrityMismatch(
+                "compressed managed media grew",
+            ));
+        }
+        if calculate_digest {
+            self.digest_memo.borrow_mut().computed();
+        }
+        #[cfg(test)]
+        self.run_media_validation_hook();
+        if sealed_media_identity::media_identity(&file)? != identity {
+            return Err(StoreError::IntegrityMismatch(
+                "compressed media changed during hashing",
+            ));
+        }
+        let current_audio = self.open_managed_audio_directory(session_id)?;
+        let current_track = open_managed_directory_at(&current_audio, track)?;
+        let rebound = fd_fs::openat(
+            &current_track,
+            *name,
+            fd_fs::OFlags::RDONLY | fd_fs::OFlags::CLOEXEC | fd_fs::OFlags::NOFOLLOW,
+            fd_fs::Mode::empty(),
+        )
+        .map_err(|_| {
+            StoreError::IntegrityMismatch("compressed managed media changed during validation")
+        })?;
+        let after = fd_fs::fstat(&rebound).map_err(|_| {
+            StoreError::IntegrityMismatch("compressed managed media identity changed")
+        })?;
+        if after.st_dev != stat.st_dev
+            || after.st_ino != stat.st_ino
+            || after.st_size != stat.st_size
+            || sealed_media_identity::media_identity(&File::from(rebound))? != identity
+        {
+            return Err(StoreError::IntegrityMismatch(
+                "compressed managed media was replaced",
+            ));
+        }
+        file.rewind()?;
+        Ok(ValidatedMediaFile {
+            file,
+            identity,
+            byte_length,
+            device: stat.st_dev as u64,
+            inode: stat.st_ino as u64,
+            digest_sha256: calculate_digest.then(|| format!("{:x}", hasher.finalize())),
+            recoverable_sample_count: None,
+            channels: None,
+        })
+    }
 }
 
 fn validate_import_source(path: &Path) -> Result<ValidatedImportSource, StoreError> {
@@ -1173,9 +1668,15 @@ fn validate_import_source(path: &Path) -> Result<ValidatedImportSource, StoreErr
         ));
     }
     file.rewind()?;
-    let sample_count = inspect_recoverable_pcm_caf(&mut file, byte_length)?.ok_or(
-        StoreError::InvalidRequest("import source is not recoverable mono PCM CAF"),
-    )?;
+    let inspection = inspect_pcm_caf(&mut file, byte_length)?.ok_or(StoreError::InvalidRequest(
+        "import source is not recoverable mono PCM CAF",
+    ))?;
+    let sample_count = inspection
+        .sample_count
+        .filter(|_| inspection.channels == 1)
+        .ok_or(StoreError::InvalidRequest(
+            "import source is not recoverable mono PCM CAF",
+        ))?;
     validate_import_bounds(byte_length, sample_count)?;
     file.rewind()?;
     let mut hasher = Sha256::new();
@@ -1227,744 +1728,5 @@ fn revalidate_stat(
 }
 
 #[cfg(test)]
-mod tests {
-    use std::fs::OpenOptions;
-    use std::io::{SeekFrom, Write};
-    use std::os::unix::fs::{MetadataExt, symlink};
-
-    use tempfile::TempDir;
-
-    use super::*;
-    use crate::RuntimePlayableMediaAvailability;
-
-    fn write_recoverable_caf(path: &Path, sample_count: u64) {
-        let mut file = File::create(path).unwrap();
-        file.write_all(CAF_HEADER).unwrap();
-        file.write_all(b"desc").unwrap();
-        file.write_all(&32_i64.to_be_bytes()).unwrap();
-        file.write_all(&48_000_f64.to_bits().to_be_bytes()).unwrap();
-        file.write_all(b"lpcm").unwrap();
-        file.write_all(&2_u32.to_be_bytes()).unwrap();
-        file.write_all(&2_u32.to_be_bytes()).unwrap();
-        file.write_all(&1_u32.to_be_bytes()).unwrap();
-        file.write_all(&1_u32.to_be_bytes()).unwrap();
-        file.write_all(&16_u32.to_be_bytes()).unwrap();
-        file.write_all(b"data").unwrap();
-        file.write_all(&(-1_i64).to_be_bytes()).unwrap();
-        file.write_all(&0_u32.to_be_bytes()).unwrap();
-        file.write_all(&vec![0_u8; sample_count as usize * 2])
-            .unwrap();
-        file.sync_all().unwrap();
-    }
-
-    fn write_sparse_recoverable_caf(path: &Path, sample_count: u64) {
-        let mut file = File::create(path).unwrap();
-        file.write_all(CAF_HEADER).unwrap();
-        file.write_all(b"desc").unwrap();
-        file.write_all(&32_i64.to_be_bytes()).unwrap();
-        file.write_all(&48_000_f64.to_bits().to_be_bytes()).unwrap();
-        file.write_all(b"lpcm").unwrap();
-        file.write_all(&2_u32.to_be_bytes()).unwrap();
-        file.write_all(&2_u32.to_be_bytes()).unwrap();
-        file.write_all(&1_u32.to_be_bytes()).unwrap();
-        file.write_all(&1_u32.to_be_bytes()).unwrap();
-        file.write_all(&16_u32.to_be_bytes()).unwrap();
-        file.write_all(b"data").unwrap();
-        file.write_all(&(-1_i64).to_be_bytes()).unwrap();
-        file.write_all(&0_u32.to_be_bytes()).unwrap();
-        file.set_len(68 + sample_count * 2).unwrap();
-        file.sync_all().unwrap();
-    }
-
-    #[test]
-    fn managed_caf_import_preserves_original_and_enters_the_existing_library() {
-        let temp = TempDir::new().unwrap();
-        let source_path = temp.path().join("donella-review.caf");
-        write_recoverable_caf(&source_path, 960);
-        let original = fs::read(&source_path).unwrap();
-        let mut store = SessionStore::open(temp.path().join("Open Scribe")).unwrap();
-
-        let evidence = store
-            .import_recoverable_caf(ImportMediaRequest {
-                title: "Donella review".to_owned(),
-                source_path: source_path.clone(),
-            })
-            .unwrap();
-
-        assert!(evidence.ready_for_review);
-        assert!(evidence.original_untouched);
-        assert_eq!(evidence.sample_count, 960);
-        assert_eq!(evidence.digest_sha256.len(), 64);
-        assert_eq!(fs::read(&source_path).unwrap(), original);
-        assert_eq!(
-            fs::read(
-                store
-                    .session_directory(&evidence.session_id.0)
-                    .unwrap()
-                    .join(&evidence.relative_path)
-            )
-            .unwrap(),
-            original
-        );
-        let snapshot = store.runtime_library_snapshot().unwrap();
-        assert!(snapshot.current_session.is_none());
-        assert_eq!(snapshot.saved_sessions.len(), 1);
-        assert_eq!(snapshot.saved_sessions[0].session_id, evidence.session_id);
-        assert_eq!(snapshot.saved_sessions[0].title, "Donella review");
-        let playable = snapshot.saved_sessions[0].playable_media.as_ref().unwrap();
-        assert_eq!(playable.source_display_name, "donella-review.caf");
-        assert_eq!(
-            playable.availability,
-            RuntimePlayableMediaAvailability::Available
-        );
-        assert_eq!(playable.sample_count, 960);
-        assert_eq!(playable.duration_nanoseconds, 20_000_000);
-        assert!(playable.absolute_path.is_none());
-        assert_eq!(
-            store
-                .connection
-                .query_row(
-                    "SELECT COUNT(*) FROM imports WHERE session_id = ?1",
-                    [&evidence.session_id.0],
-                    |row| row.get::<_, i64>(0)
-                )
-                .unwrap(),
-            1
-        );
-        assert_eq!(
-            store
-                .connection
-                .query_row(
-                    "SELECT COUNT(*) FROM session_events
-                     WHERE session_id = ?1 AND event_kind = 'recording_started'",
-                    [&evidence.session_id.0],
-                    |row| row.get::<_, i64>(0)
-                )
-                .unwrap(),
-            0
-        );
-    }
-
-    #[test]
-    fn imported_library_playback_fails_closed_when_managed_media_is_missing_or_corrupt() {
-        let temp = TempDir::new().unwrap();
-        let managed_root = temp.path().join("Open Scribe");
-        let mut store = SessionStore::open(&managed_root).unwrap();
-
-        let missing_source = temp.path().join("missing-later.caf");
-        write_recoverable_caf(&missing_source, 48_000);
-        let missing = store
-            .import_recoverable_caf(ImportMediaRequest {
-                title: "Missing later".to_owned(),
-                source_path: missing_source,
-            })
-            .unwrap();
-        fs::remove_file(
-            store
-                .session_directory(&missing.session_id.0)
-                .unwrap()
-                .join(&missing.relative_path),
-        )
-        .unwrap();
-
-        let corrupt_source = temp.path().join("corrupt-later.caf");
-        write_recoverable_caf(&corrupt_source, 96_000);
-        let corrupt = store
-            .import_recoverable_caf(ImportMediaRequest {
-                title: "Corrupt later".to_owned(),
-                source_path: corrupt_source,
-            })
-            .unwrap();
-        let corrupt_path = store
-            .session_directory(&corrupt.session_id.0)
-            .unwrap()
-            .join(&corrupt.relative_path);
-        let mut corrupt_file = fs::OpenOptions::new()
-            .write(true)
-            .open(&corrupt_path)
-            .unwrap();
-        corrupt_file.seek(std::io::SeekFrom::Start(68)).unwrap();
-        corrupt_file.write_all(&[1]).unwrap();
-        corrupt_file.sync_all().unwrap();
-        drop(corrupt_file);
-        let replacement_digest = format!("{:x}", Sha256::digest(fs::read(&corrupt_path).unwrap()));
-        store
-            .connection
-            .execute(
-                "UPDATE segments SET digest = ?2 WHERE session_id = ?1",
-                params![&corrupt.session_id.0, replacement_digest],
-            )
-            .unwrap();
-
-        let snapshot = store.runtime_library_snapshot().unwrap();
-        let missing_playback = snapshot
-            .saved_sessions
-            .iter()
-            .find(|session| session.session_id == missing.session_id)
-            .unwrap()
-            .playable_media
-            .as_ref()
-            .unwrap();
-        assert_eq!(
-            missing_playback.availability,
-            RuntimePlayableMediaAvailability::Unavailable
-        );
-        assert!(missing_playback.absolute_path.is_none());
-        assert_eq!(missing_playback.duration_nanoseconds, 1_000_000_000);
-
-        let corrupt_playback = snapshot
-            .saved_sessions
-            .iter()
-            .find(|session| session.session_id == corrupt.session_id)
-            .unwrap()
-            .playable_media
-            .as_ref()
-            .unwrap();
-        assert_eq!(
-            corrupt_playback.availability,
-            RuntimePlayableMediaAvailability::Corrupt
-        );
-        assert!(corrupt_playback.absolute_path.is_none());
-        assert_eq!(corrupt_playback.duration_nanoseconds, 2_000_000_000);
-    }
-
-    #[test]
-    fn imported_playback_lease_retains_the_validated_object_across_path_replacement() {
-        let temp = TempDir::new().unwrap();
-        let source_path = temp.path().join("leased.caf");
-        write_recoverable_caf(&source_path, 48_000);
-        let original = fs::read(&source_path).unwrap();
-        let mut store = SessionStore::open(temp.path().join("Open Scribe")).unwrap();
-        let imported = store
-            .import_recoverable_caf(ImportMediaRequest {
-                title: "Leased import".to_owned(),
-                source_path,
-            })
-            .unwrap();
-        let lease = store.lease_imported_playback(&imported.session_id).unwrap();
-        let managed_path = store
-            .session_directory(&imported.session_id.0)
-            .unwrap()
-            .join(&imported.relative_path);
-
-        fs::remove_file(&managed_path).unwrap();
-        write_recoverable_caf(&managed_path, 96_000);
-
-        let mut leased_file = lease.file.try_clone().unwrap();
-        let mut leased_bytes = Vec::new();
-        leased_file.read_to_end(&mut leased_bytes).unwrap();
-        assert_eq!(leased_bytes, original);
-        assert_eq!(lease.byte_length(), original.len() as u64);
-        assert_eq!(lease.digest_sha256(), imported.digest_sha256);
-        assert_eq!(
-            ImportedPlaybackLease::maximum_snapshot_byte_length(),
-            MAX_IMPORTED_PLAYBACK_SNAPSHOT_BYTES
-        );
-        assert_ne!(fs::read(managed_path).unwrap(), original);
-        assert!(store.lease_imported_playback(&imported.session_id).is_err());
-    }
-
-    #[test]
-    fn imported_playback_lease_preserves_admitted_digest_for_native_copy_validation() {
-        let temp = TempDir::new().unwrap();
-        let source_path = temp.path().join("same-inode.caf");
-        write_recoverable_caf(&source_path, 48_000);
-        let original = fs::read(&source_path).unwrap();
-        let managed_root = temp.path().join("Open Scribe");
-        let mut store = SessionStore::open(&managed_root).unwrap();
-        let imported = store
-            .import_recoverable_caf(ImportMediaRequest {
-                title: "Same inode import".to_owned(),
-                source_path,
-            })
-            .unwrap();
-        let lease = store.lease_imported_playback(&imported.session_id).unwrap();
-        let managed_path = store
-            .session_directory(&imported.session_id.0)
-            .unwrap()
-            .join(&imported.relative_path);
-        let before = fs::metadata(&managed_path).unwrap();
-
-        let mut managed = OpenOptions::new().write(true).open(&managed_path).unwrap();
-        managed.seek(SeekFrom::End(-1)).unwrap();
-        managed.write_all(&[1]).unwrap();
-        managed.sync_all().unwrap();
-        let after = fs::metadata(&managed_path).unwrap();
-
-        assert_eq!(after.dev(), before.dev());
-        assert_eq!(after.ino(), before.ino());
-        assert_eq!(after.len(), before.len());
-        assert_ne!(fs::read(&managed_path).unwrap(), original);
-        let mut leased_file = lease.file.try_clone().unwrap();
-        let mut changed_bytes = Vec::new();
-        leased_file.read_to_end(&mut changed_bytes).unwrap();
-        assert_ne!(changed_bytes, original);
-        assert_ne!(
-            format!("{:x}", Sha256::digest(&changed_bytes)),
-            lease.digest_sha256()
-        );
-        assert_eq!(lease.byte_length(), original.len() as u64);
-        assert_eq!(lease.digest_sha256(), imported.digest_sha256);
-        assert!(store.lease_imported_playback(&imported.session_id).is_err());
-        assert!(fs::read_dir(&managed_root).unwrap().all(|entry| {
-            !entry
-                .unwrap()
-                .file_name()
-                .to_string_lossy()
-                .starts_with(PLAYBACK_SNAPSHOT_PREFIX)
-        }));
-    }
-
-    #[test]
-    fn imported_playback_lease_rejects_over_cap_evidence_before_media_revalidation() {
-        let temp = TempDir::new().unwrap();
-        let source_path = temp.path().join("over-cap-lease.caf");
-        write_recoverable_caf(&source_path, 48_000);
-        let mut store = SessionStore::open(temp.path().join("Open Scribe")).unwrap();
-        let imported = store
-            .import_recoverable_caf(ImportMediaRequest {
-                title: "Over-cap playback lease".to_owned(),
-                source_path,
-            })
-            .unwrap();
-        let managed_path = store
-            .session_directory(&imported.session_id.0)
-            .unwrap()
-            .join(&imported.relative_path);
-        store
-            .connection
-            .execute(
-                "UPDATE segments SET byte_length = ?2 WHERE session_id = ?1",
-                params![
-                    &imported.session_id.0,
-                    i64::try_from(MAX_IMPORTED_PLAYBACK_SNAPSHOT_BYTES + 1).unwrap()
-                ],
-            )
-            .unwrap();
-        fs::remove_file(managed_path).unwrap();
-
-        assert!(matches!(
-            store.lease_imported_playback(&imported.session_id),
-            Err(StoreError::InvalidState(
-                "managed media exceeds the safe playback snapshot limit"
-            ))
-        ));
-    }
-
-    #[test]
-    fn p1_import_failure_before_durable_stage_is_tombstoned_and_not_visible() {
-        let temp = TempDir::new().unwrap();
-        let source_path = temp.path().join("early-failure.caf");
-        write_recoverable_caf(&source_path, 48_000);
-        let managed_root = temp.path().join("Open Scribe");
-        let mut store = SessionStore::open(&managed_root).unwrap();
-
-        assert!(
-            store
-                .import_recoverable_caf_inner(
-                    ImportMediaRequest {
-                        title: "Failed import".to_owned(),
-                        source_path,
-                    },
-                    Some(ImportFailurePoint::PreparationDurable),
-                )
-                .is_err()
-        );
-
-        let snapshot = store.runtime_library_snapshot().unwrap();
-        assert!(snapshot.current_session.is_none());
-        assert!(snapshot.saved_sessions.is_empty());
-        let (lifecycle, health, failures): (String, String, i64) = store
-            .connection
-            .query_row(
-                "SELECT sessions.lifecycle, sessions.health,
-                        COUNT(session_events.id)
-                 FROM sessions
-                 LEFT JOIN session_events ON session_events.session_id = sessions.id
-                                               AND session_events.event_kind = 'media_import_failed'
-                 WHERE sessions.origin = 'import'",
-                [],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-            )
-            .unwrap();
-        assert_eq!(lifecycle, "deleted");
-        assert_eq!(health, "degraded");
-        assert_eq!(failures, 1);
-
-        drop(store);
-        let mut reopened = SessionStore::open(managed_root).unwrap();
-        assert!(reopened.recover_playable_sessions().unwrap().is_empty());
-        let snapshot = reopened.runtime_library_snapshot().unwrap();
-        assert!(snapshot.current_session.is_none());
-        assert!(snapshot.saved_sessions.is_empty());
-    }
-
-    #[test]
-    fn prestage_copy_failure_cleans_managed_bytes_before_tombstone() {
-        let temp = TempDir::new().unwrap();
-        let source_path = temp.path().join("copied-before-failure.caf");
-        write_recoverable_caf(&source_path, 48_000);
-        let original = fs::read(&source_path).unwrap();
-        let managed_root = temp.path().join("Open Scribe");
-        let mut store = SessionStore::open(&managed_root).unwrap();
-
-        assert!(
-            store
-                .import_recoverable_caf_inner(
-                    ImportMediaRequest {
-                        title: "Cleaned import".to_owned(),
-                        source_path: source_path.clone(),
-                    },
-                    Some(ImportFailurePoint::ManagedCopyComplete),
-                )
-                .is_err()
-        );
-
-        assert_eq!(fs::read(&source_path).unwrap(), original);
-        let (session_id, lifecycle, health): (String, String, String) = store
-            .connection
-            .query_row(
-                "SELECT id, lifecycle, health FROM sessions WHERE origin = 'import'",
-                [],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-            )
-            .unwrap();
-        assert_eq!(lifecycle, "deleted");
-        assert_eq!(health, "degraded");
-        assert_eq!(
-            fs::read_dir(store.session_directory(&session_id).unwrap().join("audio"))
-                .unwrap()
-                .count(),
-            0
-        );
-        assert!(
-            store
-                .runtime_library_snapshot()
-                .unwrap()
-                .saved_sessions
-                .is_empty()
-        );
-    }
-
-    #[test]
-    fn p1_staged_import_failure_reconciles_to_ready_instead_of_reporting_no_add() {
-        let temp = TempDir::new().unwrap();
-        let source_path = temp.path().join("staged-failure.caf");
-        write_recoverable_caf(&source_path, 48_000);
-        let mut store = SessionStore::open(temp.path().join("Open Scribe")).unwrap();
-
-        let evidence = store
-            .import_recoverable_caf_inner(
-                ImportMediaRequest {
-                    title: "Recovered staged import".to_owned(),
-                    source_path,
-                },
-                Some(ImportFailurePoint::StagedJournalDurable),
-            )
-            .unwrap();
-
-        assert!(evidence.ready_for_review);
-        let snapshot = store.runtime_library_snapshot().unwrap();
-        assert!(snapshot.current_session.is_none());
-        assert_eq!(snapshot.saved_sessions.len(), 1);
-        assert_eq!(snapshot.saved_sessions[0].session_id, evidence.session_id);
-    }
-
-    #[test]
-    fn p1_recovered_playback_lease_binds_exact_record_across_path_replacement_without_import_cap() {
-        let temp = TempDir::new().unwrap();
-        let mut store = SessionStore::open(temp.path().join("Open Scribe")).unwrap();
-        let prepared = store
-            .prepare_session_with_required_sources(
-                PrepareSessionRequest {
-                    title: "Recovered lease".to_owned(),
-                    origin: SessionOrigin::Capture,
-                },
-                vec![crate::MediaSourceKind::Microphone],
-            )
-            .unwrap();
-        let authorization = store
-            .authorize_media_open(crate::AuthorizeMediaOpenRequest {
-                session_id: prepared.session_id.clone(),
-                source_kind: crate::MediaSourceKind::Microphone,
-                source_display_name: "Synthetic microphone".to_owned(),
-            })
-            .unwrap();
-        write_recoverable_caf(&authorization.absolute_path, 0);
-        let initial_byte_length = authorization.absolute_path.metadata().unwrap().len();
-        store
-            .accept_media_open(crate::MediaOpenReceipt {
-                session_id: authorization.session_id.clone(),
-                track_id: authorization.track_id.clone(),
-                segment_id: authorization.segment_id.clone(),
-                open_token: authorization.open_token.clone(),
-                writer_generation: authorization.writer_generation,
-                relative_path: authorization.relative_path.clone(),
-                media_format: authorization.media_format.clone(),
-                sample_rate_hz: authorization.sample_rate_hz,
-                channels: authorization.channels,
-                initial_byte_length,
-            })
-            .unwrap();
-        let observed_byte_length = {
-            let mut writer = OpenOptions::new()
-                .append(true)
-                .open(&authorization.absolute_path)
-                .unwrap();
-            writer.write_all(&vec![0_u8; 960 * 2]).unwrap();
-            writer.sync_all().unwrap();
-            writer.metadata().unwrap().len()
-        };
-        store
-            .accept_first_sample(crate::FirstSampleReceipt {
-                session_id: authorization.session_id.clone(),
-                track_id: authorization.track_id.clone(),
-                segment_id: authorization.segment_id.clone(),
-                open_token: authorization.open_token.clone(),
-                writer_generation: authorization.writer_generation,
-                relative_path: authorization.relative_path.clone(),
-                first_sample_host_time: 42_000,
-                first_sample_frame_count: 960,
-                observed_byte_length,
-            })
-            .unwrap();
-        store
-            .confirm_recording(prepared.session_id.clone())
-            .unwrap();
-        store
-            .interrupt_session(crate::InterruptSessionRequest {
-                session_id: prepared.session_id,
-                reason: crate::SessionInterruptionReason::CaptureFailed,
-            })
-            .unwrap();
-        let recovered = store.recover_playable_sessions().unwrap().remove(0);
-        let original = fs::read(&authorization.absolute_path).unwrap();
-
-        let lease = store
-            .lease_recovered_playback(
-                &recovered.session_id,
-                &recovered.source_id,
-                &recovered.track_id,
-                &recovered.segment_id,
-            )
-            .unwrap();
-        assert!(matches!(
-            store.lease_recovered_playback(
-                &recovered.session_id,
-                "wrong-source",
-                &recovered.track_id,
-                &recovered.segment_id,
-            ),
-            Err(StoreError::InvalidState(
-                "recovered playback evidence is unavailable"
-            ))
-        ));
-        let managed_path = authorization.absolute_path;
-        fs::remove_file(&managed_path).unwrap();
-        write_recoverable_caf(&managed_path, 96_000);
-
-        let mut leased_file = lease.file.try_clone().unwrap();
-        let mut leased_bytes = Vec::new();
-        leased_file.read_to_end(&mut leased_bytes).unwrap();
-        assert_eq!(leased_bytes, original);
-        assert_eq!(lease.byte_length(), original.len() as u64);
-        assert_eq!(lease.digest_sha256(), recovered.digest_sha256);
-    }
-
-    #[test]
-    fn store_open_recovers_only_empty_private_playback_placeholders() {
-        let temp = TempDir::new().unwrap();
-        let managed_root = temp.path().join("Open Scribe");
-        drop(SessionStore::open(&managed_root).unwrap());
-        let stale = managed_root.join(format!(
-            "{PLAYBACK_SNAPSHOT_PREFIX}{}{PLAYBACK_SNAPSHOT_SUFFIX}",
-            Uuid::now_v7()
-        ));
-        File::create(&stale).unwrap();
-
-        drop(SessionStore::open(&managed_root).unwrap());
-
-        assert!(!stale.exists());
-        let quarantine = fs::read_dir(&managed_root)
-            .unwrap()
-            .find_map(|entry| {
-                let entry = entry.unwrap();
-                entry
-                    .file_name()
-                    .to_string_lossy()
-                    .starts_with(PLAYBACK_QUARANTINE_PREFIX)
-                    .then_some(entry.path())
-            })
-            .unwrap();
-        assert_eq!(fs::metadata(&quarantine).unwrap().len(), 0);
-        let invalid = managed_root.join(format!(
-            "{PLAYBACK_SNAPSHOT_PREFIX}{}{PLAYBACK_SNAPSHOT_SUFFIX}",
-            Uuid::now_v7()
-        ));
-        fs::write(&invalid, b"not an empty placeholder").unwrap();
-        assert!(SessionStore::open(&managed_root).is_err());
-        assert_eq!(fs::read(&invalid).unwrap(), b"not an empty placeholder");
-
-        fs::remove_file(&invalid).unwrap();
-        fs::remove_file(&quarantine).unwrap();
-        let raced = managed_root.join(format!(
-            "{PLAYBACK_SNAPSHOT_PREFIX}{}{PLAYBACK_SNAPSHOT_SUFFIX}",
-            Uuid::now_v7()
-        ));
-        File::create(&raced).unwrap();
-        let replacement = b"replacement must be preserved";
-        assert!(
-            cleanup_stale_playback_snapshot_placeholders_with_hook(&managed_root, |path| {
-                fs::remove_file(path).unwrap();
-                fs::write(path, replacement).unwrap();
-            })
-            .is_err()
-        );
-        assert_eq!(fs::read(&raced).unwrap(), replacement);
-        assert!(fs::read_dir(&managed_root).unwrap().all(|entry| {
-            !entry
-                .unwrap()
-                .file_name()
-                .to_string_lossy()
-                .starts_with(PLAYBACK_QUARANTINE_PREFIX)
-        }));
-
-        fs::remove_file(&raced).unwrap();
-        let symlink_target = managed_root.join("preserved-target");
-        fs::write(&symlink_target, b"preserved").unwrap();
-        let linked = managed_root.join(format!(
-            "{PLAYBACK_SNAPSHOT_PREFIX}{}{PLAYBACK_SNAPSHOT_SUFFIX}",
-            Uuid::now_v7()
-        ));
-        symlink(&symlink_target, &linked).unwrap();
-        assert!(SessionStore::open(&managed_root).is_err());
-        assert!(
-            fs::symlink_metadata(&linked)
-                .unwrap()
-                .file_type()
-                .is_symlink()
-        );
-        assert_eq!(fs::read(&symlink_target).unwrap(), b"preserved");
-    }
-
-    #[test]
-    fn import_rejects_symlinks_and_malformed_media_without_library_rows() {
-        let temp = TempDir::new().unwrap();
-        let source_path = temp.path().join("audio.caf");
-        fs::write(&source_path, b"not audio").unwrap();
-        let symlink_path = temp.path().join("linked.caf");
-        symlink(&source_path, &symlink_path).unwrap();
-        let oversized_path = temp.path().join("oversized.caf");
-        File::create(&oversized_path)
-            .unwrap()
-            .set_len(MAX_IMPORT_BYTES + 1)
-            .unwrap();
-        let overlong_path = temp.path().join("overlong.caf");
-        write_sparse_recoverable_caf(&overlong_path, MAX_IMPORT_SAMPLES + 1);
-        let mut store = SessionStore::open(temp.path().join("Open Scribe")).unwrap();
-
-        for path in [source_path, symlink_path, oversized_path, overlong_path] {
-            assert!(
-                store
-                    .import_recoverable_caf(ImportMediaRequest {
-                        title: "Rejected".to_owned(),
-                        source_path: path,
-                    })
-                    .is_err()
-            );
-        }
-        assert_eq!(
-            store
-                .connection
-                .query_row("SELECT COUNT(*) FROM sessions", [], |row| row
-                    .get::<_, i64>(0))
-                .unwrap(),
-            0
-        );
-        assert_eq!(
-            fs::read_dir(temp.path().join("Open Scribe").join("Sessions"))
-                .unwrap()
-                .count(),
-            0
-        );
-    }
-
-    #[test]
-    fn durable_import_journal_replays_an_uncommitted_library_projection() {
-        let temp = TempDir::new().unwrap();
-        let source_path = temp.path().join("interrupted-import.caf");
-        write_recoverable_caf(&source_path, 1_920);
-        let managed_root = temp.path().join("Open Scribe");
-        let mut store = SessionStore::open(&managed_root).unwrap();
-        let evidence = store
-            .import_recoverable_caf(ImportMediaRequest {
-                title: "Interrupted import".to_owned(),
-                source_path,
-            })
-            .unwrap();
-        let session_id = evidence.session_id.0.clone();
-        let track_id = Path::new(&evidence.relative_path)
-            .components()
-            .nth(1)
-            .and_then(|component| match component {
-                std::path::Component::Normal(value) => value.to_str(),
-                _ => None,
-            })
-            .unwrap()
-            .to_owned();
-        let track_directory = store
-            .managed_import_track_directory(&session_id, &track_id)
-            .unwrap();
-        fd_fs::renameat_with(
-            &track_directory,
-            OsStr::new("000000-import.caf"),
-            &track_directory,
-            OsStr::new(".importing.caf"),
-            fd_fs::RenameFlags::NOREPLACE,
-        )
-        .unwrap();
-        fd_fs::fsync(&track_directory).unwrap();
-        drop(track_directory);
-
-        let transaction = store.connection.transaction().unwrap();
-        transaction
-            .execute("DELETE FROM imports WHERE session_id = ?1", [&session_id])
-            .unwrap();
-        transaction
-            .execute("DELETE FROM segments WHERE session_id = ?1", [&session_id])
-            .unwrap();
-        transaction
-            .execute("DELETE FROM tracks WHERE session_id = ?1", [&session_id])
-            .unwrap();
-        transaction
-            .execute("DELETE FROM sources WHERE session_id = ?1", [&session_id])
-            .unwrap();
-        transaction
-            .execute(
-                "DELETE FROM session_events
-                 WHERE session_id = ?1 AND event_kind = 'media_imported'",
-                [&session_id],
-            )
-            .unwrap();
-        transaction
-            .execute(
-                "UPDATE sessions SET lifecycle = 'preparing' WHERE id = ?1",
-                [&session_id],
-            )
-            .unwrap();
-        transaction.commit().unwrap();
-        drop(store);
-
-        let mut reopened = SessionStore::open(&managed_root).unwrap();
-        let findings = reopened.recover_preparations().unwrap();
-        assert_eq!(findings.len(), 1);
-        assert_eq!(
-            findings[0].disposition,
-            RecoveryDisposition::ImportProjectionRepaired
-        );
-        let snapshot = reopened.runtime_library_snapshot().unwrap();
-        assert!(snapshot.current_session.is_none());
-        assert_eq!(snapshot.saved_sessions.len(), 1);
-        assert_eq!(snapshot.saved_sessions[0].session_id.0, session_id);
-    }
-}
+#[path = "import_tests.rs"]
+mod tests;
