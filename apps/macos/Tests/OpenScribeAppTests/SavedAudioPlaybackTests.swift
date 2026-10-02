@@ -597,11 +597,13 @@ final class SavedAudioPlaybackTests: RecoveredSessionTestCase {
     let mediaURL = try nativePlaybackCAF(frameCount: 24_000)
     defer { try? FileManager.default.removeItem(at: mediaURL.deletingLastPathComponent()) }
     let leaseReleased = SendableFlag()
+    let closeRecorder = DescriptorCloseRecorder()
     var lease: DescriptorPlaybackLeaseProbe? = try DescriptorPlaybackLeaseProbe(
       url: mediaURL,
-      released: leaseReleased
+      released: leaseReleased,
+      closeRecorder: closeRecorder
     )
-    let descriptor = try XCTUnwrap(lease?.fileDescriptor)
+    let identity = try XCTUnwrap(lease?.fileIdentity)
     let lifecycle = NativePlaybackLifecycleRecorder()
     let player = RecoveredAudioPlayer(
       lifecycle: NativePlaybackLifecycleHooks(observer: lifecycle.record),
@@ -625,7 +627,12 @@ final class SavedAudioPlaybackTests: RecoveredSessionTestCase {
     XCTAssertTrue(terminated)
     let released = await waitUntil { leaseReleased.value }
     XCTAssertTrue(released)
-    XCTAssertEqual(fcntl(descriptor, F_GETFD), -1)
+    let observations = closeRecorder.observations
+    XCTAssertEqual(observations.count, 1)
+    let closed = try XCTUnwrap(observations.first)
+    XCTAssertEqual(closed.metadataResult, 0, "pre-close fstat errno: \(closed.metadataErrno)")
+    XCTAssertEqual(closed.identity, identity)
+    XCTAssertEqual(closed.closeResult, 0, "close errno: \(closed.closeErrno)")
     XCTAssertTrue(
       lifecycle.occursInOrder([
         .outputConfigurationChanged(generation),
@@ -641,6 +648,7 @@ final class SavedAudioPlaybackTests: RecoveredSessionTestCase {
     XCTAssertTrue(
       termination.contains(generation: generation, outcome: .outputRouteChanged)
     )
+    XCTAssertEqual(closeRecorder.observations.count, 1)
   }
 
   func testRecoveryAndAsyncDecodeFailureReleaseImportedPlayingTruth() async {
