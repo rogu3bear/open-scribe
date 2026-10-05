@@ -109,8 +109,9 @@ struct MenuBarContent: View {
     Divider()
     Button("Open Open Scribe") {
       AppTelemetry.commandInvoked("open-primary")
-      NSApp.activate(ignoringOtherApps: true)
-      openWindow(id: "main")
+      if !MainWindow.focusExisting() {
+        openWindow(id: "main")
+      }
     }
     Button("Refresh Library") {
       store.refresh()
@@ -172,7 +173,9 @@ struct MenuBarLabel: View {
         #if DEBUG
           // The explicit scene proof must also work after macOS restores a
           // menu-bar-only launch. Its primary scene opens Settings in turn.
-          if ProcessInfo.processInfo.arguments.contains("--m0-proof-settings") {
+          if ProcessInfo.processInfo.arguments.contains("--m0-proof-settings"),
+            !MainWindow.focusExisting()
+          {
             openWindow(id: "main")
           }
         #endif

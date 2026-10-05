@@ -24,7 +24,7 @@ enum StructuredNativeIO {
     checksCancellationAfterOperation: Bool
   ) async throws -> Result {
     try await withThrowingTaskGroup(of: Result.self) { group in
-      group.addTask(priority: .userInitiated) {
+      group.addTask(priority: checksCancellationAfterOperation ? .utility : .userInitiated) {
         try Task.checkCancellation()
         let result = try operation()
         if checksCancellationAfterOperation {
@@ -222,6 +222,8 @@ final class RuntimeLibraryStore: ObservableObject {
     // A snapshot read during the scan may predate its recovery even if the
     // scan has finished by the time the read returns.
     let readDuringRecovery = isLaunchRecoveryPending()
+    let signpost = AppTelemetry.signposter.beginInterval("library_snapshot")
+    let started = ContinuousClock.now
     refreshTask = Task { [weak self] in
       let result: Result<NativeRuntimeLibrarySnapshot, Error>
       do {
@@ -229,6 +231,9 @@ final class RuntimeLibraryStore: ObservableObject {
       } catch {
         result = .failure(error)
       }
+      let milliseconds = DiagnosticTiming.milliseconds(since: started)
+      AppTelemetry.signposter.endInterval("library_snapshot", signpost)
+      DiagnosticTiming.note("library_snapshot", milliseconds: milliseconds)
       guard let self else { return }
       self.finishRefresh(
         result, generation: generation, readDuringRecovery: readDuringRecovery)
@@ -244,10 +249,18 @@ final class RuntimeLibraryStore: ObservableObject {
     if generation == refreshGeneration {
       switch result {
       case .success(let native):
-        currentSession =
+        let nextCurrent =
           readDuringRecovery || isLaunchRecoveryPending()
           ? nil : native.currentSession.map(RuntimeSessionPresentation.init(native:))
-        savedSessions = native.savedSessions.map(RuntimeSessionPresentation.init(native:))
+        let nextSaved = native.savedSessions.map(RuntimeSessionPresentation.init(native:))
+        // Identical snapshots must not invalidate SwiftUI. The one-second poll
+        // otherwise redraws the whole library while the app is idle.
+        guard
+          currentSession != nextCurrent || savedSessions != nextSaved || isSnapshotStale
+            || errorMessage != nil
+        else { break }
+        currentSession = nextCurrent
+        savedSessions = nextSaved
         isSnapshotStale = false
         errorMessage = nil
       case .failure(let error) where error is CancellationError:

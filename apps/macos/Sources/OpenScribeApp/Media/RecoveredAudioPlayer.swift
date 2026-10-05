@@ -298,9 +298,22 @@ enum StructuredImportedPlaybackCopy {
         _ isCancelled: @escaping @Sendable () -> Bool
       ) throws -> Result
   ) async throws -> Result {
-    try await withThrowingTaskGroup(of: Result.self) { group in
-      group.addTask(priority: .userInitiated) {
-        try operation { Task.isCancelled }
+    let started = ContinuousClock.now
+    let signpost = AppTelemetry.signposter.beginInterval("playback_copy")
+    defer {
+      let milliseconds = DiagnosticTiming.milliseconds(since: started)
+      AppTelemetry.signposter.endInterval("playback_copy", signpost)
+      DiagnosticTiming.note("playback_copy", milliseconds: milliseconds)
+    }
+    return try await withThrowingTaskGroup(of: Result.self) { group in
+      group.addTask(priority: .utility) {
+        try Task.checkCancellation()
+        if pthread_main_np() != 0 {
+          AppTelemetry.performanceStall(operation: "playback_copy_main", milliseconds: 0)
+        }
+        let result = try operation { Task.isCancelled }
+        try Task.checkCancellation()
+        return result
       }
       guard let result = try await group.next() else {
         throw CancellationError()

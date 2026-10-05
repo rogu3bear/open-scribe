@@ -47,7 +47,15 @@ final class SpeechTranscriptionModel: ObservableObject {
   var installedModel: NativeSpeechModel? { models.first(where: \.installed) }
 
   func refresh() {
-    models = speech?.models() ?? []
+    guard let speech else {
+      models = []
+      return
+    }
+    Task { [weak self] in
+      let loaded = try? await StructuredNativeIO.read { speech.models() }
+      guard let self else { return }
+      self.models = loaded ?? []
+    }
   }
 
   /// Copies, verifies, self-tests, and installs the chosen file off the main

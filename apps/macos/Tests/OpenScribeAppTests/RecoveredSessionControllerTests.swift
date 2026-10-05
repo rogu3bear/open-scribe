@@ -412,6 +412,32 @@ final class RecoveredSessionControllerTests: RecoveredSessionTestCase {
     await assertEventually { controller.phase == .available }
     XCTAssertEqual(controller.sessions.map(\.sessionId), [recovered.sessionId])
     XCTAssertEqual(preparation.recoveredOnMainThread, false)
+    XCTAssertTrue(
+      DiagnosticJournal.shared.recent().contains {
+        $0.message.contains("stage=scan-finished") && $0.message.contains("count=1")
+      })
+  }
+
+  func testCancelledRecoveryScanDoesNotClaimMediaFailure() async {
+    DiagnosticJournal.shared.resetForTest()
+    let preparation = RecoveryPreparationFake()
+    preparation.recoveryError = CancellationError()
+    let controller = RecoveredSessionController(
+      recoveryFactory: { preparation },
+      player: RecoveredAudioPlayerFake()
+    )
+
+    controller.recoverOnLaunch()
+
+    await assertEventually { controller.phase == .none }
+    XCTAssertTrue(controller.sessions.isEmpty)
+    XCTAssertNil(controller.errorMessage)
+    XCTAssertTrue(
+      DiagnosticJournal.shared.recent().contains {
+        $0.category == "RecoveryProof" && $0.message.contains("stage=scan-cancelled")
+      })
+    XCTAssertFalse(
+      DiagnosticJournal.shared.recent().contains { $0.message.contains("scan-failed") })
   }
 
   /// F4: a recording killed right after both sources reserved and opened a

@@ -1,6 +1,38 @@
 import AppKit
 import SwiftUI
 
+@MainActor
+enum MainWindow {
+  static func isPrimary(_ window: NSWindow) -> Bool {
+    guard window.canBecomeMain, window.level == .normal, window.styleMask.contains(.titled) else {
+      return false
+    }
+    return window.title != "Settings" && window.title != "Open Scribe Settings"
+  }
+
+  static func existing() -> [NSWindow] {
+    NSApp.windows.filter(isPrimary)
+  }
+
+  static func keepOne() {
+    let windows = existing()
+    guard windows.count > 1 else { return }
+    let keeper = windows.first(where: { $0.isKeyWindow }) ?? windows[0]
+    for window in windows where window !== keeper {
+      window.close()
+    }
+  }
+
+  @discardableResult
+  static func focusExisting() -> Bool {
+    keepOne()
+    guard let window = existing().first else { return false }
+    NSApp.activate(ignoringOtherApps: true)
+    window.makeKeyAndOrderFront(nil)
+    return true
+  }
+}
+
 final class AppDelegate: NSObject, NSApplicationDelegate {
   private var instanceGuard: SingleInstanceGuard?
   private var launchAdmitted = false
@@ -23,6 +55,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     guard launchAdmitted else { return }
     NSApp.setActivationPolicy(.regular)
     NSApp.activate(ignoringOtherApps: true)
+    // WindowGroup restores the previous window and also creates a new one.
+    MainWindow.keepOne()
+    DispatchQueue.main.async { MainWindow.keepOne() }
+  }
+
+  func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+    if flag {
+      MainWindow.keepOne()
+      MainWindow.focusExisting()
+      return false
+    }
+    return true
   }
 
   private func activateExistingInstance() {
@@ -169,6 +213,9 @@ struct OpenScribeApp: App {
       )
     }
     .defaultSize(width: 1040, height: 720)
+    .commands {
+      CommandGroup(replacing: .newItem) {}
+    }
 
     MenuBarExtra {
       MenuBarContent(
@@ -183,7 +230,8 @@ struct OpenScribeApp: App {
     }
 
     Settings {
-      SettingsView(status: status)
+      SettingsView(
+        status: status, speech: speech, library: runtimeStore, recovery: recoveredSessions)
     }
   }
 

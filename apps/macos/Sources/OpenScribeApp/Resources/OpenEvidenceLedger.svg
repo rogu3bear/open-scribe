@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-label="Open evidence ledger">
+  <rect width="1024" height="1024" fill="#F7F7F5"/>
+  <rect x="246" y="292" width="250" height="492" rx="41" fill="#D8D8D2"/>
+  <rect x="528" y="292" width="250" height="492" rx="41" fill="#D8D8D2"/>
+  <rect x="225" y="266" width="266" height="492" rx="41" fill="#FFFFFF" stroke="#171714" stroke-width="14"/>
+  <rect x="533" y="266" width="266" height="492" rx="41" fill="#FFFFFF" stroke="#171714" stroke-width="14"/>
+  <rect x="497" y="254" width="31" height="516" rx="15" fill="#171714"/>
+  <g stroke="#5C5C57" stroke-width="12" stroke-linecap="round" fill="none">
+    <path d="M581 581 H730"/>
+    <path d="M581 512 H730"/>
+    <path d="M581 443 H730"/>
+  </g>
+</svg>

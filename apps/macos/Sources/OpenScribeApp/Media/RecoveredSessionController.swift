@@ -9,6 +9,15 @@ enum RecoveredSessionPhase: Equatable, Sendable {
   case none
   case available
   case failed
+
+  var diagnosticName: String {
+    switch self {
+    case .scanning: "scanning"
+    case .none: "none"
+    case .available: "available"
+    case .failed: "failed"
+    }
+  }
 }
 
 enum RecoveredPlaybackStartupState: Equatable, Sendable {
@@ -207,24 +216,34 @@ final class RecoveredSessionController: ObservableObject {
     let generation = UUID()
     recoveryGeneration = generation
     let recoveryFactory = recoveryFactory
+    AppTelemetry.recoveryProof(stage: "scan-started", detail: "launch")
+    let started = ContinuousClock.now
+    let signpost = AppTelemetry.signposter.beginInterval("launch_recovery")
     recoveryTask = Task { [weak self] in
       let outcome: Result<[NativeRecoveredPlayableSession], Error>
       do {
         outcome = .success(
           try await StructuredNativeIO.read {
-            try recoveryFactory().recoverPlayableSessions()
+            if Thread.isMainThread {
+              AppTelemetry.performanceStall(operation: "launch_recovery_main", milliseconds: 0)
+            }
+            return try recoveryFactory().recoverPlayableSessions()
           })
       } catch {
         outcome = .failure(error)
       }
+      let milliseconds = DiagnosticTiming.milliseconds(since: started)
+      AppTelemetry.signposter.endInterval("launch_recovery", signpost)
+      DiagnosticTiming.note("launch_recovery", milliseconds: milliseconds)
       guard let self, self.recoveryGeneration == generation else { return }
       self.recoveryTask = nil
-      self.publishLaunchRecovery(outcome)
+      self.publishLaunchRecovery(outcome, milliseconds: milliseconds)
     }
   }
 
   private func publishLaunchRecovery(
-    _ outcome: Result<[NativeRecoveredPlayableSession], Error>
+    _ outcome: Result<[NativeRecoveredPlayableSession], Error>,
+    milliseconds: Int
   ) {
     do {
       let recovered = try outcome.get()
@@ -238,14 +257,33 @@ final class RecoveredSessionController: ObservableObject {
       }
       sessions = recovered
       phase = recovered.isEmpty ? .none : .available
-    } catch {
+      AppTelemetry.recoveryProof(
+        stage: "scan-finished",
+        detail: "phase=\(phase.diagnosticName) count=\(recovered.count) milliseconds=\(milliseconds)"
+      )
+    } catch is CancellationError {
       sessions = []
-      errorMessage =
-        "Recovery could not confirm playable local media. Original files were not changed."
-      errorSessionId = nil
-      errorRecoveredMediaIdentity = nil
-      phase = .failed
+      clearPlaybackError()
+      phase = .none
+      AppTelemetry.recoveryProof(
+        stage: "scan-cancelled", detail: "milliseconds=\(milliseconds)")
+    } catch RecoveredSessionError.invalidEvidence {
+      publishRecoveryFailure(code: "invalid_evidence", milliseconds: milliseconds)
+    } catch {
+      publishRecoveryFailure(code: "unavailable", milliseconds: milliseconds)
     }
+  }
+
+  private func publishRecoveryFailure(code: String, milliseconds: Int) {
+    sessions = []
+    errorMessage =
+      "Recovery could not confirm playable local media. Original files were not changed."
+    errorSessionId = nil
+    errorRecoveredMediaIdentity = nil
+    phase = .failed
+    AppTelemetry.recoveryProof(
+      stage: code == "invalid_evidence" ? "scan-rejected" : "scan-failed",
+      detail: "code=\(code) milliseconds=\(milliseconds)")
   }
 
   @discardableResult

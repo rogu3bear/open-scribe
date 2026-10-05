@@ -51,8 +51,12 @@ struct ContentView: View {
     }
     .onAppear {
       store.refresh()
-      synchronizeSelection(preferCurrentSession: true)
       AppTelemetry.runtimeSceneAppeared("primary", session: store.currentSession)
+      // Selection is published state. Applying it on the next turn keeps the
+      // first library layout from redrawing inside its own appearance pass.
+      Task { @MainActor in
+        synchronizeSelection(preferCurrentSession: true)
+      }
     }
     .onChange(of: store.currentSession?.sessionId) { _ in
       synchronizeSelection(preferCurrentSession: false)
@@ -380,6 +384,7 @@ final class MainWorkspaceNavigation: ObservableObject {
   private(set) var pendingImportedSessionId: String?
 
   func select(_ sessionId: String?) {
+    guard selectedSessionId != sessionId else { return }
     selectedSessionId = sessionId
   }
 
@@ -388,12 +393,15 @@ final class MainWorkspaceNavigation: ObservableObject {
     savedSessionIds: [String],
     preferCurrentSession: Bool
   ) {
-    selectedSessionId = MainWorkspaceSelection.resolve(
+    let resolved = MainWorkspaceSelection.resolve(
       selectedSessionId: selectedSessionId,
       currentSessionId: currentSessionId,
       savedSessionIds: savedSessionIds,
       preferCurrentSession: preferCurrentSession
     )
+    if selectedSessionId != resolved {
+      selectedSessionId = resolved
+    }
     reconcileImportedConversation(savedSessionIds: savedSessionIds)
   }
 
@@ -408,7 +416,9 @@ final class MainWorkspaceNavigation: ObservableObject {
       selectedSessionId: selectedSessionId,
       savedSessionIds: savedSessionIds
     )
-    selectedSessionId = resolution.selectedSessionId
+    if selectedSessionId != resolution.selectedSessionId {
+      selectedSessionId = resolution.selectedSessionId
+    }
     pendingImportedSessionId = resolution.pendingImportedSessionId
   }
 }
