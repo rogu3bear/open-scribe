@@ -24,7 +24,7 @@ struct TranscriptSection: View {
     VStack(alignment: .leading, spacing: 12) {
       HStack(alignment: .firstTextBaseline) {
         Text("Transcript")
-          .font(.title2.weight(.semibold))
+          .font(.headline)
           .accessibilityAddTraits(.isHeader)
         Spacer()
         exportMenu
@@ -149,7 +149,7 @@ struct TranscriptSection: View {
       .disabled(!canSeek)
       .help(canSeek ? "Play from \(stamp)" : "This conversation has no playable audio")
       .accessibilityLabel(canSeek ? "Play from \(stamp)" : stamp)
-      VStack(alignment: .leading, spacing: 2) {
+      VStack(alignment: .leading, spacing: 4) {
         Text(segment.speakerLabel)
           .font(.subheadline.weight(.semibold))
         Text(segment.effectiveText)
@@ -272,7 +272,6 @@ struct TranscriptSection: View {
         .textSelection(.enabled)
       TextEditor(text: $draftText)
         .frame(minHeight: 90)
-        .border(Color.secondary.opacity(0.4))
         .accessibilityLabel("Corrected text")
       sheetFailure
       HStack {
@@ -291,7 +290,7 @@ struct TranscriptSection: View {
         .disabled(draftText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
       }
     }
-    .padding(20)
+    .padding(16)
     .frame(width: 460)
   }
 
@@ -323,7 +322,7 @@ struct TranscriptSection: View {
         .disabled(draftLabel.trimmingCharacters(in: .whitespaces).isEmpty)
       }
     }
-    .padding(20)
+    .padding(16)
     .frame(width: 400)
   }
 

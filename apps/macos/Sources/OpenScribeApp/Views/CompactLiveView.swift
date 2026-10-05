@@ -17,16 +17,16 @@ struct CompactLiveView: View {
   }
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 20) {
-      HStack(alignment: .firstTextBaseline, spacing: 12) {
+    VStack(alignment: .leading, spacing: 16) {
+      HStack(alignment: .firstTextBaseline, spacing: 16) {
         Image(systemName: statusSymbol)
           .foregroundStyle(statusColor)
         Text(statusText)
           .font(.title2.weight(.semibold))
-        Spacer()
         if let current = store.currentSession {
           Text(current.timerText)
-            .font(.title3.monospacedDigit())
+            .font(.title.monospacedDigit())
+            .foregroundStyle(.secondary)
         }
       }
       .accessibilityElement(children: .ignore)
@@ -37,12 +37,12 @@ struct CompactLiveView: View {
           .font(.headline)
           .textSelection(.enabled)
 
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 8) {
           Text("Sources")
             .font(.headline)
             .accessibilityAddTraits(.isHeader)
           ForEach(current.sources, id: \.kind) { source in
-            HStack(spacing: 10) {
+            HStack(spacing: 8) {
               Image(systemName: source.symbolName)
                 .frame(width: 18)
               Text(source.name)
@@ -61,12 +61,6 @@ struct CompactLiveView: View {
             .accessibilityLabel("Recording needs attention. \(interruption)")
         }
 
-        if current.isRecording {
-          Label("Audio is being saved locally as you record.", systemImage: "lock.shield")
-            .font(.callout)
-            .foregroundStyle(.secondary)
-        }
-
         if liveRecording.contextBinding != nil {
           ContextInspector(model: context)
         }
@@ -81,8 +75,9 @@ struct CompactLiveView: View {
       }
 
     }
+    .frame(maxWidth: 760, alignment: .leading)
     .padding(24)
-    .frame(minWidth: 500, minHeight: 430, alignment: .topLeading)
+    .frame(maxWidth: .infinity, minHeight: 430, alignment: .topLeading)
     .onAppear {
       AppTelemetry.runtimeSceneAppeared("live-session", session: store.currentSession)
     }

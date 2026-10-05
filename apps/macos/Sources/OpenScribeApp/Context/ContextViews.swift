@@ -60,8 +60,8 @@ struct ContextScopeSheet: View {
   @State private var hovered: String?
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 14) {
-      Text("Add Screen Context").font(.title2.weight(.semibold))
+    VStack(alignment: .leading, spacing: 16) {
+      Text("Add Screen Context").font(.headline)
       Form {
         Section("Meeting (optional)") {
           TextField("Participants, separated by commas", text: $participants)
@@ -114,7 +114,7 @@ struct ContextScopeSheet: View {
         .disabled(!canAuthorize)
       }
     }
-    .padding(20)
+    .padding(16)
     .frame(width: 580, height: 720)
     .task { await model.refreshChoices() }
     .onChange(of: model.selection) { _ in model.previewOverlay(hovered: hovered) }

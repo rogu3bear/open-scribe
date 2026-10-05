@@ -36,12 +36,12 @@ struct SpeechModelSheet: View {
           .keyboardShortcut(.defaultAction)
       }
     }
-    .padding(20)
+    .padding(16)
     .frame(width: 520)
   }
 
   private func modelDetail(_ model: NativeSpeechModel) -> some View {
-    VStack(alignment: .leading, spacing: 6) {
+    VStack(alignment: .leading, spacing: 8) {
       HStack(alignment: .firstTextBaseline) {
         Text(Self.title(model))
           .font(.subheadline.weight(.semibold))
@@ -75,8 +75,7 @@ struct SpeechModelSheet: View {
         }
       }
     }
-    .padding(12)
-    .background(RoundedRectangle(cornerRadius: 8).fill(Color(nsColor: .controlBackgroundColor)))
+    .padding(.vertical, 8)
   }
 
   private func choose(_ model: NativeSpeechModel) {

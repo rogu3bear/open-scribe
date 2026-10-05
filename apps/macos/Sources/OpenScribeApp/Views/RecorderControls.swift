@@ -41,7 +41,7 @@ struct RecorderControls: View {
             if let error = picker.errorMessage { Text(error).foregroundStyle(.orange) }
             Text("Application selection limits computer audio to the chosen app. Changes take effect when you explicitly record or resume.")
               .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-          }.padding(20).frame(width: 340)
+          }.padding(16).frame(width: 340)
         }
     case .menu:
       Menu("Sources", systemImage: "slider.horizontal.3") {

@@ -29,17 +29,6 @@ struct SettingsView: View {
 
   var body: some View {
     Form {
-      Section("Native core") {
-        LabeledContent("Product", value: status.productName)
-        LabeledContent("Rust version", value: status.coreVersion)
-      }
-
-      Section("Current implementation") {
-        LabeledContent("Persistence", value: status.persistence)
-        LabeledContent("Capture", value: status.capture)
-        LabeledContent("Intelligence", value: status.intelligence)
-      }
-
       Section("Diagnostics") {
         LabeledContent("Microphone", value: microphoneLabel)
         LabeledContent("Screen Recording", value: screenCaptureLabel)
@@ -72,8 +61,7 @@ struct SettingsView: View {
       }
     }
     .formStyle(.grouped)
-    .frame(minWidth: 460, minHeight: 420)
-    .padding()
+    .frame(minWidth: 460, minHeight: 320)
     .onAppear {
       AppTelemetry.sceneAppeared("settings", status: status)
       speech.refresh()

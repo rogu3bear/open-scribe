@@ -145,7 +145,7 @@ struct ContentView: View {
 
       if let current = store.currentSession {
         Section("Now") {
-          ConversationSidebarRow(session: current, isCurrent: true)
+          ConversationSidebarRow(session: current)
             .tag(current.sessionId)
         }
       }
@@ -156,7 +156,7 @@ struct ContentView: View {
             .foregroundStyle(.secondary)
         } else {
           ForEach(store.savedSessions) { session in
-            ConversationSidebarRow(session: session, isCurrent: false)
+            ConversationSidebarRow(session: session)
               .tag(session.sessionId)
               .contextMenu {
                 Button("Move to Trash…", role: .destructive) {
@@ -226,8 +226,8 @@ struct ContentView: View {
           }
           .font(.callout)
           .foregroundStyle(notice.isFailure ? Color.red : Color.secondary)
-          .padding(.horizontal, 20)
-          .padding(.vertical, 10)
+          .padding(.horizontal, 16)
+          .padding(.vertical, 8)
           .accessibilityElement(children: .combine)
           .accessibilityLabel(
             "\(notice.isFailure ? "Problem" : "Status"): \(notice.message)"
@@ -526,18 +526,20 @@ enum ImportedPlaybackEligibility {
 
 private struct ConversationSidebarRow: View {
   let session: RuntimeSessionPresentation
-  let isCurrent: Bool
 
-  private var symbolName: String {
-    if isCurrent { return session.isRecording ? "record.circle.fill" : "waveform" }
+  private var symbolName: String? {
+    if session.isRecording { return "record.circle.fill" }
     if session.needsAttention { return "exclamationmark.triangle" }
-    if session.playableMedia != nil { return "waveform.circle" }
-    return session.recovered ? "arrow.clockwise.circle" : "waveform.badge.checkmark"
+    return nil
   }
 
   var body: some View {
-    Label {
-      VStack(alignment: .leading, spacing: 2) {
+    HStack(alignment: .firstTextBaseline, spacing: 8) {
+      if let symbolName {
+        Image(systemName: symbolName)
+          .foregroundStyle(session.isRecording ? Color.red : Color.orange)
+      }
+      VStack(alignment: .leading, spacing: 4) {
         Text(session.title)
           .lineLimit(1)
         Text("\(session.timerText) · \(session.statusText)")
@@ -545,9 +547,6 @@ private struct ConversationSidebarRow: View {
           .foregroundStyle(.secondary)
           .lineLimit(1)
       }
-    } icon: {
-      Image(systemName: symbolName)
-        .foregroundStyle(session.needsAttention ? .orange : .secondary)
     }
     .accessibilityElement(children: .combine)
     .accessibilityLabel("\(session.title), \(session.timerText), \(session.statusText)")
@@ -617,19 +616,17 @@ private struct ConversationWorkspaceView: View {
   }
 
   private var header: some View {
-    VStack(alignment: .leading, spacing: 6) {
-      Text(session.title)
-        .font(.largeTitle.weight(.semibold))
-        .textSelection(.enabled)
-        .accessibilityAddTraits(.isHeader)
-      HStack(spacing: 8) {
-        Label(session.timerText, systemImage: "clock")
-        Text("·")
-          .foregroundStyle(.tertiary)
-        Text(session.statusText)
-      }
-      .foregroundStyle(.secondary)
+    HStack(spacing: 8) {
+      Label(session.timerText, systemImage: "clock")
+      Text("·")
+        .foregroundStyle(.tertiary)
+      Text(session.statusText)
     }
+    .font(.title3)
+    .foregroundStyle(.secondary)
+    .accessibilityElement(children: .combine)
+    .accessibilityAddTraits(.isHeader)
+    .accessibilityLabel("\(session.title), \(session.timerText), \(session.statusText)")
   }
 
   private var attentionNotice: some View {
@@ -653,7 +650,7 @@ private struct ConversationWorkspaceView: View {
   private var audioSection: some View {
     VStack(alignment: .leading, spacing: 12) {
       Text("Audio")
-        .font(.title2.weight(.semibold))
+        .font(.headline)
         .accessibilityAddTraits(.isHeader)
 
       if session.lifecycle == "ready_for_review", session.hasCaptureTimeline {
@@ -761,7 +758,7 @@ private struct ConversationWorkspaceView: View {
           )
         }
       } else if !session.hasCaptureTimeline {
-        Label("No verified playable audio is available.", systemImage: "waveform.slash")
+        Text("No verified playable audio is available.")
           .foregroundStyle(.secondary)
       }
     }
@@ -770,10 +767,10 @@ private struct ConversationWorkspaceView: View {
   private var sourceSection: some View {
     VStack(alignment: .leading, spacing: 12) {
       Text("Sources")
-        .font(.title2.weight(.semibold))
+        .font(.headline)
         .accessibilityAddTraits(.isHeader)
       ForEach(session.sources, id: \.kind) { source in
-        HStack(spacing: 10) {
+        HStack(spacing: 8) {
           Image(systemName: source.symbolName)
             .frame(width: 20)
           Text(source.name)
@@ -818,23 +815,20 @@ private struct PlayableAudioRow: View {
 
   var body: some View {
     HStack(spacing: 12) {
-      Image(systemName: "waveform")
-        .foregroundStyle(.secondary)
-      VStack(alignment: .leading, spacing: 2) {
+      VStack(alignment: .leading, spacing: 4) {
         Text(name)
           .font(.headline)
         Text("\(duration) · \(status)")
           .font(.caption)
-          .foregroundStyle(statusIsFailure || !isAvailable ? Color.red : Color.secondary)
+          .foregroundStyle(statusIsFailure ? Color.red : Color.secondary)
       }
-      Spacer()
       Button(playbackAction.title) {
         onTogglePlayback()
       }
       .disabled(!actionEnabled)
       .accessibilityLabel("\(playbackAction.title) \(name)")
     }
-    .padding(.vertical, 6)
+    .padding(.vertical, 8)
     .accessibilityElement(children: .contain)
   }
 }
@@ -849,14 +843,11 @@ private struct EmptyConversationWorkspace: View {
 
   var body: some View {
     VStack(spacing: 16) {
-      Image(systemName: "waveform")
-        .font(.system(size: 42, weight: .light))
-        .foregroundStyle(.secondary)
-      Text("Keep a conversation you can return to")
-        .font(.title2.weight(.semibold))
+      Text("No conversation is open")
+        .font(.title.weight(.semibold))
         .accessibilityAddTraits(.isHeader)
       Text(
-        "Record microphone and computer audio, import local CAF or M4A audio, or open a portable package from another Mac. Open Scribe keeps the source on this Mac."
+        "Record microphone and computer audio, import local CAF or M4A audio, or open a portable package from another Mac. The source stays on this Mac."
       )
       .foregroundStyle(.secondary)
       .multilineTextAlignment(.center)
@@ -873,7 +864,7 @@ private struct EmptyConversationWorkspace: View {
         }
       }
     }
-    .padding(40)
+    .padding(32)
     .frame(maxWidth: .infinity, maxHeight: .infinity)
     .accessibilityElement(children: .contain)
   }
