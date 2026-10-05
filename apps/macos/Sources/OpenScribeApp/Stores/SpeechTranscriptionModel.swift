@@ -55,7 +55,7 @@ final class SpeechTranscriptionModel: ObservableObject {
     // read it when this returns. The Rust read itself stays off the main
     // thread; only the finished list is published here.
     let loaded = DispatchQueue.global(qos: .utility).sync {
-      (try? speech.models()) ?? []
+      speech.models()
     }
     models = loaded
   }
