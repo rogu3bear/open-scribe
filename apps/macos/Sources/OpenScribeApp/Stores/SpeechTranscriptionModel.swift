@@ -51,11 +51,13 @@ final class SpeechTranscriptionModel: ObservableObject {
       models = []
       return
     }
-    Task { [weak self] in
-      let loaded = try? await StructuredNativeIO.read { speech.models() }
-      guard let self else { return }
-      self.models = loaded ?? []
+    // The catalog is part of the model's observable state, so callers can
+    // read it when this returns. The Rust read itself stays off the main
+    // thread; only the finished list is published here.
+    let loaded = DispatchQueue.global(qos: .utility).sync {
+      (try? speech.models()) ?? []
     }
+    models = loaded
   }
 
   /// Copies, verifies, self-tests, and installs the chosen file off the main
