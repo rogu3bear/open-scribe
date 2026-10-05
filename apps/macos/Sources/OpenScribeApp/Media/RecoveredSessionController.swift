@@ -241,6 +241,12 @@ final class RecoveredSessionController: ObservableObject {
     }
   }
 
+  /// Waits for the scan started by `recoverOnLaunch`, including one that has
+  /// already published.
+  func waitForLaunchRecovery() async {
+    await recoveryTask?.value
+  }
+
   private func publishLaunchRecovery(
     _ outcome: Result<[NativeRecoveredPlayableSession], Error>,
     milliseconds: Int
@@ -299,6 +305,7 @@ final class RecoveredSessionController: ObservableObject {
     activePlaybackSessionId = session.sessionId
     pendingRecoveredMediaIdentity = identity
     clearPlaybackError()
+    notePlayback("playback-requested", sessionId: session.sessionId)
     let leaseProvider = recoveredPlaybackLeaseProvider
     playbackTask = Task { [weak self] in
       guard let self else { return }
@@ -320,6 +327,7 @@ final class RecoveredSessionController: ObservableObject {
         self.settleRecoveredPlaybackStartup(generation: generation, state: .playing)
         self.playbackTask = nil
         self.playingSessionId = session.sessionId
+        self.notePlayback("playback-opened", sessionId: session.sessionId)
         self.pendingRecoveredMediaIdentity = nil
         self.playingRecoveredMediaIdentity = identity
         self.clearPlaybackError()
@@ -378,6 +386,7 @@ final class RecoveredSessionController: ObservableObject {
     }
     let leaseProvider = importedPlaybackLeaseProvider
     let sessionId = session.sessionId
+    notePlayback("playback-requested", sessionId: sessionId)
     let generation = UUID()
     activePlaybackGeneration = generation
     activePlaybackSessionId = session.sessionId
@@ -397,6 +406,7 @@ final class RecoveredSessionController: ObservableObject {
         guard self.activePlaybackGeneration == generation else { return }
         self.playbackTask = nil
         self.playingSessionId = session.sessionId
+        self.notePlayback("playback-opened", sessionId: session.sessionId)
         self.clearPlaybackError()
       } catch is CancellationError {
         guard self.activePlaybackGeneration == generation else { return }
@@ -441,6 +451,7 @@ final class RecoveredSessionController: ObservableObject {
     let generation = UUID()
     activePlaybackGeneration = generation
     activePlaybackSessionId = sessionId
+    notePlayback("playback-requested", sessionId: sessionId)
     playbackTask = Task { [weak self] in
       guard let self else { return }
       do {
@@ -469,6 +480,7 @@ final class RecoveredSessionController: ObservableObject {
         self.timelineClockAdjustmentNanoseconds =
           segments.map(\.clockAdjustmentNanoseconds).max() ?? 0
         self.playingSessionId = sessionId
+        self.notePlayback("playback-opened", sessionId: sessionId)
         self.playbackTask = nil
       } catch {
         guard self.activePlaybackGeneration == generation else { return }
@@ -493,6 +505,7 @@ final class RecoveredSessionController: ObservableObject {
     activePlaybackGeneration = generation
     activePlaybackSessionId = sessionId
     activeMixdownSessionId = sessionId
+    notePlayback("playback-requested", sessionId: sessionId)
     playbackTask = Task { [weak self] in
       guard let self else { return }
       do {
@@ -505,6 +518,7 @@ final class RecoveredSessionController: ObservableObject {
           receipt: lease.playbackPath(), retaining: lease, generation: generation)
         guard self.activePlaybackGeneration == generation else { return }
         self.playingSessionId = sessionId
+        self.notePlayback("playback-opened", sessionId: sessionId)
         self.playbackTask = nil
       } catch {
         guard self.activePlaybackGeneration == generation else { return }
@@ -560,6 +574,17 @@ final class RecoveredSessionController: ObservableObject {
     errorMessage = message
     errorSessionId = sessionId
     errorRecoveredMediaIdentity = recoveredMediaIdentity
+    AppTelemetry.recoveryProof(
+      stage: "playback-failed",
+      detail: "session=\(DiagnosticPrivacy.token(sessionId ?? "none"))"
+    )
+  }
+
+  private func notePlayback(_ stage: String, sessionId: String) {
+    AppTelemetry.recoveryProof(
+      stage: stage,
+      detail: "session=\(DiagnosticPrivacy.token(sessionId))"
+    )
   }
 
   private func clearPlaybackError() {

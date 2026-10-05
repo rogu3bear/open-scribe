@@ -19,11 +19,13 @@ Durable session policy, evidence, persistence, recovery, provider scope, and exp
 ## Local audio import
 
 Import copies user-selected audio into the conversation library without changing
-the original or starting transcription. PCM CAF remains limited to 256 MiB.
-M4A AAC/Apple Lossless imports have a 1 GiB source limit and a four-hour duration
-limit. Compressed preservation supports a single audio track at 48 kHz with one
-or two channels; small mono M4A at other rates uses the existing bounded 48 kHz
-CAF normalization path. Unsupported layouts, rates, formats, or policy excesses
+the original or starting transcription. PCM CAF may be four hours of stereo
+16-bit 48 kHz audio. Files above 256 MiB play as verified chunks and are not
+held in memory. M4A AAC/Apple Lossless imports have a 4 GiB source limit and
+the same four-hour duration limit. Compressed preservation supports a single
+audio track at 48 kHz with one or two channels; small mono M4A at other rates
+uses the existing bounded 48 kHz CAF normalization path. Unsupported layouts,
+rates, formats, or policy excesses
 fail with a visible explanation. Capture must finish before import begins.
 
 Swift probes the selected file and a private staged copy. Rust verifies the

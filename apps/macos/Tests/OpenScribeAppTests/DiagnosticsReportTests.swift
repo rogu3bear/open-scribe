@@ -121,6 +121,48 @@ final class DiagnosticsReportTests: XCTestCase {
     XCTAssertEqual(observation.value, false)
   }
 
+  func testCaptureProgressStaysOutOfTheJournal() {
+    let journal = DiagnosticJournal.shared
+    journal.resetForTest()
+    let identity = MicrophoneCaptureIdentity.testFixture(generation: 1)
+    func observation(
+      _ event: MicrophoneSourceHealthEvent
+    ) -> MicrophoneSourceHealthObservation {
+      MicrophoneSourceHealthObservation(
+        identity: identity,
+        sequence: 1,
+        event: event,
+        callbackCount: 1,
+        successfullyWrittenFrameCount: 1,
+        lastProgressMonotonicNanoseconds: 1
+      )
+    }
+    AppTelemetry.captureSourceHealth(
+      CaptureSourceHealthTelemetryRecord(
+        observation: observation(.progress),
+        rustSourceState: "active",
+        visibleState: "capturing"
+      )
+    )
+    XCTAssertTrue(journal.recent().isEmpty)
+    AppTelemetry.captureSourceHealth(
+      CaptureSourceHealthTelemetryRecord(
+        observation: observation(.routeInterrupted),
+        rustSourceState: "active",
+        visibleState: "capturing"
+      )
+    )
+    let recent = journal.recent()
+    XCTAssertEqual(recent.count, 1)
+    XCTAssertTrue(recent[0].message.contains("event=route_interrupted"))
+    XCTAssertFalse(recent[0].message.contains("/"))
+  }
+
+  func testTokenRedactsOneField() {
+    XCTAssertEqual(DiagnosticPrivacy.token("/tmp/secret"), "redacted")
+    XCTAssertEqual(DiagnosticPrivacy.token("session-1"), "session-1")
+  }
+
   func testJournalKeepsOnlyTheLatestBoundedNotes() {
     let journal = DiagnosticJournal.shared
     journal.resetForTest()

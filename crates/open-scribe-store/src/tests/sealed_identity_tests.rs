@@ -549,7 +549,15 @@ fn sealed_identity_snapshot_memo_is_bounded_and_not_persistent() {
             .availability
             == RuntimePlayableMediaAvailability::Available)
     );
-    assert_eq!(store.snapshot_digest_memo.borrow().len(), 64);
+    assert_eq!(store.snapshot_digest_memo.borrow().len(), 66);
+    let digest = "0123456789abcdef".repeat(4);
+    for index in 0..5_000_u64 {
+        store.remember_snapshot_digest((9, index, 8, 0, 0, 0, 0), digest.clone());
+    }
+    assert_eq!(
+        store.snapshot_digest_memo.borrow().len(),
+        super::super::SNAPSHOT_DIGEST_MEMO_CAPACITY
+    );
     drop(store);
     let reopened = open_store(&temp);
     assert!(reopened.snapshot_digest_memo.borrow().is_empty());

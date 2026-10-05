@@ -31,7 +31,13 @@ final class DiagnosticJournal: @unchecked Sendable {
     if events.count > Self.limit {
       events.removeFirst(events.count - Self.limit)
     }
+    let snapshot = events
     lock.unlock()
+    // Settings observes this copy. Publishing on the next main-actor turn
+    // keeps a note recorded during a view update from redrawing that update.
+    DispatchQueue.main.async {
+      DiagnosticLog.shared.replace(snapshot)
+    }
   }
 
   func recent() -> [DiagnosticEvent] {
@@ -62,6 +68,23 @@ enum DiagnosticPrivacy {
     let lowered = text.lowercased()
     if lowered.contains("file:") || lowered.contains("transcript=") { return true }
     return text.unicodeScalars.contains { $0.value < 32 }
+  }
+
+  /// A single log field. A private value becomes the word `redacted` so the
+  /// rest of the line can still be kept.
+  static func token(_ text: String) -> String {
+    isPrivate(text) ? "redacted" : text
+  }
+}
+
+/// The journal lines Settings is currently showing. `replace` runs on the main
+/// thread; the journal itself stays lock-protected for capture callbacks.
+final class DiagnosticLog: ObservableObject, @unchecked Sendable {
+  static let shared = DiagnosticLog()
+  @Published private(set) var events: [DiagnosticEvent] = []
+
+  func replace(_ events: [DiagnosticEvent]) {
+    self.events = events
   }
 }
 

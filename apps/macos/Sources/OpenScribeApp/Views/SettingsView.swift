@@ -24,7 +24,7 @@ struct SettingsView: View {
   @ObservedObject var recovery: RecoveredSessionController
   @State private var exportDocument = DiagnosticsDocument(text: "")
   @State private var exportPresented = false
-  @State private var events: [DiagnosticEvent] = []
+  @ObservedObject private var diagnosticLog = DiagnosticLog.shared
   @State private var signature = "checking"
 
   var body: some View {
@@ -52,14 +52,16 @@ struct SettingsView: View {
         Text("Recent notes stay on this Mac. They omit titles, transcript text, and file paths.")
           .font(.caption)
           .foregroundStyle(.secondary)
-        if events.isEmpty {
+        if diagnosticLog.events.isEmpty {
           Text("No notes yet.")
             .foregroundStyle(.secondary)
         } else {
-          ForEach(events.suffix(6)) { event in
-            Text("\(event.category)  \(event.message)")
-              .font(.caption.monospaced())
-              .textSelection(.enabled)
+          ForEach(diagnosticLog.events.suffix(12)) { event in
+            Text(
+              "\(event.recordedAt.formatted(.dateTime.hour().minute().second()))  \(event.category)  \(event.message)"
+            )
+            .font(.caption.monospaced())
+            .textSelection(.enabled)
           }
         }
         Button("Export Diagnostics…") {
@@ -75,7 +77,7 @@ struct SettingsView: View {
     .onAppear {
       AppTelemetry.sceneAppeared("settings", status: status)
       speech.refresh()
-      events = DiagnosticJournal.shared.recent()
+      diagnosticLog.replace(DiagnosticJournal.shared.recent())
       Task { @MainActor in
         let status = await Task.detached(priority: .utility) {
           DiagnosticsSignature.current()

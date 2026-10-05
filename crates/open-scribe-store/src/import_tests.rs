@@ -346,9 +346,10 @@ fn normalized_import_retains_original_metadata_and_reopens_as_playable_media() {
 fn import_bounds_have_distinct_size_and_duration_failures() {
     let policy = import_policy();
     assert_eq!(
-        policy.maximum_managed_bytes,
-        ImportedPlaybackLease::maximum_snapshot_byte_length()
+        ImportedPlaybackLease::maximum_snapshot_byte_length(),
+        256 * 1024 * 1024
     );
+    assert!(policy.maximum_managed_bytes > ImportedPlaybackLease::maximum_snapshot_byte_length());
     assert!(matches!(
         validate_import_bounds(policy.maximum_managed_bytes + 1, 1),
         Err(StoreError::ImportSizeLimit)
@@ -551,7 +552,7 @@ fn imported_playback_lease_rejects_over_cap_evidence_before_media_revalidation()
             "UPDATE segments SET byte_length = ?2 WHERE session_id = ?1",
             params![
                 &imported.session_id.0,
-                i64::try_from(MAX_IMPORTED_PLAYBACK_SNAPSHOT_BYTES + 1).unwrap()
+                i64::try_from(MAX_IMPORT_BYTES + 1).unwrap()
             ],
         )
         .unwrap();
@@ -559,9 +560,7 @@ fn imported_playback_lease_rejects_over_cap_evidence_before_media_revalidation()
 
     assert!(matches!(
         store.lease_imported_playback(&imported.session_id),
-        Err(StoreError::InvalidState(
-            "managed media exceeds the safe playback snapshot limit"
-        ))
+        Err(StoreError::ImportSizeLimit)
     ));
 }
 

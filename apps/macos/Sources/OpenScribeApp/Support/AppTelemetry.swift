@@ -28,6 +28,7 @@ enum AppTelemetry {
   private static let capture = Logger(subsystem: subsystem, category: "CaptureProof")
   private static let recovery = Logger(subsystem: subsystem, category: "RecoveryProof")
   private static let launch = Logger(subsystem: subsystem, category: "Launch")
+  private static let library = Logger(subsystem: subsystem, category: "Library")
   private static let performance = Logger(subsystem: subsystem, category: "Performance")
   static let signposter = OSSignposter(subsystem: subsystem, category: "Performance")
 
@@ -73,6 +74,9 @@ enum AppTelemetry {
 
   static func captureSourceHealth(_ record: CaptureSourceHealthTelemetryRecord) {
     capture.info("\(record.privacySafeMessage, privacy: .public)")
+    // Progress arrives with the audio callback. The unified log keeps it;
+    // the in-app journal keeps only the route and writer changes.
+    guard record.observation.event != .progress else { return }
     note("CaptureProof", record.privacySafeMessage)
   }
 
@@ -84,6 +88,18 @@ enum AppTelemetry {
   static func launchFailed(_ failure: String) {
     launch.error("single_instance_failure=\(failure, privacy: .public)")
     note("Launch", "single_instance_failure=\(failure)")
+  }
+
+  static func launchAdmitted(microphone: String, screenCapture: String) {
+    let message =
+      "admitted microphone=\(DiagnosticPrivacy.token(microphone)) screen_capture=\(DiagnosticPrivacy.token(screenCapture))"
+    launch.info("\(message, privacy: .public)")
+    note("Launch", message)
+  }
+
+  static func libraryNote(stage: String, detail: String) {
+    library.info("stage=\(stage, privacy: .public) detail=\(detail, privacy: .public)")
+    note("Library", "stage=\(stage) detail=\(detail)")
   }
 
   static func performanceStall(operation: String, milliseconds: Int) {

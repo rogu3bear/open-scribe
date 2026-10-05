@@ -70,6 +70,7 @@ final class RuntimeLibraryStore: ObservableObject {
   private var refreshTask: Task<Void, Never>?
   private var refreshGeneration: UInt64 = 0
   private var refreshQueued = false
+  private var loggedSnapshotSignature = ""
 
   init(
     snapshotProvider: @escaping SnapshotProvider,
@@ -77,26 +78,52 @@ final class RuntimeLibraryStore: ObservableObject {
     normalizedImportProvider: NormalizedImportProvider? = nil,
     compressedImportProvider: CompressedImportProvider? = nil,
     packageImportProvider: PackageImportProvider? = nil,
-    startsPolling: Bool = true
+    startsPolling: Bool = true,
+    refreshesImmediately: Bool = true
   ) {
     self.snapshotProvider = snapshotProvider
     self.importProvider = importProvider
     self.normalizedImportProvider = normalizedImportProvider
     self.compressedImportProvider = compressedImportProvider
     self.packageImportProvider = packageImportProvider
-    refresh()
-    if startsPolling {
-      pollingTask = Task { [weak self] in
-        while !Task.isCancelled {
-          try? await Task.sleep(for: .seconds(1))
-          guard !Task.isCancelled else { return }
+    if refreshesImmediately {
+      refresh()
+      if startsPolling {
+        startPolling()
+      }
+    }
+  }
+
+  private func startPolling() {
+    pollingTask = Task { [weak self] in
+      var idleTicks = 0
+      while !Task.isCancelled {
+        try? await Task.sleep(for: .seconds(1))
+        guard !Task.isCancelled else { return }
+        // Recording, pause, and finalization move the clock every second.
+        // An idle library keeps its last sealed snapshot and checks again
+        // only every five seconds.
+        let live = self?.tracksLiveClock ?? false
+        if live {
+          idleTicks = 0
           self?.refresh()
+        } else {
+          idleTicks += 1
+          if idleTicks >= 5 {
+            idleTicks = 0
+            self?.refresh()
+          }
         }
       }
     }
   }
 
-  convenience init(managedRoot: URL?) {
+  private var tracksLiveClock: Bool {
+    guard let lifecycle = currentSession?.lifecycle else { return false }
+    return ["preparing", "recording", "paused", "finalizing"].contains(lifecycle)
+  }
+
+  convenience init(managedRoot: URL?, refreshesImmediately: Bool = true) {
     let controller = try? managedRoot.map {
       try NativeRecordingPreparation.open(managedRoot: $0.path)
     }
@@ -135,7 +162,8 @@ final class RuntimeLibraryStore: ObservableObject {
           throw RuntimeLibraryStoreError.managedRootUnavailable
         }
         return try library.importPortablePackage(packagePath: packagePath)
-      }
+      },
+      refreshesImmediately: refreshesImmediately
     )
   }
 
@@ -217,6 +245,23 @@ final class RuntimeLibraryStore: ObservableObject {
     return evidence
   }
 
+  private func noteSnapshotIfChanged(
+    current: RuntimeSessionPresentation?, saved: [RuntimeSessionPresentation]
+  ) {
+    let currentSignature =
+      current.map { "\($0.sessionId):\($0.lifecycle):\($0.health)" } ?? "none"
+    let savedSignature = saved.map { "\($0.sessionId):\($0.lifecycle):\($0.health)" }.joined(
+      separator: ",")
+    let signature = "\(currentSignature)|\(savedSignature)"
+    guard signature != loggedSnapshotSignature else { return }
+    loggedSnapshotSignature = signature
+    AppTelemetry.libraryNote(
+      stage: "snapshot",
+      detail:
+        "current=\(DiagnosticPrivacy.token(current?.sessionId ?? "none")) saved=\(saved.count) lifecycle=\(DiagnosticPrivacy.token(current?.lifecycle ?? "idle"))"
+    )
+  }
+
   private func startRefresh(generation: UInt64) {
     let snapshotProvider = snapshotProvider
     // A snapshot read during the scan may predate its recovery even if the
@@ -263,13 +308,19 @@ final class RuntimeLibraryStore: ObservableObject {
         savedSessions = nextSaved
         isSnapshotStale = false
         errorMessage = nil
+        noteSnapshotIfChanged(current: nextCurrent, saved: nextSaved)
       case .failure(let error) where error is CancellationError:
         break
       case .failure:
+        let alreadyFailed = isSnapshotStale && errorMessage != nil
         currentSession = nil
         isSnapshotStale = true
         errorMessage =
           "Live recording state is unavailable. The saved list is last known; recorded media was not changed."
+        if !alreadyFailed {
+          loggedSnapshotSignature = ""
+          AppTelemetry.libraryNote(stage: "snapshot-failed", detail: "code=unavailable")
+        }
       }
     }
     if refreshQueued || generation != refreshGeneration {

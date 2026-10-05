@@ -222,7 +222,7 @@ final class ImportedMediaAuthorityAdapter: ObservableObject {
     let panel = NSOpenPanel()
     panel.title = "Import Conversation Audio"
     panel.message =
-      "Choose a local PCM CAF (up to 256 MiB) or 48 kHz AAC/Apple Lossless M4A (up to 1 GiB and four hours)."
+      Self.importLimitPrompt
     panel.prompt = "Import"
     panel.canChooseFiles = true
     panel.canChooseDirectories = false
@@ -238,7 +238,6 @@ final class ImportedMediaAuthorityAdapter: ObservableObject {
       return "Import evidence was not accepted. Nothing was added to the conversation library."
     }
     let policy = nativeImportPolicy()
-    let maximumMiB = policy.maximumSourceBytes / 1_048_576
     if let failure = error as? BoundedAudioImportError {
       switch failure {
       case .sourceTooLarge(let actual, let maximum):
@@ -247,7 +246,7 @@ final class ImportedMediaAuthorityAdapter: ObservableObject {
           "This file is \(actualMiB) MiB; its import limit is \(maximum / 1_048_576) MiB. Choose a smaller file. Nothing was added."
       case .decodedTooLarge:
         return
-          "The decoded audio exceeds the \(policy.maximumManagedBytes / 1_048_576) MiB PCM playback limit. Choose a shorter file. Nothing was added."
+          "The decoded audio exceeds the \(policy.maximumManagedBytes / 1_048_576) MiB PCM import limit. Choose a shorter file. Nothing was added."
       case .durationTooLong:
         return
           "The audio exceeds the four-hour import duration limit. Choose a shorter file. Nothing was added."
@@ -268,7 +267,7 @@ final class ImportedMediaAuthorityAdapter: ObservableObject {
       switch failure {
       case .ImportSizeLimit:
         return
-          "The audio exceeds the \(maximumMiB) MiB M4A or 256 MiB PCM CAF limit. Nothing was added."
+          "The audio exceeds the import size limit (\(Self.pcmLimitMiB) MiB PCM CAF or \(Self.m4aLimitGiB) GiB M4A). Nothing was added."
       case .ImportDurationLimit:
         return "The audio exceeds the four-hour import duration limit. Nothing was added."
       case .InvalidRequest:
@@ -279,5 +278,21 @@ final class ImportedMediaAuthorityAdapter: ObservableObject {
     }
     return
       "The selected audio could not be imported. Nothing was added to the conversation library."
+  }
+
+  static var importLimitHelp: String {
+    "Add local CAF or M4A audio (PCM CAF up to \(pcmLimitMiB) MiB, M4A up to \(m4aLimitGiB) GiB, four hours)"
+  }
+
+  private static var importLimitPrompt: String {
+    "Choose a local PCM CAF (up to \(pcmLimitMiB) MiB and four hours) or 48 kHz AAC/Apple Lossless M4A (up to \(m4aLimitGiB) GiB and four hours)."
+  }
+
+  private static var pcmLimitMiB: UInt64 {
+    nativeImportPolicy().maximumManagedBytes / 1_048_576
+  }
+
+  private static var m4aLimitGiB: UInt64 {
+    nativeImportPolicy().maximumSourceBytes / 1_073_741_824
   }
 }

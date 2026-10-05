@@ -58,6 +58,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // WindowGroup restores the previous window and also creates a new one.
     MainWindow.keepOne()
     DispatchQueue.main.async { MainWindow.keepOne() }
+    let microphone = AVFoundationMicrophonePermissionAuthority().currentState.rawValue
+    let screenCapture = CGPreflightScreenCaptureAccess() ? "authorized" : "not_authorized"
+    AppTelemetry.launchAdmitted(microphone: microphone, screenCapture: screenCapture)
   }
 
   func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
@@ -134,8 +137,8 @@ struct OpenScribeApp: App {
     let controller = injectedProof?.controller
       ?? managedRoot.map(LiveMicrophoneRecordingController.init(managedRoot:))
       ?? LiveMicrophoneRecordingController(managedRoot: nil)
-    let recovery = RecoveredSessionController(managedRoot: managedRoot)
     let runtime = RuntimeLibraryStore(managedRoot: managedRoot)
+    let recovery = RecoveredSessionController(managedRoot: managedRoot)
     let importAuthority = ImportedMediaAuthorityAdapter(
       canBeginImport: { controller.canStart },
       importer: { title, sourceURL in
@@ -192,8 +195,8 @@ struct OpenScribeApp: App {
       runtime.isLaunchRecoveryPending = { recovery.phase == .scanning }
       Task { @MainActor in
         recovery.recoverOnLaunch()
-        runtime.refresh()
         if forcedRecoveryRoot != nil {
+          await recovery.waitForLaunchRecovery()
           await Self.runForcedTerminationRecoveryProof(controller: recovery)
         }
       }

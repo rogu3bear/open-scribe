@@ -14,6 +14,7 @@ final class SpeechTranscriptionModel: ObservableObject {
   @Published private(set) var messageIsFailure = false
 
   private let speech: NativeSpeechModels?
+  private var loggedCatalogSummary = ""
   /// Leases a compressed import's verified bytes for companion decoding.
   private let preparation: NativeRecordingPreparation?
   private var job: NativeTranscriptionJob?
@@ -58,6 +59,10 @@ final class SpeechTranscriptionModel: ObservableObject {
       speech.models()
     }
     models = loaded
+    let summary = "count=\(loaded.count) installed=\(loaded.filter(\.installed).count)"
+    guard summary != loggedCatalogSummary else { return }
+    loggedCatalogSummary = summary
+    AppTelemetry.libraryNote(stage: "speech-catalog", detail: summary)
   }
 
   /// Copies, verifies, self-tests, and installs the chosen file off the main
@@ -72,15 +77,22 @@ final class SpeechTranscriptionModel: ObservableObject {
       refresh()
     }
     let modelId = model.modelId
+    let modelToken = DiagnosticPrivacy.token(modelId)
     let path = url.path
     do {
       try await Task.detached(priority: .utility) {
         try speech.installFromFile(modelId: modelId, sourcePath: path)
       }.value
       report("\(model.fileName) verified and installed.")
+      AppTelemetry.libraryNote(
+        stage: "speech-install", detail: "model=\(modelToken) result=installed")
       return true
     } catch {
       report(Self.describe(error), failure: true)
+      AppTelemetry.libraryNote(
+        stage: "speech-install",
+        detail: "model=\(modelToken) result=rejected code=\(Self.speechCode(error))"
+      )
       return false
     }
   }
@@ -101,6 +113,10 @@ final class SpeechTranscriptionModel: ObservableObject {
       progress = nil
     }
     let modelId = model.modelId
+    let sessionToken = DiagnosticPrivacy.token(sessionId)
+    let modelToken = DiagnosticPrivacy.token(modelId)
+    AppTelemetry.libraryNote(
+      stage: "transcription", detail: "started session=\(sessionToken) model=\(modelToken)")
     let preparation = preparation
     let work = Task.detached(priority: .utility) {
       try Self.run(
@@ -120,9 +136,16 @@ final class SpeechTranscriptionModel: ObservableObject {
       let tracks = summary.tracks == 1 ? "1 track" : "\(summary.tracks) tracks"
       let segments = summary.segments == 1 ? "1 segment" : "\(summary.segments) segments"
       report("Transcribed \(tracks) on this Mac: \(segments).")
+      AppTelemetry.libraryNote(
+        stage: "transcription",
+        detail: "committed session=\(sessionToken) tracks=\(summary.tracks) segments=\(summary.segments)"
+      )
       return true
     } catch {
       report(Self.describe(error), failure: true)
+      let code = error is CancellationError ? "cancelled" : Self.speechCode(error)
+      AppTelemetry.libraryNote(
+        stage: "transcription", detail: "failed session=\(sessionToken) code=\(code)")
       return false
     }
   }
@@ -184,6 +207,13 @@ final class SpeechTranscriptionModel: ObservableObject {
   private func report(_ text: String?, failure: Bool = false) {
     message = text
     messageIsFailure = text != nil && failure
+  }
+
+  nonisolated private static func speechCode(_ error: Error) -> String {
+    let described = String(describing: error)
+    let leaf = described.split(separator: ".").last.map(String.init) ?? "unavailable"
+    let name = leaf.split(separator: "(").first.map(String.init) ?? "unavailable"
+    return DiagnosticPrivacy.token(name)
   }
 
   nonisolated static func describe(_ error: Error) -> String {

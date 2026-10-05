@@ -936,14 +936,18 @@ impl NativeRecordingPreparation {
             .controller()?
             .lease_imported_playback(open_scribe_types::SessionId(session_id))
             .map_err(map_storage_error)?;
-        Ok(Arc::new(NativeImportedPlaybackLease {
-            strategy: if lease.media_format() == "m4a-alac-or-aac" {
-                NativePlaybackLeaseStrategy::ImportedCompressed
-            } else {
-                NativePlaybackLeaseStrategy::ImportedSnapshot
-            },
-            lease,
-        }))
+        let strategy = if lease.media_format() == "m4a-alac-or-aac" {
+            NativePlaybackLeaseStrategy::ImportedCompressed
+        } else if lease.byte_length()
+            > open_scribe_core::ImportedPlaybackLease::maximum_snapshot_byte_length()
+        {
+            // Larger PCM stays on the verified chunk reader. The 256 MiB
+            // snapshot path is only for audio that fits in that buffer.
+            NativePlaybackLeaseStrategy::RecoveredVerifiedChunks
+        } else {
+            NativePlaybackLeaseStrategy::ImportedSnapshot
+        };
+        Ok(Arc::new(NativeImportedPlaybackLease { strategy, lease }))
     }
 
     pub fn lease_recovered_playback(

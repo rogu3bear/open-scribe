@@ -553,6 +553,10 @@ enum MediaLengthRequirement {
     AtLeast(u64),
 }
 
+/// Verified sealed digests kept for library polling. A larger library stays
+/// on the fast path; the map is still bounded and dies with the process.
+const SNAPSHOT_DIGEST_MEMO_CAPACITY: usize = 4096;
+
 /// Native store with one owned SQLite writer connection.
 pub struct SessionStore {
     managed_root: PathBuf,
@@ -595,6 +599,21 @@ impl SessionStore {
             #[cfg(test)]
             media_validation_hook: std::cell::RefCell::default(),
         })
+    }
+
+    /// Remembers a digest whose file identity already matched a sealed receipt.
+    /// The memory lives only in this store. A new open hashes again, and a
+    /// changed file identity misses the entry.
+    fn remember_snapshot_digest(
+        &self,
+        identity: sealed_media_identity::MediaIdentity,
+        digest: String,
+    ) {
+        let mut memo = self.snapshot_digest_memo.borrow_mut();
+        if memo.len() >= SNAPSHOT_DIGEST_MEMO_CAPACITY && !memo.contains_key(&identity) {
+            memo.pop_first();
+        }
+        memo.insert(identity, digest);
     }
 
     #[must_use]
@@ -1111,7 +1130,7 @@ impl SessionStore {
                 )| {
                     let session = session_id.clone();
                     let row = (move || -> Result<RecoveredPlayableSession, StoreError> {
-                        let validated = self.validate_media_file(
+                        let validated = self.observe_sealed_media_file(
                             &session_id,
                             &relative_path,
                             MediaLengthRequirement::Exact(byte_length),
@@ -1129,6 +1148,9 @@ impl SessionStore {
                             return Err(StoreError::IntegrityMismatch(
                                 "recovered playable media changed after acceptance",
                             ));
+                        }
+                        if let Some(digest) = validated.digest_sha256.clone() {
+                            self.remember_snapshot_digest(validated.identity, digest);
                         }
                         Ok(RecoveredPlayableSession {
                             session_id: SessionId(session_id.clone()),
@@ -2462,6 +2484,46 @@ impl SessionStore {
         length_requirement: MediaLengthRequirement,
         calculate_digest: bool,
     ) -> Result<ValidatedMediaFile, StoreError> {
+        self.validate_media_file_with(
+            session_id,
+            relative_path,
+            length_requirement,
+            calculate_digest,
+            true,
+            false,
+        )
+    }
+
+    /// Reads sealed media without flushing it. Launch listing and the library
+    /// snapshot use this. A digest already accepted for the UI snapshot is
+    /// reused; promotion and leases keep `validate_media_file`, which still
+    /// flushes and hashes on its own.
+    fn observe_sealed_media_file(
+        &self,
+        session_id: &str,
+        relative_path: &str,
+        length_requirement: MediaLengthRequirement,
+        calculate_digest: bool,
+    ) -> Result<ValidatedMediaFile, StoreError> {
+        self.validate_media_file_with(
+            session_id,
+            relative_path,
+            length_requirement,
+            calculate_digest,
+            false,
+            true,
+        )
+    }
+
+    fn validate_media_file_with(
+        &self,
+        session_id: &str,
+        relative_path: &str,
+        length_requirement: MediaLengthRequirement,
+        calculate_digest: bool,
+        synchronize: bool,
+        reuse_snapshot_digest: bool,
+    ) -> Result<ValidatedMediaFile, StoreError> {
         if !valid_media_relative_path(relative_path) {
             return Err(StoreError::IntegrityMismatch("invalid media relative path"));
         }
@@ -2485,21 +2547,23 @@ impl SessionStore {
 
         let audio = self.open_managed_audio_directory(session_id)?;
         let track = open_managed_directory_at(&audio, track_component)?;
-        let media_fd = fd_fs::openat(
-            &track,
-            *file_component,
-            fd_fs::OFlags::RDWR | fd_fs::OFlags::CLOEXEC | fd_fs::OFlags::NOFOLLOW,
-            fd_fs::Mode::empty(),
-        )
-        .map_err(|error| {
-            if error == rustix::io::Errno::NOENT {
-                StoreError::IntegrityMismatch("accepted media file is missing")
-            } else {
-                StoreError::IntegrityMismatch("media file is missing, replaced, or symlinked")
-            }
-        })?;
+        let open_flags = if synchronize {
+            fd_fs::OFlags::RDWR | fd_fs::OFlags::CLOEXEC | fd_fs::OFlags::NOFOLLOW
+        } else {
+            fd_fs::OFlags::RDONLY | fd_fs::OFlags::CLOEXEC | fd_fs::OFlags::NOFOLLOW
+        };
+        let media_fd = fd_fs::openat(&track, *file_component, open_flags, fd_fs::Mode::empty())
+            .map_err(|error| {
+                if error == rustix::io::Errno::NOENT {
+                    StoreError::IntegrityMismatch("accepted media file is missing")
+                } else {
+                    StoreError::IntegrityMismatch("media file is missing, replaced, or symlinked")
+                }
+            })?;
         let mut file = File::from(media_fd);
-        file.sync_all()?;
+        if synchronize {
+            file.sync_all()?;
+        }
         let stat = fd_fs::fstat(&file)
             .map_err(|_| StoreError::IntegrityMismatch("media file identity could not be read"))?;
         if fd_fs::FileType::from_raw_mode(stat.st_mode) != fd_fs::FileType::RegularFile {
@@ -2532,7 +2596,16 @@ impl SessionStore {
                 "media changed before hashing",
             ));
         }
-        let cached_digest = self.digest_memo.borrow().recall(media_identity);
+        let snapshot_cached = if reuse_snapshot_digest {
+            self.snapshot_digest_memo
+                .borrow()
+                .get(&media_identity)
+                .cloned()
+        } else {
+            None
+        };
+        let cached_digest =
+            snapshot_cached.or_else(|| self.digest_memo.borrow().recall(media_identity));
         let reused_digest = cached_digest.is_some();
         let digest_sha256 = if !calculate_digest {
             None
@@ -2541,7 +2614,7 @@ impl SessionStore {
         } else {
             file.rewind()?;
             let mut hasher = Sha256::new();
-            let mut buffer = [0_u8; 64 * 1024];
+            let mut buffer = vec![0_u8; 1024 * 1024];
             let mut remaining = byte_length;
             while remaining > 0 {
                 let read_limit = usize::try_from(remaining.min(buffer.len() as u64))
@@ -2588,7 +2661,7 @@ impl SessionStore {
         let rebound_fd = fd_fs::openat(
             &current_track,
             *file_component,
-            fd_fs::OFlags::RDWR | fd_fs::OFlags::CLOEXEC | fd_fs::OFlags::NOFOLLOW,
+            open_flags,
             fd_fs::Mode::empty(),
         )
         .map_err(|_| StoreError::IntegrityMismatch("media path changed while Rust validated it"))?;
@@ -2604,9 +2677,11 @@ impl SessionStore {
                 "media path no longer names the validated file",
             ));
         }
-        fd_fs::fsync(&track).map_err(|_| {
-            StoreError::IntegrityMismatch("media directory could not be synchronized")
-        })?;
+        if synchronize {
+            fd_fs::fsync(&track).map_err(|_| {
+                StoreError::IntegrityMismatch("media directory could not be synchronized")
+            })?;
+        }
         if !reused_digest && let Some(digest) = &digest_sha256 {
             self.digest_memo.borrow_mut().record(media_identity, digest);
         }

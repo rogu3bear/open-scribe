@@ -27,3 +27,9 @@ publish = false
 # without changing the optimization or stripping of shipped release code.
 [profile.release.build-override]
 strip = "none"
+
+# The library snapshot hashes sealed audio on the first open. Debug builds
+# otherwise use a slow software SHA-256 and keep that list blank for tens of
+# seconds. The `asm` feature selects the machine implementation where it exists.
+[profile.dev.package.sha2]
+opt-level = 3

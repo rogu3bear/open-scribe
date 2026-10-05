@@ -274,7 +274,7 @@ struct ContentView: View {
     .disabled(!canImport)
     .help(
       canImport
-        ? "Add local CAF or M4A audio (M4A up to 1 GiB and four hours)"
+        ? ImportedMediaAuthorityAdapter.importLimitHelp
         : liveRecording.isLaunchRecoveryPending()
           ? "Wait for the check of recordings from the last session to finish before importing audio"
           : "Wait for the current recording action to finish before importing audio"

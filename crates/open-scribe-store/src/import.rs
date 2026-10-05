@@ -20,8 +20,10 @@ use super::{
 };
 
 const MAX_IMPORTED_PLAYBACK_SNAPSHOT_BYTES: u64 = 256 * 1024 * 1024;
-const MAX_IMPORT_BYTES: u64 = MAX_IMPORTED_PLAYBACK_SNAPSHOT_BYTES;
-const MAX_COMPRESSED_IMPORT_BYTES: u64 = 1024 * 1024 * 1024;
+/// Four hours of stereo 16-bit 48 kHz, plus CAF container slack. Files above
+/// the snapshot cap stream in verified chunks and are not held in memory.
+const MAX_IMPORT_BYTES: u64 = (4 * 60 * 60 * 48_000 * 2 * 2) + (1024 * 1024);
+const MAX_COMPRESSED_IMPORT_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 const MAX_IMPORT_SAMPLES: u64 = 4 * 60 * 60 * 48_000;
 const MAX_IMPORT_DURATION_NANOSECONDS: u64 = 4 * 60 * 60 * 1_000_000_000;
 pub(super) const IMPORT_SOURCE_KIND: &str = "imported_audio";
@@ -535,11 +537,8 @@ impl SessionStore {
         if media_format == COMPRESSED_IMPORT_MEDIA_FORMAT {
             validate_compressed_import_bounds(byte_length, sample_count)?;
         }
-        if media_format == IMPORT_MEDIA_FORMAT && byte_length > MAX_IMPORTED_PLAYBACK_SNAPSHOT_BYTES
-        {
-            return Err(StoreError::InvalidState(
-                "managed media exceeds the safe playback snapshot limit",
-            ));
+        if media_format == IMPORT_MEDIA_FORMAT && byte_length > MAX_IMPORT_BYTES {
+            return Err(StoreError::ImportSizeLimit);
         }
         if segment_digest != import_digest {
             return Err(StoreError::IntegrityMismatch(
@@ -1568,7 +1567,7 @@ impl SessionStore {
         }
         file.rewind()?;
         let mut hasher = Sha256::new();
-        let mut buffer = [0_u8; 64 * 1024];
+        let mut buffer = vec![0_u8; 1024 * 1024];
         let mut remaining = if calculate_digest { byte_length } else { 0 };
         while remaining > 0 {
             let read_limit = usize::try_from(remaining.min(buffer.len() as u64)).unwrap();

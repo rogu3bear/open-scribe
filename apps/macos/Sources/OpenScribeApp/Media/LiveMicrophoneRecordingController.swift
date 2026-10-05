@@ -69,7 +69,9 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
   typealias CaptureHealthTelemetry =
     @Sendable (CaptureSourceHealthTelemetryRecord) -> Void
 
-  @Published private(set) var phase: LiveMicrophoneRecordingPhase = .idle
+  @Published private(set) var phase: LiveMicrophoneRecordingPhase = .idle {
+    didSet { notePhaseChange(from: oldValue) }
+  }
   @Published private(set) var errorMessage: String?
   @Published private(set) var failureCode: String?
   @Published private(set) var savedPath: String?
@@ -109,6 +111,9 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
   private var failedSources: Set<NativeMediaSourceKind> = []
   private var sourceFailureTask: Task<Void, Never>?
   private var activeSessionId: String?
+  /// Kept after the active id is cleared so a Saved or Failed line still
+  /// names the session. Titles and paths are never stored here.
+  private var diagnosticSessionId: String?
   private var activeAttempt: UUID?
   /// Identity the microphone adapter binds when capture starts. Segment
   /// generations advance on every rotation, so observations are matched
@@ -270,6 +275,7 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
     savedPath = nil
     savedPaths = []
     activeSessionId = nil
+    if !resuming { diagnosticSessionId = nil }
     writers = [:]
     sourcesWithFirstSample = []
     // A source that failed during degraded continuation stays retired for
@@ -284,7 +290,7 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
       guard permissionState == .authorized else {
         if resuming {
           writers = previousWriters
-          activeSessionId = previousSession
+          rememberSession(previousSession)
           savedPaths = previousSavedPaths
           savedPath = previousSavedPaths.first
           activeAttempt = nil
@@ -320,7 +326,7 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
           // and Stop stay available.
           self.preparation = preparation
           writers = previousWriters
-          activeSessionId = previousSession
+          rememberSession(previousSession)
           savedPaths = previousSavedPaths
           savedPath = previousSavedPaths.first
           microphoneCapture = nil
@@ -342,7 +348,7 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
         }
       }
       self.preparation = preparation
-      activeSessionId = sessionId
+      rememberSession(sessionId)
       proofCheckpoint(.preparation, sessionId)
       // Retired sources keep their sealed writer for the saved-path list but
       // get no successor authorization and no capture in this span.
@@ -887,6 +893,22 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
     }
   }
 
+  private func rememberSession(_ id: String?) {
+    activeSessionId = id
+    if let id { diagnosticSessionId = id }
+  }
+
+  private func notePhaseChange(from previous: LiveMicrophoneRecordingPhase) {
+    guard phase != previous else { return }
+    let session = DiagnosticPrivacy.token(activeSessionId ?? diagnosticSessionId ?? "none")
+    var detail = "from=\(previous.rawValue) to=\(phase.rawValue) session=\(session)"
+    if phase == .failed {
+      let code = DiagnosticPrivacy.token(failureCode ?? "none")
+      detail += " code=\(code)"
+    }
+    AppTelemetry.captureProof(stage: "phase", detail: detail)
+  }
+
   private func resetActiveSession() {
     storageWatchTask?.cancel()
     storageWatchTask = nil
@@ -928,6 +950,10 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
         verified = false
       }
       await MainActor.run {
+        AppTelemetry.captureProof(
+          stage: "mixdown",
+          detail: "\(verified ? "verified" : "unavailable") session=\(DiagnosticPrivacy.token(sessionId))"
+        )
         guard let self, self.lastSavedSessionId == sessionId, self.phase == .saved else { return }
         self.mixdownStatus = verified
           ? "Recording saved with verified stereo mix"

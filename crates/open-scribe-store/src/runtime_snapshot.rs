@@ -100,7 +100,7 @@ impl SessionStore {
             rusqlite::TransactionBehavior::Deferred,
         )?;
         let sessions = {
-            let mut statement = transaction.prepare(
+            let mut statement = transaction.prepare_cached(
                 "SELECT sessions.id, sessions.title, sessions.origin, sessions.lifecycle, sessions.health,
                         sessions.journal_durable, sessions.media_files_open,
                         sessions.updated_at_ms,
@@ -234,7 +234,7 @@ impl SessionStore {
                     })
                 });
             if matches!(lifecycle.as_str(), "paused" | "recording" | "preparing") {
-                let mut boundary = transaction.prepare("SELECT event_kind, session_nanoseconds, wall_time_ms FROM session_events WHERE session_id = ?1 AND event_kind IN ('capture_paused', 'capture_resumed') ORDER BY sequence DESC LIMIT 1")?;
+                let mut boundary = transaction.prepare_cached("SELECT event_kind, session_nanoseconds, wall_time_ms FROM session_events WHERE session_id = ?1 AND event_kind IN ('capture_paused', 'capture_resumed') ORDER BY sequence DESC LIMIT 1")?;
                 let mut rows = boundary.query([&session_id])?;
                 if let Some(row) = rows.next()? {
                     let kind: String = row.get(0)?;
@@ -286,7 +286,7 @@ impl SessionStore {
         session_id: &str,
         session_lifecycle: &str,
     ) -> Result<Vec<RuntimeSourceSnapshot>, StoreError> {
-        let mut statement = connection.prepare(
+        let mut statement = connection.prepare_cached(
             "SELECT required.kind,
                     COALESCE(
                       (SELECT sources.display_name FROM sources
@@ -337,7 +337,7 @@ impl SessionStore {
             return Ok(None);
         }
         let rows = if origin == "import" {
-            let mut statement = connection.prepare(
+            let mut statement = connection.prepare_cached(
                 "SELECT sources.display_name, segments.relative_path,
                         segments.sample_count, segments.byte_length, segments.digest,
                         imports.source_digest, segments.file_device, segments.file_inode,
@@ -358,7 +358,7 @@ impl SessionStore {
                 .query_map([session_id], playable_media_row)?
                 .collect::<Result<Vec<_>, _>>()?
         } else if origin == "capture" {
-            let mut statement = connection.prepare(
+            let mut statement = connection.prepare_cached(
                 "SELECT sources.display_name, segments.relative_path,
                         segments.sample_count, segments.byte_length, segments.digest,
                         segments.digest, segments.file_device, segments.file_inode,
@@ -457,7 +457,7 @@ impl SessionStore {
         // rather than changing validation for playback or other consumers.
         let validate = |calculate_digest| {
             if media_format == "caf-pcm-s16le" {
-                self.validate_media_file(
+                self.observe_sealed_media_file(
                     session_id,
                     relative_path,
                     MediaLengthRequirement::Exact(byte_length),
@@ -473,25 +473,30 @@ impl SessionStore {
                 )
             }
         };
-        let validated = match validate(false) {
-            Ok(mut media)
-                if (media_format == "caf-pcm-s16le"
-                    || media.device != u64::try_from(*stored_device).unwrap_or(0))
-                    && media.digest_sha256.is_none() =>
-            {
-                let cached = self
-                    .snapshot_digest_memo
-                    .borrow()
-                    .get(&media.identity)
-                    .cloned();
-                if let Some(digest) = cached {
-                    media.digest_sha256 = Some(digest);
-                    Ok(media)
-                } else {
-                    validate(true)
+        let validated = if media_format == "caf-pcm-s16le" {
+            // One open. The sealed-read path reuses a digest already checked
+            // for this file identity and hashes the audio at most once.
+            validate(true)
+        } else {
+            match validate(false) {
+                Ok(mut media)
+                    if media.device != u64::try_from(*stored_device).unwrap_or(0)
+                        && media.digest_sha256.is_none() =>
+                {
+                    let cached = self
+                        .snapshot_digest_memo
+                        .borrow()
+                        .get(&media.identity)
+                        .cloned();
+                    if let Some(digest) = cached {
+                        media.digest_sha256 = Some(digest);
+                        Ok(media)
+                    } else {
+                        validate(true)
+                    }
                 }
+                other => other,
             }
-            other => other,
         };
         let Ok(validated) = validated else {
             return Ok(Some(base(RuntimePlayableMediaAvailability::Corrupt)));
@@ -512,11 +517,7 @@ impl SessionStore {
             // This cache belongs only to read-only UI polling. A fresh nofollow
             // path rebind and full change-timestamp fingerprint precede lookup;
             // insertion follows all sealed receipt comparisons above.
-            let mut memo = self.snapshot_digest_memo.borrow_mut();
-            if memo.len() >= 64 && !memo.contains_key(&validated.identity) {
-                memo.pop_first();
-            }
-            memo.insert(validated.identity, digest);
+            self.remember_snapshot_digest(validated.identity, digest);
         }
         Ok(Some(base(RuntimePlayableMediaAvailability::Available)))
     }
