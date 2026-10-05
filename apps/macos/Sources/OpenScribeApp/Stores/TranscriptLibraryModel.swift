@@ -176,7 +176,8 @@ final class TranscriptLibraryModel: ObservableObject {
     do {
       let receipt = try library.export(
         sessionId: sessionId, format: format, destinationPath: destination.path)
-      report("Exported \(receipt.segmentCount) segments.")
+      let segments = receipt.segmentCount == 1 ? "1 segment" : "\(receipt.segmentCount) segments"
+      report("Exported \(segments).")
       return true
     } catch {
       report(Self.describe(error, action: "export the transcript"), failure: true)

@@ -108,7 +108,8 @@ final class SpeechTranscriptionModel: ObservableObject {
     do {
       let summary = try await work.value
       let tracks = summary.tracks == 1 ? "1 track" : "\(summary.tracks) tracks"
-      report("Transcribed \(tracks) on this Mac: \(summary.segments) segments.")
+      let segments = summary.segments == 1 ? "1 segment" : "\(summary.segments) segments"
+      report("Transcribed \(tracks) on this Mac: \(segments).")
       return true
     } catch {
       report(Self.describe(error), failure: true)

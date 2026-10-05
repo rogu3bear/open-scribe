@@ -164,6 +164,14 @@ struct TranscriptSection: View {
       }
       // Keep transcript lines near the 60–85 character measure (DESIGN §10).
       .frame(maxWidth: 500, alignment: .leading)
+      // Selectable Text can retain its initial AppKit accessibility value after
+      // a correction. Project the current review text explicitly for readers.
+      .accessibilityElement(children: .ignore)
+      .accessibilityAddTraits(.isStaticText)
+      .accessibilityLabel(
+        "\(segment.speakerLabel). \(segment.effectiveText)"
+          + (segment.corrected ? " Corrected. Machine reading: \(segment.verbatimText)" : "")
+      )
       Spacer(minLength: 8)
       Button("Correct…") {
         draftText = segment.effectiveText
