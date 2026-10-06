@@ -5,8 +5,8 @@
 ADR 0001 is accepted only for the Milestone 0 native development proof. It does
 not settle distribution or later product capabilities.
 
-ADR 0002 pins the M0 Rust proof toolchain and defines its least-privilege CI
-boundary. It does not admit packaging, signing, deployment, or release work.
+ADR 0002 pins the M0 Rust proof toolchain. Its hosted-CI clauses are historical
+only. It does not admit packaging, signing, deployment, or release work.
 
 ADR 0003 records the selective website-template import, rejects automatic
 upstream synchronization and starter state, and pins the M0 Swift/Xcode and web
@@ -48,6 +48,11 @@ ADRs 0015–0017 admit Milestone 5 implementation after every prior runtime gate
 a capability-true static-first website, exact signed/notarized bundle and Sparkle
 channel, and staged release authority through canonical readback. They prove no release.
 
+ADR 0018 supersedes ADR 0002's hosted-CI clauses. GitHub Actions stays disabled,
+and a pull-request candidate is admitted only after its exact checkout passes the
+relevant local gates, `git diff --check`, and an independent review. It proves no
+capture, recovery, signing, notarization, deployment, or release.
+
 ## Required founding decisions
 
 | Proposed ADR | Status |
@@ -70,7 +75,8 @@ channel, and staged release authority through canonical readback. They prove no 
 | Sparkle/update mechanism | ADR 0016; signed N−1 update proof open |
 | remote-provider content-scope policy | ADR 0014; exact provider adapters and network proof open |
 | website foundation import and upstream-sync policy | ADR 0003, M0 website only |
-| toolchain and dependency pinning | Rust M0 proof pin recorded by ADR 0002; Swift/Xcode and web pins recorded by ADR 0003 |
+| toolchain and dependency pinning | Rust M0 proof pin recorded by ADR 0002; hosted CI superseded by ADR 0018; Swift/Xcode and web pins recorded by ADR 0003 |
+| local proof and repository Actions | ADR 0018; Actions disabled; hosted-runner compatibility unknown and not claimed |
 
 ## ADR admission requirements
 
