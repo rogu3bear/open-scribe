@@ -35,12 +35,10 @@ fn m1_launch_interrupts_abandoned_preparation_without_claiming_media() {
         .unwrap()
         .join(JOURNAL_NAME);
     let journal = fs::read(&journal_path).unwrap();
-    assert!(
-        journal_records(&store, &session)
-            .iter()
-            .any(|record| record.body.event_kind == "session_interrupted"
-                && record.body.payload["reason"] == "capture_start_failed")
-    );
+    assert!(journal_records(&store, &session)
+        .iter()
+        .any(|record| record.body.event_kind == "session_interrupted"
+            && record.body.payload["reason"] == "capture_start_failed"));
     drop(store);
 
     let mut store = SessionStore::open(temp.path()).unwrap();
@@ -51,6 +49,102 @@ fn m1_launch_interrupts_abandoned_preparation_without_claiming_media() {
     );
     assert_eq!(event_kinds(&store, &session), events);
     assert_eq!(fs::read(journal_path).unwrap(), journal);
+}
+
+/// A start that opened both sources and then interrupted, before any sample,
+/// must not keep those files open or become playable on the next launch.
+#[test]
+fn launch_closes_media_opened_before_capture_start_failed_without_promoting_it() {
+    let temp = TempDir::new().unwrap();
+    let mut store = SessionStore::open(temp.path()).unwrap();
+    let session = store
+        .prepare_session_with_required_sources(
+            PrepareSessionRequest {
+                title: "Start failed after media open".to_owned(),
+                origin: SessionOrigin::Capture,
+            },
+            vec![MediaSourceKind::Microphone, MediaSourceKind::SystemAudio],
+        )
+        .unwrap()
+        .session_id;
+    let opened: Vec<_> = [MediaSourceKind::Microphone, MediaSourceKind::SystemAudio]
+        .into_iter()
+        .map(|kind| {
+            let authorization = store
+                .authorize_media_open(AuthorizeMediaOpenRequest {
+                    session_id: session.clone(),
+                    source_kind: kind,
+                    source_display_name: kind.as_str().to_owned(),
+                })
+                .unwrap();
+            create_media(&mut store, &authorization);
+            authorization
+        })
+        .collect();
+    let preserved: Vec<_> = opened
+        .iter()
+        .map(|authorization| fs::read(&authorization.absolute_path).unwrap())
+        .collect();
+    store
+        .interrupt_session(InterruptSessionRequest {
+            session_id: session.clone(),
+            reason: SessionInterruptionReason::CaptureStartFailed,
+        })
+        .unwrap();
+    assert_eq!(session_flag(&store, &session, "media_files_open"), 1);
+    drop(store);
+
+    let mut store = SessionStore::open(temp.path()).unwrap();
+    let recovery = store.recover_library().unwrap();
+    assert_eq!(
+        store.recorder_detail(&session).unwrap().lifecycle,
+        "interrupted"
+    );
+    assert_eq!(session_flag(&store, &session, "media_files_open"), 0);
+    assert_eq!(playable_count(&recovery, &session), 0);
+    for authorization in &opened {
+        assert_eq!(segment_lifecycle(&store, &authorization.segment_id), "gap");
+    }
+    let gaps = journal_records(&store, &session)
+        .iter()
+        .filter(|record| record.body.event_kind == "segment_capture_gap")
+        .count();
+    assert_eq!(gaps, opened.len());
+    assert!(!event_kinds(&store, &session)
+        .iter()
+        .any(|kind| kind == "timeline_recovered" || kind == "playable_media_recovered"));
+    drop(store);
+
+    let mut store = SessionStore::open(temp.path()).unwrap();
+    let second = store.recover_library().unwrap();
+    assert_eq!(
+        store.recorder_detail(&session).unwrap().lifecycle,
+        "interrupted"
+    );
+    assert_eq!(session_flag(&store, &session, "media_files_open"), 0);
+    assert_eq!(playable_count(&second, &session), 0);
+    assert_eq!(
+        journal_records(&store, &session)
+            .iter()
+            .filter(|record| record.body.event_kind == "segment_capture_gap")
+            .count(),
+        opened.len(),
+        "a second launch reuses the gap records"
+    );
+    for (authorization, bytes) in opened.iter().zip(preserved) {
+        assert_eq!(fs::read(&authorization.absolute_path).unwrap(), bytes);
+    }
+}
+
+fn segment_lifecycle(store: &SessionStore, segment: &str) -> String {
+    store
+        .connection
+        .query_row(
+            "SELECT lifecycle FROM segments WHERE id = ?1",
+            [segment],
+            |row| row.get(0),
+        )
+        .unwrap()
 }
 
 fn finding_for(recovery: &LibraryRecovery, session: &SessionId) -> Option<RecoveryDisposition> {

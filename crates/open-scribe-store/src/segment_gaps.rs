@@ -7,8 +7,10 @@ type UnstartedSegment = (String, String, String);
 
 impl SessionStore {
     /// Turns journaled-but-unstarted successors into explicit gaps, then
-    /// finalizes sessions whose sources have all sealed. Each session is handled
-    /// on its own; `blocked` sessions keep their earlier finding untouched.
+    /// finalizes sessions whose sources have all sealed. An interrupted session
+    /// whose first files never accepted a sample is closed the same way and is
+    /// not promoted. Each session is handled on its own; `blocked` sessions
+    /// keep their earlier finding untouched.
     pub(super) fn recover_unstarted_successors(
         &mut self,
         blocked: &BTreeSet<String>,
@@ -20,10 +22,21 @@ impl SessionStore {
                  WHERE sessions.lifecycle IN ('recording', 'interrupted', 'preparing', 'finalizing', 'paused')
                    AND segments.lifecycle IN ('opening', 'open')
                    AND segments.original_start IS NULL
-                   AND (segments.sequence > 0 OR EXISTS(
-                        SELECT 1 FROM session_events resumed
-                        WHERE resumed.session_id = segments.session_id
-                          AND resumed.event_kind = 'resume_requested'))",
+                   AND (
+                        segments.sequence > 0
+                        OR EXISTS(
+                            SELECT 1 FROM session_events resumed
+                            WHERE resumed.session_id = segments.session_id
+                              AND resumed.event_kind = 'resume_requested')
+                        OR (
+                            sessions.lifecycle = 'interrupted'
+                            AND NOT EXISTS (
+                                SELECT 1 FROM segments captured
+                                WHERE captured.session_id = segments.session_id
+                                  AND captured.original_start IS NOT NULL
+                            )
+                        )
+                   )",
             )?;
             query
                 .query_map([], |r| {
@@ -177,6 +190,26 @@ impl SessionStore {
                 ));
             }
         };
+        let sealed_segments: i64 = self.connection.query_row(
+            "SELECT COUNT(*) FROM segments WHERE session_id = ?1 AND lifecycle = 'sealed'",
+            [session],
+            |row| row.get(0),
+        )?;
+        if sealed_segments == 0 {
+            // Opened files that never accepted a sample are gaps, not audio.
+            // Close the session's media flag without promoting it to review.
+            self.connection.execute(
+                "UPDATE sessions SET media_files_open = 0
+                 WHERE id = ?1
+                   AND NOT EXISTS (
+                        SELECT 1 FROM segments
+                        WHERE session_id = ?1
+                          AND lifecycle IN ('opening', 'open', 'capturing')
+                   )",
+                [session],
+            )?;
+            return Ok(false);
+        }
         let sources = self.validate_sealed_recovery_companions(session, &records)?;
         if self
             .evidenced_source_kinds(session)?
