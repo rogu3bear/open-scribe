@@ -167,6 +167,16 @@ private final class RecordingPreparationFake: NativeRecordingPreparation, @unche
     )
   }
 
+  override func recorderDetail(sessionId _: String) throws -> NativeRecorderDetail {
+    // This double has no Rust handle. The generated clone would fault.
+    NativeRecorderDetail(
+      lifecycle: "recording",
+      capturedNanoseconds: 0,
+      storageLevel: "unchecked",
+      events: []
+    )
+  }
+
   override func recordSourceFailure(
     sessionId: String,
     sourceKind: NativeMediaSourceKind,
@@ -425,6 +435,14 @@ private final class SegmentWriterMap: @unchecked Sendable {
 
 @MainActor
 final class LiveMicrophoneRecordingControllerTests: XCTestCase {
+  func testInertPreparationDetailStaysOffTheRustHandle() throws {
+    let preparation = RecordingPreparationFake()
+    let detail = try preparation.recorderDetail(sessionId: "session-live")
+    XCTAssertEqual(detail.lifecycle, "recording")
+    XCTAssertEqual(detail.storageLevel, "unchecked")
+    XCTAssertTrue(detail.events.isEmpty)
+  }
+
   func testLateFailureFromPreviousAttemptCannotInterruptNewRecording() async throws {
     let capture = MicrophoneCaptureFake()
     capture.lastHostTime = nil
