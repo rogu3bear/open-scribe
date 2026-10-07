@@ -219,6 +219,8 @@ pub enum TranscriptionFailure {
     ResourceExhausted,
     InvalidResult,
     InputUnavailable,
+    /// Launch recovery found a progress-stalled incomplete run with no live worker.
+    Orphaned,
 }
 
 impl TranscriptionFailure {
@@ -230,6 +232,7 @@ impl TranscriptionFailure {
             Self::ResourceExhausted => "resource_exhausted",
             Self::InvalidResult => "invalid_result",
             Self::InputUnavailable => "input_unavailable",
+            Self::Orphaned => "orphaned",
         }
     }
 }
@@ -480,6 +483,12 @@ impl SessionStore {
         if changed != 1 {
             return Err(StoreError::InvalidState("transcript chunk is not open"));
         }
+        // Chunk progress advances the run clock so launch recovery can tell a
+        // live checkpoint from a never-updated orphan fingerprint.
+        transaction.execute(
+            "UPDATE transcription_runs SET updated_at_ms = ?2 WHERE id = ?1 AND state = 'running'",
+            params![run_id, now],
+        )?;
         transaction.commit()?;
         Ok(())
     }
@@ -646,6 +655,65 @@ impl SessionStore {
         Ok(())
     }
 
+    /// Chunks for one run, ordered by sequence. Used by launch finalize and tests.
+    pub fn transcript_chunks_for_run(
+        &self,
+        run_id: &str,
+    ) -> Result<Vec<TranscriptChunk>, StoreError> {
+        load_chunks(&self.connection, run_id)
+    }
+
+    /// Session and track that own a transcription run.
+    pub fn transcription_run_binding(
+        &self,
+        run_id: &str,
+    ) -> Result<(SessionId, String), StoreError> {
+        self.connection
+            .query_row(
+                "SELECT session_id, track_id FROM transcription_runs WHERE id = ?1",
+                [run_id],
+                |row| Ok((SessionId(row.get(0)?), row.get(1)?)),
+            )
+            .optional()?
+            .ok_or(StoreError::InvalidState("transcription run does not exist"))
+    }
+
+    /// Running transcription runs at launch: Class A (all chunks complete) need
+    /// core finalize; Class B (incomplete) are failed as orphaned.
+    pub(crate) fn classify_running_transcription_orphans(
+        &self,
+    ) -> Result<(Vec<String>, Vec<(String, String)>), StoreError> {
+        let mut statement = self.connection.prepare(
+            "SELECT id, session_id,
+                    (SELECT COUNT(*) FROM transcript_chunks WHERE run_id = transcription_runs.id),
+                    (SELECT COUNT(*) FROM transcript_chunks
+                     WHERE run_id = transcription_runs.id AND state = 'complete')
+             FROM transcription_runs
+             WHERE state = 'running'
+             ORDER BY created_at_ms, id",
+        )?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, i64>(3)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut class_a = Vec::new();
+        let mut class_b = Vec::new();
+        for (run_id, session_id, total, complete) in rows {
+            if total > 0 && complete == total {
+                class_a.push(run_id);
+            } else {
+                class_b.push((run_id, session_id));
+            }
+        }
+        Ok((class_a, class_b))
+    }
+
     pub fn transcription_runs(
         &self,
         session: &SessionId,
@@ -795,10 +863,10 @@ pub(super) fn select_revision(
 }
 
 fn load_chunks(
-    transaction: &Transaction<'_>,
+    connection: &rusqlite::Connection,
     run_id: &str,
 ) -> Result<Vec<TranscriptChunk>, StoreError> {
-    let mut statement = transaction.prepare(
+    let mut statement = connection.prepare(
         "SELECT sequence, identity, span_index, start_ns, end_ns, state, language,
                 hypothesis_json, reused_from_run
          FROM transcript_chunks WHERE run_id = ?1 ORDER BY sequence",

@@ -370,6 +370,8 @@ pub enum RecoveryDisposition {
     InterruptedSegmentSealed,
     InterruptionProjectionRepaired,
     PlayableMediaRecovered,
+    /// Incomplete running transcription failed closed on launch (no live worker).
+    TranscriptRunOrphaned,
     MissingMediaFile,
     InvalidMediaFile,
     MissingDirectory,

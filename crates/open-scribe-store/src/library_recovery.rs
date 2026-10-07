@@ -9,6 +9,9 @@ use super::*;
 pub struct LibraryRecovery {
     pub findings: Vec<RecoveryFinding>,
     pub playable: Vec<RecoveredPlayableSession>,
+    /// Running transcription runs whose chunks are all complete. Core must
+    /// finalize (reconcile + commit) on the launch path — store cannot.
+    pub pending_transcript_finalizations: Vec<String>,
 }
 
 /// One evidence rule for "playable recovered", shared by the launch listing and
@@ -179,8 +182,42 @@ impl SessionStore {
             merge_finding(&mut findings, finding);
         }
         let playable = self.list_recovered_playable(&mut findings)?;
+        let (pending_transcript_finalizations, transcript_findings) =
+            self.recover_orphan_transcription_runs()?;
+        for finding in transcript_findings {
+            merge_finding(&mut findings, finding);
+        }
         findings.sort_by(|left, right| left.session_id.0.cmp(&right.session_id.0));
-        Ok(LibraryRecovery { findings, playable })
+        Ok(LibraryRecovery {
+            findings,
+            playable,
+            pending_transcript_finalizations,
+        })
+    }
+
+    /// Launch-only transcription orphan handling. Class A (all chunks complete)
+    /// is queued for core finalize. Class B (incomplete, worker gone) fails with
+    /// `orphaned`. Never touches capture media or journals.
+    fn recover_orphan_transcription_runs(
+        &mut self,
+    ) -> Result<(Vec<String>, Vec<RecoveryFinding>), StoreError> {
+        let (class_a, class_b) = self.classify_running_transcription_orphans()?;
+        let mut findings = Vec::new();
+        for (run_id, session_id) in class_b {
+            match self.fail_transcription_run(&run_id, None, TranscriptionFailure::Orphaned) {
+                Ok(()) => findings.push(RecoveryFinding {
+                    session_id: SessionId(session_id),
+                    disposition: RecoveryDisposition::TranscriptRunOrphaned,
+                }),
+                Err(error) => {
+                    // A raced completion is fine; other errors still abort launch.
+                    if !matches!(error, StoreError::InvalidState(_)) {
+                        return Err(error);
+                    }
+                }
+            }
+        }
+        Ok((class_a, findings))
     }
 
     /// A launch has no surviving capture to finish durable preparation. Mark

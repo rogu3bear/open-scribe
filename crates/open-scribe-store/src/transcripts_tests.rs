@@ -7,7 +7,7 @@ use sha2::{Digest, Sha256};
 use tempfile::TempDir;
 
 use super::*;
-use crate::{CAF_HEADER, DATABASE_NAME, ImportMediaRequest, JOURNAL_NAME, SESSIONS_DIRECTORY};
+use crate::{RecoveryDisposition, CAF_HEADER, DATABASE_NAME, ImportMediaRequest, JOURNAL_NAME, SESSIONS_DIRECTORY};
 
 pub(crate) const SECOND: i64 = 1_000_000_000;
 
@@ -585,4 +585,128 @@ fn schema_v4_fixture_migrates_without_rewriting_sealed_evidence() {
         file_digest(&media),
         "a8c794f178230c3f9e629e1366cf7c6891f1294a3d1eed283df1554fbeaa2587"
     );
+}
+
+#[test]
+fn launch_fails_incomplete_running_transcription_as_orphaned() {
+    let mut fixture = imported_fixture(144_000);
+    let identity = identity(&fixture, "options-a");
+    let handle = fixture
+        .store
+        .begin_transcription_run(&identity, &plan())
+        .unwrap();
+    fixture
+        .store
+        .complete_transcript_chunk(&handle.run_id, 0, "en", &hypothesis("alpha"))
+        .unwrap();
+    // Chunk 1 stays pending — Class B incomplete orphan.
+
+    let recovery = fixture.store.recover_library().unwrap();
+    assert!(
+        recovery.pending_transcript_finalizations.is_empty(),
+        "incomplete runs are not Class A"
+    );
+    let runs = fixture.store.transcription_runs(&fixture.session).unwrap();
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0].state, "failed");
+    assert_eq!(runs[0].failure_class.as_deref(), Some("orphaned"));
+    assert_eq!(
+        finding_for_session(&recovery, &fixture.session),
+        Some(RecoveryDisposition::TranscriptRunOrphaned)
+    );
+
+    // Same-identity resume reuses the complete chunk; no hand SQL.
+    let retry = fixture
+        .store
+        .begin_transcription_run(&identity, &plan())
+        .unwrap();
+    assert!(!retry.resumed);
+    assert_eq!(retry.chunks[0].state, TranscriptChunkState::Complete);
+    assert_eq!(
+        retry.chunks[0].reused_from_run.as_deref(),
+        Some(handle.run_id.as_str())
+    );
+    assert_eq!(retry.chunks[1].state, TranscriptChunkState::Pending);
+}
+
+#[test]
+fn launch_queues_complete_chunk_running_runs_for_finalize() {
+    let mut fixture = imported_fixture(144_000);
+    let identity = identity(&fixture, "options-a");
+    let handle = fixture
+        .store
+        .begin_transcription_run(&identity, &plan())
+        .unwrap();
+    fixture
+        .store
+        .complete_transcript_chunk(&handle.run_id, 0, "en", &hypothesis("alpha"))
+        .unwrap();
+    fixture
+        .store
+        .complete_transcript_chunk(&handle.run_id, 1, "en", &hypothesis("bravo"))
+        .unwrap();
+
+    let recovery = fixture.store.recover_library().unwrap();
+    assert_eq!(
+        recovery.pending_transcript_finalizations,
+        vec![handle.run_id.clone()]
+    );
+    let runs = fixture.store.transcription_runs(&fixture.session).unwrap();
+    assert_eq!(runs[0].state, "running", "Class A stays running for core finalize");
+    assert!(runs[0].failure_class.is_none());
+}
+
+#[test]
+fn chunk_progress_bumps_run_updated_at() {
+    let mut fixture = imported_fixture(144_000);
+    let identity = identity(&fixture, "options-a");
+    let handle = fixture
+        .store
+        .begin_transcription_run(&identity, &plan())
+        .unwrap();
+    let created: i64 = fixture
+        .store
+        .connection
+        .query_row(
+            "SELECT created_at_ms FROM transcription_runs WHERE id = ?1",
+            [&handle.run_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let updated_before: i64 = fixture
+        .store
+        .connection
+        .query_row(
+            "SELECT updated_at_ms FROM transcription_runs WHERE id = ?1",
+            [&handle.run_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(created, updated_before);
+    std::thread::sleep(std::time::Duration::from_millis(2));
+    fixture
+        .store
+        .complete_transcript_chunk(&handle.run_id, 0, "en", &hypothesis("alpha"))
+        .unwrap();
+    let updated_after: i64 = fixture
+        .store
+        .connection
+        .query_row(
+            "SELECT updated_at_ms FROM transcription_runs WHERE id = ?1",
+            [&handle.run_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(updated_after > updated_before);
+}
+
+fn finding_for_session(
+    recovery: &crate::LibraryRecovery,
+    session: &SessionId,
+) -> Option<RecoveryDisposition> {
+    recovery
+        .findings
+        .iter()
+        .find(|finding| finding.session_id == *session)
+        .map(|finding| finding.disposition)
 }
