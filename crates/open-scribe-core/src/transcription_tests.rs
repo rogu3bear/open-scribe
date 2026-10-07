@@ -2,8 +2,8 @@ use std::fs::File;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use open_scribe_asr::{HypothesisSegment, Language, RecognizerIdentity};
-use open_scribe_store::ImportMediaRequest;
+use open_scribe_asr::{HypothesisSegment, Language, RECONCILIATION_VERSION, RecognizerIdentity};
+use open_scribe_store::{ImportMediaRequest, TranscriptionRunIdentity};
 use sha2::{Digest, Sha256};
 use tempfile::TempDir;
 
@@ -401,4 +401,200 @@ fn windows_cover_each_span_on_the_session_timeline() {
             .all(|pair| pair[1].chunk.start_nanoseconds < pair[0].chunk.end_nanoseconds)
     );
     assert_eq!(discontinuities(&input), serde_json::json!([]));
+}
+
+#[test]
+fn finalize_completes_a_run_whose_chunks_are_already_durable() {
+    let mut imported = imported(60);
+    let model = "a".repeat(64);
+    let options = DecodeOptions::final_pass(Language::English);
+    let input = imported
+        .store
+        .transcription_input(&imported.session, &imported.track)
+        .unwrap();
+    let identity = TranscriptionRunIdentity {
+        session_id: imported.session.clone(),
+        track_id: imported.track.clone(),
+        input_digest: input.input_digest.clone(),
+        engine: "burst-fixture".into(),
+        engine_version: "1".into(),
+        model_id: "burst-model".into(),
+        model_sha256: model.clone(),
+        options_digest: options.digest(),
+        reconciliation_version: RECONCILIATION_VERSION.to_owned(),
+    };
+    let windows = plan_windows(&input);
+    let plan: Vec<_> = windows.iter().map(|w| w.chunk).collect();
+    let handle = imported
+        .store
+        .begin_transcription_run(&identity, &plan)
+        .unwrap();
+    // Simulate death after every chunk committed, before revision.
+    for chunk in &handle.chunks {
+        let hypothesis = Hypothesis {
+            language: "en".into(),
+            segments: vec![HypothesisSegment {
+                start_ms: 100,
+                end_ms: 500,
+                text: "burst".into(),
+                mean_probability: Some(0.9),
+                no_speech_probability: Some(0.0),
+            }],
+        };
+        let json = serde_json::to_string(&hypothesis).unwrap();
+        imported
+            .store
+            .complete_transcript_chunk(&handle.run_id, chunk.sequence, "en", &json)
+            .unwrap();
+    }
+    assert!(
+        imported
+            .store
+            .transcript_revisions(&imported.session)
+            .unwrap()
+            .is_empty()
+    );
+
+    let (revision_id, segment_count, _) =
+        finalize_transcription_run(&mut imported.store, &handle.run_id).unwrap();
+    assert!(!revision_id.is_empty());
+    assert!(segment_count >= 1);
+    let runs = imported
+        .store
+        .transcription_runs(&imported.session)
+        .unwrap();
+    assert_eq!(runs[0].state, "complete");
+    assert_eq!(runs[0].failure_class, None);
+    assert_eq!(
+        imported
+            .store
+            .transcript_revisions(&imported.session)
+            .unwrap()
+            .len(),
+        1
+    );
+
+    // Second finalize is a no-op failure path: run is no longer running.
+    assert!(matches!(
+        finalize_transcription_run(&mut imported.store, &handle.run_id),
+        Err(TranscriptionError::Store(_)) | Err(TranscriptionError::RunEnded { .. })
+    ));
+}
+
+#[test]
+fn launch_recovery_finalizes_class_a_orphans_without_recognizer() {
+    let mut imported = imported(60);
+    let model = "a".repeat(64);
+    let options = DecodeOptions::final_pass(Language::English);
+    let input = imported
+        .store
+        .transcription_input(&imported.session, &imported.track)
+        .unwrap();
+    let identity = TranscriptionRunIdentity {
+        session_id: imported.session.clone(),
+        track_id: imported.track.clone(),
+        input_digest: input.input_digest.clone(),
+        engine: "burst-fixture".into(),
+        engine_version: "1".into(),
+        model_id: "burst-model".into(),
+        model_sha256: model,
+        options_digest: options.digest(),
+        reconciliation_version: RECONCILIATION_VERSION.to_owned(),
+    };
+    let windows = plan_windows(&input);
+    let plan: Vec<_> = windows.iter().map(|w| w.chunk).collect();
+    let handle = imported
+        .store
+        .begin_transcription_run(&identity, &plan)
+        .unwrap();
+    for chunk in &handle.chunks {
+        let hypothesis = Hypothesis {
+            language: "en".into(),
+            segments: vec![HypothesisSegment {
+                start_ms: 100,
+                end_ms: 500,
+                text: "burst".into(),
+                mean_probability: Some(0.9),
+                no_speech_probability: Some(0.0),
+            }],
+        };
+        let json = serde_json::to_string(&hypothesis).unwrap();
+        imported
+            .store
+            .complete_transcript_chunk(&handle.run_id, chunk.sequence, "en", &json)
+            .unwrap();
+    }
+    let root = imported.root.clone();
+    let session = imported.session.clone();
+    let Imported {
+        _temp,
+        store,
+        ..
+    } = imported;
+    drop(store);
+
+    let mut controller = crate::RecordingPreparationController::open(&root).unwrap();
+    let _playable = controller.recover_playable_sessions().unwrap();
+    let store = SessionStore::open(&root).unwrap();
+    let runs = store.transcription_runs(&session).unwrap();
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0].state, "complete");
+    assert!(runs[0].failure_class.is_none());
+    assert_eq!(store.transcript_revisions(&session).unwrap().len(), 1);
+    drop(_temp);
+}
+
+#[test]
+fn commit_failure_after_complete_chunks_fails_the_run_closed() {
+    let mut imported = imported(60);
+    let model = "a".repeat(64);
+    let options = DecodeOptions::final_pass(Language::English);
+    let input = imported
+        .store
+        .transcription_input(&imported.session, &imported.track)
+        .unwrap();
+    let identity = TranscriptionRunIdentity {
+        session_id: imported.session.clone(),
+        track_id: imported.track.clone(),
+        input_digest: input.input_digest.clone(),
+        engine: "burst-fixture".into(),
+        engine_version: "1".into(),
+        model_id: "burst-model".into(),
+        model_sha256: model,
+        options_digest: options.digest(),
+        reconciliation_version: RECONCILIATION_VERSION.to_owned(),
+    };
+    let windows = plan_windows(&input);
+    let plan: Vec<_> = windows.iter().map(|w| w.chunk).collect();
+    let handle = imported
+        .store
+        .begin_transcription_run(&identity, &plan)
+        .unwrap();
+    // Persist complete chunks whose JSON is not a Hypothesis — finalize must
+    // fail closed rather than leave the run forever-running.
+    for chunk in &handle.chunks {
+        imported
+            .store
+            .complete_transcript_chunk(
+                &handle.run_id,
+                chunk.sequence,
+                "en",
+                r#"{"not":"a-hypothesis"}"#,
+            )
+            .unwrap();
+    }
+    let err = finalize_transcription_run(&mut imported.store, &handle.run_id).unwrap_err();
+    assert!(matches!(
+        err,
+        TranscriptionError::RunEnded {
+            failure: TranscriptionFailure::InvalidResult,
+            ..
+        }
+    ));
+    let runs = imported
+        .store
+        .transcription_runs(&imported.session)
+        .unwrap();
+    assert_eq!(runs[0].state, "failed");
+    assert_eq!(runs[0].failure_class.as_deref(), Some("invalid_result"));
 }

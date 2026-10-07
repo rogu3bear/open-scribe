@@ -78,7 +78,7 @@ impl From<StoreError> for TranscriptionError {
     }
 }
 
-struct PlannedWindow {
+pub(crate) struct PlannedWindow {
     span_index: usize,
     start_sample: u64,
     end_sample: u64,
@@ -157,25 +157,24 @@ pub fn transcribe_request(
         .filter(|chunk| chunk.reused_from_run.is_some())
         .count() as u32;
 
-    let mut hypotheses: Vec<Option<Hypothesis>> = vec![None; windows.len()];
     let mut completed = 0_i64;
     let mut transcribed_chunks = 0_u32;
     for (chunk, window) in handle.chunks.iter().zip(&windows) {
         let duration = window.chunk.end_nanoseconds - window.chunk.start_nanoseconds;
         if chunk.state == TranscriptChunkState::Complete {
-            let parsed = chunk
+            let valid = chunk
                 .hypothesis_json
                 .as_deref()
-                .and_then(|json| serde_json::from_str::<Hypothesis>(json).ok());
-            let Some(parsed) = parsed else {
+                .and_then(|json| serde_json::from_str::<Hypothesis>(json).ok())
+                .is_some();
+            if !valid {
                 return Err(end_run(
                     store,
                     &run_id,
                     Some(chunk.sequence),
                     TranscriptionFailure::InvalidResult,
                 ));
-            };
-            hypotheses[chunk.sequence as usize] = Some(parsed);
+            }
             completed += duration;
             continue;
         }
@@ -237,7 +236,6 @@ pub fn transcribe_request(
         };
         let json = serde_json::to_string(&hypothesis).map_err(StoreError::Json)?;
         store.complete_transcript_chunk(&run_id, chunk.sequence, &hypothesis.language, &json)?;
-        hypotheses[chunk.sequence as usize] = Some(hypothesis);
         transcribed_chunks += 1;
         completed += duration;
     }
@@ -247,17 +245,91 @@ pub fn transcribe_request(
         completed_nanoseconds: completed,
         required_nanoseconds: required,
     });
-    let chunk_views: Vec<ChunkHypothesis<'_>> = handle
-        .chunks
+    // Finish-or-fail: once every chunk is durable, never leave the run running.
+    let (revision_id, segment_count, rejections) =
+        match finalize_transcription_run(store, &run_id) {
+            Ok(outcome) => outcome,
+            Err(error) => return Err(error),
+        };
+    Ok(TranscriptionOutcome {
+        run_id,
+        revision_id,
+        resumed: handle.resumed,
+        reused_chunks,
+        transcribed_chunks,
+        segment_count,
+        rejections,
+    })
+}
+
+/// Reconcile stored complete-chunk hypotheses and commit a revision.
+/// On failure the run is failed closed (`invalid_result`) so it never stays
+/// forever-running. No ASR; launch recovery uses this for Class A orphans.
+pub fn finalize_transcription_run(
+    store: &mut SessionStore,
+    run_id: &str,
+) -> Result<(String, u32, Rejections), TranscriptionError> {
+    let result = finalize_transcription_run_inner(store, run_id);
+    match result {
+        Ok(outcome) => Ok(outcome),
+        Err(TranscriptionError::RunEnded { .. }) => Err(TranscriptionError::RunEnded {
+            run_id: run_id.to_owned(),
+            failure: TranscriptionFailure::InvalidResult,
+        }),
+        Err(error) => match store.fail_transcription_run(
+            run_id,
+            None,
+            TranscriptionFailure::InvalidResult,
+        ) {
+            Ok(()) => Err(TranscriptionError::RunEnded {
+                run_id: run_id.to_owned(),
+                failure: TranscriptionFailure::InvalidResult,
+            }),
+            Err(StoreError::InvalidState(_)) => Err(error),
+            Err(store_error) => Err(TranscriptionError::Store(store_error)),
+        },
+    }
+}
+
+fn finalize_transcription_run_inner(
+    store: &mut SessionStore,
+    run_id: &str,
+) -> Result<(String, u32, Rejections), TranscriptionError> {
+    let chunks = store.transcript_chunks_for_run(run_id)?;
+    if chunks.is_empty()
+        || chunks
+            .iter()
+            .any(|chunk| chunk.state != TranscriptChunkState::Complete)
+    {
+        return Err(TranscriptionError::Store(StoreError::InvalidState(
+            "transcription run has incomplete chunks",
+        )));
+    }
+    let mut parsed = Vec::with_capacity(chunks.len());
+    for chunk in &chunks {
+        let Some(hypothesis) = chunk
+            .hypothesis_json
+            .as_deref()
+            .and_then(|json| serde_json::from_str::<Hypothesis>(json).ok())
+        else {
+            return Err(end_run(
+                store,
+                run_id,
+                Some(chunk.sequence),
+                TranscriptionFailure::InvalidResult,
+            ));
+        };
+        parsed.push(hypothesis);
+    }
+    let chunk_views: Vec<ChunkHypothesis<'_>> = chunks
         .iter()
-        .zip(&windows)
-        .zip(&hypotheses)
-        .map(|((chunk, window), hypothesis)| ChunkHypothesis {
+        .zip(&parsed)
+        .map(|(chunk, hypothesis)| ChunkHypothesis {
             chunk_id: &chunk.identity,
-            span_index: window.span_index as u32,
-            start_nanoseconds: window.chunk.start_nanoseconds,
-            end_nanoseconds: window.chunk.end_nanoseconds,
-            hypothesis: hypothesis.as_ref().expect("every chunk has a hypothesis"),
+            span_index: chunk.span_index,
+            start_nanoseconds: chunk.start_nanoseconds,
+            end_nanoseconds: chunk.end_nanoseconds,
+            hypothesis,
         })
         .collect();
     let (reconciled, rejections) = reconcile(&chunk_views);
@@ -280,21 +352,18 @@ pub fn transcribe_request(
         "overlap_duplicates": rejections.overlap_duplicates,
     })
     .to_string();
+    let (session_id, track_id) = store.transcription_run_binding(run_id)?;
+    let discontinuities_json = match store.transcription_input(&session_id, &track_id) {
+        Ok(input) => discontinuities(&input).to_string(),
+        Err(_) => "[]".to_owned(),
+    };
     let revision_id = store.commit_transcript_revision(
-        &run_id,
+        run_id,
         &segments,
         &rejections_json,
-        &discontinuities(&input).to_string(),
+        &discontinuities_json,
     )?;
-    Ok(TranscriptionOutcome {
-        run_id,
-        revision_id,
-        resumed: handle.resumed,
-        reused_chunks,
-        transcribed_chunks,
-        segment_count: segments.len() as u32,
-        rejections,
-    })
+    Ok((revision_id, segments.len() as u32, rejections))
 }
 
 fn end_run(
@@ -317,7 +386,7 @@ fn span_duration(frames: u64) -> i64 {
         as i64
 }
 
-fn plan_windows(input: &TranscriptionInput) -> Vec<PlannedWindow> {
+pub(crate) fn plan_windows(input: &TranscriptionInput) -> Vec<PlannedWindow> {
     let nanoseconds_per_sample = NANOSECONDS_PER_SECOND / i64::from(MODEL_SAMPLE_RATE_HZ);
     let mut windows = Vec::new();
     for (span_index, span) in input.spans.iter().enumerate() {

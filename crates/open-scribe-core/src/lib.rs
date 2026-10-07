@@ -17,7 +17,7 @@ pub use transcript_library::{AudioExportOptions, TranscriptLibrary};
 mod transcription;
 pub use transcription::{
     TrackRequest, TranscriptionError, TranscriptionOutcome, TranscriptionProgress,
-    TranscriptionStage, transcribe_request, transcribe_track,
+    TranscriptionStage, finalize_transcription_run, transcribe_request, transcribe_track,
 };
 mod session_export;
 pub use session_export::{
@@ -373,7 +373,16 @@ impl RecordingPreparationController {
     pub fn recover_playable_sessions(
         &mut self,
     ) -> Result<Vec<RecoveredPlayableSession>, StoreError> {
-        self.store.recover_playable_sessions()
+        let recovery = self.store.recover_library()?;
+        // Class A: all chunks complete, worker gone — finalize without ASR.
+        for run_id in recovery.pending_transcript_finalizations {
+            match crate::finalize_transcription_run(&mut self.store, &run_id) {
+                Ok(_) => {}
+                Err(crate::TranscriptionError::RunEnded { .. }) => {}
+                Err(crate::TranscriptionError::Store(error)) => return Err(error),
+            }
+        }
+        Ok(recovery.playable)
     }
 
     pub fn import_recoverable_caf(
