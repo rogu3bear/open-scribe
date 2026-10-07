@@ -941,7 +941,7 @@ impl NativeRecordingPreparation {
         } else if lease.byte_length()
             > open_scribe_core::ImportedPlaybackLease::maximum_snapshot_byte_length()
         {
-            // Larger PCM stays on the verified chunk reader. The 256 MiB
+            // Larger uncompressed audio stays on the verified chunk reader. The 256 MiB
             // snapshot path is only for audio that fits in that buffer.
             NativePlaybackLeaseStrategy::RecoveredVerifiedChunks
         } else {
