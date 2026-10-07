@@ -3273,7 +3273,7 @@ fn append_journal_record_in_place(
             "session journal is not a complete append target",
         ));
     }
-    let mut file = OpenOptions::new().append(true).open(journal_path)?;
+    let mut file = fs::OpenOptions::new().append(true).open(journal_path)?;
     append_journal_record(&mut file, record)?;
     file.sync_all()?;
     sync_directory(session_directory)?;
