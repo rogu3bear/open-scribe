@@ -63,10 +63,10 @@ impl SessionStore {
         // Below the capture reserve the volume may already be at ENOSPC. Free
         // emergency blocks and journal critical storage before a full detail
         // read can spend those blocks on WAL/SHM recovery.
-        if let RecorderAction::ObserveStorage { available_bytes } = &action {
-            if *available_bytes < RESERVE_BYTES {
-                return self.observe_critical_storage(session, *available_bytes);
-            }
+        if let RecorderAction::ObserveStorage { available_bytes } = &action
+            && *available_bytes < RESERVE_BYTES
+        {
+            return self.observe_critical_storage(session, *available_bytes);
         }
         let state = self.recorder_detail(&session)?;
         let phase = state.lifecycle.as_str();
