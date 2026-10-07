@@ -148,7 +148,7 @@ struct MenuBarContent: View {
     case .capturing: "Confirming durable recording…"
     case .stopping: "Securing recording…"
     case .saved: liveRecording.statusText
-    case .failed: "Recording needs attention"
+    case .failed: liveRecording.statusText
     default: liveRecording.readinessText
     }
   }
@@ -228,7 +228,7 @@ struct MenuBarLabel: View {
     case .pausing, .paused:
       (liveStatus, "pause.circle", liveStatus)
     case .failed:
-      ("Recording needs attention", "exclamationmark.circle", liveStatus)
+      (liveStatus, "exclamationmark.circle", liveStatus)
     case .saved:
       (liveStatus, "waveform.badge.checkmark", liveStatus)
     case .requestingPermission, .preparing, .stopping:

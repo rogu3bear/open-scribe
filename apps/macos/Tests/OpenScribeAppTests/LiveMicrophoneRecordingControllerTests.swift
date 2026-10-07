@@ -24,6 +24,7 @@ private final class RecordingPreparationFake: NativeRecordingPreparation, @unche
   private(set) var recordingConfirmCount = 0
   private(set) var interruptionReasons: [NativeSessionInterruptionReason] = []
   private(set) var failedSources: [NativeMediaSourceKind] = []
+  private(set) var sourceFailureReasons: [NativeSourceFailureReason] = []
   private var authorizedSourceCount = 0
   var authorizeError: Error?
   var firstSampleDurable = true
@@ -183,6 +184,7 @@ private final class RecordingPreparationFake: NativeRecordingPreparation, @unche
     reason: NativeSourceFailureReason
   ) throws -> NativeSourceFailureEvidence {
     failedSources.append(sourceKind)
+    sourceFailureReasons.append(reason)
     return NativeSourceFailureEvidence(
       sessionId: sessionId,
       sourceKind: sourceKind,
@@ -950,9 +952,13 @@ final class LiveMicrophoneRecordingControllerTests: XCTestCase {
     }
 
     XCTAssertEqual(controller.phase, .capturing)
-    XCTAssertEqual(controller.microphoneSourceHealth?.event, .routeInterrupted)
+    XCTAssertNil(
+      controller.microphoneSourceHealth,
+      "retired microphone must not keep a health observation that claims it is fine")
+    XCTAssertTrue(controller.isMicrophoneRetired)
     XCTAssertEqual(controller.statusText, "Recording continues with remaining audio")
     XCTAssertEqual(preparation.failedSources, [.microphone])
+    XCTAssertEqual(preparation.sourceFailureReasons, [.captureFailed])
     XCTAssertTrue(preparation.interruptionReasons.isEmpty)
     XCTAssertEqual(preparation.sealedSegmentCount, 1)
     XCTAssertEqual(microphone.stopCount, 1)
@@ -1223,8 +1229,12 @@ final class LiveMicrophoneRecordingControllerTests: XCTestCase {
     await controller.start()
 
     XCTAssertEqual(controller.phase, .failed)
+    XCTAssertNotEqual(controller.phase, .capturing)
     XCTAssertFalse(controller.isCapturing)
+    XCTAssertEqual(controller.statusText, "Conversation capture failed")
+    XCTAssertFalse(controller.statusText.hasPrefix("Recording "))
     XCTAssertEqual(preparation.interruptionReasons, [.captureStartFailed])
+    XCTAssertTrue(preparation.sourceFailureReasons.isEmpty, "start-abort is not mid-session source_failed")
   }
 
   func testPostPreparationSetupFailureRecordsInterruptedState() async {

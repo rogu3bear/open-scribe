@@ -58,7 +58,7 @@ struct CompactLiveView: View {
           Label(interruption, systemImage: "exclamationmark.triangle")
             .font(.callout)
             .foregroundStyle(.orange)
-            .accessibilityLabel("Recording needs attention. \(interruption)")
+            .accessibilityLabel("Capture needs attention. \(interruption)")
         }
 
         if liveRecording.contextBinding != nil {
@@ -90,7 +90,7 @@ struct CompactLiveView: View {
     case .capturing: "Confirming durable recording…"
     case .stopping: "Securing recording…"
     case .saved: liveRecording.statusText
-    case .failed: "Recording needs attention"
+    case .failed: liveRecording.statusText
     default: "Ready to record"
     }
   }

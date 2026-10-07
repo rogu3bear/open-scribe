@@ -813,6 +813,11 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
         throw LiveMicrophoneRecordingError.invalidSourceFailure
       }
       failedSources.insert(source)
+      if source == .microphone {
+        // Retired mic must not keep a fresh progress observation that claims it is fine.
+        microphoneSourceHealth = nil
+        microphoneCaptureIdentity = nil
+      }
       if segmentedCapture {
         recorderDetail = try preparation.recorderDetail(sessionId: activeSessionId)
       }
