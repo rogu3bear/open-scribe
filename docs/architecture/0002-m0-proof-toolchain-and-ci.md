@@ -1,6 +1,6 @@
 # ADR 0002 — Milestone 0 Proof Toolchain and CI Boundary
 
-- Status: Superseded by ADR 0018
+- Status: Accepted for the M0 Rust toolchain pin; hosted-CI clauses superseded by ADR 0018
 - Date: 2026-08-20
 - Owner/approver: repository operator, through the explicit instruction to carry the M0 proof on one PR
 - Founding clauses refined: PRD 25.3–25.4, 31 Milestone 0, 34, and 39
@@ -40,4 +40,4 @@ A reviewed dependency/toolchain update changes the pin and lockfile together and
 
 ## Proof
 
-The local source gate must pass before commit. The hosted proof is established only when the exact PR head reports the `SwiftUI / Rust / UniFFI` job green. A local run does not prove hosted CI, and a hosted green job does not prove signing, distribution, deployment, capture, recovery, or release.
+The Rust toolchain pin remains current. A change to it passes the local source gate before commit. Hosted CI is not an admission rule: ADR 0018 admits a pull-request candidate only after exact local gates, `git diff --check`, and an independent review of that candidate. None of this proves signing, distribution, deployment, capture, recovery, or release.
