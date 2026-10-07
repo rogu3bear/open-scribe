@@ -51,9 +51,10 @@ struct MenuBarContent: View {
       Text(libraryError)
         .foregroundStyle(.red)
     }
-    if !store.savedSessions.isEmpty {
+    let savedCount = LibraryConversationLists.saved(store.savedSessions).count
+    if savedCount > 0 {
       Text(
-        "\(store.isSnapshotStale ? "Last known: " : "")\(store.savedSessions.count) saved conversation\(store.savedSessions.count == 1 ? "" : "s")"
+        "\(store.isSnapshotStale ? "Last known: " : "")\(savedCount) saved conversation\(savedCount == 1 ? "" : "s")"
       )
       .foregroundStyle(.secondary)
     }

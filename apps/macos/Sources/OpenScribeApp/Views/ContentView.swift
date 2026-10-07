@@ -145,17 +145,44 @@ struct ContentView: View {
 
       if let current = store.currentSession {
         Section("Now") {
-          ConversationSidebarRow(session: current)
-            .tag(current.sessionId)
+          if current.lifecycle == "interrupted" {
+            ConversationSidebarRow(session: current)
+              .tag(current.sessionId)
+              .contextMenu {
+                Button("Move to Trash…", role: .destructive) {
+                  requestDeletion(current)
+                }
+                .disabled(!liveRecording.canStart)
+              }
+          } else {
+            ConversationSidebarRow(session: current)
+              .tag(current.sessionId)
+          }
+        }
+      }
+
+      if !LibraryConversationLists.interrupted(store.savedSessions).isEmpty {
+        Section("Interrupted") {
+          ForEach(LibraryConversationLists.interrupted(store.savedSessions)) { session in
+            ConversationSidebarRow(session: session)
+              .tag(session.sessionId)
+              .contextMenu {
+                Button("Move to Trash…", role: .destructive) {
+                  requestDeletion(session)
+                }
+                .disabled(!liveRecording.canStart)
+              }
+          }
         }
       }
 
       Section("Conversations") {
-        if store.savedSessions.isEmpty {
+        let saved = LibraryConversationLists.saved(store.savedSessions)
+        if saved.isEmpty {
           Text("No saved conversations yet")
             .foregroundStyle(.secondary)
         } else {
-          ForEach(store.savedSessions) { session in
+          ForEach(saved) { session in
             ConversationSidebarRow(session: session)
               .tag(session.sessionId)
               .contextMenu {
@@ -521,6 +548,16 @@ enum ImportedPlaybackEligibility {
 
   static func status(_ media: RuntimePlayableMediaPresentation) -> String {
     return media.statusText
+  }
+}
+
+enum LibraryConversationLists {
+  static func saved(_ sessions: [RuntimeSessionPresentation]) -> [RuntimeSessionPresentation] {
+    sessions.filter { $0.lifecycle == "ready_for_review" }
+  }
+
+  static func interrupted(_ sessions: [RuntimeSessionPresentation]) -> [RuntimeSessionPresentation] {
+    sessions.filter { $0.lifecycle == "interrupted" }
   }
 }
 
