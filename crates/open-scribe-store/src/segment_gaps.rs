@@ -8,8 +8,9 @@ type UnstartedSegment = (String, String, String);
 impl SessionStore {
     /// Turns journaled-but-unstarted successors into explicit gaps, then
     /// finalizes sessions whose sources have all sealed. An interrupted session
-    /// whose first files never accepted a sample is closed the same way and is
-    /// not promoted. Each session is handled on its own; `blocked` sessions
+    /// whose accepted files never took a sample is closed the same way and is
+    /// not promoted. An authorization that never received a file stays put.
+    /// Each session is handled on its own; `blocked` sessions
     /// keep their earlier finding untouched.
     pub(super) fn recover_unstarted_successors(
         &mut self,
@@ -30,6 +31,7 @@ impl SessionStore {
                               AND resumed.event_kind = 'resume_requested')
                         OR (
                             sessions.lifecycle = 'interrupted'
+                            AND segments.lifecycle = 'open'
                             AND NOT EXISTS (
                                 SELECT 1 FROM segments captured
                                 WHERE captured.session_id = segments.session_id
@@ -121,13 +123,34 @@ impl SessionStore {
                 "UPDATE segments SET lifecycle = 'gap', recovery_state = 'gap' WHERE id = ?1",
                 [segment],
             )?;
-            tx.execute("UPDATE tracks SET lifecycle = 'sealed' WHERE id = ?1 AND NOT EXISTS(
-                SELECT 1 FROM segments WHERE track_id = ?1 AND lifecycle IN ('opening', 'open', 'capturing'))", [track])?;
+            // A track that never accepted a sample is not sealed audio. Seal only
+            // a capturing track, or one that already holds a sealed segment, once
+            // nothing on it is still open.
+            tx.execute(
+                "UPDATE tracks SET lifecycle = 'sealed'
+                 WHERE id = ?1
+                   AND NOT EXISTS(
+                       SELECT 1 FROM segments
+                       WHERE track_id = ?1 AND lifecycle IN ('opening', 'open', 'capturing'))
+                   AND (
+                       lifecycle = 'capturing'
+                       OR EXISTS(
+                           SELECT 1 FROM segments
+                           WHERE track_id = ?1 AND lifecycle = 'sealed'))",
+                [track],
+            )?;
             tx.execute("UPDATE sources SET lifecycle = 'sealed' WHERE id = (SELECT source_id FROM tracks WHERE id = ?1 AND lifecycle = 'sealed')", [track])?;
             tx.execute("UPDATE required_sources SET lifecycle = 'sealed' WHERE session_id = ?1 AND kind IN(
                 SELECT kind FROM sources WHERE session_id = ?1 AND lifecycle = 'sealed')", [session])?;
             tx.execute(
-                "UPDATE sessions SET health = 'degraded' WHERE id = ?1",
+                "UPDATE sessions
+                 SET health = 'degraded',
+                     media_files_open = EXISTS(
+                         SELECT 1 FROM segments
+                         WHERE session_id = ?1
+                           AND lifecycle IN ('opening', 'open', 'capturing')
+                     )
+                 WHERE id = ?1",
                 [session],
             )?;
             insert_event_with_id(

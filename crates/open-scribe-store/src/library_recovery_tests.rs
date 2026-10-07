@@ -35,10 +35,12 @@ fn m1_launch_interrupts_abandoned_preparation_without_claiming_media() {
         .unwrap()
         .join(JOURNAL_NAME);
     let journal = fs::read(&journal_path).unwrap();
-    assert!(journal_records(&store, &session)
-        .iter()
-        .any(|record| record.body.event_kind == "session_interrupted"
-            && record.body.payload["reason"] == "capture_start_failed"));
+    assert!(
+        journal_records(&store, &session)
+            .iter()
+            .any(|record| record.body.event_kind == "session_interrupted"
+                && record.body.payload["reason"] == "capture_start_failed")
+    );
     drop(store);
 
     let mut store = SessionStore::open(temp.path()).unwrap();
@@ -101,7 +103,17 @@ fn launch_closes_media_opened_before_capture_start_failed_without_promoting_it()
         "interrupted"
     );
     assert_eq!(session_flag(&store, &session, "media_files_open"), 0);
+    assert_eq!(session_column(&store, &session, "health"), "degraded");
+    assert_eq!(
+        finding_for(&recovery, &session),
+        Some(RecoveryDisposition::InterruptedMediaOpen)
+    );
     assert_eq!(playable_count(&recovery, &session), 0);
+    assert_eq!(
+        required_lifecycles(&store, &session),
+        vec!["open".to_owned(), "open".to_owned()],
+        "opened files that never accepted a sample are not sealed audio"
+    );
     for authorization in &opened {
         assert_eq!(segment_lifecycle(&store, &authorization.segment_id), "gap");
     }
@@ -110,9 +122,11 @@ fn launch_closes_media_opened_before_capture_start_failed_without_promoting_it()
         .filter(|record| record.body.event_kind == "segment_capture_gap")
         .count();
     assert_eq!(gaps, opened.len());
-    assert!(!event_kinds(&store, &session)
-        .iter()
-        .any(|kind| kind == "timeline_recovered" || kind == "playable_media_recovered"));
+    assert!(
+        !event_kinds(&store, &session)
+            .iter()
+            .any(|kind| kind == "timeline_recovered" || kind == "playable_media_recovered")
+    );
     drop(store);
 
     let mut store = SessionStore::open(temp.path()).unwrap();
@@ -122,6 +136,10 @@ fn launch_closes_media_opened_before_capture_start_failed_without_promoting_it()
         "interrupted"
     );
     assert_eq!(session_flag(&store, &session, "media_files_open"), 0);
+    assert_eq!(
+        finding_for(&second, &session),
+        Some(RecoveryDisposition::InterruptedMediaOpen)
+    );
     assert_eq!(playable_count(&second, &session), 0);
     assert_eq!(
         journal_records(&store, &session)
@@ -134,6 +152,18 @@ fn launch_closes_media_opened_before_capture_start_failed_without_promoting_it()
     for (authorization, bytes) in opened.iter().zip(preserved) {
         assert_eq!(fs::read(&authorization.absolute_path).unwrap(), bytes);
     }
+}
+
+fn required_lifecycles(store: &SessionStore, session: &SessionId) -> Vec<String> {
+    let mut query = store
+        .connection
+        .prepare("SELECT lifecycle FROM required_sources WHERE session_id = ?1 ORDER BY kind")
+        .unwrap();
+    query
+        .query_map([&session.0], |row| row.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap()
 }
 
 fn segment_lifecycle(store: &SessionStore, segment: &str) -> String {

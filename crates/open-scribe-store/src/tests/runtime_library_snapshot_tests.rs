@@ -62,6 +62,48 @@ fn runtime_library_snapshot_projects_recording_timer_and_required_sources() {
 }
 
 #[test]
+fn an_older_interrupted_session_stays_listed_beside_a_newer_one() {
+    let temp = TempDir::new().unwrap();
+    let mut store = open_store(&temp);
+    let older = store
+        .prepare_session(PrepareSessionRequest {
+            title: "Start failed".to_owned(),
+            origin: SessionOrigin::Capture,
+        })
+        .unwrap()
+        .session_id;
+    store
+        .interrupt_session(InterruptSessionRequest {
+            session_id: older.clone(),
+            reason: SessionInterruptionReason::CaptureStartFailed,
+        })
+        .unwrap();
+    let newer = store
+        .prepare_session(PrepareSessionRequest {
+            title: "Still starting".to_owned(),
+            origin: SessionOrigin::Capture,
+        })
+        .unwrap()
+        .session_id;
+    store
+        .interrupt_session(InterruptSessionRequest {
+            session_id: newer.clone(),
+            reason: SessionInterruptionReason::CaptureStartFailed,
+        })
+        .unwrap();
+
+    let snapshot = store.runtime_library_snapshot().unwrap();
+    let current = snapshot.current_session.unwrap();
+    assert_eq!(current.session_id, newer);
+    assert_eq!(current.lifecycle, "interrupted");
+    assert_eq!(snapshot.saved_sessions.len(), 1);
+    let listed = &snapshot.saved_sessions[0];
+    assert_eq!(listed.session_id, older);
+    assert_eq!(listed.lifecycle, "interrupted");
+    assert!(listed.playable_media.is_none());
+}
+
+#[test]
 fn runtime_library_snapshot_exposes_saved_session_without_fixture_state() {
     let temp = TempDir::new().unwrap();
     let mut store = open_store(&temp);

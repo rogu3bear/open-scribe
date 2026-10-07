@@ -54,6 +54,9 @@ pub struct RuntimeSessionSnapshot {
 }
 
 /// One read-only authority snapshot shared by the native live and library surfaces.
+/// `current_session` is the newest nonterminal session. `saved_sessions` holds
+/// reviewable conversations and any older interrupted sessions, which are not
+/// themselves saved recordings.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RuntimeLibrarySnapshot {
     pub current_session: Option<RuntimeSessionSnapshot>,
@@ -264,10 +267,19 @@ impl SessionStore {
             };
             if lifecycle == "ready_for_review" {
                 saved_sessions.push(snapshot);
+            } else if lifecycle == "interrupted" {
+                // The newest nonterminal session stays in Now. Older
+                // interrupted sessions remain listable so they can be reviewed
+                // and deleted; they are not saved recordings.
+                if current_session.is_none() {
+                    current_session = Some(snapshot);
+                } else {
+                    saved_sessions.push(snapshot);
+                }
             } else if current_session.is_none()
                 && matches!(
                     lifecycle.as_str(),
-                    "preparing" | "recording" | "paused" | "finalizing" | "interrupted"
+                    "preparing" | "recording" | "paused" | "finalizing"
                 )
             {
                 current_session = Some(snapshot);
