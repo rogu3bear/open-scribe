@@ -15,6 +15,9 @@ use rusqlite::{OptionalExtension, Transaction, params};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
+/// Class A run ids (complete chunks → finalize) and Class B (run_id, session_id) orphans.
+type RunningTranscriptionOrphanClasses = (Vec<String>, Vec<(String, String)>);
+
 pub const TRANSCRIPT_SCHEMA_VERSION: i64 = 1;
 pub(super) const TRANSCRIPT_MIGRATION_VERSION: i64 = 5;
 
@@ -682,7 +685,7 @@ impl SessionStore {
     /// core finalize; Class B (incomplete) are failed as orphaned.
     pub(crate) fn classify_running_transcription_orphans(
         &self,
-    ) -> Result<(Vec<String>, Vec<(String, String)>), StoreError> {
+    ) -> Result<RunningTranscriptionOrphanClasses, StoreError> {
         let mut statement = self.connection.prepare(
             "SELECT id, session_id,
                     (SELECT COUNT(*) FROM transcript_chunks WHERE run_id = transcription_runs.id),
