@@ -170,22 +170,26 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
   }
 
   func testSizeFailureExplainsPolicyWithoutAddingASession() async {
+    let maximum = nativeImportPolicy().maximumSourceBytes
+    let actual = maximum + (512 * 1_048_576)
+    let expectedActualMiB = String(format: "%.1f", Double(actual) / 1_048_576) + " MiB"
+    let expectedLimitMiB = "\(maximum / 1_048_576) MiB"
     let adapter = ImportedMediaAuthorityAdapter(
       picker: { URL(fileURLWithPath: "/tmp/large.m4a") },
       startSecurityScope: { _ in true },
       stopSecurityScope: { _ in },
       importer: { _, _ in
         throw BoundedAudioImportError.sourceTooLarge(
-          actual: 1_610_612_736,
-          maximum: nativeImportPolicy().maximumSourceBytes
+          actual: actual,
+          maximum: maximum
         )
       }
     )
     adapter.chooseAndImport()
     await assertEventually { adapter.phase == .failed }
     XCTAssertNil(adapter.importedSessionId)
-    XCTAssertTrue(adapter.statusMessage?.contains("1536.0 MiB") == true)
-    XCTAssertTrue(adapter.statusMessage?.contains("1024 MiB") == true)
+    XCTAssertTrue(adapter.statusMessage?.contains(expectedActualMiB) == true)
+    XCTAssertTrue(adapter.statusMessage?.contains(expectedLimitMiB) == true)
     XCTAssertTrue(adapter.statusMessage?.contains("Nothing was added") == true)
   }
 
