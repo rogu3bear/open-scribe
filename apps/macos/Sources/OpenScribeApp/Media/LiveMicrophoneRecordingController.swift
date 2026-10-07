@@ -814,8 +814,11 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
       }
       failedSources.insert(source)
       if source == .microphone {
-        // Retired mic must not keep a fresh progress observation that claims it is fine.
-        microphoneSourceHealth = nil
+        // Drop progress that would still claim the mic is fine after retirement.
+        // Keep degrade events (routeInterrupted / writerFailed) as durable health.
+        if microphoneSourceHealth?.event == .progress {
+          microphoneSourceHealth = nil
+        }
         microphoneCaptureIdentity = nil
       }
       if segmentedCapture {

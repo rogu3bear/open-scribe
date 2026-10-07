@@ -952,9 +952,9 @@ final class LiveMicrophoneRecordingControllerTests: XCTestCase {
     }
 
     XCTAssertEqual(controller.phase, .capturing)
-    XCTAssertNil(
-      controller.microphoneSourceHealth,
-      "retired microphone must not keep a health observation that claims it is fine")
+    XCTAssertEqual(
+      controller.microphoneSourceHealth?.event, .routeInterrupted,
+      "route interruption remains as durable health reason after mic retirement")
     XCTAssertTrue(controller.isMicrophoneRetired)
     XCTAssertEqual(controller.statusText, "Recording continues with remaining audio")
     XCTAssertEqual(preparation.failedSources, [.microphone])
