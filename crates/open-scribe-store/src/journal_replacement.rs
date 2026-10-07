@@ -13,11 +13,12 @@ static LIVE: Mutex<BTreeSet<String>> = Mutex::new(BTreeSet::new());
 
 /// APFS can transiently reject allocation after an emergency reserve has
 /// been unlinked, closed, and synced. Retry only create-new, for at most
-/// 250 ms of waiting. No journal bytes, rename, or projection are replayed.
+/// 1 s of waiting. No journal bytes, rename, or projection are replayed.
+/// Persistent ENOSPC still fails; callers may fall back to in-place append.
 pub(super) fn create_temporary(path: &Path) -> io::Result<File> {
     retry_create(
         || OpenOptions::new().create_new(true).write(true).open(path),
-        || std::thread::sleep(Duration::from_millis(10)),
+        || std::thread::sleep(Duration::from_millis(20)),
     )
 }
 
@@ -25,7 +26,7 @@ fn retry_create<T>(
     mut create: impl FnMut() -> io::Result<T>,
     mut wait: impl FnMut(),
 ) -> io::Result<T> {
-    for _ in 0..25 {
+    for _ in 0..50 {
         match create() {
             Err(error) if error.raw_os_error() == Some(rustix::io::Errno::NOSPC.raw_os_error()) => {
                 wait();
@@ -108,7 +109,7 @@ mod tests {
             || waits += 1,
         );
         assert_eq!(result.unwrap_err().raw_os_error(), Some(28));
-        assert_eq!((attempts, waits), (26, 25));
+        assert_eq!((attempts, waits), (51, 50));
     }
 
     #[test]

@@ -60,13 +60,13 @@ impl SessionStore {
         session: SessionId,
         action: RecorderAction,
     ) -> Result<RecorderDetail, StoreError> {
-        if let RecorderAction::ObserveStorage { available_bytes } = &action
-            && *available_bytes < RESERVE_BYTES
-        {
-            // Even a SQLite read may need WAL/SHM recovery space. A known
-            // critical observation must return emergency blocks before any
-            // database access, not after reading the current projection.
-            self.release_storage_reserve()?;
+        // Below the capture reserve the volume may already be at ENOSPC. Free
+        // emergency blocks and journal critical storage before a full detail
+        // read can spend those blocks on WAL/SHM recovery.
+        if let RecorderAction::ObserveStorage { available_bytes } = &action {
+            if *available_bytes < RESERVE_BYTES {
+                return self.observe_critical_storage(session, *available_bytes);
+            }
         }
         let state = self.recorder_detail(&session)?;
         let phase = state.lifecycle.as_str();
@@ -223,9 +223,9 @@ impl SessionStore {
                     || (matches!(phase, "preparing" | "paused")
                         && available_bytes < preflight_bytes);
                 let level = if critical {
-                    // A failed media write can arrive before the periodic
-                    // probe. Free physical emergency blocks before either the
-                    // journal replacement or SQLite needs to allocate space.
+                    // Preflight-critical (preparing/paused) can still have
+                    // available_bytes >= RESERVE_BYTES; free emergency blocks
+                    // before the journal replacement needs to allocate.
                     self.release_storage_reserve()?;
                     "critical"
                 } else if available_bytes < WARNING_BYTES {
@@ -272,6 +272,50 @@ impl SessionStore {
             }
         };
         let record = self.append_session_journal(&session.0, kind, None, payload)?;
+        self.project_recorder_event(&session.0, &record, true)?;
+        self.recorder_detail(&session)
+    }
+
+    /// Journals a critical `storage_observed` while the volume is still full.
+    /// Releases the emergency reserve, performs only the queries required for
+    /// the payload, then appends to the activity journal before a full detail
+    /// projection can spend the freed blocks.
+    fn observe_critical_storage(
+        &mut self,
+        session: SessionId,
+        available_bytes: u64,
+    ) -> Result<RecorderDetail, StoreError> {
+        self.release_storage_reserve()?;
+        let five_minute_pcm_bytes: u64 = self
+            .required_source_kinds(&session.0)?
+            .into_iter()
+            .map(|kind| u64::from(kind.capture_channels()) * 48_000 * 2 * 300)
+            .sum();
+        let preflight_bytes = RESERVE_BYTES + five_minute_pcm_bytes;
+        if self
+            .latest_recorder_payload(&session.0, "storage_observed")?
+            .as_ref()
+            .and_then(|p| p.get("level"))
+            .and_then(Value::as_str)
+            == Some("critical")
+        {
+            return self.recorder_detail(&session);
+        }
+        let captured_nanoseconds: i64 = self.connection.query_row(
+            "SELECT COALESCE(MAX(mapped_start_ns + sample_count * 1000000000 / 48000), 0)
+             FROM segments WHERE session_id = ?1 AND lifecycle = 'sealed'",
+            [&session.0],
+            |row| row.get(0),
+        )?;
+        let payload = json!({
+            "level": "critical",
+            "available_bytes": available_bytes,
+            "reserve_bytes": RESERVE_BYTES,
+            "warning_bytes": WARNING_BYTES,
+            "preflight_bytes": preflight_bytes,
+            "session_nanoseconds": captured_nanoseconds,
+        });
+        let record = self.append_session_journal(&session.0, "storage_observed", None, payload)?;
         self.project_recorder_event(&session.0, &record, true)?;
         self.recorder_detail(&session)
     }

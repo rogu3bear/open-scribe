@@ -1786,8 +1786,20 @@ impl SessionStore {
             record_digest: digest_json(&body)?,
             body,
         };
-        atomic_replace_journal_with_record(&journal_path, &session_directory, &record, None)?;
-        Ok(record)
+        match atomic_replace_journal_with_record(&journal_path, &session_directory, &record, None) {
+            Ok(()) => Ok(record),
+            Err(StoreError::Io(error))
+                if error.raw_os_error() == Some(rustix::io::Errno::NOSPC.raw_os_error()) =>
+            {
+                // After emergency reserve release, APFS can still refuse
+                // create-new for a replacement file while extending the
+                // existing journal inode succeeds. Fall back to a durable
+                // in-place append so exhaustion evidence is not lost.
+                append_journal_record_in_place(&journal_path, &session_directory, &record)?;
+                Ok(record)
+            }
+            Err(error) => Err(error),
+        }
     }
 
     /// Appends records in one journal replacement, chained in order. Only for
@@ -3238,6 +3250,33 @@ fn append_journal_record(file: &mut File, record: &JournalRecord) -> Result<(), 
     }
     file.write_all(&encoded)?;
     file.write_all(b"\n")?;
+    Ok(())
+}
+
+/// Durable single-record append used only when atomic replacement cannot
+/// create a temporary file under ENOSPC after the emergency reserve was
+/// released. The existing journal inode is extended, synced, and the
+/// session directory is synced; no partial record is left without a newline.
+fn append_journal_record_in_place(
+    journal_path: &Path,
+    session_directory: &Path,
+    record: &JournalRecord,
+) -> Result<(), StoreError> {
+    let metadata = fs::symlink_metadata(journal_path)?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(StoreError::IntegrityMismatch(
+            "session journal is not a regular append target",
+        ));
+    }
+    if metadata.len() == 0 {
+        return Err(StoreError::IntegrityMismatch(
+            "session journal is not a complete append target",
+        ));
+    }
+    let mut file = OpenOptions::new().append(true).open(journal_path)?;
+    append_journal_record(&mut file, record)?;
+    file.sync_all()?;
+    sync_directory(session_directory)?;
     Ok(())
 }
 
