@@ -526,11 +526,7 @@ fn launch_recovery_finalizes_class_a_orphans_without_recognizer() {
     }
     let root = imported.root.clone();
     let session = imported.session.clone();
-    let Imported {
-        _temp,
-        store,
-        ..
-    } = imported;
+    let Imported { _temp, store, .. } = imported;
     drop(store);
 
     let mut controller = crate::RecordingPreparationController::open(&root).unwrap();

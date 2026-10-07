@@ -246,11 +246,11 @@ pub fn transcribe_request(
         required_nanoseconds: required,
     });
     // Finish-or-fail: once every chunk is durable, never leave the run running.
-    let (revision_id, segment_count, rejections) =
-        match finalize_transcription_run(store, &run_id) {
-            Ok(outcome) => outcome,
-            Err(error) => return Err(error),
-        };
+    let (revision_id, segment_count, rejections) = match finalize_transcription_run(store, &run_id)
+    {
+        Ok(outcome) => outcome,
+        Err(error) => return Err(error),
+    };
     Ok(TranscriptionOutcome {
         run_id,
         revision_id,
@@ -276,18 +276,16 @@ pub fn finalize_transcription_run(
             run_id: run_id.to_owned(),
             failure: TranscriptionFailure::InvalidResult,
         }),
-        Err(error) => match store.fail_transcription_run(
-            run_id,
-            None,
-            TranscriptionFailure::InvalidResult,
-        ) {
-            Ok(()) => Err(TranscriptionError::RunEnded {
-                run_id: run_id.to_owned(),
-                failure: TranscriptionFailure::InvalidResult,
-            }),
-            Err(StoreError::InvalidState(_)) => Err(error),
-            Err(store_error) => Err(TranscriptionError::Store(store_error)),
-        },
+        Err(error) => {
+            match store.fail_transcription_run(run_id, None, TranscriptionFailure::InvalidResult) {
+                Ok(()) => Err(TranscriptionError::RunEnded {
+                    run_id: run_id.to_owned(),
+                    failure: TranscriptionFailure::InvalidResult,
+                }),
+                Err(StoreError::InvalidState(_)) => Err(error),
+                Err(store_error) => Err(TranscriptionError::Store(store_error)),
+            }
+        }
     }
 }
 

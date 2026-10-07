@@ -7,7 +7,10 @@ use sha2::{Digest, Sha256};
 use tempfile::TempDir;
 
 use super::*;
-use crate::{RecoveryDisposition, CAF_HEADER, DATABASE_NAME, ImportMediaRequest, JOURNAL_NAME, SESSIONS_DIRECTORY};
+use crate::{
+    CAF_HEADER, DATABASE_NAME, ImportMediaRequest, JOURNAL_NAME, RecoveryDisposition,
+    SESSIONS_DIRECTORY,
+};
 
 pub(crate) const SECOND: i64 = 1_000_000_000;
 
@@ -652,7 +655,10 @@ fn launch_queues_complete_chunk_running_runs_for_finalize() {
         vec![handle.run_id.clone()]
     );
     let runs = fixture.store.transcription_runs(&fixture.session).unwrap();
-    assert_eq!(runs[0].state, "running", "Class A stays running for core finalize");
+    assert_eq!(
+        runs[0].state, "running",
+        "Class A stays running for core finalize"
+    );
     assert!(runs[0].failure_class.is_none());
 }
 
