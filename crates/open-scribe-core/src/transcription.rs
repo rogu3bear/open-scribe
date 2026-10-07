@@ -246,11 +246,7 @@ pub fn transcribe_request(
         required_nanoseconds: required,
     });
     // Finish-or-fail: once every chunk is durable, never leave the run running.
-    let (revision_id, segment_count, rejections) = match finalize_transcription_run(store, &run_id)
-    {
-        Ok(outcome) => outcome,
-        Err(error) => return Err(error),
-    };
+    let (revision_id, segment_count, rejections) = finalize_transcription_run(store, &run_id)?;
     Ok(TranscriptionOutcome {
         run_id,
         revision_id,
