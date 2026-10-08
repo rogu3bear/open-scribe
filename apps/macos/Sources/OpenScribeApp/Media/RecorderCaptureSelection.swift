@@ -22,6 +22,44 @@ struct RecorderCaptureSelection: @unchecked Sendable {
   }
 }
 
+/// The next explicit capture span, including sources retired in this session.
+/// This describes eligibility; it does not authorize or start capture.
+struct RecorderSourceSelectionPresentation: Equatable {
+  let summary: String
+  let unavailableNotice: String?
+  let help: String
+  let systemAudioOptionTitle: String
+
+  init(
+    selection: RecorderCaptureSelection, microphoneRetired: Bool,
+    selectedAudioRetired: Bool = false
+  ) {
+    var names: [String] = []
+    if !microphoneRetired { names.append("Microphone") }
+    if selection.kind != nil, !selectedAudioRetired { names.append(selection.name) }
+    summary =
+      names.isEmpty
+      ? "No available source for resume"
+      : names == ["Microphone"] ? "Microphone only" : names.joined(separator: " + ")
+
+    var notices: [String] = []
+    if microphoneRetired {
+      notices.append("Microphone stopped earlier and remains unavailable for this recording.")
+    }
+    if selectedAudioRetired, selection.kind != nil {
+      notices.append(
+        "\(selection.name) stopped earlier and is excluded from the next recording span.")
+    }
+    unavailableNotice = notices.isEmpty ? nil : notices.joined(separator: " ")
+    help =
+      "Pause before changing sources. "
+      + (unavailableNotice ?? "Microphone audio is included.")
+    systemAudioOptionTitle =
+      microphoneRetired
+      ? "All computer audio" : "Microphone + all computer audio"
+  }
+}
+
 @MainActor
 final class RecorderApplicationPicker: NSObject, ObservableObject {
   @Published private(set) var applications: [SCRunningApplication] = []

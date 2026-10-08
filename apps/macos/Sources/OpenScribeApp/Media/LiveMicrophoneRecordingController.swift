@@ -212,6 +212,16 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
   /// every later span, so a microphone-only scope would capture nothing.
   var isMicrophoneRetired: Bool { failedSources.contains(.microphone) }
 
+  var sourceSelectionPresentation: RecorderSourceSelectionPresentation {
+    // A new session clears retirement; a resumed span preserves it.
+    RecorderSourceSelectionPresentation(
+      selection: captureSelection,
+      microphoneRetired: !canStart && isMicrophoneRetired,
+      selectedAudioRetired: !canStart
+        && captureSelection.kind.map { failedSources.contains($0) } == true
+    )
+  }
+
   var canStop: Bool {
     phase == .starting || phase == .capturing || phase == .paused
   }

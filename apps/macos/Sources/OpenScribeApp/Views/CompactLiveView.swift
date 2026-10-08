@@ -95,10 +95,16 @@ struct CompactLiveView: View {
     }
   }
 
-  private var statusSymbol: String {
+  var statusSymbol: String {
     if store.currentSession?.isRecording == true { return "record.circle.fill" }
     if store.currentSession?.needsAttention == true || liveRecording.phase == .failed {
       return "exclamationmark.circle"
+    }
+    if let paused = store.currentSession?.pausedStatusSymbolName { return paused }
+    if store.currentSession == nil,
+      liveRecording.phase == .pausing || liveRecording.phase == .paused
+    {
+      return SymbolResolver.pausedCaptureSymbolName
     }
     if liveRecording.phase == .starting || liveRecording.phase == .preparing {
       return "waveform"

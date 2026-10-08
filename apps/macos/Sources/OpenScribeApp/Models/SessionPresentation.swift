@@ -156,6 +156,27 @@ struct RuntimeSessionPresentation: Equatable, Sendable, Identifiable {
     lifecycle == "interrupted" || health == "degraded"
   }
 
+  var pausedStatusSymbolName: String? {
+    guard lifecycle == "paused", !needsAttention else { return nil }
+    return SymbolResolver.pausedCaptureSymbolName
+  }
+
+  var captureStatusSymbolName: String {
+    if lifecycle == "interrupted" || (recovered && needsAttention) {
+      return SymbolResolver.captureSymbol(for: .recoveryRequired)
+    }
+    if needsAttention { return SymbolResolver.captureSymbol(for: .degraded) }
+    if isRecording { return SymbolResolver.captureSymbol(for: .recording) }
+    if let pausedStatusSymbolName { return pausedStatusSymbolName }
+    let state: SymbolResolver.CaptureState =
+      switch lifecycle {
+      case "preparing", "recording", "finalizing": .starting
+      case "ready_for_review": .ready
+      default: .idle
+      }
+    return SymbolResolver.captureSymbol(for: state)
+  }
+
   /// The sources capturing now, joined for speech: only what this session
   /// records, never a source the selection excluded.
   var capturingSourcesText: String {

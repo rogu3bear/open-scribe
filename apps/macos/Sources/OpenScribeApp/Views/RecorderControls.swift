@@ -32,11 +32,12 @@ struct RecorderControls: View {
     case .popover:
       Button("Sources", systemImage: "slider.horizontal.3") { showsSources = true }
         .disabled(!sourcesEnabled)
-        .help("Pause before changing sources. Microphone audio is included.")
+        .help(recorder.sourceSelectionPresentation.help)
         .popover(isPresented: $showsSources) {
           VStack(alignment: .leading, spacing: 12) {
             Text("Recording sources").font(.headline)
-            Text("Microphone + \(recorder.captureSelection.name)")
+              .accessibilityAddTraits(.isHeader)
+            sourceSelectionSummary
             sourceButtons
             if let error = picker.errorMessage { Text(error).foregroundStyle(.orange) }
             Text("Application selection limits computer audio to the chosen app. Changes take effect when you explicitly record or resume.")
@@ -45,19 +46,30 @@ struct RecorderControls: View {
         }
     case .menu:
       Menu("Sources", systemImage: "slider.horizontal.3") {
-        Text("Microphone + \(recorder.captureSelection.name)")
+        sourceSelectionSummary
         sourceButtons
         if let error = picker.errorMessage { Text(error) }
       }
       .disabled(!sourcesEnabled)
-      .help("Pause before changing sources. Microphone audio is included.")
+      .help(recorder.sourceSelectionPresentation.help)
+    }
+  }
+
+  @ViewBuilder private var sourceSelectionSummary: some View {
+    Text(recorder.sourceSelectionPresentation.summary)
+      .fixedSize(horizontal: false, vertical: true)
+    if let notice = recorder.sourceSelectionPresentation.unavailableNotice {
+      Text(notice)
+        .font(.callout)
+        .foregroundStyle(.secondary)
+        .fixedSize(horizontal: false, vertical: true)
     }
   }
 
   @ViewBuilder private var sourceButtons: some View {
     Button("Microphone only") { select(.microphoneOnly) }
       .disabled(recorder.isMicrophoneRetired)
-    Button("Microphone + all computer audio") { select(.system) }
+    Button(recorder.sourceSelectionPresentation.systemAudioOptionTitle) { select(.system) }
     Button("Choose an application…") {
       picker.onSelection = { selection in select(selection) }
       Task { await picker.choose() }

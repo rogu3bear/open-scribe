@@ -491,10 +491,17 @@ final class RecorderPauseResumeTests: XCTestCase {
     XCTAssertEqual(harness.controller.phase, .capturing)
     await harness.controller.stop(pausing: true)
     XCTAssertEqual(harness.controller.phase, .paused)
+    XCTAssertEqual(harness.controller.sourceSelectionPresentation.summary, "Microphone only")
+    XCTAssertTrue(
+      harness.controller.sourceSelectionPresentation.unavailableNotice?.contains(
+        "Mac system audio stopped earlier") == true)
     harness.clock.advance(seconds: 60)
 
     harness.controller.selectCaptureSource(.system)
     XCTAssertNil(harness.controller.errorMessage)
+    XCTAssertEqual(
+      harness.controller.sourceSelectionPresentation.summary, "Microphone + Mac system audio")
+    XCTAssertNil(harness.controller.sourceSelectionPresentation.unavailableNotice)
     await harness.controller.start(resuming: true)
     XCTAssertEqual(harness.controller.phase, .starting, harness.controller.errorMessage ?? "")
     XCTAssertEqual(harness.captures.systems.count, 2, "the reselected source starts again")
@@ -533,6 +540,12 @@ final class RecorderPauseResumeTests: XCTestCase {
     XCTAssertTrue(harness.controller.isMicrophoneRetired)
     await harness.controller.stop(pausing: true)
     XCTAssertEqual(harness.controller.phase, .paused)
+    XCTAssertEqual(harness.controller.sourceSelectionPresentation.summary, "Mac system audio")
+    XCTAssertTrue(
+      harness.controller.sourceSelectionPresentation.unavailableNotice?.contains(
+        "Microphone stopped earlier") == true)
+    XCTAssertFalse(
+      harness.controller.sourceSelectionPresentation.help.contains("Microphone audio is included"))
     harness.clock.advance(seconds: 60)
 
     harness.controller.selectCaptureSource(.microphoneOnly)

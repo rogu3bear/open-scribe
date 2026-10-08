@@ -17,6 +17,301 @@ private final class SnapshotFailureSwitch: @unchecked Sendable {
 
 @MainActor
 final class FixtureSessionTests: XCTestCase {
+  func testRuntimeCaptureAnnouncementsRequireDurableTruthAndIgnoreTicks() {
+    var announcements = RuntimeCaptureAnnouncements()
+    XCTAssertTrue(announcements.update(current: captureSession("preparing"), saved: []).isEmpty)
+    XCTAssertTrue(
+      announcements.update(
+        current: captureSession("recording", durable: false), saved: []
+      ).isEmpty
+    )
+    XCTAssertTrue(
+      announcements.update(
+        current: captureSession("recording", durable: false, mediaOpen: true), saved: []
+      ).isEmpty
+    )
+    XCTAssertTrue(
+      announcements.update(
+        current: captureSession("recording", mediaOpen: false), saved: []
+      ).isEmpty
+    )
+    XCTAssertEqual(
+      announcements.update(current: captureSession("recording"), saved: []),
+      ["Recording Mac microphone and Mac system audio."]
+    )
+    XCTAssertTrue(
+      announcements.update(current: captureSession("recording", seconds: 900), saved: []).isEmpty
+    )
+    XCTAssertEqual(
+      announcements.update(current: captureSession("paused"), saved: []),
+      ["Paused. Capture is suspended."]
+    )
+    XCTAssertTrue(announcements.update(current: captureSession("paused"), saved: []).isEmpty)
+    XCTAssertTrue(
+      announcements.update(
+        current: captureSession("paused", sourceLifecycle: "sealed"), saved: []
+      ).isEmpty
+    )
+    XCTAssertEqual(announcements.update(current: captureSession("recording"), saved: []).count, 1)
+  }
+
+  func testRuntimeSourceFailureNamesFailureAndActualContinuationOnce() {
+    var announcements = RuntimeCaptureAnnouncements()
+    _ = announcements.update(current: captureSession("recording"), saved: [])
+    let degraded = captureSession("recording", health: "degraded", microphoneFailed: true)
+    let messages = announcements.update(current: degraded, saved: [])
+    XCTAssertEqual(messages.count, 1)
+    XCTAssertTrue(messages[0].contains("Mac microphone failed."))
+    XCTAssertTrue(messages[0].contains("Capture continues on Mac system audio."))
+    XCTAssertTrue(announcements.update(current: degraded, saved: []).isEmpty)
+    let revoked = captureSession(
+      "interrupted", health: "degraded", reason: "permission_revoked", microphoneFailed: true
+    )
+    let permission = announcements.update(current: revoked, saved: [])
+    XCTAssertEqual(permission.count, 1)
+    XCTAssertTrue(permission[0].contains("Capture permission was withdrawn."))
+    XCTAssertTrue(permission[0].contains("Mac microphone failed."))
+    XCTAssertTrue(permission[0].contains("No source is confirmed capturing."))
+    XCTAssertTrue(permission[0].contains("Recovery required."))
+    XCTAssertFalse(permission[0].contains("Capture continues"))
+    XCTAssertTrue(announcements.update(current: revoked, saved: []).isEmpty)
+  }
+
+  func testRuntimeAnnouncementsDoNotPromoteUndurableDegradedRecording() {
+    var announcements = RuntimeCaptureAnnouncements()
+    XCTAssertTrue(
+      announcements.update(
+        current: captureSession("recording", health: "degraded", durable: false), saved: []
+      ).isEmpty
+    )
+  }
+
+  func testRecoveryAnnouncementsSeedHistoryAndAnnounceNewPartialRecoveryOnce() {
+    var announcements = RuntimeCaptureAnnouncements()
+    let recovered = captureSession("ready_for_review", health: "degraded", recovered: true)
+    XCTAssertTrue(announcements.update(current: nil, saved: [recovered]).isEmpty)
+    XCTAssertTrue(announcements.update(current: nil, saved: [recovered]).isEmpty)
+
+    var emptyLibrary = RuntimeCaptureAnnouncements()
+    _ = emptyLibrary.update(current: nil, saved: [])
+    let messages = emptyLibrary.update(current: nil, saved: [recovered])
+    XCTAssertEqual(messages.count, 1)
+    XCTAssertTrue(messages[0].hasPrefix("Recovery required for Meeting."))
+    XCTAssertTrue(emptyLibrary.update(current: nil, saved: [recovered]).isEmpty)
+
+    var movingRecovery = RuntimeCaptureAnnouncements()
+    XCTAssertEqual(movingRecovery.update(current: recovered, saved: []).count, 1)
+    XCTAssertTrue(movingRecovery.update(current: nil, saved: [recovered]).isEmpty)
+  }
+
+  func testRuntimeStoreDispatchesWithoutViewAndDoesNotAnnounceReadFailures() async {
+    let native = NativeRuntimeSessionSnapshot(
+      sessionId: "announcement-session", title: "Meeting", lifecycle: "recording",
+      health: "healthy", elapsedSeconds: 1, journalDurable: true, mediaFilesOpen: true,
+      interruptionReason: nil, recovered: false, hasCaptureTimeline: true,
+      sources: [
+        NativeRuntimeSourceSnapshot(
+          kind: .microphone, displayName: "Mac microphone", lifecycle: "capturing"
+        )
+      ], playableMedia: nil
+    )
+    let failure = SnapshotFailureSwitch()
+    var messages: [String] = []
+    let store = RuntimeLibraryStore(
+      snapshotProvider: {
+        if failure.isEnabled() { throw CocoaError(.fileReadUnknown) }
+        return NativeRuntimeLibrarySnapshot(currentSession: native, savedSessions: [])
+      },
+      announce: { messages.append($0) }, startsPolling: false
+    )
+    await assertEventually { store.currentSession?.isRecording == true }
+    XCTAssertEqual(messages, ["Recording Mac microphone."])
+    failure.enable()
+    store.refresh()
+    await assertEventually { store.isSnapshotStale }
+    XCTAssertNil(store.currentSession)
+    XCTAssertEqual(messages.count, 1)
+  }
+
+  func testRuntimeStoreSeedsEmptySnapshotBeforeNewRecoveryArrives() async {
+    let partial = NativeRuntimeSessionSnapshot(
+      sessionId: "partial-session", title: "Meeting", lifecycle: "ready_for_review",
+      health: "degraded", elapsedSeconds: 5, journalDurable: true, mediaFilesOpen: false,
+      interruptionReason: "capture_failed", recovered: true, hasCaptureTimeline: true,
+      sources: [], playableMedia: nil
+    )
+    let counter = SnapshotInvocationCounter()
+    var messages: [String] = []
+    let store = RuntimeLibraryStore(
+      snapshotProvider: {
+        NativeRuntimeLibrarySnapshot(
+          currentSession: nil, savedSessions: counter.next() == 1 ? [] : [partial]
+        )
+      },
+      announce: { messages.append($0) }, startsPolling: false
+    )
+    store.refresh()
+    await assertEventually { store.savedSessions.count == 1 }
+    XCTAssertEqual(messages.count, 1)
+    XCTAssertTrue(messages[0].hasPrefix("Recovery required for Meeting."))
+  }
+
+  func testPausedGlyphAgreesAcrossLiveMenuAndStatusItem() async {
+    let paused = captureSession("paused")
+    let native = NativeRuntimeSessionSnapshot(
+      sessionId: paused.sessionId, title: paused.title, lifecycle: "paused", health: "healthy",
+      elapsedSeconds: 1, journalDurable: true, mediaFilesOpen: true, interruptionReason: nil,
+      recovered: false, hasCaptureTimeline: true, sources: [], playableMedia: nil
+    )
+    let store = RuntimeLibraryStore(
+      snapshotProvider: { NativeRuntimeLibrarySnapshot(currentSession: native, savedSessions: []) },
+      announce: { _ in }, startsPolling: false
+    )
+    await assertEventually { store.currentSession?.lifecycle == "paused" }
+    let live = CompactLiveView(
+      store: store, liveRecording: LiveMicrophoneRecordingController(managedRoot: nil)
+    )
+    let symbol = SymbolResolver.pausedCaptureSymbolName
+    XCTAssertFalse(symbol.isEmpty)
+    XCTAssertEqual(
+      symbol, SymbolResolver.resolve(primary: "pause.circle.fill", fallback: "pause.fill"))
+    XCTAssertEqual(live.statusSymbol, symbol)
+    XCTAssertEqual(MenuBarContent.statusSymbol(for: paused), symbol)
+    for current in [Optional(paused), nil] {
+      XCTAssertEqual(
+        MenuBarLabel.presentation(
+          session: current, snapshotStale: false, livePhase: .paused, liveStatus: "Paused"
+        ).symbolName, symbol
+      )
+    }
+    let pausedWithElapsedTime = MenuBarLabel.presentation(
+      session: captureSession("paused", seconds: 3661, sourceLifecycle: "paused"),
+      snapshotStale: false, livePhase: .paused, liveStatus: "Paused"
+    )
+    XCTAssertEqual(pausedWithElapsedTime.text, "Paused · 01:01:01")
+    XCTAssertEqual(pausedWithElapsedTime.accessibilityText, "Paused, 01:01:01")
+    XCTAssertEqual(
+      MenuBarContent.statusSymbol(for: captureSession("interrupted", health: "degraded")),
+      SymbolResolver.captureSymbol(for: .recoveryRequired)
+    )
+  }
+
+  func testCaptureSymbolsUseDocumentedFallbacksWithoutInventingGlyphs() {
+    let contract: [(SymbolResolver.CaptureState, String, String)] = [
+      (.idle, "waveform", "circle"),
+      (.ready, "waveform.circle", "waveform"),
+      (.starting, "ellipsis.circle", "ellipsis"),
+      (.recording, "record.circle.fill", "circle.fill"),
+      (.paused, "pause.circle.fill", "pause.fill"),
+      (.degraded, "exclamationmark.triangle.fill", "exclamationmark.triangle"),
+      (.recoveryRequired, "clock.arrow.circlepath", "clock"),
+    ]
+    XCTAssertEqual(contract.count, SymbolResolver.CaptureState.allCases.count)
+    for (state, primary, fallback) in contract {
+      XCTAssertEqual(SymbolResolver.captureSymbol(for: state, isAvailable: { _ in true }), primary)
+      XCTAssertEqual(
+        SymbolResolver.captureSymbol(for: state, isAvailable: { $0 == fallback }), fallback)
+      XCTAssertEqual(SymbolResolver.captureSymbol(for: state, isAvailable: { _ in false }), "")
+      XCTAssertFalse(SymbolResolver.captureSymbol(for: state).isEmpty)
+    }
+  }
+
+  func testSessionAndControllerMenuSymbolsAgreeWithoutPrematureRecording() {
+    let sessions: [(RuntimeSessionPresentation, SymbolResolver.CaptureState)] = [
+      (captureSession("preparing"), .starting),
+      (captureSession("recording", durable: false), .starting),
+      (captureSession("recording"), .recording),
+      (captureSession("paused"), .paused),
+      (captureSession("recording", health: "degraded", microphoneFailed: true), .degraded),
+      (captureSession("paused", health: "degraded", microphoneFailed: true), .degraded),
+      (captureSession("interrupted", health: "degraded"), .recoveryRequired),
+      (captureSession("ready_for_review", health: "degraded", recovered: true), .recoveryRequired),
+    ]
+    for (session, state) in sessions {
+      let symbol = SymbolResolver.captureSymbol(for: state)
+      XCTAssertEqual(MenuBarContent.statusSymbol(for: session), symbol)
+      XCTAssertEqual(
+        MenuBarLabel.presentation(
+          session: session, snapshotStale: false, livePhase: .capturing, liveStatus: "Recording"
+        ).symbolName, symbol)
+    }
+    for phase in [
+      LiveMicrophoneRecordingPhase.requestingPermission, .preparing, .starting,
+      .capturing, .pausing, .stopping,
+    ] {
+      XCTAssertEqual(
+        MenuBarLabel.presentation(
+          session: nil, snapshotStale: false, livePhase: phase, liveStatus: "Working…"
+        ).symbolName, SymbolResolver.captureSymbol(for: .starting))
+    }
+    XCTAssertEqual(
+      MenuBarLabel.presentation(
+        session: nil, snapshotStale: false, livePhase: .idle, liveStatus: "Ready to record"
+      ).symbolName, SymbolResolver.captureSymbol(for: .ready))
+    XCTAssertEqual(
+      MenuBarLabel.presentation(
+        session: captureSession("recording"), snapshotStale: true,
+        livePhase: .capturing, liveStatus: "Recording"
+      ).accessibilityText, "Live recording state unavailable")
+  }
+
+  func testSourceSelectionPresentationNamesOnlyEligibleSources() {
+    let microphoneOnly = RecorderSourceSelectionPresentation(
+      selection: .microphoneOnly, microphoneRetired: false)
+    XCTAssertEqual(microphoneOnly.summary, "Microphone only")
+    XCTAssertNil(microphoneOnly.unavailableNotice)
+    let retiredMicrophone = RecorderSourceSelectionPresentation(
+      selection: .system, microphoneRetired: true)
+    XCTAssertEqual(retiredMicrophone.summary, "Mac system audio")
+    XCTAssertTrue(
+      retiredMicrophone.unavailableNotice?.contains("Microphone stopped earlier") == true)
+    XCTAssertFalse(retiredMicrophone.help.contains("Microphone audio is included"))
+    XCTAssertEqual(retiredMicrophone.systemAudioOptionTitle, "All computer audio")
+    let retiredAudio = RecorderSourceSelectionPresentation(
+      selection: .system, microphoneRetired: false, selectedAudioRetired: true)
+    XCTAssertEqual(retiredAudio.summary, "Microphone only")
+    XCTAssertTrue(
+      retiredAudio.unavailableNotice?.contains("Mac system audio stopped earlier") == true)
+    let noSource = RecorderSourceSelectionPresentation(
+      selection: .microphoneOnly, microphoneRetired: true)
+    XCTAssertEqual(noSource.summary, "No available source for resume")
+    let name = String(repeating: "音声 Åudio ", count: 15)
+    let application = RecorderCaptureSelection(
+      kind: .applicationAudio, identity: "presentation-only", name: name,
+      filter: nil, processId: nil)
+    XCTAssertEqual(
+      RecorderSourceSelectionPresentation(selection: application, microphoneRetired: false).summary,
+      "Microphone + \(name)")
+    XCTAssertEqual(
+      RecorderSourceSelectionPresentation(selection: application, microphoneRetired: true).summary,
+      name)
+  }
+
+  private func captureSession(
+    _ lifecycle: String, health: String = "healthy", durable: Bool = true,
+    mediaOpen: Bool? = nil,
+    seconds: UInt64 = 1, reason: String? = nil, microphoneFailed: Bool = false,
+    recovered: Bool = false, sourceLifecycle: String = "capturing"
+  ) -> RuntimeSessionPresentation {
+    RuntimeSessionPresentation(
+      native: NativeRuntimeSessionSnapshot(
+        sessionId: "announcement-session", title: "Meeting", lifecycle: lifecycle,
+        health: health, elapsedSeconds: seconds, journalDurable: durable,
+        mediaFilesOpen: mediaOpen ?? durable, interruptionReason: reason, recovered: recovered,
+        hasCaptureTimeline: true,
+        sources: [
+          NativeRuntimeSourceSnapshot(
+            kind: .microphone, displayName: "Mac microphone",
+            lifecycle: microphoneFailed ? "failed" : sourceLifecycle
+          ),
+          NativeRuntimeSourceSnapshot(
+            kind: .systemAudio, displayName: "Mac system audio", lifecycle: sourceLifecycle
+          ),
+        ], playableMedia: nil
+      )
+    )
+  }
+
   func testMainWorkspacePrefersTheActiveConversation() {
     XCTAssertEqual(
       MainWorkspaceSelection.resolve(

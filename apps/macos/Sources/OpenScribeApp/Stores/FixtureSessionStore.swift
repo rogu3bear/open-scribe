@@ -62,6 +62,8 @@ final class RuntimeLibraryStore: ObservableObject {
   var isLaunchRecoveryPending: @MainActor () -> Bool = { false }
 
   private let snapshotProvider: SnapshotProvider
+  private let announce: @MainActor (String) -> Void
+  private var captureAnnouncements = RuntimeCaptureAnnouncements()
   nonisolated private let importProvider: ImportProvider?
   nonisolated private let normalizedImportProvider: NormalizedImportProvider?
   nonisolated private let compressedImportProvider: CompressedImportProvider?
@@ -78,10 +80,12 @@ final class RuntimeLibraryStore: ObservableObject {
     normalizedImportProvider: NormalizedImportProvider? = nil,
     compressedImportProvider: CompressedImportProvider? = nil,
     packageImportProvider: PackageImportProvider? = nil,
+    announce: @escaping @MainActor (String) -> Void = AccessibilityAnnouncer.post,
     startsPolling: Bool = true,
     refreshesImmediately: Bool = true
   ) {
     self.snapshotProvider = snapshotProvider
+    self.announce = announce
     self.importProvider = importProvider
     self.normalizedImportProvider = normalizedImportProvider
     self.compressedImportProvider = compressedImportProvider
@@ -298,6 +302,7 @@ final class RuntimeLibraryStore: ObservableObject {
           readDuringRecovery || isLaunchRecoveryPending()
           ? nil : native.currentSession.map(RuntimeSessionPresentation.init(native:))
         let nextSaved = native.savedSessions.map(RuntimeSessionPresentation.init(native:))
+        let announcements = captureAnnouncements.update(current: nextCurrent, saved: nextSaved)
         // Identical snapshots must not invalidate SwiftUI. The one-second poll
         // otherwise redraws the whole library while the app is idle.
         guard
@@ -309,6 +314,9 @@ final class RuntimeLibraryStore: ObservableObject {
         isSnapshotStale = false
         errorMessage = nil
         noteSnapshotIfChanged(current: nextCurrent, saved: nextSaved)
+        for message in announcements {
+          announce(message)
+        }
       case .failure(let error) where error is CancellationError:
         break
       case .failure:

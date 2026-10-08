@@ -27,9 +27,7 @@ struct MenuBarContent: View {
 
   var body: some View {
     if let current = store.currentSession {
-      Label(
-        current.statusText,
-        systemImage: current.isRecording ? "record.circle.fill" : "exclamationmark.circle")
+      CaptureStatusLabel(text: current.statusText, symbolName: Self.statusSymbol(for: current))
       Text(current.timerText)
         .font(.system(.body, design: .monospaced))
       ForEach(current.sources, id: \.kind) { source in
@@ -59,7 +57,7 @@ struct MenuBarContent: View {
       .foregroundStyle(.secondary)
     }
     if liveRecording.canStart {
-      Button("Record — \(liveRecording.captureSelection.name)") {
+      Button("Record — \(liveRecording.sourceSelectionPresentation.summary)") {
         Task {
           await liveRecording.start()
           store.refresh()
@@ -69,7 +67,7 @@ struct MenuBarContent: View {
       .keyboardShortcut("r", modifiers: [.command, .shift])
     }
     if liveRecording.canStop {
-      Button("Stop Capture") {
+      Button("Stop and Save") {
         Task {
           await liveRecording.stop()
           store.refresh()
@@ -142,9 +140,13 @@ struct MenuBarContent: View {
     )
   }
 
+  static func statusSymbol(for session: RuntimeSessionPresentation) -> String {
+    session.captureStatusSymbolName
+  }
+
   private var pendingStatusText: String {
     switch liveRecording.phase {
-    case .requestingPermission, .preparing, .starting: liveRecording.statusText
+    case .requestingPermission, .preparing, .starting, .pausing, .paused: liveRecording.statusText
     case .capturing: "Confirming durable recording…"
     case .stopping: "Securing recording…"
     case .saved: liveRecording.statusText
@@ -166,7 +168,7 @@ struct MenuBarLabel: View {
       livePhase: liveRecording.phase,
       liveStatus: liveRecording.statusText
     )
-    Label(presentation.text, systemImage: presentation.symbolName)
+    CaptureStatusLabel(text: presentation.text, symbolName: presentation.symbolName)
       .accessibilityLabel(presentation.accessibilityText)
       .onAppear {
         store.refresh()
@@ -197,7 +199,7 @@ struct MenuBarLabel: View {
     ).accessibilityText
   }
 
-  private static func presentation(
+  static func presentation(
     session: RuntimeSessionPresentation?,
     snapshotStale: Bool,
     livePhase: LiveMicrophoneRecordingPhase,
@@ -207,34 +209,56 @@ struct MenuBarLabel: View {
       return ("State unavailable", "exclamationmark.circle", "Live recording state unavailable")
     }
     if let session {
+      if let paused = session.pausedStatusSymbolName {
+        return (
+          "\(session.statusText) · \(session.timerText)", paused,
+          "\(session.statusText), \(session.timerText)"
+        )
+      }
       if session.isRecording {
         return (
           "Recording · \(session.timerText)",
-          "record.circle.fill",
+          session.captureStatusSymbolName,
           "Recording \(session.capturingSourcesText), \(session.timerText)"
         )
       }
       return (
         session.statusText,
-        session.needsAttention ? "exclamationmark.circle" : "waveform",
+        session.captureStatusSymbolName,
         session.statusText
       )
     }
     return switch livePhase {
     case .capturing:
-      ("Confirming recording", "waveform", "Confirming durable recording")
+      (
+        "Confirming recording", SymbolResolver.captureSymbol(for: .starting),
+        "Confirming durable recording"
+      )
     case .starting:
-      (liveStatus, "waveform", liveStatus)
-    case .pausing, .paused:
-      (liveStatus, "pause.circle", liveStatus)
+      (liveStatus, SymbolResolver.captureSymbol(for: .starting), liveStatus)
+    case .paused:
+      (liveStatus, SymbolResolver.pausedCaptureSymbolName, liveStatus)
     case .failed:
       (liveStatus, "exclamationmark.circle", liveStatus)
     case .saved:
       (liveStatus, "waveform.badge.checkmark", liveStatus)
-    case .requestingPermission, .preparing, .stopping:
-      (liveStatus, "waveform", liveStatus)
+    case .requestingPermission, .preparing, .pausing, .stopping:
+      (liveStatus, SymbolResolver.captureSymbol(for: .starting), liveStatus)
     case .idle:
-      ("Open Scribe", "record.circle", liveStatus)
+      ("Open Scribe", SymbolResolver.captureSymbol(for: .ready), liveStatus)
+    }
+  }
+}
+
+private struct CaptureStatusLabel: View {
+  let text: String
+  let symbolName: String
+
+  var body: some View {
+    if symbolName.isEmpty {
+      Text(text)
+    } else {
+      Label(text, systemImage: symbolName)
     }
   }
 }
