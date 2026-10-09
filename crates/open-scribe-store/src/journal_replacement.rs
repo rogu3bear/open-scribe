@@ -14,7 +14,7 @@ static LIVE: Mutex<BTreeSet<String>> = Mutex::new(BTreeSet::new());
 /// APFS can transiently reject allocation after an emergency reserve has
 /// been unlinked, closed, and synced. Retry only create-new, for at most
 /// 1 s of waiting. No journal bytes, rename, or projection are replayed.
-/// Persistent ENOSPC still fails; callers may fall back to in-place append.
+/// Persistent ENOSPC fails without extending the canonical journal inode.
 pub(super) fn create_temporary(path: &Path) -> io::Result<File> {
     retry_create(
         || OpenOptions::new().create_new(true).write(true).open(path),

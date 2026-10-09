@@ -172,7 +172,7 @@ fn an_imported_conversation_survives_a_round_trip_with_its_review() {
 
 /// A capture with a gap between two microphone segments, a system-audio
 /// track, and a marker, restored into a library as a package would be.
-fn captured(temp: &TempDir) -> (SessionStore, SessionId, String) {
+pub(crate) fn captured(temp: &TempDir) -> (SessionStore, SessionId, String) {
     let files = temp.path().join("capture");
     fs::create_dir(&files).unwrap();
     let segment = |name: &str, sequence: u64, start: i64, seconds: u64| {

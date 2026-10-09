@@ -26,10 +26,12 @@ and logs are in `docs/TESTING.md`. A small passing volume does not qualify the
 native exhaustion gate, and recovery after freeing filler cannot prove that
 the original failure was journaled while full.
 After unlink/close/fsync, replacement-file creation also intermittently returned
-ENOSPC. Create-new retries for at most 1 s. If replacement still cannot be
-created, a single-record append extends the existing journal inode (write,
-fsync, directory sync) so critical exhaustion evidence is not lost. Renames,
-projections, and unrelated errors are not replayed.
+ENOSPC. Create-new retries for at most 1 s. The later in-place append fallback
+was retired during PR #10 review: a short write or crash could corrupt the
+canonical journal, and an error after rename could duplicate a record. Persistent
+failure now returns an error with a complete old/new canonical journal; it never
+replays an append. Prior fallback receipts do not qualify current journaling of
+critical exhaustion while full; that acceptance requires fresh native proof.
 
 ### Writer generation advances on every rotation
 

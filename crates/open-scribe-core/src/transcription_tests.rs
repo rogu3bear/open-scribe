@@ -482,6 +482,104 @@ fn finalize_completes_a_run_whose_chunks_are_already_durable() {
 }
 
 #[test]
+fn finalize_refuses_unavailable_input_instead_of_committing_gap_free_success() {
+    let mut imported = imported(1);
+    let run = complete_fixture_chunks(&mut imported.store, &imported.session, &imported.track);
+    let database = rusqlite::Connection::open(imported.root.join("Library.sqlite3")).unwrap();
+    // Complete hypotheses outlive a lost sealed-media binding; finalization
+    // must not turn that unknown timeline into an empty list of gaps.
+    database
+        .execute(
+            "UPDATE segments SET digest = NULL WHERE track_id = ?1",
+            [&imported.track],
+        )
+        .unwrap();
+    assert!(matches!(
+        finalize_transcription_run(&mut imported.store, &run),
+        Err(TranscriptionError::RunEnded {
+            failure: TranscriptionFailure::InvalidResult,
+            ..
+        })
+    ));
+    assert!(
+        imported
+            .store
+            .transcript_revisions(&imported.session)
+            .unwrap()
+            .is_empty()
+    );
+    let runs = imported
+        .store
+        .transcription_runs(&imported.session)
+        .unwrap();
+    assert_eq!(runs[0].state, "failed");
+    assert_eq!(runs[0].failure_class.as_deref(), Some("invalid_result"));
+}
+
+#[test]
+fn finalize_accepts_verified_gapped_input_with_explicit_discontinuities() {
+    let temp = TempDir::new().unwrap();
+    let (mut store, session, track) = crate::package_import_tests::captured(&temp);
+    let input = store.transcription_input(&session, &track).unwrap();
+    let gaps = discontinuities(&input);
+    assert_ne!(gaps, serde_json::json!([]));
+    let run = complete_fixture_chunks(&mut store, &session, &track);
+    let (revision, _, _) = finalize_transcription_run(&mut store, &run).unwrap();
+    let database =
+        rusqlite::Connection::open(temp.path().join("Open Scribe/Library.sqlite3")).unwrap();
+    let stored: String = database
+        .query_row(
+            "SELECT discontinuities_json FROM transcript_revisions WHERE id = ?1",
+            [&revision],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&stored).unwrap(),
+        gaps
+    );
+    assert_eq!(
+        store.transcription_runs(&session).unwrap()[0].state,
+        "complete"
+    );
+    assert_eq!(
+        discontinuities(&store.transcription_input(&session, &track).unwrap()),
+        gaps
+    );
+}
+
+fn complete_fixture_chunks(store: &mut SessionStore, session: &SessionId, track: &str) -> String {
+    let input = store.transcription_input(session, track).unwrap();
+    let identity = TranscriptionRunIdentity {
+        session_id: session.clone(),
+        track_id: track.to_owned(),
+        input_digest: input.input_digest.clone(),
+        engine: "burst-fixture".into(),
+        engine_version: "1".into(),
+        model_id: "burst-model".into(),
+        model_sha256: "a".repeat(64),
+        options_digest: DecodeOptions::final_pass(Language::English).digest(),
+        reconciliation_version: RECONCILIATION_VERSION.to_owned(),
+    };
+    let plan: Vec<_> = plan_windows(&input)
+        .iter()
+        .map(|window| window.chunk)
+        .collect();
+    let handle = store.begin_transcription_run(&identity, &plan).unwrap();
+    for chunk in &handle.chunks {
+        store
+            .complete_transcript_chunk(
+                &handle.run_id,
+                chunk.sequence,
+                "en",
+                r#"{"language":"en","segments":[]}"#,
+            )
+            .unwrap();
+    }
+    handle.run_id
+}
+
+#[test]
 fn launch_recovery_finalizes_class_a_orphans_without_recognizer() {
     let mut imported = imported(60);
     let model = "a".repeat(64);

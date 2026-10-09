@@ -415,6 +415,10 @@ enum JournalReplacementFailurePoint {
     TemporarySync,
     Rename,
     DirectorySync,
+    #[cfg(test)]
+    PartialWriteNoSpace,
+    #[cfg(test)]
+    AfterRenameNoSpace,
 }
 
 #[derive(Debug)]
@@ -1755,6 +1759,17 @@ impl SessionStore {
         relative_path: Option<&str>,
         payload: Value,
     ) -> Result<JournalRecord, StoreError> {
+        self.append_session_journal_inner(session_id, event_kind, relative_path, payload, None)
+    }
+
+    fn append_session_journal_inner(
+        &self,
+        session_id: &str,
+        event_kind: &str,
+        relative_path: Option<&str>,
+        payload: Value,
+        failure: Option<JournalReplacementFailurePoint>,
+    ) -> Result<JournalRecord, StoreError> {
         let session_directory = self.session_directory(session_id)?;
         let journal_path = session_directory.join(JOURNAL_NAME);
         let records = match validate_journal(&journal_path, session_id)? {
@@ -1786,20 +1801,10 @@ impl SessionStore {
             record_digest: digest_json(&body)?,
             body,
         };
-        match atomic_replace_journal_with_record(&journal_path, &session_directory, &record, None) {
-            Ok(()) => Ok(record),
-            Err(StoreError::Io(error))
-                if error.raw_os_error() == Some(rustix::io::Errno::NOSPC.raw_os_error()) =>
-            {
-                // After emergency reserve release, APFS can still refuse
-                // create-new for a replacement file while extending the
-                // existing journal inode succeeds. Fall back to a durable
-                // in-place append so exhaustion evidence is not lost.
-                append_journal_record_in_place(&journal_path, &session_directory, &record)?;
-                Ok(record)
-            }
-            Err(error) => Err(error),
-        }
+        // Never extend the canonical inode: a short write or crash must leave
+        // a complete old/new journal, and errors after rename must not replay.
+        atomic_replace_journal_with_record(&journal_path, &session_directory, &record, failure)?;
+        Ok(record)
     }
 
     /// Appends records in one journal replacement, chained in order. Only for
@@ -3253,33 +3258,6 @@ fn append_journal_record(file: &mut File, record: &JournalRecord) -> Result<(), 
     Ok(())
 }
 
-/// Durable single-record append used only when atomic replacement cannot
-/// create a temporary file under ENOSPC after the emergency reserve was
-/// released. The existing journal inode is extended, synced, and the
-/// session directory is synced; no partial record is left without a newline.
-fn append_journal_record_in_place(
-    journal_path: &Path,
-    session_directory: &Path,
-    record: &JournalRecord,
-) -> Result<(), StoreError> {
-    let metadata = fs::symlink_metadata(journal_path)?;
-    if metadata.file_type().is_symlink() || !metadata.is_file() {
-        return Err(StoreError::IntegrityMismatch(
-            "session journal is not a regular append target",
-        ));
-    }
-    if metadata.len() == 0 {
-        return Err(StoreError::IntegrityMismatch(
-            "session journal is not a complete append target",
-        ));
-    }
-    let mut file = fs::OpenOptions::new().append(true).open(journal_path)?;
-    append_journal_record(&mut file, record)?;
-    file.sync_all()?;
-    sync_directory(session_directory)?;
-    Ok(())
-}
-
 fn atomic_replace_journal_with_record(
     journal_path: &Path,
     session_directory: &Path,
@@ -3318,6 +3296,12 @@ fn atomic_replace_journal_with_records(
     let result = (|| {
         let mut temporary = journal_replacement::create_temporary(&temporary_path)?;
         temporary.write_all(&existing)?;
+        #[cfg(test)]
+        if failure == Some(JournalReplacementFailurePoint::PartialWriteNoSpace) {
+            let encoded = serde_json::to_vec(&records[0])?;
+            temporary.write_all(&encoded[..encoded.len() / 2])?;
+            return Err(std::io::Error::from_raw_os_error(28).into());
+        }
         for record in records {
             append_journal_record(&mut temporary, record)?;
         }
@@ -3325,6 +3309,10 @@ fn atomic_replace_journal_with_records(
         temporary.sync_all()?;
         interrupt_journal_replace_if(failure, JournalReplacementFailurePoint::TemporarySync)?;
         fs::rename(&temporary_path, journal_path)?;
+        #[cfg(test)]
+        if failure == Some(JournalReplacementFailurePoint::AfterRenameNoSpace) {
+            return Err(std::io::Error::from_raw_os_error(28).into());
+        }
         interrupt_journal_replace_if(failure, JournalReplacementFailurePoint::Rename)?;
         sync_directory(session_directory)?;
         interrupt_journal_replace_if(failure, JournalReplacementFailurePoint::DirectorySync)?;
@@ -3990,6 +3978,8 @@ mod tests {
     use super::*;
     use std::os::unix::fs::symlink;
     use tempfile::TempDir;
+
+    mod journal_append_tests;
 
     fn request() -> PrepareSessionRequest {
         PrepareSessionRequest {

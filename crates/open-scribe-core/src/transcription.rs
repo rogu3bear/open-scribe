@@ -347,10 +347,8 @@ fn finalize_transcription_run_inner(
     })
     .to_string();
     let (session_id, track_id) = store.transcription_run_binding(run_id)?;
-    let discontinuities_json = match store.transcription_input(&session_id, &track_id) {
-        Ok(input) => discontinuities(&input).to_string(),
-        Err(_) => "[]".to_owned(),
-    };
+    let input = store.transcription_input(&session_id, &track_id)?;
+    let discontinuities_json = discontinuities(&input).to_string();
     let revision_id = store.commit_transcript_revision(
         run_id,
         &segments,
