@@ -23,12 +23,13 @@ struct SpeechModelSheet: View {
         modelDetail(model)
       }
       if let message = speech.message {
-        Label(
-          message,
-          systemImage: speech.messageIsFailure ? "exclamationmark.triangle" : "checkmark.circle"
-        )
-        .font(.callout)
-        .foregroundStyle(speech.messageIsFailure ? Color.red : Color.secondary)
+        if speech.messageIsFailure {
+          CaptureIssueLabel(message: message, isFailure: true).font(.callout)
+        } else {
+          Label(message, systemImage: "checkmark.circle")
+            .font(.callout)
+            .foregroundStyle(.secondary)
+        }
       }
       HStack {
         Spacer()

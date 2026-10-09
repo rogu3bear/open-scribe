@@ -91,6 +91,7 @@ struct OpenScribeApp: App {
   @StateObject private var transcripts: TranscriptLibraryModel
   @StateObject private var speech: SpeechTranscriptionModel
   @StateObject private var context: ContextScopeModel
+  @StateObject private var navigation = MainWorkspaceNavigation()
 
   private let status = RustStatusSource.load()
 
@@ -212,7 +213,8 @@ struct OpenScribeApp: App {
         recoveredSessions: recoveredSessions,
         transcripts: transcripts,
         speech: speech,
-        context: context
+        context: context,
+        navigation: navigation
       )
     }
     .defaultSize(width: 1040, height: 720)
@@ -226,7 +228,8 @@ struct OpenScribeApp: App {
         importedMediaAuthority: importedMediaAuthority,
         liveRecording: liveRecording,
         recoveredSessions: recoveredSessions,
-        context: context
+        context: context,
+        navigation: navigation
       )
     } label: {
       MenuBarLabel(store: runtimeStore, liveRecording: liveRecording)

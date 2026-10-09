@@ -39,7 +39,7 @@ struct RecorderControls: View {
               .accessibilityAddTraits(.isHeader)
             sourceSelectionSummary
             sourceButtons
-            if let error = picker.errorMessage { Text(error).foregroundStyle(.orange) }
+            if let error = picker.errorMessage { CaptureIssueLabel(message: error, isFailure: true) }
             Text("Application selection limits computer audio to the chosen app. Changes take effect when you explicitly record or resume.")
               .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
           }.padding(16).frame(width: 340)
@@ -48,7 +48,7 @@ struct RecorderControls: View {
       Menu("Sources", systemImage: "slider.horizontal.3") {
         sourceSelectionSummary
         sourceButtons
-        if let error = picker.errorMessage { Text(error) }
+        if let error = picker.errorMessage { CaptureIssueLabel(message: error, isFailure: true) }
       }
       .disabled(!sourcesEnabled)
       .help(recorder.sourceSelectionPresentation.help)
@@ -86,12 +86,31 @@ struct RecorderControls: View {
   }
 }
 
+/// Status color stays on the glyph; body text uses the native readable foreground.
+struct CaptureIssueLabel: View {
+  let message: String
+  var isFailure = false
+
+  var body: some View {
+    Label {
+      Text(message)
+        .foregroundStyle(.primary)
+        .fixedSize(horizontal: false, vertical: true)
+    } icon: {
+      Image(systemName: isFailure ? "exclamationmark.circle" : "exclamationmark.triangle")
+        .foregroundStyle(isFailure ? Color.red : Color.orange)
+    }
+    .accessibilityElement(children: .combine)
+  }
+}
+
 struct RecorderEventList: View {
   let events: [NativeRecorderEvent]
+  var heading = "Markers and recording events"
   var body: some View {
     if !events.isEmpty {
       VStack(alignment: .leading, spacing: 8) {
-        Text("Markers and recording events").font(.headline)
+        Text(heading).font(.headline)
           .accessibilityAddTraits(.isHeader)
         ForEach(events, id: \.id) { event in
           HStack(alignment: .firstTextBaseline) {

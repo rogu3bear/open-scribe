@@ -136,6 +136,10 @@ struct RuntimeSessionPresentation: Equatable, Sendable, Identifiable {
 
   var id: String { sessionId }
 
+  func hasVerifiedPreservedAudio(from recoveredSessions: [NativeRecoveredPlayableSession]) -> Bool {
+    playableMedia?.isPlayable == true || !recoveredTracks(from: recoveredSessions).isEmpty
+  }
+
   /// Imports have no required capture sources. Captures need Rust's saved
   /// clock calibration before transcripts or exports can use a shared timeline.
   var transcriptionUnavailableReason: String? {

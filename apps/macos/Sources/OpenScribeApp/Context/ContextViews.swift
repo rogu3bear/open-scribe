@@ -15,7 +15,8 @@ struct ContextInspector: View {
         Text("\(ContextScopeSummary.modeName(scope.request.mode)): \(ContextScopeSummary.target(scope.request))")
           .fixedSize(horizontal: false, vertical: true)
         Text(ContextScopeSummary.condition(scope))
-          .foregroundStyle(scope.condition == .active ? Color.primary : Color.orange)
+          .foregroundStyle(.primary)
+          .fontWeight(scope.condition == .active ? nil : .semibold)
         Text("\(model.detail?.acceptedEvents ?? 0) context events · \(ContextScopeSummary.retention)")
           .font(.callout).foregroundStyle(.secondary)
         HStack {
@@ -38,8 +39,7 @@ struct ContextInspector: View {
           .disabled(!model.canAuthorize)
       }
       if let message = model.message {
-        Text(message).font(.callout).foregroundStyle(.orange)
-          .fixedSize(horizontal: false, vertical: true)
+        CaptureIssueLabel(message: message).font(.callout)
       }
     }
     .accessibilityElement(children: .contain)
@@ -99,7 +99,7 @@ struct ContextScopeSheet: View {
       .fixedSize(horizontal: false, vertical: true)
       .accessibilityElement(children: .combine)
       if let message = model.message {
-        Text(message).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+        CaptureIssueLabel(message: message)
       }
       HStack {
         Spacer()

@@ -229,6 +229,36 @@ Open Scribe is a calm native instrument while capture is active and a readable e
 | Settings | Durable user preferences | only implemented, persistent configuration grouped by native categories | roadmap, disabled future controls, or permission-status substitute |
 | Context overlay | Inspectable watched scope | selected surface identity, bounded perimeter signal, pause/revoke affordance through the controlling UI | crop editor, ambient decoration, or retained screen recording implication |
 
+### Conversation workspace presentation
+
+The approved native conversation brief preserves the sidebar and a top-aligned
+document. Capture controls and truthful lifecycle/source state remain visible;
+semantic system typography and the 760 × 520-point minimum remain binding.
+
+- Saved captures have one default **Play** action using the existing verified
+  stereo-mix path. Imported audio uses the same primary Play presentation with
+  its existing verified import path. Source playback alternatives and diagnostics
+  belong under **Audio Details**, closed by default; recording diagnostics belong
+  under **Recording Details**. Markers and chronological evidence stay distinct.
+- Interrupted captures explain what was preserved. **Review Preserved Audio**
+  appears only when verified media exists and navigates to Audio Details without
+  playing audio. **Start New Recording** appears only when existing recording,
+  import, and launch-recovery policy permits it. Failed source truth stays visible.
+- Warning and failure explanations use semantic primary text. Orange/red stays
+  on the accompanying status glyph, and failed source labels use primary text
+  with semibold weight. Small body text must remain readable in light appearance.
+- The menu bar remains a remote control. Its recovery action opens the exact
+  conversation's Audio Details rather than choosing an arbitrary recovered
+  segment to play. Active playback retains Cancel/Stop access.
+- Canonical generated timestamp titles are formatted for local reading in the
+  library, search results, document, live view, and recovery handoff. Custom
+  titles and stored/export identity remain intact. Otherwise identical library
+  rows receive a short unique session reference, carried into search and review.
+
+This brief specifies presentation, not capture, playback, accessibility, or
+release qualification. Source checks and exact native observations remain
+separate evidence; the deferred live-layout concern requires native reproduction.
+
 ### Evidence-linked interpretation contract
 
 - Derived memory remains under Interpretation, after chronological Evidence. It never edits transcript, context, markers, corrections, or media in place.

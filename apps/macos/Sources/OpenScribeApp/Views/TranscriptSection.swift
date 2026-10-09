@@ -39,12 +39,13 @@ struct TranscriptSection: View {
         session.transcriptionUnavailableReason == nil
           || speech.transcribingSessionId == session.sessionId
       {
-        Label(
-          message,
-          systemImage: speech.messageIsFailure ? "exclamationmark.triangle" : "checkmark.circle"
-        )
-        .font(.callout)
-        .foregroundStyle(speech.messageIsFailure ? Color.red : Color.secondary)
+        if speech.messageIsFailure {
+          CaptureIssueLabel(message: message, isFailure: true).font(.callout)
+        } else {
+          Label(message, systemImage: "checkmark.circle")
+            .font(.callout)
+            .foregroundStyle(.secondary)
+        }
       }
       if session.transcriptionUnavailableReason == nil, !transcripts.segments.isEmpty {
         speakerList
@@ -190,9 +191,7 @@ struct TranscriptSection: View {
   @ViewBuilder
   private var sheetFailure: some View {
     if transcripts.messageIsFailure, let message = transcripts.message {
-      Label(message, systemImage: "exclamationmark.triangle")
-        .font(.callout)
-        .foregroundStyle(.red)
+      CaptureIssueLabel(message: message, isFailure: true).font(.callout)
     }
   }
 

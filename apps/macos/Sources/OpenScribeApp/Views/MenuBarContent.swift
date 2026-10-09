@@ -8,6 +8,7 @@ struct MenuBarContent: View {
   @ObservedObject var liveRecording: LiveMicrophoneRecordingController
   @ObservedObject var recoveredSessions: RecoveredSessionController
   @ObservedObject var context: ContextScopeModel
+  @ObservedObject var navigation: MainWorkspaceNavigation
 
   @MainActor
   init(
@@ -15,7 +16,8 @@ struct MenuBarContent: View {
     importedMediaAuthority: ImportedMediaAuthorityAdapter,
     liveRecording: LiveMicrophoneRecordingController? = nil,
     recoveredSessions: RecoveredSessionController? = nil,
-    context: ContextScopeModel? = nil
+    context: ContextScopeModel? = nil,
+    navigation: MainWorkspaceNavigation? = nil
   ) {
     self.store = store
     self.importedMediaAuthority = importedMediaAuthority
@@ -23,6 +25,7 @@ struct MenuBarContent: View {
     self.recoveredSessions =
       recoveredSessions ?? RecoveredSessionController(managedRoot: nil)
     self.context = context ?? ContextScopeModel(binding: { nil })
+    self.navigation = navigation ?? MainWorkspaceNavigation()
   }
 
   var body: some View {
@@ -34,20 +37,17 @@ struct MenuBarContent: View {
         Label("\(source.name): \(source.stateText)", systemImage: source.symbolName)
       }
       if let interruption = current.interruptionText {
-        Text(interruption)
-          .foregroundStyle(.orange)
+        CaptureIssueLabel(message: interruption)
       }
     } else {
       Text(pendingStatusText)
         .accessibilityLabel(pendingStatusText)
     }
     if let errorMessage = liveRecording.errorMessage {
-      Text(errorMessage)
-        .foregroundStyle(.red)
+      CaptureIssueLabel(message: errorMessage, isFailure: true)
     }
     if let libraryError = store.errorMessage {
-      Text(libraryError)
-        .foregroundStyle(.red)
+      CaptureIssueLabel(message: libraryError, isFailure: true)
     }
     let savedCount = LibraryConversationLists.saved(store.savedSessions).count
     if savedCount > 0 {
@@ -57,7 +57,10 @@ struct MenuBarContent: View {
       .foregroundStyle(.secondary)
     }
     if liveRecording.canStart {
-      Button("Record — \(liveRecording.sourceSelectionPresentation.summary)") {
+      Button(
+        store.currentSession?.lifecycle == "interrupted"
+          ? "Start New Recording" : "Record — \(liveRecording.sourceSelectionPresentation.summary)"
+      ) {
         Task {
           await liveRecording.start()
           store.refresh()
@@ -77,40 +80,39 @@ struct MenuBarContent: View {
     }
     RecorderControls(recorder: liveRecording, store: store, sourcesPresentation: .menu)
     ContextMenuSection(model: context)
-    if let recovered = recoveredSessions.sessions.first {
+    let conversations = (store.currentSession.map { [$0] } ?? []) + store.savedSessions
+    if let recovered = Self.preservedConversation(
+      in: conversations, media: recoveredSessions.sessions
+    ) {
       Divider()
-      Label("Recovered conversation", systemImage: "waveform.badge.checkmark")
-      Text("Playable local audio")
+      let title = ConversationIdentityPresentation.title(recovered.title)
+      let reference = ConversationIdentityPresentation.references(for: conversations)[
+        recovered.sessionId]
+      Text("\(title)\(reference.map { " · \($0)" } ?? "")")
+        .help(recovered.title)
+        .accessibilityLabel("\(title)\(reference.map { ", reference \($0)" } ?? "")")
+      Text("Verified local audio is available for review.")
         .foregroundStyle(.secondary)
+      Button("Review Preserved Audio") {
+        navigation.reviewPreservedAudio(sessionId: recovered.sessionId)
+        openPrimaryWindow()
+      }
+    }
+    if recoveredSessions.activePlaybackSessionId != nil {
       let playbackAction = PlaybackControlAction.resolve(
-        isPending: recoveredSessions.pendingRecoveredMediaIdentity != nil,
-        isPlaying: recoveredSessions.playingRecoveredMediaIdentity != nil
+        isPending: recoveredSessions.playingSessionId == nil,
+        isPlaying: recoveredSessions.playingSessionId != nil
       )
-      if playbackAction == .play {
-        Button("Play Recovered Audio") {
-          recoveredSessions.play(recovered)
-        }
-        .disabled(
-          !playbackAction.isEnabled(
-            hasActivePlayback: recoveredSessions.activePlaybackSessionId != nil
-          )
-        )
-      } else {
-        Button("\(playbackAction.title) Recovered Audio") {
-          recoveredSessions.stopPlayback()
-        }
+      Button("\(playbackAction.title) Audio") {
+        recoveredSessions.stopPlayback()
       }
     }
     if let recoveryError = recoveredSessions.errorMessage {
-      Text(recoveryError)
-        .foregroundStyle(.red)
+      CaptureIssueLabel(message: recoveryError, isFailure: true)
     }
     Divider()
     Button("Open Open Scribe") {
-      AppTelemetry.commandInvoked("open-primary")
-      if !MainWindow.focusExisting() {
-        openWindow(id: "main")
-      }
+      openPrimaryWindow()
     }
     Button("Refresh Library") {
       store.refresh()
@@ -142,6 +144,22 @@ struct MenuBarContent: View {
 
   static func statusSymbol(for session: RuntimeSessionPresentation) -> String {
     session.captureStatusSymbolName
+  }
+
+  static func preservedConversation(
+    in sessions: [RuntimeSessionPresentation], media: [NativeRecoveredPlayableSession]
+  ) -> RuntimeSessionPresentation? {
+    sessions.first {
+      ($0.lifecycle == "interrupted" || $0.lifecycle == "ready_for_review")
+        && ($0.needsAttention || $0.recovered) && $0.hasVerifiedPreservedAudio(from: media)
+    }
+  }
+
+  private func openPrimaryWindow() {
+    AppTelemetry.commandInvoked("open-primary")
+    if !MainWindow.focusExisting() {
+      openWindow(id: "main")
+    }
   }
 
   private var pendingStatusText: String {

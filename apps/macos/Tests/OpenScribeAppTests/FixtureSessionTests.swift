@@ -17,6 +17,46 @@ private final class SnapshotFailureSwitch: @unchecked Sendable {
 
 @MainActor
 final class FixtureSessionTests: XCTestCase {
+  func testConversationIdentityFormatsOnlyCanonicalGeneratedTitles() {
+    let locale = Locale(identifier: "en_US")
+    let zone = TimeZone(secondsFromGMT: -4 * 3600)!
+    let generated = "Conversation 2026-10-06T17:20:28Z"
+    let displayed = ConversationIdentityPresentation.title(
+      generated, locale: locale, timeZone: zone)
+    XCTAssertTrue(displayed.contains("Oct 6, 2026"))
+    XCTAssertTrue(displayed.contains("1:20"))
+    XCTAssertFalse(displayed.contains("17:20:28Z"))
+    for title in [
+      "Troy and James", "Conversation about 2026", "Conversation 2026-10-06T17:20:28Z notes",
+    ] {
+      XCTAssertEqual(ConversationIdentityPresentation.title(title), title)
+    }
+  }
+
+  func testConversationReferencesDistinguishCollidingRowsWithoutChangingTitles() {
+    func session(_ id: String, seconds: UInt64 = 3) -> RuntimeSessionPresentation {
+      RuntimeSessionPresentation(
+        native: NativeRuntimeSessionSnapshot(
+          sessionId: id, title: "speech48", lifecycle: "ready_for_review", health: "healthy",
+          elapsedSeconds: seconds, journalDurable: true, mediaFilesOpen: false,
+          interruptionReason: nil, recovered: false, hasCaptureTimeline: false,
+          sources: [], playableMedia: nil
+        ))
+    }
+    let first = session("first-aaaaaa")
+    let second = session("second-aaaaaa")
+    let distinct = session("different-aaaaaa", seconds: 9)
+    let references = ConversationIdentityPresentation.references(for: [
+      first, second, distinct, first,
+    ])
+    XCTAssertEqual(references.count, 2)
+    XCTAssertNotEqual(references[first.sessionId], references[second.sessionId])
+    XCTAssertGreaterThan(references[first.sessionId]!.count, 6)
+    XCTAssertNil(references[distinct.sessionId])
+    XCTAssertTrue(ConversationIdentityPresentation.references(for: [first, first]).isEmpty)
+    XCTAssertEqual(first.title, "speech48")
+  }
+
   func testRuntimeCaptureAnnouncementsRequireDurableTruthAndIgnoreTicks() {
     var announcements = RuntimeCaptureAnnouncements()
     XCTAssertTrue(announcements.update(current: captureSession("preparing"), saved: []).isEmpty)
@@ -412,6 +452,39 @@ final class FixtureSessionTests: XCTestCase {
 
     XCTAssertEqual(navigation.selectedSessionId, "older-session")
     XCTAssertNil(navigation.pendingImportedSessionId)
+  }
+
+  func testPreservedAudioReviewKeepsExactDestinationAndCanBeRequestedAgain() {
+    let navigation = MainWorkspaceNavigation()
+    navigation.select("older-session")
+    navigation.reviewPreservedAudio(sessionId: "recovered-session")
+    let firstRequest = navigation.audioReviewRequest
+    navigation.synchronize(
+      currentSessionId: "live-session",
+      savedSessionIds: ["older-session", "recovered-session"],
+      preferCurrentSession: false
+    )
+    XCTAssertEqual(navigation.selectedSessionId, "recovered-session")
+    XCTAssertEqual(navigation.audioReviewRequest?.sessionId, "recovered-session")
+    navigation.reviewPreservedAudio(sessionId: "recovered-session")
+    XCTAssertNotEqual(firstRequest, navigation.audioReviewRequest)
+    navigation.select("older-session")
+    XCTAssertNil(navigation.audioReviewRequest)
+  }
+
+  func testMenuRecoveryHandoffRequiresMediaForTheExactConversation() {
+    let unavailable = recoveredSessionPresentation(sessionId: "unavailable-session")
+    let preserved = recoveredSessionPresentation(sessionId: "preserved-session")
+    let media = recoveredTrack(
+      sessionId: preserved.sessionId, segmentId: "preserved-segment",
+      sampleCount: 48_000, durationNanoseconds: 1_000_000_000, byteLength: 96_068
+    )
+    XCTAssertNil(MenuBarContent.preservedConversation(in: [unavailable], media: [media]))
+    XCTAssertNil(MenuBarContent.preservedConversation(in: [preserved], media: []))
+    XCTAssertEqual(
+      MenuBarContent.preservedConversation(in: [unavailable, preserved], media: [media])?.sessionId,
+      preserved.sessionId
+    )
   }
 
   func testMainWorkspaceStopsPlaybackThatBelongsToAnotherConversation() {

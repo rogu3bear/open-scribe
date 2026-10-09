@@ -33,7 +33,7 @@ struct CompactLiveView: View {
       .accessibilityLabel(accessibilityStatus)
 
       if let current = store.currentSession {
-        Text(current.title)
+        Text(ConversationIdentityPresentation.title(current.title))
           .font(.headline)
           .textSelection(.enabled)
 
@@ -48,16 +48,16 @@ struct CompactLiveView: View {
               Text(source.name)
               Spacer()
               Text(source.stateText)
-                .foregroundStyle(source.lifecycle == "failed" ? .orange : .secondary)
+                .foregroundStyle(source.lifecycle == "failed" ? .primary : .secondary)
+                .fontWeight(source.lifecycle == "failed" ? .semibold : nil)
             }
             .accessibilityElement(children: .combine)
           }
         }
 
         if let interruption = current.interruptionText {
-          Label(interruption, systemImage: "exclamationmark.triangle")
+          CaptureIssueLabel(message: interruption)
             .font(.callout)
-            .foregroundStyle(.orange)
             .accessibilityLabel("Capture needs attention. \(interruption)")
         }
 

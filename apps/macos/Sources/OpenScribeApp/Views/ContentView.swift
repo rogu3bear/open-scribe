@@ -8,7 +8,7 @@ struct ContentView: View {
   @ObservedObject var transcripts: TranscriptLibraryModel
   @ObservedObject var speech: SpeechTranscriptionModel
   @ObservedObject var context: ContextScopeModel
-  @StateObject private var navigation = MainWorkspaceNavigation()
+  @ObservedObject var navigation: MainWorkspaceNavigation
   @State private var searchQuery = ""
 
   private var selectedSessionId: String? {
@@ -29,6 +29,12 @@ struct ContentView: View {
       return store.currentSession
     }
     return store.savedSessions.first { $0.sessionId == selectedSessionId }
+  }
+
+  private var conversationReferences: [String: String] {
+    ConversationIdentityPresentation.references(
+      for: store.savedSessions + (store.currentSession.map { [$0] } ?? [])
+    )
   }
 
   var body: some View {
@@ -55,7 +61,7 @@ struct ContentView: View {
       // Selection is published state. Applying it on the next turn keeps the
       // first library layout from redrawing inside its own appearance pass.
       Task { @MainActor in
-        synchronizeSelection(preferCurrentSession: true)
+        synchronizeSelection(preferCurrentSession: navigation.selectedSessionId == nil)
       }
     }
     .onChange(of: store.currentSession?.sessionId) { _ in
@@ -118,7 +124,8 @@ struct ContentView: View {
   }
 
   private var conversationSidebar: some View {
-    List(selection: selectedSessionBinding) {
+    let references = conversationReferences
+    return List(selection: selectedSessionBinding) {
       if !searchQuery.trimmingCharacters(in: .whitespaces).isEmpty {
         Section("Transcript Matches") {
           if transcripts.searchResults.isEmpty {
@@ -126,19 +133,29 @@ struct ContentView: View {
               .foregroundStyle(.secondary)
           }
           ForEach(transcripts.searchResults, id: \.self) { hit in
+            let title = ConversationIdentityPresentation.title(hit.sessionTitle)
+            let reference = references[hit.sessionId]
             Button {
               openSearchHit(hit)
             } label: {
               VStack(alignment: .leading, spacing: 2) {
-                Text(hit.sessionTitle)
-                  .font(.caption)
-                  .foregroundStyle(.secondary)
+                HStack(spacing: 8) {
+                  Text(title)
+                  if let reference {
+                    Text(reference).monospaced().fixedSize()
+                  }
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
                 Text(hit.effectiveText)
                   .lineLimit(2)
               }
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("\(hit.sessionTitle): \(hit.effectiveText)")
+            .help(hit.sessionTitle)
+            .accessibilityLabel(
+              "\(title)\(reference.map { ", reference \($0)" } ?? ""): \(hit.effectiveText)"
+            )
           }
         }
       }
@@ -146,7 +163,7 @@ struct ContentView: View {
       if let current = store.currentSession {
         Section("Now") {
           if current.lifecycle == "interrupted" {
-            ConversationSidebarRow(session: current)
+            ConversationSidebarRow(session: current, reference: references[current.sessionId])
               .tag(current.sessionId)
               .contextMenu {
                 Button("Move to Trash…", role: .destructive) {
@@ -155,7 +172,7 @@ struct ContentView: View {
                 .disabled(!liveRecording.canStart)
               }
           } else {
-            ConversationSidebarRow(session: current)
+            ConversationSidebarRow(session: current, reference: references[current.sessionId])
               .tag(current.sessionId)
           }
         }
@@ -164,7 +181,7 @@ struct ContentView: View {
       if !LibraryConversationLists.interrupted(store.savedSessions).isEmpty {
         Section("Interrupted") {
           ForEach(LibraryConversationLists.interrupted(store.savedSessions)) { session in
-            ConversationSidebarRow(session: session)
+            ConversationSidebarRow(session: session, reference: references[session.sessionId])
               .tag(session.sessionId)
               .contextMenu {
                 Button("Move to Trash…", role: .destructive) {
@@ -183,7 +200,7 @@ struct ContentView: View {
             .foregroundStyle(.secondary)
         } else {
           ForEach(saved) { session in
-            ConversationSidebarRow(session: session)
+            ConversationSidebarRow(session: session, reference: references[session.sessionId])
               .tag(session.sessionId)
               .contextMenu {
                 Button("Move to Trash…", role: .destructive) {
@@ -214,7 +231,9 @@ struct ContentView: View {
     VStack(spacing: 0) {
       statusBanner
       if let selectedSession {
-        if selectedSession.sessionId == store.currentSession?.sessionId {
+        if selectedSession.sessionId == store.currentSession?.sessionId,
+          selectedSession.lifecycle != "interrupted"
+        {
           CompactLiveView(store: store, liveRecording: liveRecording, context: context)
         } else {
           ConversationWorkspaceView(
@@ -222,8 +241,20 @@ struct ContentView: View {
             playbackController: recoveredSessions,
             transcripts: transcripts,
             speech: speech,
+            reference: conversationReferences[selectedSession.sessionId],
+            audioReviewRequest: navigation.audioReviewRequest,
+            canStartNewRecording: MainWorkspaceActions.canRecord(
+              liveCanStart: liveRecording.canStart, importIsBusy: importedMediaAuthority.isBusy
+            ),
+            newRecordingUnavailableReason: importedMediaAuthority.isBusy
+              ? "Wait for the current import to finish before starting a new recording."
+              : liveRecording.isLaunchRecoveryPending()
+                ? liveRecording.readinessText
+                : "Finish the current recording action before starting a new recording.",
+            onStartNewRecording: startRecording,
             loadRecorderEvents: { (try? liveRecording.detail(sessionId: $0).events) ?? [] }
           )
+          .id(selectedSession.sessionId)
         }
       } else {
         EmptyConversationWorkspace(
@@ -239,6 +270,7 @@ struct ContentView: View {
         )
       }
     }
+    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
   }
 
   @ViewBuilder
@@ -248,11 +280,12 @@ struct ContentView: View {
         ForEach(workspaceNotices) { notice in
           HStack(alignment: .firstTextBaseline, spacing: 8) {
             Image(systemName: notice.isFailure ? "exclamationmark.triangle" : "checkmark.circle")
+              .foregroundStyle(notice.isFailure ? Color.red : Color.secondary)
             Text(notice.message)
               .frame(maxWidth: .infinity, alignment: .leading)
           }
           .font(.callout)
-          .foregroundStyle(notice.isFailure ? Color.red : Color.secondary)
+          .foregroundStyle(notice.isFailure ? Color.primary : Color.secondary)
           .padding(.horizontal, 16)
           .padding(.vertical, 8)
           .accessibilityElement(children: .combine)
@@ -377,7 +410,9 @@ struct ContentView: View {
 
   private func openSearchHit(_ hit: NativeTranscriptSearchHit) {
     navigation.select(hit.sessionId)
-    if store.savedSessions.contains(where: { $0.sessionId == hit.sessionId && $0.hasCaptureTimeline }) {
+    if store.savedSessions.contains(where: {
+      $0.sessionId == hit.sessionId && $0.hasCaptureTimeline
+    }) {
       recoveredSessions.playSynchronized(
         sessionId: hit.sessionId, startNanoseconds: hit.startNanoseconds)
     }
@@ -407,12 +442,24 @@ private struct WorkspaceNotice: Identifiable {
 
 @MainActor
 final class MainWorkspaceNavigation: ObservableObject {
+  struct AudioReviewRequest: Equatable {
+    let sessionId: String
+    let id = UUID()
+  }
+
   @Published private(set) var selectedSessionId: String?
+  @Published private(set) var audioReviewRequest: AudioReviewRequest?
   private(set) var pendingImportedSessionId: String?
 
   func select(_ sessionId: String?) {
     guard selectedSessionId != sessionId else { return }
     selectedSessionId = sessionId
+    audioReviewRequest = nil
+  }
+
+  func reviewPreservedAudio(sessionId: String) {
+    select(sessionId)
+    audioReviewRequest = AudioReviewRequest(sessionId: sessionId)
   }
 
   func synchronize(
@@ -426,9 +473,7 @@ final class MainWorkspaceNavigation: ObservableObject {
       savedSessionIds: savedSessionIds,
       preferCurrentSession: preferCurrentSession
     )
-    if selectedSessionId != resolved {
-      selectedSessionId = resolved
-    }
+    select(resolved)
     reconcileImportedConversation(savedSessionIds: savedSessionIds)
   }
 
@@ -443,9 +488,7 @@ final class MainWorkspaceNavigation: ObservableObject {
       selectedSessionId: selectedSessionId,
       savedSessionIds: savedSessionIds
     )
-    if selectedSessionId != resolution.selectedSessionId {
-      selectedSessionId = resolution.selectedSessionId
-    }
+    select(resolution.selectedSessionId)
     pendingImportedSessionId = resolution.pendingImportedSessionId
   }
 }
@@ -556,13 +599,15 @@ enum LibraryConversationLists {
     sessions.filter { $0.lifecycle == "ready_for_review" }
   }
 
-  static func interrupted(_ sessions: [RuntimeSessionPresentation]) -> [RuntimeSessionPresentation] {
+  static func interrupted(_ sessions: [RuntimeSessionPresentation]) -> [RuntimeSessionPresentation]
+  {
     sessions.filter { $0.lifecycle == "interrupted" }
   }
 }
 
 private struct ConversationSidebarRow: View {
   let session: RuntimeSessionPresentation
+  let reference: String?
 
   private var symbolName: String? {
     if session.isRecording { return "record.circle.fill" }
@@ -571,14 +616,24 @@ private struct ConversationSidebarRow: View {
   }
 
   var body: some View {
+    let title = ConversationIdentityPresentation.title(session.title)
     HStack(alignment: .firstTextBaseline, spacing: 8) {
       if let symbolName {
         Image(systemName: symbolName)
           .foregroundStyle(session.isRecording ? Color.red : Color.orange)
       }
       VStack(alignment: .leading, spacing: 4) {
-        Text(session.title)
-          .lineLimit(1)
+        HStack(spacing: 8) {
+          Text(title)
+            .lineLimit(1)
+            .truncationMode(.middle)
+          if let reference {
+            Text(reference)
+              .font(.caption.monospaced())
+              .foregroundStyle(.secondary)
+              .fixedSize()
+          }
+        }
         Text("\(session.timerText) · \(session.statusText)")
           .font(.caption)
           .foregroundStyle(.secondary)
@@ -586,287 +641,10 @@ private struct ConversationSidebarRow: View {
       }
     }
     .accessibilityElement(children: .combine)
-    .accessibilityLabel("\(session.title), \(session.timerText), \(session.statusText)")
-  }
-}
-
-private struct ConversationWorkspaceView: View {
-  let session: RuntimeSessionPresentation
-  @ObservedObject var playbackController: RecoveredSessionController
-  @ObservedObject var transcripts: TranscriptLibraryModel
-  @ObservedObject var speech: SpeechTranscriptionModel
-  let loadRecorderEvents: @MainActor (String) -> [NativeRecorderEvent]
-  @State private var recorderEvents: [NativeRecorderEvent] = []
-
-  private var recoveredTracks: [RecoveredTrackPresentation] {
-    session.recoveredTracks(from: playbackController.sessions)
-  }
-
-  var body: some View {
-    ScrollView {
-      VStack(alignment: .leading, spacing: 24) {
-        header
-        if session.needsAttention {
-          attentionNotice
-        }
-        audioSection
-        if session.lifecycle == "ready_for_review" {
-          TranscriptSection(
-            session: session,
-            transcripts: transcripts,
-            speech: speech,
-            canSeek: session.hasCaptureTimeline || session.playableMedia?.isPlayable == true,
-            onSeek: { position in
-              // Captures seek on the shared timeline; imports within their media.
-              if session.hasCaptureTimeline {
-                playbackController.playSynchronized(
-                  sessionId: session.sessionId, startNanoseconds: position)
-              } else {
-                playbackController.play(session, startNanoseconds: position)
-              }
-            }
-          )
-        }
-        if !session.sources.isEmpty {
-          sourceSection
-        }
-        ContextEventsSection(
-          detail: transcripts.sessionId == session.sessionId ? transcripts.contextDetail : nil,
-          events: transcripts.sessionId == session.sessionId ? transcripts.contextEvents : [],
-          canSeek: session.hasCaptureTimeline,
-          onSeek: { event in
-            // Navigation follows Rust evidence resolution, never the row alone.
-            if let start = transcripts.contextEvidenceStart(event) {
-              playbackController.playSynchronized(sessionId: session.sessionId, startNanoseconds: start)
-            }
-          })
-        RecorderEventList(events: recorderEvents)
-      }
-      .frame(maxWidth: 760, alignment: .leading)
-      .padding(32)
-      .frame(maxWidth: .infinity, alignment: .top)
-    }
-    .navigationTitle(session.title)
-    .task(id: "\(session.sessionId)|\(session.lifecycle)") {
-      recorderEvents = loadRecorderEvents(session.sessionId)
-    }
-  }
-
-  private var header: some View {
-    HStack(spacing: 8) {
-      Label(session.timerText, systemImage: "clock")
-      Text("·")
-        .foregroundStyle(.tertiary)
-      Text(session.statusText)
-    }
-    .font(.title3)
-    .foregroundStyle(.secondary)
-    .accessibilityElement(children: .combine)
-    .accessibilityAddTraits(.isHeader)
-    .accessibilityLabel("\(session.title), \(session.timerText), \(session.statusText)")
-  }
-
-  private var attentionNotice: some View {
-    Label {
-      VStack(alignment: .leading, spacing: 4) {
-        Text("This recording needs attention")
-          .font(.headline)
-          .accessibilityAddTraits(.isHeader)
-        Text(
-          session.interruptionText
-            ?? "Open Scribe preserved the audio it could verify. Review each source below."
-        )
-      }
-    } icon: {
-      Image(systemName: "exclamationmark.triangle.fill")
-    }
-    .foregroundStyle(.orange)
-    .accessibilityElement(children: .combine)
-  }
-
-  private var audioSection: some View {
-    VStack(alignment: .leading, spacing: 12) {
-      Text("Audio")
-        .font(.headline)
-        .accessibilityAddTraits(.isHeader)
-
-      if session.lifecycle == "ready_for_review", session.hasCaptureTimeline {
-        let active =
-          playbackController.activePlaybackSessionId == session.sessionId
-          && playbackController.pendingRecoveredMediaIdentity == nil
-          && playbackController.playingRecoveredMediaIdentity == nil
-        let mixActive = active && playbackController.activeMixdownSessionId == session.sessionId
-        let timelineActive = active && !mixActive
-        Button(mixActive ? "Stop stereo mix" : "Play stereo mix") {
-          if mixActive {
-            playbackController.stopPlayback()
-          } else {
-            playbackController.playMixdown(sessionId: session.sessionId)
-          }
-        }
-        .disabled(active && !mixActive)
-        Text("The mix is made from the saved source tracks and checked before playback.")
-          .font(.caption)
-          .foregroundStyle(.secondary)
-        Button(timelineActive ? "Stop synchronized playback" : "Play all sources together") {
-          if timelineActive {
-            playbackController.stopPlayback()
-          } else {
-            playbackController.playSynchronized(sessionId: session.sessionId)
-          }
-        }
-        .disabled(playbackController.activePlaybackSessionId != nil && !timelineActive)
-        Text("Uses the recorded timeline, including source offsets and gaps.")
-          .font(.caption)
-          .foregroundStyle(.secondary)
-        if timelineActive, playbackController.timelineClockAdjustmentNanoseconds > 0 {
-          Text(
-            "Source clock alignment: up to \(Double(playbackController.timelineClockAdjustmentNanoseconds) / 1_000_000, specifier: "%.1f") ms. All recorded samples are preserved."
-          )
-          .font(.caption)
-          .foregroundStyle(.secondary)
-        }
-        if playbackController.errorSessionId == session.sessionId,
-          playbackController.errorRecoveredMediaIdentity == nil,
-          let message = playbackController.errorMessage
-        {
-          Text(message).foregroundStyle(.orange)
-        }
-      }
-
-      if let media = session.playableMedia {
-        let canPlay = ImportedPlaybackEligibility.canPlay(media)
-        let isPlaying = playbackController.playingSessionId == session.sessionId
-        let isPending =
-          playbackController.activePlaybackSessionId == session.sessionId && !isPlaying
-        let playbackAction = PlaybackControlAction.resolve(
-          isPending: isPending,
-          isPlaying: isPlaying
-        )
-        let playbackError =
-          playbackController.errorSessionId == session.sessionId
-            && playbackController.errorRecoveredMediaIdentity == nil
-          ? playbackController.errorMessage : nil
-        PlayableAudioRow(
-          name: media.sourceDisplayName,
-          duration: media.durationText,
-          status: isPending
-            ? "Verifying local audio"
-            : playbackError ?? ImportedPlaybackEligibility.status(media),
-          statusIsFailure: playbackError != nil || (media.isPlayable && !canPlay),
-          isAvailable: canPlay,
-          actionEnabled:
-            playbackAction != .play
-            || (canPlay
-              && playbackAction.isEnabled(
-                hasActivePlayback: playbackController.activePlaybackSessionId != nil
-              )),
-          playbackAction: playbackAction,
-          onTogglePlayback: toggleImportedPlayback
-        )
-      } else if !recoveredTracks.isEmpty {
-        ForEach(recoveredTracks) { track in
-          let identity = RecoveredPlaybackMediaIdentity(track.playableSession)
-          let isPlaying =
-            playbackController.playingRecoveredMediaIdentity
-            == identity
-          let isPending = playbackController.pendingRecoveredMediaIdentity == identity
-          let playbackAction = PlaybackControlAction.resolve(
-            isPending: isPending,
-            isPlaying: isPlaying
-          )
-          let playbackError =
-            playbackController.errorSessionId == session.sessionId
-              && playbackController.errorRecoveredMediaIdentity == identity
-            ? playbackController.errorMessage : nil
-          PlayableAudioRow(
-            name: track.source.name,
-            duration: track.durationText,
-            status: isPending ? "Verifying local audio" : playbackError ?? "Preserved local audio",
-            statusIsFailure: playbackError != nil,
-            isAvailable: true,
-            actionEnabled: playbackAction.isEnabled(
-              hasActivePlayback: playbackController.activePlaybackSessionId != nil
-            ),
-            playbackAction: playbackAction,
-            onTogglePlayback: {
-              toggleRecoveredPlayback(track.playableSession)
-            }
-          )
-        }
-      } else if !session.hasCaptureTimeline {
-        Text("No verified playable audio is available.")
-          .foregroundStyle(.secondary)
-      }
-    }
-  }
-
-  private var sourceSection: some View {
-    VStack(alignment: .leading, spacing: 12) {
-      Text("Sources")
-        .font(.headline)
-        .accessibilityAddTraits(.isHeader)
-      ForEach(session.sources, id: \.kind) { source in
-        HStack(spacing: 8) {
-          Image(systemName: source.symbolName)
-            .frame(width: 20)
-          Text(source.name)
-          Spacer()
-          Text(source.stateText)
-            .foregroundStyle(source.lifecycle == "failed" ? .orange : .secondary)
-        }
-        .accessibilityElement(children: .combine)
-      }
-    }
-  }
-
-  private func toggleImportedPlayback() {
-    if playbackController.activePlaybackSessionId == session.sessionId {
-      playbackController.stopPlayback()
-    } else {
-      playbackController.play(session)
-    }
-  }
-
-  private func toggleRecoveredPlayback(_ playableSession: NativeRecoveredPlayableSession) {
-    let identity = RecoveredPlaybackMediaIdentity(playableSession)
-    if playbackController.pendingRecoveredMediaIdentity == identity
-      || playbackController.playingRecoveredMediaIdentity == identity
-    {
-      playbackController.stopPlayback()
-    } else {
-      playbackController.play(playableSession)
-    }
-  }
-}
-
-private struct PlayableAudioRow: View {
-  let name: String
-  let duration: String
-  let status: String
-  let statusIsFailure: Bool
-  let isAvailable: Bool
-  let actionEnabled: Bool
-  let playbackAction: PlaybackControlAction
-  let onTogglePlayback: () -> Void
-
-  var body: some View {
-    HStack(spacing: 12) {
-      VStack(alignment: .leading, spacing: 4) {
-        Text(name)
-          .font(.headline)
-        Text("\(duration) · \(status)")
-          .font(.caption)
-          .foregroundStyle(statusIsFailure ? Color.red : Color.secondary)
-      }
-      Button(playbackAction.title) {
-        onTogglePlayback()
-      }
-      .disabled(!actionEnabled)
-      .accessibilityLabel("\(playbackAction.title) \(name)")
-    }
-    .padding(.vertical, 8)
-    .accessibilityElement(children: .contain)
+    .help(session.title)
+    .accessibilityLabel(
+      "\(title), \(session.timerText), \(session.statusText)\(reference.map { ", reference \($0)" } ?? "")"
+    )
   }
 }
 
