@@ -5,9 +5,9 @@ set -euo pipefail
 # a sandbox profile that refuses every IP connection, listener, and bind.
 # Then it checks that the workflow completed, that no IP socket appeared in
 # once-a-second samples, and that no diagnostic surface contains session
-# content. Unprivileged, macOS logs neither sandbox denials nor reports, so
-# attempts are bounded by those samples and by the static symbol and
-# source checks, not observed directly.
+# content. Sampling establishes absence only at the sampled instants, not a
+# count of connection attempts. Sandbox refusal and static symbol/source
+# checks are separate evidence; denial-log behavior is not assumed.
 # Local inputs: OPEN_SCRIBE_LOCAL_PROOF_MODEL (the pinned speech model file)
 # and OPEN_SCRIBE_LOCAL_PROOF_SPEECH_CAF (a 48 kHz spoken CAF whose words
 # include "recording safe").

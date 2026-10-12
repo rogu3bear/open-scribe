@@ -2,58 +2,58 @@
 
 > **Budget:** 500 words plus compact proven entries.
 
-Add an entry only when a likely recurring contradiction is proved by an exact command or inspection and does not belong in an anchor, architecture decision, or code comment.
+Nuance records counterexamples to plausible interpretations, not requirements
+or current capability certification. Support is labeled by proof plane.
+Historical investigations remain in [Testing](docs/TESTING.md).
 
-### Cold web failure can mean an unloadable host proc macro
+### An existing host proc macro need not be loadable
 
-On September 29, an empty-target `cargo leptos build --release` failed with
-`E0463: can't find crate for rustversion`. The dylib existed; direct `dlopen`
-rejected it with `mis-aligned LINKEDIT string pool`. Rust 1.93.1 debuginfo
-stripping and macOS 27's loader reproduce
-[rust-lang/rust#157750](https://github.com/rust-lang/rust/issues/157750).
-The workspace release build-override disables stripping for host build
-dependencies; dependency versions and shipped-code optimization stay pinned.
-Do not solve this by warming an unrelated cache or editing Cargo's registry.
+**Experimentally reproduced, exact retained artifacts:** the cold-web-before
+`rustversion` dylib exists with its expected hash, but `dlopen` rejects its
+misaligned LINKEDIT string pool. The hash-bound cold-web-after control loads.
+`ruby script/check_nuance.rb --proc-macro` checks both. This establishes an
+existence-versus-loadability counterexample on this host; it does not reproduce
+a fresh cold build or prove that every compiler/SDK combination has the fault.
+The release build-dependency strip policy is current configuration, not loader
+proof. Build history: [candidate infrastructure](docs/TESTING.md#september-29-2026--candidate-build-infrastructure).
 
-### APFS emergency space must be releasable at actual ENOSPC
+### Releasing reserve space does not prove replacement allocation
 
-On September 29, a 128 MiB volume passed reserve truncation, but the native
-1.5 GiB full-volume harness failed: even truncating the owned reserve to zero
-returned `ENOSPC`. Unlinking and closing that same validated allocation allowed
-a subsequent write and fsync. The expanded ignored store regression reproduced
-the truncation failure and passed with unlink-before-journal; exact commands
-and logs are in `docs/TESTING.md`. A small passing volume does not qualify the
-native exhaustion gate, and recovery after freeing filler cannot prove that
-the original failure was journaled while full.
-After unlink/close/fsync, replacement-file creation also intermittently returned
-ENOSPC. Create-new retries for at most 1 s. The later in-place append fallback
-was retired during PR #10 review: a short write or crash could corrupt the
-canonical journal, and an error after rename could duplicate a record. Persistent
-failure now returns an error with a complete old/new canonical journal; it never
-replays an append. Prior fallback receipts do not qualify current journaling of
-critical exhaustion while full; that acceptance requires fresh native proof.
+**Statically established:** `storage_reserve.rs` validates the owned allocation,
+unlinks it, closes its descriptor, then syncs the directory. These steps precede
+journal replacement; they do not establish that replacement-file creation will
+succeed. `journal_replacement.rs` retries only create-new ENOSPC, with 50 waits
+of 20 ms and a final attempt. Persistent exhaustion remains an error; this is
+one second of requested waiting, not a wall-clock completion guarantee.
+Existing tests cover transient success, the strict attempt bound, and unrelated
+errors. None qualifies full-volume native journaling. Earlier truncation and
+retired fallback investigations remain in [APFS history](docs/TESTING.md#september-29-2026--apfs-exhaustion-and-scene-launch-repair);
+the dedicated-volume test remains explicitly ignored by default. It was not
+rerun in this audit.
 
-### Writer generation advances on every rotation
+### Segment generation and capture identity have different lifetimes
 
-The segmented CAF writer opens a new segment every 30 seconds, on a forward
-host-time gap over 2 ms, and on an input-format change (a backward overlap over
-2 ms is rejected instead), and each successor's `writerGeneration` increments. A
-capture identity bound once at start (`MicrophoneCaptureIdentity(authorization:)`)
-goes stale after the first rotation: a health observation or failure reported
-with the start-time generation no longer matches the writer's current
-authorization. Reproduced by
+**Statically established:** `SegmentedCAFWriter` advances authorization when it
+opens a successor segment. `LiveMicrophoneRecordingController` accepts health
+observations against the identity bound when capture starts plus an increasing
+observation sequence, rather than the writer's current segment generation.
+Comparing a route-loss observation with the successor's generation would discard
+an observation from the same capture. The existing
 `RecorderPauseResumeTests.testRouteInterruptionAfterRotationDegradesMicrophoneCapture`
-(route loss after one rotation must still degrade the microphone). The controller
-matches observations against the full identity bound at capture start (its
-generation included) plus a monotonic sequence, never against the current
-segment's generation.
+tests that specific counterexample. Its source was inspected; it was not
+executed in this audit, and does not establish every route/format change or
+real-device continuation.
 
-### Unprivileged macOS logs no sandbox network denials
+### Zero sampled sockets does not establish zero connection attempts
 
-On September 29, `sandbox-exec` with `(deny network-outbound (remote ip))` made
-`curl https://1.1.1.1` fail, yet `log show` found no denial. Allow rules
-`(with report)` logged nothing either, and deny rules reject the modifier. A
-first local-only run went RED because `log show --style compact` echoes its
-filter predicate as a header line, which matched the search text. Bound
-attempted connections with in-process socket samples and symbol and source
-checks (`script/check_m4_local_only.sh`), never with a log search for denials.
+**Experimentally reproduced, isolated timing fixture:** samples at 0, 1, and
+2 seconds miss a socket present only from 0.2 to 0.3 seconds. Run
+`ruby script/check_nuance.rb --sampling`. The local-only harness samples sockets
+once per second; its sandbox refusal and static networking checks are separate
+evidence. Sampling establishes only absence at the sampled instants, not an
+attempt count. The older universal claim about unprivileged denial logs is
+removed: a current empty-process log query cannot establish denial behavior.
+
+The checker reports **PASS** when its bounded counterexample is established,
+**FAIL** when contradicted, and **STALE** when required artifact identity or
+observation is unavailable. Missing or changed evidence never becomes PASS.
