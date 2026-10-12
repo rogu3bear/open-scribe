@@ -44,7 +44,6 @@ struct ContentView: View {
       selectedWorkspace
     }
     .navigationSplitViewStyle(.balanced)
-    .frame(minWidth: 760, minHeight: 520)
     .toolbar {
       ToolbarItemGroup(placement: .primaryAction) {
         captureButton

@@ -57,6 +57,17 @@ final class FixtureSessionTests: XCTestCase {
     XCTAssertEqual(first.title, "speech48")
   }
 
+  func testEvidenceReferencesSurviveReorderingDuplicatesAndSuffixCollisions() {
+    let ids = ["first-aaaaaa", "second-aaaaaa", "short", "first-aaaaaa"]
+    let references = ShortIdentityReference.references(for: ids)
+    XCTAssertEqual(references, ShortIdentityReference.references(for: Array(ids.reversed())))
+    XCTAssertEqual(references.count, 3)
+    XCTAssertEqual(Set(references.values).count, 3)
+    XCTAssertGreaterThan(references["first-aaaaaa"]!.count, 6)
+    XCTAssertEqual(references["short"], "short")
+    XCTAssertTrue(ShortIdentityReference.references(for: []).isEmpty)
+  }
+
   func testRuntimeCaptureAnnouncementsRequireDurableTruthAndIgnoreTicks() {
     var announcements = RuntimeCaptureAnnouncements()
     XCTAssertTrue(announcements.update(current: captureSession("preparing"), saved: []).isEmpty)

@@ -30,13 +30,22 @@ enum ConversationIdentityPresentation {
     }
     var result = [String: String]()
     for group in groups.values where group.count > 1 {
-      let ids = group.map(\.sessionId)
-      var length = 6
-      while Set(ids.map { String($0.suffix(length)) }).count < ids.count {
-        length += 1
+      result.merge(ShortIdentityReference.references(for: group.map(\.sessionId))) { first, _ in
+        first
       }
-      for id in ids { result[id] = String(id.suffix(length)) }
     }
     return result
+  }
+}
+
+/// Stable references for evidence identities, independent of display order.
+enum ShortIdentityReference {
+  static func references(for identifiers: [String]) -> [String: String] {
+    let ids = Set(identifiers)
+    var length = 6
+    while Set(ids.map { String($0.suffix(length)) }).count < ids.count {
+      length += 1
+    }
+    return Dictionary(uniqueKeysWithValues: ids.map { ($0, String($0.suffix(length))) })
   }
 }

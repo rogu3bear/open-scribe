@@ -3,6 +3,8 @@ import SwiftUI
 
 @MainActor
 enum MainWindow {
+  static let minimumFrameSize = NSSize(width: 760, height: 520)
+
   static func isPrimary(_ window: NSWindow) -> Bool {
     guard window.canBecomeMain, window.level == .normal, window.styleMask.contains(.titled) else {
       return false
@@ -30,6 +32,60 @@ enum MainWindow {
     NSApp.activate(ignoringOtherApps: true)
     window.makeKeyAndOrderFront(nil)
     return true
+  }
+}
+
+/// SwiftUI owns the sizing constraint; AppKit measures the chrome included in
+/// the product's outer-window minimum, without assuming a toolbar height.
+private struct MainWindowMinimumSize: ViewModifier {
+  @State private var chromeHeight: CGFloat = 0
+
+  func body(content: Content) -> some View {
+    content
+      .frame(
+        minWidth: MainWindow.minimumFrameSize.width,
+        minHeight: max(0, MainWindow.minimumFrameSize.height - chromeHeight)
+      )
+      .background {
+        WindowChromeReader { chromeHeight = $0 }
+      }
+  }
+}
+
+private struct WindowChromeReader: NSViewRepresentable {
+  let onChange: (CGFloat) -> Void
+
+  func makeNSView(context: Context) -> ChromeView {
+    let view = ChromeView()
+    view.onChange = onChange
+    return view
+  }
+
+  func updateNSView(_ nsView: ChromeView, context: Context) {
+    nsView.onChange = onChange
+  }
+
+  final class ChromeView: NSView {
+    var onChange: ((CGFloat) -> Void)?
+    private var lastHeight: CGFloat?
+
+    override func viewDidMoveToWindow() {
+      super.viewDidMoveToWindow()
+      reportChromeHeight()
+    }
+
+    override func layout() {
+      super.layout()
+      reportChromeHeight()
+    }
+
+    private func reportChromeHeight() {
+      guard let window else { return }
+      let height = max(0, window.frame.height - window.contentLayoutRect.height)
+      guard height != lastHeight else { return }
+      lastHeight = height
+      DispatchQueue.main.async { [weak self] in self?.onChange?(height) }
+    }
   }
 }
 
@@ -216,6 +272,7 @@ struct OpenScribeApp: App {
         context: context,
         navigation: navigation
       )
+      .modifier(MainWindowMinimumSize())
     }
     .defaultSize(width: 1040, height: 720)
     .commands {

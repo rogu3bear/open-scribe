@@ -109,6 +109,7 @@ struct ConversationWorkspaceView: View {
     VStack(alignment: .leading, spacing: 8) {
       Text(title)
         .font(.title2.weight(.semibold))
+        .fixedSize(horizontal: false, vertical: true)
         .textSelection(.enabled)
         .accessibilityAddTraits(.isHeader)
         .accessibilityLabel(title)
@@ -116,6 +117,7 @@ struct ConversationWorkspaceView: View {
         Label {
           Text(session.statusText)
             .foregroundStyle(session.needsAttention ? Color.primary : Color.secondary)
+            .fixedSize(horizontal: false, vertical: true)
         } icon: {
           Image(systemName: session.captureStatusSymbolName)
             .foregroundStyle(session.needsAttention ? Color.orange : Color.secondary)
@@ -242,6 +244,7 @@ struct ConversationWorkspaceView: View {
           .font(.callout)
           .foregroundStyle(.secondary)
       } else if !recoveredTracks.isEmpty {
+        let references = ShortIdentityReference.references(for: recoveredTracks.map(\.id))
         ForEach(recoveredTracks) { track in
           let identity = RecoveredPlaybackMediaIdentity(track.playableSession)
           let isPlaying = playbackController.playingRecoveredMediaIdentity == identity
@@ -253,6 +256,7 @@ struct ConversationWorkspaceView: View {
             ? playbackController.errorMessage : nil
           PlayableAudioRow(
             name: track.source.name, duration: track.durationText,
+            segmentReference: references[track.id] ?? track.id,
             status: isPending ? "Verifying local audio" : error ?? "Preserved local audio",
             statusIsFailure: error != nil,
             actionEnabled: action.isEnabled(
@@ -356,6 +360,7 @@ struct ConversationWorkspaceView: View {
 private struct PlayableAudioRow: View {
   let name: String
   let duration: String
+  let segmentReference: String
   let status: String
   let statusIsFailure: Bool
   let actionEnabled: Bool
@@ -367,6 +372,10 @@ private struct PlayableAudioRow: View {
       VStack(alignment: .leading, spacing: 4) {
         Text(name)
           .font(.headline)
+        Text("Segment \(segmentReference)")
+          .font(.caption)
+          .monospaced()
+          .foregroundStyle(.secondary)
         if statusIsFailure {
           CaptureIssueLabel(message: "\(duration) · \(status)", isFailure: true)
             .font(.caption)
@@ -380,7 +389,7 @@ private struct PlayableAudioRow: View {
         onTogglePlayback()
       }
       .disabled(!actionEnabled)
-      .accessibilityLabel("\(playbackAction.title) \(name)")
+      .accessibilityLabel("\(playbackAction.title) \(name), segment \(segmentReference)")
     }
     .padding(.vertical, 8)
     .accessibilityElement(children: .contain)
