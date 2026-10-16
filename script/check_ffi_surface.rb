@@ -64,6 +64,12 @@ module CoarseFFI
         break if changed == surface
         surface = changed
       end
+      # Nullability cannot turn a numeric collection into coarse metadata.
+      loop do
+        changed = surface.gsub(/\b(?:\w+::)*Option\s*<\s*([^<>]+)\s*>/, '\1')
+        break if changed == surface
+        surface = changed
+      end
       # Numeric vectors/slices/arrays and opaque buffers are media-shaped even
       # with neutral names. Native geometry has narrowly listed scalar owners.
       if surface.match?(/(?:Vec|Box|Arc)\s*<\s*(?:Vec\s*<\s*)?(?:u\d+|i\d+|f\d+|\[)/) ||
@@ -86,7 +92,7 @@ module CoarseFFI
       signatures = body.scan(/(?:public|open)\s+(?:static\s+)?func\s+[^{}]+(?=\{)/m)
       variants = body.scan(/case\s+\w+\s*\([^\n]+/m)
       (fields + signatures + variants).each do |surface|
-        if surface.match?(/\[\s*(?:U?Int\d*|Float|Double)\s*\]|\bArray\s*<\s*(?:U?Int\d*|Float|Double)/) ||
+        if surface.match?(/\[\s*(?:U?Int\d*|Float|Double)\s*\??\s*\]|\bArray\s*<\s*(?:U?Int\d*|Float|Double)/) ||
            surface.match?(/\b(?:Data|RustBuffer|ForeignBytes|OpaquePointer|Unsafe\w*Pointer)\b/) ||
            (surface.match?(/\b(?:Float|Double)\b/) && !GEOMETRY.include?(owner))
           failures << "#{name}: #{owner}: disallowed generated API payload type"
@@ -105,16 +111,20 @@ if $PROGRAM_NAME == __FILE__
     alias_payload = 'type Notice = Vec<u8>; #[derive(uniffi::Record)] pub struct Envelope { pub values: Notice }'
     raise 'harmless comment rejected' unless CoarseFFI.validate(comment, 'comment').empty?
     raise 'neutral record bypassed' if CoarseFFI.validate(neutral, 'neutral').empty?
+    raise 'optional numeric collection bypassed' if CoarseFFI.validate('#[derive(uniffi::Record)] pub struct Notice { pub values: Vec<Option<u8>> }', 'optional').empty?
+    raise 'optional text metadata rejected' unless CoarseFFI.validate('#[derive(uniffi::Record)] pub struct Receipt { pub labels: Vec<Option<String>> }', 'optional-text').empty?
     raise 'neutral signature bypassed' if CoarseFFI.validate(signature, 'signature').empty?
     raise 'alias bypassed' if CoarseFFI.validate(alias_payload, 'alias').empty?
     raise 'cross-module alias bypassed' if CoarseFFI.validate('#[derive(uniffi::Record)] pub struct Envelope { pub values: Neutral }', 'module', {'Neutral' => 'Vec<u8>'}).empty?
     raise 'enum payload bypassed' if CoarseFFI.validate('#[derive(uniffi::Enum)] pub enum Notice { Data { values: Vec<u8> } }', 'enum').empty?
     raise 'generated numeric collection bypassed' if CoarseFFI.validate_swift('public struct Notice { public let values: [UInt8] }', 'swift').empty?
+    raise 'generated optional numeric collection bypassed' if CoarseFFI.validate_swift('public struct Notice { public let values: [UInt8?] }', 'swift-optional').empty?
+    raise 'generated optional text metadata rejected' unless CoarseFFI.validate_swift('public struct Receipt { public let labels: [String?] }', 'swift-optional-text').empty?
     raise 'generated method bypassed' if CoarseFFI.validate_swift('open class Notice { open func next() -> [Double] { fatalError() } }', 'swift-method').empty?
     raise 'generated enum bypassed' if CoarseFFI.validate_swift('public enum Notice { case item(values: [UInt8]) }', 'swift-enum').empty?
     raise 'generated scalar receipt rejected' unless CoarseFFI.validate_swift("public struct Receipt { public let count: UInt64\n public let id: String }", 'swift-receipt').empty?
     raise 'nested comment changed code' unless CoarseFFI.validate('/* outer /* inner */ pub fn neutral()->Vec<u8>{} */' + comment, 'nested').empty?
-    puts 'FFI_SURFACE_TEST_GREEN: comments, aliases, neutral records/enums/methods, generated APIs, scalar receipts'
+    puts 'FFI_SURFACE_TEST_GREEN: comments, aliases, nullable/neutral payloads, generated APIs, coarse metadata'
   else
     paths = ARGV.empty? ? Dir['crates/open-scribe-uniffi/src/*.rs'] : ARGV
     aliases = paths.reject { |path| path.end_with?('.swift') }.flat_map { |path| CoarseFFI.code(File.read(path)).scan(/\btype\s+(\w+)\s*=\s*([^;]+);/m) }.to_h
