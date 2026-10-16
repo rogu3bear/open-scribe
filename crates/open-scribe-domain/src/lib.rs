@@ -3,7 +3,9 @@
 #![forbid(unsafe_code)]
 
 mod production;
-pub use production::{recording_evidence_sufficient, transcription_hold};
+pub use production::{
+    merge_transcription_attempt, recording_evidence_sufficient, transcription_hold,
+};
 
 use open_scribe_types::{
     DurabilityRecord, Lifecycle, PermissionRecord, PermissionState, RecoveryRecord, RecoveryStatus,

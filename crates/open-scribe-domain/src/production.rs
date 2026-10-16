@@ -1,5 +1,26 @@
-//! Pure production admission shared by the durable store and fixture inputs.
-use open_scribe_types::{ModelReadiness, TranscriptionIntent, WorkHold, WorkObservations};
+//! Pure production decisions shared by the durable store and fixture inputs.
+use open_scribe_types::{
+    AttemptState, ModelReadiness, TranscriptionIntent, WorkHold, WorkObservations,
+};
+
+/// Aggregate the latest attempt on each track independently of track order.
+/// Active work and unresolved stops remain visible beside completed tracks.
+pub fn merge_transcription_attempt(left: AttemptState, right: AttemptState) -> AttemptState {
+    let priority = |state| match state {
+        AttemptState::None => 0,
+        AttemptState::Complete => 1,
+        AttemptState::Cancelled => 2,
+        AttemptState::Preempted => 3,
+        AttemptState::Failed => 4,
+        AttemptState::Running => 5,
+        AttemptState::Unknown => 6,
+    };
+    if priority(right) > priority(left) {
+        right
+    } else {
+        left
+    }
+}
 
 pub fn recording_evidence_sufficient(
     required: usize,
@@ -56,6 +77,33 @@ pub fn transcription_hold(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn completed_fixture_tracks_cannot_hide_unresolved_or_active_attempts() {
+        for state in [
+            AttemptState::Cancelled,
+            AttemptState::Preempted,
+            AttemptState::Failed,
+            AttemptState::Running,
+            AttemptState::Unknown,
+        ] {
+            assert_eq!(
+                merge_transcription_attempt(AttemptState::Complete, state),
+                state
+            );
+            assert_eq!(
+                merge_transcription_attempt(state, AttemptState::Complete),
+                state
+            );
+        }
+        assert_eq!(
+            merge_transcription_attempt(AttemptState::Failed, AttemptState::Running),
+            AttemptState::Running
+        );
+        assert_eq!(
+            merge_transcription_attempt(AttemptState::Running, AttemptState::Failed),
+            AttemptState::Running
+        );
+    }
     #[test]
     fn manual_and_reconciliation_intent_preserve_capture_priority() {
         let observations = WorkObservations {

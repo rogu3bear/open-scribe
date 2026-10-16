@@ -56,6 +56,8 @@ pub use transcription_plan::{
 };
 #[cfg(test)]
 mod speech_tests;
+#[cfg(test)]
+mod transcription_projection_tests;
 
 pub use open_scribe_domain::{
     Command, Fixture, Presentation, SessionSnapshot, TimerBehavior, TransitionError, announcement,

@@ -451,7 +451,10 @@ impl SessionStore {
                     if !is_selected {
                         running += 1;
                     }
-                    snapshot.attempt = open_scribe_types::AttemptState::Running;
+                    snapshot.attempt = open_scribe_domain::merge_transcription_attempt(
+                        snapshot.attempt,
+                        open_scribe_types::AttemptState::Running,
+                    );
                     snapshot.completed_chunks += u32::try_from(complete).unwrap_or(u32::MAX);
                     snapshot.total_chunks += u32::try_from(total).unwrap_or(u32::MAX);
                 }
@@ -459,8 +462,11 @@ impl SessionStore {
                     if !is_selected {
                         failed += 1;
                     }
-                    if snapshot.attempt != open_scribe_types::AttemptState::Running {
-                        snapshot.attempt = open_scribe_types::AttemptState::Failed;
+                    snapshot.attempt = open_scribe_domain::merge_transcription_attempt(
+                        snapshot.attempt,
+                        open_scribe_types::AttemptState::Failed,
+                    );
+                    if snapshot.attempt == open_scribe_types::AttemptState::Failed {
                         snapshot.attempt_failure = failure_class.clone();
                     }
                     if snapshot.failure_class.is_none() {
@@ -479,19 +485,20 @@ impl SessionStore {
                     if !is_selected {
                         cancelled += 1;
                     }
-                    if snapshot.attempt == open_scribe_types::AttemptState::None {
-                        snapshot.attempt = if failure_class.as_deref() == Some("capture_preempted")
-                        {
+                    snapshot.attempt = open_scribe_domain::merge_transcription_attempt(
+                        snapshot.attempt,
+                        if failure_class.as_deref() == Some("capture_preempted") {
                             open_scribe_types::AttemptState::Preempted
                         } else {
                             open_scribe_types::AttemptState::Cancelled
-                        };
-                    }
+                        },
+                    );
                 }
                 Some((state, _, _, _)) if state == "complete" => {
-                    if snapshot.attempt == open_scribe_types::AttemptState::None {
-                        snapshot.attempt = open_scribe_types::AttemptState::Complete;
-                    }
+                    snapshot.attempt = open_scribe_domain::merge_transcription_attempt(
+                        snapshot.attempt,
+                        open_scribe_types::AttemptState::Complete,
+                    );
                 }
                 Some(_) => {
                     unsupported = true;
@@ -501,6 +508,9 @@ impl SessionStore {
         }
         if unsupported {
             snapshot.attempt = open_scribe_types::AttemptState::Unknown;
+        }
+        if snapshot.attempt != open_scribe_types::AttemptState::Failed {
+            snapshot.attempt_failure = None;
         }
         // Recognizers use a cancellation flag for capture preemption too. The
         // accepted operation outcome supplies that missing stop reason without
