@@ -25,6 +25,9 @@ cmp "$proof_root/bindings/OpenScribeFFI.h" \
 	apps/macos/Sources/OpenScribeFFI/include/OpenScribeFFI.h
 
 xcode_log="$proof_root/xcodebuild.log"
+# shellcheck source=script/native_test_environment.sh
+source "$script_dir/native_test_environment.sh"
+native_test_environment
 if ! xcodebuild \
 	-project apps/macos/OpenScribe.xcodeproj \
 	-scheme OpenScribeApp \
@@ -35,6 +38,8 @@ if ! xcodebuild \
 	LIBRARY_SEARCH_PATHS="$(dirname "$rust_library")" \
 	MACOSX_DEPLOYMENT_TARGET=13.0 \
 	CODE_SIGNING_ALLOWED=NO \
+	OPEN_SCRIBE_VERIFICATION_SUFFIX=.verification \
+	-parallel-testing-enabled NO \
 	test \
 	-only-testing:OpenScribeAppTests/MediaOpenProtocolTests 2>&1 | tee "$xcode_log"; then
 	printf '%s\n' 'M1_SEGMENT_SEALING_RED: Swift-to-Rust segment-seal proof failed' >&2

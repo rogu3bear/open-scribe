@@ -14,6 +14,9 @@ proof_root="$(mktemp -d "$repo_root/apps/macos/.build/m1-microphone-check.XXXXXX
 trap 'rm -rf "$proof_root"' EXIT
 rust_library="$(bash "$script_dir/build_rust_macos.sh" "$proof_root/rust")"
 xcode_log="$proof_root/xcodebuild.log"
+# shellcheck source=script/native_test_environment.sh
+source "$script_dir/native_test_environment.sh"
+native_test_environment
 if ! xcodebuild \
 	-project "$project" \
 	-scheme OpenScribeApp \
@@ -24,6 +27,8 @@ if ! xcodebuild \
 	LIBRARY_SEARCH_PATHS="$(dirname "$rust_library")" \
 	MACOSX_DEPLOYMENT_TARGET=13.0 \
 	CODE_SIGNING_ALLOWED=NO \
+	OPEN_SCRIBE_VERIFICATION_SUFFIX=.verification \
+	-parallel-testing-enabled NO \
 	test \
 	-only-testing:OpenScribeAppTests/MicrophoneCaptureAdapterTests 2>&1 | tee "$xcode_log"; then
 	printf '%s\n' 'M1_MICROPHONE_FOUNDATION_RED: deterministic microphone adapter tests failed' >&2
