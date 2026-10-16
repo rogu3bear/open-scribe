@@ -1035,3 +1035,64 @@ fn runtime_snapshot_reports_transcript_posture_from_runs_and_selections() {
             .is_empty()
     );
 }
+
+#[test]
+fn accepted_capture_preemption_projects_honestly_without_rewriting_engine_history() {
+    use open_scribe_types::{
+        AttemptState, ModelReadiness, TranscriptionIntent, WorkObservations, WorkOutcome,
+    };
+    let mut fixture = imported_fixture(144_000);
+    let first = fixture
+        .store
+        .begin_transcription_run(&identity(&fixture, "first"), &plan())
+        .unwrap();
+    let revision = complete_all(&mut fixture, &first, ["reviewed", "document"]);
+    fixture
+        .store
+        .request_transcription(&fixture.session, TranscriptionIntent::ReprocessAll)
+        .unwrap();
+    let claim = fixture
+        .store
+        .admit_transcription(WorkObservations {
+            automatic: false,
+            model: ModelReadiness::Ready,
+            ..Default::default()
+        })
+        .unwrap()
+        .unwrap();
+    let replacement = fixture
+        .store
+        .begin_transcription_run(&identity(&fixture, "replacement"), &plan())
+        .unwrap();
+    // The recognizer's cancellation channel does not carry the native stop reason.
+    fixture
+        .store
+        .fail_transcription_run(&replacement.run_id, None, TranscriptionFailure::Cancelled)
+        .unwrap();
+    fixture
+        .store
+        .finish_transcription(
+            claim.admission.as_deref().unwrap(),
+            WorkOutcome::CapturePreempted,
+        )
+        .unwrap();
+    let snapshot = fixture
+        .store
+        .runtime_library_snapshot()
+        .unwrap()
+        .saved_sessions
+        .remove(0)
+        .transcript;
+    assert_eq!(snapshot.state, RuntimeTranscriptState::Final);
+    assert_eq!(snapshot.selected_revision_ids, [revision]);
+    assert_eq!(snapshot.attempt, AttemptState::Preempted);
+    assert_eq!(
+        fixture
+            .store
+            .transcription_run_record(&replacement.run_id)
+            .unwrap()
+            .failure_class
+            .as_deref(),
+        Some("cancelled")
+    );
+}

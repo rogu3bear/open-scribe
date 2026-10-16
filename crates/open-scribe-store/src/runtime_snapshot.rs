@@ -502,6 +502,27 @@ impl SessionStore {
         if unsupported {
             snapshot.attempt = open_scribe_types::AttemptState::Unknown;
         }
+        // Recognizers use a cancellation flag for capture preemption too. The
+        // accepted operation outcome supplies that missing stop reason without
+        // rewriting any engine run/failure history or masking a live attempt.
+        let accepted_outcome: Option<String> = connection
+            .query_row(
+                "SELECT last_outcome FROM transcription_intent WHERE session_id = ?1",
+                [session_id],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .optional()?
+            .flatten();
+        let accepted_preemption = !unsupported
+            && snapshot.attempt != open_scribe_types::AttemptState::Running
+            && accepted_outcome
+                .as_deref()
+                .and_then(open_scribe_types::WorkOutcome::from_code)
+                == Some(open_scribe_types::WorkOutcome::CapturePreempted);
+        if accepted_preemption {
+            snapshot.attempt = open_scribe_types::AttemptState::Preempted;
+            snapshot.attempt_failure = None;
+        }
         snapshot.replacement_resumable = connection.query_row("SELECT EXISTS(SELECT 1 FROM transcription_intent WHERE session_id = ?1
             AND admission IS NULL AND last_action = 'reprocess' AND last_outcome IN ('failed','preempted'))", [session_id], |r| r.get(0))?;
         snapshot.document = if snapshot.final_tracks == snapshot.total_tracks {
@@ -517,6 +538,8 @@ impl SessionStore {
             RuntimeTranscriptState::Final
         } else if unsupported {
             RuntimeTranscriptState::Unknown
+        } else if accepted_preemption {
+            RuntimeTranscriptState::Cancelled
         } else if running > 0 {
             RuntimeTranscriptState::Running
         } else if failed > 0 {
