@@ -34,7 +34,15 @@ for key in executable debug_dylib info_plist rust_library test_binary xctestrun 
 	build_log) path="$candidate_root/build.log" ;;
 	esac
 	mkdir -p "$(dirname "$path")"
-	printf '%s\n' "$key" >"$path"
+	if [[ "$key" == info_plist ]]; then
+		cat >"$path" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict><key>CFBundleIdentifier</key><string>app.open-scribe.dev.verification</string></dict></plist>
+PLIST
+	else
+		printf '%s\n' "$key" >"$path"
+	fi
 	artifacts="$(jq --arg key "$key" --arg path "$path" --arg digest "$(candidate_sha256 "$path")" \
 		'. + {($key): {path: $path, sha256: $digest}}' <<<"$artifacts")"
 done
