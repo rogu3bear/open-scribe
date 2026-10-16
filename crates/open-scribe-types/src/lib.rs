@@ -2,6 +2,12 @@
 
 #![forbid(unsafe_code)]
 
+mod work;
+pub use work::{
+    AttemptState, DocumentAvailability, ModelReadiness, TranscriptionIntent, WorkHold,
+    WorkObservations, WorkOutcome,
+};
+
 /// Stable identity for one conversation session.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct SessionId(pub String);

@@ -40,6 +40,13 @@ while [[ "$#" -gt 0 ]]; do
 done
 
 cd "$repo_root"
+verification_suffix=""
+case "$mode" in
+--verify | --verify-recording | --m1-live-microphone-proof | --m1-dual-source-runtime-proof | --m1-forced-termination-recovery-proof)
+	verification_suffix=".verification"
+	derived_data="$macos_root/.build/xcode-verification"
+	;;
+esac
 case "$mode" in
 --verify-recording | --m1-live-microphone-proof | --m1-dual-source-runtime-proof | --m1-forced-termination-recovery-proof)
 	[[ -n "$candidate_record" ]] || candidate_fail 'this gate requires --candidate /absolute/path/candidate.json; it never rebuilds'
@@ -138,8 +145,12 @@ if [[ -z "$candidate_record" ]]; then
 		LIBRARY_SEARCH_PATHS="$(dirname "$rust_library")" \
 		MACOSX_DEPLOYMENT_TARGET=13.0 \
 		CODE_SIGNING_ALLOWED=NO \
+		OPEN_SCRIBE_VERIFICATION_SUFFIX="$verification_suffix" \
 		build
 fi
+
+# Telemetry follows the exact artifact's identity, including proof builds.
+bundle_id="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app_bundle/Contents/Info.plist")"
 
 launch_app() {
 	if [[ "$#" -gt 0 ]]; then
@@ -164,6 +175,10 @@ run)
 	launch_app
 	;;
 --verify | --verify-recording)
+	# Resolve test-host storage before Xcode can initialize the production app.
+	# shellcheck source=script/native_test_environment.sh
+	source "$script_dir/native_test_environment.sh"
+	native_test_environment
 	test_filters=()
 	if [[ "$mode" == "--verify-recording" ]]; then
 		# These suites use injected capture backends and file buffers, with no
@@ -181,6 +196,7 @@ run)
 		candidate_assert
 		xcodebuild test-without-building -xctestrun "$xctestrun" \
 			-destination 'platform=macOS,arch=arm64' \
+			-parallel-testing-enabled NO \
 			${test_filters[@]+"${test_filters[@]}"}
 		candidate_receipt
 	else
@@ -194,6 +210,8 @@ run)
 			LIBRARY_SEARCH_PATHS="$(dirname "$rust_library")" \
 			MACOSX_DEPLOYMENT_TARGET=13.0 \
 			CODE_SIGNING_ALLOWED=NO \
+			OPEN_SCRIBE_VERIFICATION_SUFFIX="$verification_suffix" \
+			-parallel-testing-enabled NO \
 			${test_filters[@]+"${test_filters[@]}"} \
 			test
 	fi
@@ -207,7 +225,10 @@ run)
 			'excludes=real_capture,permissions,audible_output,long_sessions,m1_completion,signing,release'
 		exit 0
 	fi
-	launch_app --m0-proof-settings
+	scene_root="$(mktemp -d "$macos_root/.build/scene-proof.XXXXXX")"
+	scene_root="$(CDPATH='' cd -- "$scene_root" && pwd -P)"
+	launch_app --m0-proof-settings --verification-root "$scene_root" \
+		--verification-preferences "OpenScribe.Proof.$(basename "$scene_root")"
 	app_pid="$(<"$pid_file")"
 	verify_app_pid="$app_pid"
 	observed_command="$(ps -p "$app_pid" -o comm=)"

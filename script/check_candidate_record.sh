@@ -24,6 +24,15 @@ mkdir -p "$(dirname "$candidate_record")"
 candidate_paths
 candidate_source
 artifacts='{}'
+write_artifact() {
+	local key="$1" path="$2"
+	if [[ "$key" == info_plist ]]; then
+		printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?>' \
+			'<plist version="1.0"><dict><key>CFBundleIdentifier</key><string>app.open-scribe.dev.verification</string></dict></plist>' >"$path"
+	else
+		printf '%s\n' "$key" >"$path"
+	fi
+}
 for key in executable debug_dylib info_plist rust_library test_binary xctestrun build_log; do
 	case "$key" in
 	executable) path="$app_binary" ;;
@@ -35,7 +44,7 @@ for key in executable debug_dylib info_plist rust_library test_binary xctestrun 
 	build_log) path="$candidate_root/build.log" ;;
 	esac
 	mkdir -p "$(dirname "$path")"
-	printf '%s\n' "$key" >"$path"
+	write_artifact "$key" "$path"
 	artifacts="$(jq --arg key "$key" --arg path "$path" --arg digest "$(candidate_sha256 "$path")" \
 		'. + {($key): {path: $path, sha256: $digest}}' <<<"$artifacts")"
 done
@@ -58,8 +67,15 @@ for key in executable debug_dylib info_plist rust_library test_binary xctestrun 
 	path="$(jq -r --arg key "$key" '.artifacts[$key].path' "$candidate_record")"
 	printf 'changed\n' >>"$path"
 	expect_rejection "$key-drift" candidate_load "$candidate_record"
-	printf '%s\n' "$key" >"$path"
+	write_artifact "$key" "$path"
 done
+/usr/libexec/PlistBuddy -c 'Set :CFBundleIdentifier app.open-scribe.dev' "$app_bundle/Contents/Info.plist"
+jq --arg digest "$(candidate_sha256 "$app_bundle/Contents/Info.plist")" \
+	'.artifacts.info_plist.sha256 = $digest' <<<"$record_contents" >"$candidate_record"
+expect_rejection production-preferences-domain candidate_load "$candidate_record"
+write_artifact info_plist "$app_bundle/Contents/Info.plist"
+printf '%s\n' "$record_contents" >"$candidate_record"
+candidate_load "$candidate_record"
 expect_rejection missing-checks candidate_require_checks
 printf 'source checks\n' >"$candidate_root/source-checks.log"
 printf 'native checks\n' >"$candidate_root/native-checks.log"

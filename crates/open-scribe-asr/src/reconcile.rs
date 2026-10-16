@@ -4,8 +4,8 @@
 
 use crate::recognizer::Hypothesis;
 
-/// v2 rejects whole-segment non-speech annotations such as `[BLANK_AUDIO]`.
-pub const RECONCILIATION_VERSION: &str = "overlap-midpoint-v2";
+/// v3 preserves midpoint selection and deduplication, then stably orders timestamps.
+pub const RECONCILIATION_VERSION: &str = "overlap-midpoint-v3";
 
 /// Segments may end this far past their chunk before they are rejected as
 /// materially outside input coverage; smaller overruns are clamped.
@@ -92,6 +92,11 @@ pub fn reconcile(chunks: &[ChunkHypothesis<'_>]) -> (Vec<ReconciledSegment>, Rej
             output.push(segment);
         }
     }
+    // Midpoint ownership uses each segment's center, so a longer segment in
+    // the next window can start before a retained shorter segment. Apply the
+    // store's chronological contract after selection/deduplication. Stable
+    // sorting keeps equal-time provenance and recognizer order unchanged.
+    output.sort_by_key(|segment| segment.start_nanoseconds);
     (output, rejections)
 }
 
@@ -215,6 +220,100 @@ mod tests {
         assert_eq!(
             (segments[2].start_nanoseconds, segments[2].end_nanoseconds),
             (26 * S, 27_500_000_000)
+        );
+        assert_eq!(rejections, Rejections::default());
+    }
+
+    #[test]
+    fn midpoint_owned_segments_are_ordered_without_changing_provenance() {
+        let first = hypothesis(&[(25_400, 25_500, "short left")]);
+        let second = hypothesis(&[(1_280, 4_480, "long right")]);
+        let chunks = [
+            ChunkHypothesis {
+                chunk_id: "left",
+                span_index: 0,
+                start_nanoseconds: 0,
+                end_nanoseconds: 28 * S,
+                hypothesis: &first,
+            },
+            ChunkHypothesis {
+                chunk_id: "right",
+                span_index: 0,
+                start_nanoseconds: 23 * S,
+                end_nanoseconds: 51 * S,
+                hypothesis: &second,
+            },
+        ];
+        let (segments, rejections) = reconcile(&chunks);
+        assert_eq!(texts(&segments), ["long right", "short left"]);
+        assert_eq!(
+            segments
+                .iter()
+                .map(|s| s.chunk_id.as_str())
+                .collect::<Vec<_>>(),
+            ["right", "left"]
+        );
+        assert_eq!(
+            segments
+                .iter()
+                .map(|s| (s.start_nanoseconds, s.end_nanoseconds))
+                .collect::<Vec<_>>(),
+            [
+                (24_280_000_000, 27_480_000_000),
+                (25_400_000_000, 25_500_000_000)
+            ]
+        );
+        assert!(
+            segments
+                .iter()
+                .all(|s| s.mean_probability == Some(0.9) && s.no_speech_probability == Some(0.01))
+        );
+        assert_eq!(rejections, Rejections::default());
+    }
+
+    #[test]
+    fn equal_starts_keep_original_order_across_overlapping_windows() {
+        let first = hypothesis(&[(24_400, 25_000, "left")]);
+        let second = hypothesis(&[
+            (1_400, 6_000, "right first"),
+            (1_400, 5_000, "right second"),
+        ]);
+        let chunks = [
+            ChunkHypothesis {
+                chunk_id: "z-left",
+                span_index: 0,
+                start_nanoseconds: 0,
+                end_nanoseconds: 28 * S,
+                hypothesis: &first,
+            },
+            ChunkHypothesis {
+                chunk_id: "a-right",
+                span_index: 0,
+                start_nanoseconds: 23 * S,
+                end_nanoseconds: 51 * S,
+                hypothesis: &second,
+            },
+        ];
+        let (segments, rejections) = reconcile(&chunks);
+        assert_eq!(texts(&segments), ["left", "right first", "right second"]);
+        assert!(
+            segments
+                .iter()
+                .all(|s| s.start_nanoseconds == 24_400_000_000)
+        );
+        assert_eq!(
+            segments
+                .iter()
+                .map(|s| s.chunk_id.as_str())
+                .collect::<Vec<_>>(),
+            ["z-left", "a-right", "a-right"]
+        );
+        assert_eq!(
+            segments
+                .iter()
+                .map(|s| s.end_nanoseconds)
+                .collect::<Vec<_>>(),
+            [25_000_000_000, 29_000_000_000, 28_000_000_000]
         );
         assert_eq!(rejections, Rejections::default());
     }

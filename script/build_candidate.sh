@@ -36,7 +36,7 @@ build_native() {
 	xcodebuild -project apps/macos/OpenScribe.xcodeproj -scheme OpenScribeApp \
 		-configuration Debug -derivedDataPath "$derived_data" \
 		ARCHS=arm64 ONLY_ACTIVE_ARCH=YES LIBRARY_SEARCH_PATHS="$(dirname "$rust_library")" \
-		MACOSX_DEPLOYMENT_TARGET=13.0 CODE_SIGNING_ALLOWED=NO build-for-testing
+		MACOSX_DEPLOYMENT_TARGET=13.0 CODE_SIGNING_ALLOWED=NO OPEN_SCRIBE_VERIFICATION_SUFFIX=.verification build-for-testing
 }
 build_native 2>&1 | tee "$candidate_root/build.log"
 if rg -n '/Sources/.*warning:|built for newer .macOS. version|object file.*newer.*macOS' "$candidate_root/build.log"; then

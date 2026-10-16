@@ -16,8 +16,9 @@ mod transcript_library;
 pub use transcript_library::{AudioExportOptions, TranscriptLibrary};
 mod transcription;
 pub use transcription::{
-    TrackRequest, TranscriptionError, TranscriptionOutcome, TranscriptionProgress,
-    TranscriptionStage, finalize_transcription_run, transcribe_request, transcribe_track,
+    RetainedTranscriptRecovery, TrackRequest, TranscriptionError, TranscriptionOutcome,
+    TranscriptionProgress, TranscriptionStage, finalize_transcription_run,
+    reconcile_retained_chunks, recover_retained_transcripts, transcribe_request, transcribe_track,
 };
 mod session_export;
 pub use session_export::{
@@ -42,19 +43,29 @@ pub use package_import::{PackageImportReceipt, import_portable_package};
 #[cfg(test)]
 mod package_import_tests;
 mod speech;
+mod transcription_plan;
 pub use open_scribe_asr::{WHISPER_ENGINE, WHISPER_ENGINE_VERSION};
+pub use open_scribe_types::TranscriptionIntent;
 pub use speech::{
     SpeechError, SpeechModelError, SpeechModelStatus, SpeechModels, decode_language,
     transcribe_session,
+};
+pub use transcription_plan::{
+    SessionTranscriptionPlan, execute_transcription_plan, plan_session_transcription,
+    plan_transcription_operation,
 };
 #[cfg(test)]
 mod speech_tests;
 
 pub use open_scribe_domain::{
     Command, Fixture, Presentation, SessionSnapshot, TimerBehavior, TransitionError, announcement,
+    transcription_hold,
 };
 pub use open_scribe_evidence::{EvidenceKind, EvidenceRef, EvidenceRefError, ResolutionState};
-pub use open_scribe_store::ResolvedEvidence;
+pub use open_scribe_store::{
+    LibraryRecovery, RecoveryDisposition, ResolvedEvidence, RuntimeTranscriptState, SessionStore,
+    TranscriptionFailure, TranscriptionOperation, TranscriptionRunPolicy, TranscriptionWork,
+};
 
 /// Canonical `open-scribe.evidence-ref/v1` JSON for a Rust-derived reference.
 pub fn encode_evidence_ref(reference: &EvidenceRef) -> Result<String, StoreError> {
@@ -252,6 +263,15 @@ impl RecordingPreparationController {
         })
     }
 
+    /// Replaces a conversation's user-visible title; nothing else changes.
+    pub fn rename_session(
+        &mut self,
+        session: open_scribe_types::SessionId,
+        title: String,
+    ) -> Result<String, StoreError> {
+        self.store.rename_session(&session, &title)
+    }
+
     pub fn prepare_session(&mut self, title: String) -> Result<PreparedSessionReceipt, StoreError> {
         self.store.prepare_session(PrepareSessionRequest {
             title,
@@ -373,16 +393,162 @@ impl RecordingPreparationController {
     pub fn recover_playable_sessions(
         &mut self,
     ) -> Result<Vec<RecoveredPlayableSession>, StoreError> {
-        let recovery = self.store.recover_library()?;
-        // Class A: all chunks complete, worker gone — finalize without ASR.
-        for run_id in recovery.pending_transcript_finalizations {
-            match crate::finalize_transcription_run(&mut self.store, &run_id) {
-                Ok(_) => {}
-                Err(crate::TranscriptionError::RunEnded { .. }) => {}
-                Err(crate::TranscriptionError::Store(error)) => return Err(error),
+        Ok(self.recover_capture_safety()?.playable)
+    }
+
+    pub fn recover_capture_safety(&mut self) -> Result<LibraryRecovery, StoreError> {
+        self.store.recover_library()
+    }
+
+    /// Lower-priority derived maintenance, explicitly outside capture-safety
+    /// recovery. Cancellation yields between durable runs, never hides media.
+    pub fn maintain_transcripts(
+        &mut self,
+        cancel: &std::sync::atomic::AtomicBool,
+    ) -> Result<open_scribe_types::WorkOutcome, StoreError> {
+        self.maintain_transcripts_with_observations(
+            cancel,
+            open_scribe_types::WorkObservations::default(),
+        )
+    }
+
+    pub fn maintain_transcripts_with_observations(
+        &mut self,
+        cancel: &std::sync::atomic::AtomicBool,
+        observations: open_scribe_types::WorkObservations,
+    ) -> Result<open_scribe_types::WorkOutcome, StoreError> {
+        use open_scribe_types::WorkOutcome;
+        let (pending, _) = self.store.recover_orphan_transcription_runs()?;
+        // Class A: all chunks complete, worker gone — finalize without ASR,
+        // under the reconciliation version this build actually applies.
+        for run_id in pending {
+            if cancel.load(std::sync::atomic::Ordering::Acquire) {
+                return Ok(WorkOutcome::UserCancelled);
+            }
+            if !self.reconcile_maintenance_run(&run_id, observations)? {
+                return Ok(
+                    if self.store.capture_active()? || observations.capture_active {
+                        WorkOutcome::CapturePreempted
+                    } else {
+                        WorkOutcome::Deferred
+                    },
+                );
             }
         }
-        Ok(recovery.playable)
+        // Runs an earlier build failed after every chunk was durable, or left
+        // under a label this build no longer commits, are rebuilt from their
+        // retained chunks once; media and the failed runs stay as evidence.
+        let candidates = self
+            .store
+            .retained_transcript_candidates(open_scribe_asr::RECONCILIATION_VERSION)?;
+        for run_id in candidates {
+            if cancel.load(std::sync::atomic::Ordering::Acquire) {
+                return Ok(WorkOutcome::UserCancelled);
+            }
+            if !self.reconcile_maintenance_run(&run_id, observations)? {
+                return Ok(
+                    if self.store.capture_active()? || observations.capture_active {
+                        WorkOutcome::CapturePreempted
+                    } else {
+                        WorkOutcome::Deferred
+                    },
+                );
+            }
+        }
+        Ok(WorkOutcome::Completed)
+    }
+
+    fn reconcile_maintenance_run(
+        &mut self,
+        run_id: &str,
+        observations: open_scribe_types::WorkObservations,
+    ) -> Result<bool, StoreError> {
+        use open_scribe_types::WorkOutcome;
+        let record = self.store.transcription_run_record(run_id)?;
+        let session = &record.identity.session_id;
+        let Some(claim) = self
+            .store
+            .admit_retained_reconciliation(session, observations)?
+        else {
+            return Ok(false);
+        };
+        let token = claim
+            .admission
+            .as_deref()
+            .expect("store admission has token");
+        if !self
+            .store
+            .start_transcription_execution(session, token, claim.intent)?
+        {
+            self.store
+                .finish_transcription(token, WorkOutcome::Deferred)?;
+            return Ok(false);
+        }
+        let operation = match self.store.transcription_operation(session, token) {
+            Ok(operation) => operation,
+            Err(error) => {
+                let _ = self.store.finish_transcription(token, WorkOutcome::Failed);
+                return Err(error);
+            }
+        };
+        let policy = crate::TranscriptionRunPolicy {
+            operation_key: None,
+            selection: operation
+                .selections
+                .iter()
+                .find(|expected| expected.track_id == record.identity.track_id)
+                .map(|expected| expected.selection.clone()),
+        };
+        let result = crate::transcription::reconcile_retained_chunks_with_policy(
+            &mut self.store,
+            run_id,
+            &policy,
+        );
+        let outcome = match &result {
+            Ok(_) => {
+                // Partial maintenance must not suppress ordinary automatic ASR
+                // for the conversation's still-missing tracks.
+                let all_final = match self.store.selection_expectations(session) {
+                    Ok(selections) => selections
+                        .iter()
+                        .all(|expected| expected.selection.revision_id.is_some()),
+                    Err(error) => {
+                        let _ = self.store.finish_transcription(token, WorkOutcome::Failed);
+                        return Err(error);
+                    }
+                };
+                if all_final {
+                    WorkOutcome::Completed
+                } else {
+                    WorkOutcome::Deferred
+                }
+            }
+            Err(crate::TranscriptionError::Preempted) => WorkOutcome::CapturePreempted,
+            Err(crate::TranscriptionError::RunEnded {
+                failure: TranscriptionFailure::CapturePreempted,
+                ..
+            }) => WorkOutcome::CapturePreempted,
+            Err(crate::TranscriptionError::RunEnded {
+                failure: TranscriptionFailure::Cancelled,
+                ..
+            }) => WorkOutcome::UserCancelled,
+            Err(_) => WorkOutcome::Failed,
+        };
+        self.store.finish_transcription(token, outcome)?;
+        match result {
+            Err(crate::TranscriptionError::Preempted)
+            | Err(crate::TranscriptionError::RunEnded {
+                failure: TranscriptionFailure::CapturePreempted,
+                ..
+            }) => Ok(false),
+            Ok(_) | Err(crate::TranscriptionError::RunEnded { .. }) => Ok(true),
+            Err(crate::TranscriptionError::Store(
+                StoreError::InvalidState(_)
+                | StoreError::InvalidRequest(_)
+                | StoreError::IntegrityMismatch(_),
+            )) => Ok(true),
+            Err(crate::TranscriptionError::Store(error)) => Err(error),
+        }
     }
 
     pub fn import_recoverable_caf(
@@ -434,6 +600,13 @@ impl RecordingPreparationController {
 
     pub fn runtime_library_snapshot(&self) -> Result<RuntimeLibrarySnapshot, StoreError> {
         self.store.runtime_library_snapshot()
+    }
+
+    pub fn runtime_library_snapshot_at_host(
+        &self,
+        host_time: u64,
+    ) -> Result<RuntimeLibrarySnapshot, StoreError> {
+        self.store.runtime_library_snapshot_at_host(host_time)
     }
 }
 

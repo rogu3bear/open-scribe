@@ -65,6 +65,7 @@ impl SessionStore {
         &mut self,
         session: &SessionId,
     ) -> Result<SessionDeletionInventory, StoreError> {
+        let _writer = self.write_guard()?;
         let transaction = self.connection.transaction()?;
         let title: Option<(String, String)> = transaction
             .query_row(
@@ -131,6 +132,7 @@ impl SessionStore {
     /// Clears an intent after Trash failed or the user cancelled. Nothing
     /// else changes.
     pub fn abandon_session_deletion(&mut self, session: &SessionId) -> Result<(), StoreError> {
+        let _writer = self.write_guard()?;
         self.connection.execute(
             "DELETE FROM session_deletion_intents WHERE session_id = ?1",
             [&session.0],
@@ -144,6 +146,7 @@ impl SessionStore {
         session: &SessionId,
         trash_reference: Option<&str>,
     ) -> Result<SessionDeletionReceipt, StoreError> {
+        let _writer = self.write_guard()?;
         if trash_reference.is_some_and(|reference| {
             reference.is_empty()
                 || reference.len() > MAX_TRASH_REFERENCE_BYTES
@@ -231,6 +234,7 @@ impl SessionStore {
     /// directory reached Trash completes; one whose directory remains is
     /// abandoned so the session stays intact.
     pub(super) fn settle_deletion_intents(&mut self) -> Result<(), StoreError> {
+        let _writer = self.write_guard()?;
         let intents: Vec<String> = self
             .connection
             .prepare("SELECT session_id FROM session_deletion_intents ORDER BY session_id")?

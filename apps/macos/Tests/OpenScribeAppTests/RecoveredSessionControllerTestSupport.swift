@@ -7,26 +7,18 @@ import XCTest
 
 @testable import OpenScribeApp
 
-final class RecoveryPreparationFake: NativeRecordingPreparation, @unchecked Sendable {
+final class RecoveryPreparationFake: PlayableSessionRecovering, @unchecked Sendable {
   var recovered: [NativeRecoveredPlayableSession] = []
   var recoveryError: Error?
   private let lock = NSLock()
   private var mainThreadObservation: Bool?
-
-  init() {
-    super.init(noHandle: NoHandle())
-  }
-
-  required init(unsafeFromHandle handle: UInt64) {
-    super.init(unsafeFromHandle: handle)
-  }
 
   /// Whether the last scan ran on the main thread; nil before any scan.
   var recoveredOnMainThread: Bool? {
     lock.withLock { mainThreadObservation }
   }
 
-  override func recoverPlayableSessions() throws -> [NativeRecoveredPlayableSession] {
+  func recoverPlayableSessions() throws -> [NativeRecoveredPlayableSession] {
     lock.withLock { mainThreadObservation = Thread.isMainThread }
     if let recoveryError {
       throw recoveryError
@@ -319,7 +311,8 @@ final class DescriptorPlaybackLeaseProbe: ImportedPlaybackLeaseHolding,
     errno = 0
     let closeResult = close(fileDescriptor)
     let closeErrno = errno
-    let identity = metadataResult == 0 && metadata.st_size >= 0
+    let identity =
+      metadataResult == 0 && metadata.st_size >= 0
       ? PlaybackDescriptorIdentity(
         device: UInt64(metadata.st_dev), inode: UInt64(metadata.st_ino),
         byteLength: UInt64(metadata.st_size))

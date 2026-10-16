@@ -49,6 +49,7 @@ for prior_root in ${prior_roots[@]+"${prior_roots[@]}"}; do
 	printf 'prior_proof_root=%s\n' "$prior_root"
 done
 proof_root="$(mktemp -d "$temporary_root/open-scribe-foundation.XXXXXX")"
+proof_root="$(CDPATH='' cd -- "$proof_root" && pwd -P)"
 capture_pid=""
 recovery_pid=""
 succeeded=0

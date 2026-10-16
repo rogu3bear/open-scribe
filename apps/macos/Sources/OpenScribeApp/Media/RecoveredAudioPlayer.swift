@@ -6,6 +6,14 @@ import Foundation
 
 protocol PlayableSessionRecovering: AnyObject, Sendable {
   func recoverPlayableSessions() throws -> [NativeRecoveredPlayableSession]
+  func recoverCaptureSafety() throws -> NativeMediaRecovery
+}
+
+extension PlayableSessionRecovering {
+  func recoverCaptureSafety() throws -> NativeMediaRecovery {
+    NativeMediaRecovery(
+      captureSafetyComplete: true, playable: try recoverPlayableSessions(), findings: [])
+  }
 }
 
 extension NativeRecordingPreparation: PlayableSessionRecovering {}

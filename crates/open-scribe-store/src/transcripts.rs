@@ -217,25 +217,34 @@ pub struct TranscriptionRunHandle {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TranscriptionFailure {
     Cancelled,
+    CapturePreempted,
     ModelUnavailable,
     EngineError,
     ResourceExhausted,
     InvalidResult,
     InputUnavailable,
+    /// Derived transcript storage failed; never relabel it as bad recognition.
+    StorageError,
     /// Launch recovery found a progress-stalled incomplete run with no live worker.
     Orphaned,
+    /// The run was begun under a reconciliation version this build does not
+    /// commit; its retained chunks are reconciled by a successor run instead.
+    StaleReconciliation,
 }
 
 impl TranscriptionFailure {
     pub const fn class(self) -> &'static str {
         match self {
             Self::Cancelled => "cancelled",
+            Self::CapturePreempted => "capture_preempted",
             Self::ModelUnavailable => "model_unavailable",
             Self::EngineError => "engine_error",
             Self::ResourceExhausted => "resource_exhausted",
             Self::InvalidResult => "invalid_result",
             Self::InputUnavailable => "input_unavailable",
+            Self::StorageError => "storage_error",
             Self::Orphaned => "orphaned",
+            Self::StaleReconciliation => "stale_reconciliation",
         }
     }
 }
@@ -263,6 +272,19 @@ pub struct TranscriptionRunSummary {
     pub created_at_ms: i64,
 }
 
+/// One stored run's identity and chunk plan, read back so a later build can
+/// reconcile the chunks it retained without running the recognizer again.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StoredTranscriptionRun {
+    pub run_id: String,
+    pub identity: TranscriptionRunIdentity,
+    pub plan: Vec<PlannedTranscriptChunk>,
+    pub state: String,
+    pub failure_class: Option<String>,
+    pub complete_chunks: u32,
+    pub total_chunks: u32,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TranscriptRevisionSummary {
     pub revision_id: String,
@@ -271,6 +293,8 @@ pub struct TranscriptRevisionSummary {
     pub model_id: String,
     pub engine: String,
     pub engine_version: String,
+    /// The reconciliation version that ordered this revision's segments.
+    pub reconciliation_version: String,
     pub selected: bool,
     pub segment_count: u32,
     pub created_at_ms: i64,
@@ -294,6 +318,21 @@ impl SessionStore {
         identity: &TranscriptionRunIdentity,
         plan: &[PlannedTranscriptChunk],
     ) -> Result<TranscriptionRunHandle, StoreError> {
+        self.begin_transcription_run_with_policy(
+            identity,
+            plan,
+            &super::TranscriptionRunPolicy::default(),
+        )
+    }
+
+    pub fn begin_transcription_run_with_policy(
+        &mut self,
+        identity: &TranscriptionRunIdentity,
+        plan: &[PlannedTranscriptChunk],
+        policy: &super::TranscriptionRunPolicy,
+    ) -> Result<TranscriptionRunHandle, StoreError> {
+        // Full source validation can read long media. Do it before acquiring
+        // durable write admission; recheck lifecycle immediately afterward.
         let current = self.transcription_input(&identity.session_id, &identity.track_id)?;
         if current.input_digest != identity.input_digest {
             return Err(StoreError::IntegrityMismatch(
@@ -325,12 +364,21 @@ impl SessionStore {
             .collect();
         let run_identity = identity.digest();
         let now = wall_time_milliseconds();
+        let _writer = self.write_guard()?;
+        if self.session_lifecycle(&identity.session_id.0)? != "ready_for_review" {
+            return Err(StoreError::InvalidState(
+                "session changed during transcript validation",
+            ));
+        }
+        if self.capture_active()? {
+            return Err(StoreError::InvalidState("capture has priority"));
+        }
         let transaction = self.connection.transaction()?;
         let interrupted: Option<String> = transaction
             .query_row(
                 "SELECT id FROM transcription_runs
-                 WHERE session_id = ?1 AND track_id = ?2 AND identity = ?3 AND state = 'running'",
-                params![identity.session_id.0, identity.track_id, run_identity],
+                 WHERE session_id = ?1 AND track_id = ?2 AND identity = ?3 AND state = 'running' AND operation_key IS ?4",
+                params![identity.session_id.0, identity.track_id, run_identity, policy.operation_key],
                 |row| row.get(0),
             )
             .optional()?;
@@ -364,8 +412,8 @@ impl SessionStore {
                 "INSERT INTO transcription_runs(
                     id, schema_version, session_id, track_id, identity, input_digest, engine,
                     engine_version, model_id, model_sha256, options_digest, reconciliation_version,
-                    state, created_at_ms, updated_at_ms)
-                 VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 'running', ?13, ?13)",
+                    state, created_at_ms, updated_at_ms, operation_key)
+                 VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 'running', ?13, ?13, ?14)",
                 params![
                     run_id,
                     TRANSCRIPT_SCHEMA_VERSION,
@@ -379,7 +427,8 @@ impl SessionStore {
                     identity.model_sha256,
                     identity.options_digest,
                     identity.reconciliation_version,
-                    now
+                    now,
+                    policy.operation_key
                 ],
             )?;
             for (sequence, (chunk, chunk_identity)) in plan.iter().zip(&identities).enumerate() {
@@ -424,6 +473,9 @@ impl SessionStore {
             }
             (run_id, false)
         };
+        if let Some(expected) = &policy.selection {
+            super::transcription_operation::apply_selection_guard(&transaction, &run_id, expected)?;
+        }
         let chunks = load_chunks(&transaction, &run_id)?;
         transaction.commit()?;
         Ok(TranscriptionRunHandle {
@@ -438,6 +490,7 @@ impl SessionStore {
         run_id: &str,
         sequence: u32,
     ) -> Result<(), StoreError> {
+        let _writer = self.write_guard()?;
         self.update_open_chunk(
             run_id,
             sequence,
@@ -455,6 +508,7 @@ impl SessionStore {
         language: &str,
         hypothesis_json: &str,
     ) -> Result<(), StoreError> {
+        let _writer = self.write_guard()?;
         serde_json::from_str::<serde_json::Value>(hypothesis_json)?;
         self.update_open_chunk(
             run_id,
@@ -504,6 +558,7 @@ impl SessionStore {
         failed_sequence: Option<u32>,
         failure: TranscriptionFailure,
     ) -> Result<(), StoreError> {
+        let _writer = self.write_guard()?;
         let transaction = self.connection.transaction()?;
         require_running(&transaction, run_id)?;
         let now = wall_time_milliseconds();
@@ -519,7 +574,10 @@ impl SessionStore {
              WHERE run_id = ?1 AND state = 'running'",
             params![run_id, now],
         )?;
-        let state = if failure == TranscriptionFailure::Cancelled {
+        let state = if matches!(
+            failure,
+            TranscriptionFailure::Cancelled | TranscriptionFailure::CapturePreempted
+        ) {
             "cancelled"
         } else {
             "failed"
@@ -533,8 +591,9 @@ impl SessionStore {
         Ok(())
     }
 
-    /// Atomically creates the immutable verbatim revision, completes the
-    /// run, and selects the revision for its track.
+    /// Creates immutable output and publishes only if the selection/edit epoch
+    /// captured at run admission still matches. A stale completion is retained
+    /// unselected; it never overrides newer human work.
     pub fn commit_transcript_revision(
         &mut self,
         run_id: &str,
@@ -542,6 +601,25 @@ impl SessionStore {
         rejections_json: &str,
         discontinuities_json: &str,
     ) -> Result<String, StoreError> {
+        let _writer = self.write_guard()?;
+        self.commit_transcript_revision_with_policy(
+            run_id,
+            segments,
+            rejections_json,
+            discontinuities_json,
+            super::TranscriptSelectionPolicy::IfUnchanged,
+        )
+    }
+
+    pub fn commit_transcript_revision_with_policy(
+        &mut self,
+        run_id: &str,
+        segments: &[RevisionSegmentInput],
+        rejections_json: &str,
+        discontinuities_json: &str,
+        selection: super::TranscriptSelectionPolicy,
+    ) -> Result<String, StoreError> {
+        let _writer = self.write_guard()?;
         serde_json::from_str::<serde_json::Value>(rejections_json)?;
         serde_json::from_str::<serde_json::Value>(discontinuities_json)?;
         let transaction = self.connection.transaction()?;
@@ -622,8 +700,18 @@ impl SessionStore {
             "UPDATE transcription_runs SET state = 'complete', updated_at_ms = ?2 WHERE id = ?1",
             params![run_id, now],
         )?;
-        select_revision(&transaction, &session_id, &track_id, &revision_id, now)?;
-        reindex_session_search(&transaction, &session_id)?;
+        if selection == super::TranscriptSelectionPolicy::IfUnchanged
+            && !transaction.query_row("SELECT EXISTS(SELECT 1 FROM transcription_intent WHERE session_id = ?1 AND declined_auto = 1)", [&session_id], |r| r.get::<_,bool>(0))?
+            && super::transcript_selection::expectation_matches(
+                &transaction,
+                run_id,
+                &session_id,
+                &track_id,
+            )?
+        {
+            select_revision(&transaction, &session_id, &track_id, &revision_id, now)?;
+            reindex_session_search(&transaction, &session_id)?;
+        }
         transaction.commit()?;
         Ok(revision_id)
     }
@@ -634,6 +722,7 @@ impl SessionStore {
         track_id: &str,
         revision_id: &str,
     ) -> Result<(), StoreError> {
+        let _writer = self.write_guard()?;
         let transaction = self.connection.transaction()?;
         let owned: bool = transaction.query_row(
             "SELECT EXISTS(SELECT 1 FROM transcript_revisions
@@ -679,6 +768,158 @@ impl SessionStore {
             )
             .optional()?
             .ok_or(StoreError::InvalidState("transcription run does not exist"))
+    }
+
+    /// The identity one run was begun with and the chunk plan it stored.
+    pub fn transcription_run_record(
+        &self,
+        run_id: &str,
+    ) -> Result<StoredTranscriptionRun, StoreError> {
+        type RunRow = (
+            String,
+            String,
+            String,
+            String,
+            String,
+            String,
+            String,
+            String,
+            String,
+            String,
+            Option<String>,
+        );
+        let row: RunRow = self
+            .connection
+            .query_row(
+                "SELECT session_id, track_id, input_digest, engine, engine_version, model_id,
+                        model_sha256, options_digest, reconciliation_version, state, failure_class
+                 FROM transcription_runs WHERE id = ?1",
+                [run_id],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                        row.get(6)?,
+                        row.get(7)?,
+                        row.get(8)?,
+                        row.get(9)?,
+                        row.get(10)?,
+                    ))
+                },
+            )
+            .optional()?
+            .ok_or(StoreError::InvalidState("transcription run does not exist"))?;
+        let (
+            session_id,
+            track_id,
+            input_digest,
+            engine,
+            engine_version,
+            model_id,
+            model_sha256,
+            options_digest,
+            reconciliation_version,
+            state,
+            failure_class,
+        ) = row;
+        let chunks = load_chunks(&self.connection, run_id)?;
+        let plan = chunks
+            .iter()
+            .map(|chunk| PlannedTranscriptChunk {
+                span_index: chunk.span_index,
+                start_nanoseconds: chunk.start_nanoseconds,
+                end_nanoseconds: chunk.end_nanoseconds,
+            })
+            .collect();
+        let complete_chunks = chunks
+            .iter()
+            .filter(|chunk| chunk.state == TranscriptChunkState::Complete)
+            .count() as u32;
+        Ok(StoredTranscriptionRun {
+            run_id: run_id.to_owned(),
+            identity: TranscriptionRunIdentity {
+                session_id: SessionId(session_id),
+                track_id,
+                input_digest,
+                engine,
+                engine_version,
+                model_id,
+                model_sha256,
+                options_digest,
+                reconciliation_version,
+            },
+            plan,
+            state,
+            failure_class,
+            complete_chunks,
+            total_chunks: chunks.len() as u32,
+        })
+    }
+
+    /// Runs on saved tracks whose chunks are all complete but whose
+    /// reconciliation version is not `current_version`, where the track has
+    /// no selected revision and no run under `current_version` for the same
+    /// input, engine, model, and options exists yet. One run per track, the
+    /// newest; tracks are ordered by session creation. A run that still
+    /// reports `running` is included: launch recovery may have been
+    /// interrupted before it could finish such an orphan.
+    pub fn retained_transcript_candidates(
+        &self,
+        current_version: &str,
+    ) -> Result<Vec<String>, StoreError> {
+        let mut statement = self.connection.prepare(
+            "SELECT runs.id, runs.session_id, runs.track_id
+             FROM transcription_runs AS runs
+             JOIN sessions ON sessions.id = runs.session_id
+             WHERE sessions.lifecycle = 'ready_for_review'
+               AND runs.reconciliation_version <> ?1
+               AND NOT EXISTS(SELECT 1 FROM transcription_intent WHERE session_id = runs.session_id AND declined_auto = 1)
+               AND (runs.state = 'running'
+                    OR (runs.state = 'failed'
+                        AND runs.failure_class IN ('invalid_result', 'stale_reconciliation')))
+               AND EXISTS (SELECT 1 FROM transcript_chunks AS chunks
+                           WHERE chunks.run_id = runs.id)
+               AND NOT EXISTS (SELECT 1 FROM transcript_chunks AS chunks
+                               WHERE chunks.run_id = runs.id AND chunks.state <> 'complete')
+               AND NOT EXISTS (SELECT 1 FROM transcript_selections AS selections
+                               WHERE selections.session_id = runs.session_id
+                                 AND selections.track_id = runs.track_id)
+               AND NOT EXISTS (SELECT 1 FROM transcription_runs AS successors
+                               WHERE successors.session_id = runs.session_id
+                                 AND successors.track_id = runs.track_id
+                                 AND successors.input_digest = runs.input_digest
+                                 AND successors.engine = runs.engine
+                                 AND successors.engine_version = runs.engine_version
+                                 AND successors.model_sha256 = runs.model_sha256
+                                 AND successors.options_digest = runs.options_digest
+                                 AND successors.reconciliation_version = ?1)
+             ORDER BY sessions.created_at_ms, runs.session_id, runs.track_id,
+                      runs.created_at_ms DESC, runs.id DESC",
+        )?;
+        let rows = statement
+            .query_map([current_version], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut candidates = Vec::new();
+        let mut seen: Vec<(String, String)> = Vec::new();
+        for (run_id, session_id, track_id) in rows {
+            let track = (session_id, track_id);
+            if seen.contains(&track) {
+                continue;
+            }
+            seen.push(track);
+            candidates.push(run_id);
+        }
+        Ok(candidates)
     }
 
     /// Running transcription runs at launch: Class A (all chunks complete) need
@@ -756,7 +997,8 @@ impl SessionStore {
                     runs.engine_version, revisions.created_at_ms,
                     EXISTS(SELECT 1 FROM transcript_selections
                            WHERE transcript_selections.revision_id = revisions.id),
-                    (SELECT COUNT(*) FROM transcript_segments WHERE revision_id = revisions.id)
+                    (SELECT COUNT(*) FROM transcript_segments WHERE revision_id = revisions.id),
+                    revisions.reconciliation_version
              FROM transcript_revisions AS revisions
              JOIN transcription_runs AS runs ON runs.id = revisions.run_id
              WHERE revisions.session_id = ?1
@@ -774,6 +1016,7 @@ impl SessionStore {
                     created_at_ms: row.get(6)?,
                     selected: row.get(7)?,
                     segment_count: row.get(8)?,
+                    reconciliation_version: row.get(9)?,
                 })
             })?
             .collect::<Result<_, _>>()?;

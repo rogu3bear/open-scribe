@@ -60,7 +60,8 @@ final class TranscriptLibraryModelTests: XCTestCase {
     XCTAssertEqual(model.speakers.first?.trackId, "historical")
     XCTAssertEqual(model.audioOptions?.pcmTracks, ["historical"])
     XCTAssertNil(model.audioOptions?.originalExtension)
-    XCTAssertEqual(library.transcriptReads, 2, "missing timing must not invoke transcript collection")
+    XCTAssertEqual(
+      library.transcriptReads, 2, "missing timing must not invoke transcript collection")
 
     XCTAssertTrue(model.renameSpeaker(trackId: "historical", label: "Fixture"))
     XCTAssertEqual(model.availabilityText, historical.transcriptionUnavailableReason)
@@ -191,7 +192,12 @@ final class TranscriptLibraryModelTests: XCTestCase {
         sessionId: "session", title: "Weekly planning", lifecycle: "ready_for_review",
         health: "healthy", elapsedSeconds: 3_900, journalDurable: true, mediaFilesOpen: false,
         interruptionReason: nil, recovered: false, hasCaptureTimeline: true, sources: [],
-        playableMedia: nil))
+        playableMedia: nil,
+        transcript: NativeRuntimeTranscriptSnapshot(
+          document: .final, replacementResumable: false,
+          state: .final, selectedRevisionIds: ["revision"], documentVersion: "render-final",
+          attempt: .complete, attemptFailure: nil, totalTracks: 2, finalTracks: 2,
+          completedChunks: 0, totalChunks: 0, failureClass: nil)))
     let segments = [
       segment(
         0, 4_200_000_000, "Local user", named: false,
@@ -219,7 +225,7 @@ final class TranscriptLibraryModelTests: XCTestCase {
         preview: availability, segments: rows, speakers: rows.isEmpty ? [] : speakers)
       let view = TranscriptSection(
         session: session, transcripts: model, speech: SpeechTranscriptionModel(speech: nil),
-        canSeek: true, onSeek: { _ in }
+        scheduler: TranscriptionScheduler.inert(), canSeek: true, onSeek: { _ in }
       )
       .padding(32)
       .frame(width: width)
@@ -246,7 +252,8 @@ final class TranscriptLibraryModelTests: XCTestCase {
     XCTAssertEqual(TranscriptSection.timestamp(0), "0:00")
     XCTAssertEqual(TranscriptSection.timestamp(65_400_000_000), "1:05")
     XCTAssertEqual(TranscriptSection.timestamp(3_725_000_000_000), "1:02:05")
-    XCTAssertEqual(TranscriptSection.fileName("Team: sync/notes", type: .json), "Team- sync-notes.json")
+    XCTAssertEqual(
+      TranscriptSection.fileName("Team: sync/notes", type: .json), "Team- sync-notes.json")
     XCTAssertEqual(TranscriptSection.fileName(" .hidden", type: .plainText), "Transcript.txt")
   }
 }
@@ -284,8 +291,10 @@ private final class TranscriptTimingLibraryFake: NativeTranscriptLibrary, @unche
   }
 
   override func speakers(sessionId: String) throws -> [NativeSessionSpeaker] {
-    [NativeSessionSpeaker(
-      trackId: sessionId, sourceKind: "microphone", label: "Fixture", namedByUser: false)]
+    [
+      NativeSessionSpeaker(
+        trackId: sessionId, sourceKind: "microphone", label: "Fixture", namedByUser: false)
+    ]
   }
 
   override func audioExportOptions(sessionId: String) throws -> NativeAudioExportOptions {
@@ -307,8 +316,10 @@ private final class TranscriptTimingLibraryFake: NativeTranscriptLibrary, @unche
   override func search(query: String, sessionId: String?, limit: UInt32) throws
     -> [NativeTranscriptSearchHit]
   {
-    [NativeTranscriptSearchHit(
-      sessionId: "valid", sessionTitle: "Fixture", revisionId: "fixture", trackId: "valid",
-      sequence: 0, startNanoseconds: 0, endNanoseconds: 1_000_000_000, effectiveText: "Fixture")]
+    [
+      NativeTranscriptSearchHit(
+        sessionId: "valid", sessionTitle: "Fixture", revisionId: "fixture", trackId: "valid",
+        sequence: 0, startNanoseconds: 0, endNanoseconds: 1_000_000_000, effectiveText: "Fixture")
+    ]
   }
 }

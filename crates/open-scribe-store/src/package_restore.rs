@@ -190,6 +190,7 @@ impl SessionStore {
         &mut self,
         request: &PackageRestoreRequest,
     ) -> Result<PackageRestoreReceipt, StoreError> {
+        let _writer = self.write_guard()?;
         let media_bytes = validate_restore(request)?;
         self.require_restore_space(media_bytes)?;
         let prepared = self.prepare_session_recorded(
@@ -468,6 +469,7 @@ impl SessionStore {
 
     /// Launch sweep: a restore a crash interrupted never became reviewable.
     pub(super) fn settle_package_restorations(&mut self) -> Result<(), StoreError> {
+        let _writer = self.write_guard()?;
         let sessions: Vec<String> = self
             .connection
             .prepare(

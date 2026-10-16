@@ -112,6 +112,16 @@ impl TranscriptLibrary {
         self.store.rename_speaker(session, track_id, label)
     }
 
+    /// Rebuilds Final transcripts from chunks an earlier run retained but
+    /// could not commit, for one session or the whole library. No model is
+    /// loaded; media, failed runs, and selected revisions are untouched.
+    pub fn recover_retained_transcripts(
+        &mut self,
+        session: Option<&SessionId>,
+    ) -> Result<Vec<crate::RetainedTranscriptRecovery>, StoreError> {
+        crate::recover_retained_transcripts(&mut self.store, session)
+    }
+
     pub fn search(
         &self,
         query: &str,

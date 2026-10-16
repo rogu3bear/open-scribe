@@ -40,10 +40,20 @@ pub use context_events::{
     ContextEventRecord, ContextProposal, ContextRejection, ContextSource, ContextTextBlock,
 };
 mod import;
+mod journal_cost;
 mod journal_replacement;
 mod library_recovery;
 mod storage_reserve;
+mod writer;
+pub use journal_cost::JournalCost;
+mod session_times;
+mod transcription_operation;
+mod transcription_work;
 pub use library_recovery::LibraryRecovery;
+pub use transcription_operation::{
+    SelectionExpectation, TrackSelectionExpectation, TranscriptionOperation, TranscriptionRunPolicy,
+};
+pub use transcription_work::TranscriptionWork;
 mod media_recovery;
 mod mixdown;
 pub use mixdown::{MixdownAuthorization, MixdownReceipt, ValidatedMixdown};
@@ -76,11 +86,14 @@ mod transcript_review;
 pub use transcript_review::{
     SessionSpeaker, SpeakerLabelOrigin, TranscriptDocumentSegment, TranscriptSearchHit,
 };
+mod transcript_selection;
 mod transcripts;
+pub use transcript_selection::TranscriptSelectionPolicy;
 pub use transcripts::{
-    PlannedTranscriptChunk, RevisionSegmentInput, TRANSCRIPT_SCHEMA_VERSION, TranscriptChunk,
-    TranscriptChunkState, TranscriptRevisionSummary, TranscriptSegmentView, TranscriptionFailure,
-    TranscriptionRunHandle, TranscriptionRunIdentity, TranscriptionRunSummary,
+    PlannedTranscriptChunk, RevisionSegmentInput, StoredTranscriptionRun,
+    TRANSCRIPT_SCHEMA_VERSION, TranscriptChunk, TranscriptChunkState, TranscriptRevisionSummary,
+    TranscriptSegmentView, TranscriptionFailure, TranscriptionRunHandle, TranscriptionRunIdentity,
+    TranscriptionRunSummary,
 };
 
 use conversation_identity::validate_request;
@@ -91,7 +104,8 @@ pub use import::{
 };
 pub use runtime_snapshot::{
     RuntimeLibrarySnapshot, RuntimePlayableMediaAvailability, RuntimePlayableMediaSnapshot,
-    RuntimeSessionSnapshot, RuntimeSourceSnapshot,
+    RuntimeSessionSnapshot, RuntimeSourceSnapshot, RuntimeTranscriptSnapshot,
+    RuntimeTranscriptState,
 };
 pub use source_failure::{SourceFailureEvidence, SourceFailureReason, SourceFailureRequest};
 
@@ -569,6 +583,7 @@ pub struct SessionStore {
     sessions_root: PathBuf,
     connection: Connection,
     digest_memo: std::cell::RefCell<library_recovery::DigestMemo>,
+    journal_cost: std::cell::RefCell<JournalCost>,
     // UI polling alone may reuse a verified sealed digest. Every lease,
     // transcript input, export and recovery still validates independently.
     snapshot_digest_memo:
@@ -582,6 +597,7 @@ impl SessionStore {
     pub fn open(managed_root: impl AsRef<Path>) -> Result<Self, StoreError> {
         let managed_root = managed_root.as_ref().to_path_buf();
         validate_or_create_managed_root(&managed_root)?;
+        let _writer = writer::WriterGuard::acquire(&managed_root)?;
         import::cleanup_stale_playback_snapshot_placeholders(&managed_root)?;
 
         let sessions_root = managed_root.join(SESSIONS_DIRECTORY);
@@ -601,6 +617,7 @@ impl SessionStore {
             sessions_root,
             connection,
             digest_memo: std::cell::RefCell::default(),
+            journal_cost: std::cell::RefCell::default(),
             snapshot_digest_memo: std::cell::RefCell::default(),
             #[cfg(test)]
             media_validation_hook: std::cell::RefCell::default(),
@@ -627,12 +644,21 @@ impl SessionStore {
         &self.managed_root
     }
 
+    fn write_guard(&self) -> Result<writer::WriterGuard, StoreError> {
+        writer::WriterGuard::acquire(&self.managed_root)
+    }
+
+    pub fn journal_cost(&self) -> JournalCost {
+        *self.journal_cost.borrow()
+    }
+
     /// Persists the complete required-source contract before any media is authorized.
     pub fn plan_required_sources(
         &mut self,
         session_id: SessionId,
         required_sources: Vec<MediaSourceKind>,
     ) -> Result<RequiredSourcePlanEvidence, StoreError> {
+        let _writer = self.write_guard()?;
         if Uuid::parse_str(&session_id.0).is_err() {
             return Err(StoreError::InvalidRequest("session ID is not a UUID"));
         }
@@ -723,6 +749,7 @@ impl SessionStore {
         &mut self,
         session_id: SessionId,
     ) -> Result<RecordingStartedEvidence, StoreError> {
+        let _writer = self.write_guard()?;
         let required_sources = self.required_source_kinds(&session_id.0)?;
         if required_sources.is_empty() {
             return Err(StoreError::InvalidState("required-source plan is missing"));
@@ -751,7 +778,14 @@ impl SessionStore {
                 last_journal_sequence,
             });
         }
-        if lifecycle != "preparing" || !journal_durable || !media_files_open {
+        if lifecycle != "preparing"
+            || !open_scribe_domain::recording_evidence_sufficient(
+                required_sources.len(),
+                active_sources.len(),
+                journal_durable,
+                media_files_open,
+            )
+        {
             return Err(StoreError::InvalidState(
                 "session durability is insufficient for Recording",
             ));
@@ -810,6 +844,7 @@ impl SessionStore {
         &mut self,
         request: AuthorizeMediaOpenRequest,
     ) -> Result<MediaOpenAuthorization, StoreError> {
+        let _writer = self.write_guard()?;
         self.authorize_media_open_inner(request, None)
     }
 
@@ -818,6 +853,7 @@ impl SessionStore {
         &mut self,
         receipt: MediaOpenReceipt,
     ) -> Result<MediaOpenEvidence, StoreError> {
+        let _writer = self.write_guard()?;
         self.accept_media_open_inner(receipt, None)
     }
 
@@ -826,6 +862,7 @@ impl SessionStore {
         &mut self,
         receipt: FirstSampleReceipt,
     ) -> Result<FirstSampleEvidence, StoreError> {
+        let _writer = self.write_guard()?;
         self.accept_first_sample_inner(receipt, None)
     }
 
@@ -835,6 +872,7 @@ impl SessionStore {
         &mut self,
         receipt: SealSegmentReceipt,
     ) -> Result<SealedSegmentEvidence, StoreError> {
+        let _writer = self.write_guard()?;
         self.seal_segment_inner(receipt, None)
     }
 
@@ -843,6 +881,7 @@ impl SessionStore {
         &mut self,
         request: InterruptSessionRequest,
     ) -> Result<SessionInterruptionEvidence, StoreError> {
+        let _writer = self.write_guard()?;
         if Uuid::parse_str(&request.session_id.0).is_err() {
             return Err(StoreError::InvalidRequest("session ID is not a UUID"));
         }
@@ -1770,8 +1809,11 @@ impl SessionStore {
         payload: Value,
         failure: Option<JournalReplacementFailurePoint>,
     ) -> Result<JournalRecord, StoreError> {
+        let _writer = self.write_guard()?;
+        let begun = std::time::Instant::now();
         let session_directory = self.session_directory(session_id)?;
         let journal_path = session_directory.join(JOURNAL_NAME);
+        let prior_bytes = fs::symlink_metadata(&journal_path)?.len();
         let records = match validate_journal(&journal_path, session_id)? {
             JournalValidation::Valid(records) if !records.is_empty() => records,
             _ => {
@@ -1803,7 +1845,18 @@ impl SessionStore {
         };
         // Never extend the canonical inode: a short write or crash must leave
         // a complete old/new journal, and errors after rename must not replay.
-        atomic_replace_journal_with_record(&journal_path, &session_directory, &record, failure)?;
+        let mut cost = self.journal_cost.borrow_mut();
+        cost.bytes_validated += prior_bytes;
+        let result = atomic_replace_journal_with_record(
+            &journal_path,
+            &session_directory,
+            &record,
+            failure,
+            Some(&mut cost),
+        );
+        cost.elapsed_nanoseconds += begun.elapsed().as_nanos();
+        result?;
+        cost.appends += 1;
         Ok(record)
     }
 
@@ -1850,7 +1903,13 @@ impl SessionStore {
             previous = record.clone();
             records.push(record);
         }
-        atomic_replace_journal_with_records(&journal_path, &session_directory, &records, None)?;
+        atomic_replace_journal_with_records(
+            &journal_path,
+            &session_directory,
+            &records,
+            None,
+            None,
+        )?;
         Ok(records)
     }
 
@@ -2736,6 +2795,7 @@ impl SessionStore {
 
     /// Reconciles preparation evidence without claiming media or recording.
     pub fn recover_preparations(&mut self) -> Result<Vec<RecoveryFinding>, StoreError> {
+        let _writer = self.write_guard()?;
         let mut database_sessions = BTreeMap::new();
         {
             let mut statement = self.connection.prepare(
@@ -3163,6 +3223,10 @@ fn apply_schema(connection: &mut Connection) -> Result<(), StoreError> {
         "INSERT OR IGNORE INTO schema_migrations (version, applied_at_ms) VALUES (?1, ?2)",
         params![package_restore::RESTORE_MIGRATION_VERSION, applied_at],
     )?;
+    transcript_selection::apply_schema(&transaction)?;
+    transcription_work::apply_schema(&transaction)?;
+    session_times::apply_schema(&transaction)?;
+    transcription_operation::apply_schema(&transaction)?;
     transaction.commit()?;
     Ok(())
 }
@@ -3248,7 +3312,7 @@ fn new_journal_record(session_id: &str, now: i64) -> Result<JournalRecord, Store
     })
 }
 
-fn append_journal_record(file: &mut File, record: &JournalRecord) -> Result<(), StoreError> {
+fn append_journal_record(file: &mut impl Write, record: &JournalRecord) -> Result<(), StoreError> {
     let encoded = serde_json::to_vec(record)?;
     if encoded.len() > MAX_JOURNAL_RECORD_BYTES {
         return Err(StoreError::JournalRecordTooLarge);
@@ -3263,12 +3327,14 @@ fn atomic_replace_journal_with_record(
     session_directory: &Path,
     record: &JournalRecord,
     failure: Option<JournalReplacementFailurePoint>,
+    cost: Option<&mut JournalCost>,
 ) -> Result<(), StoreError> {
     atomic_replace_journal_with_records(
         journal_path,
         session_directory,
         std::slice::from_ref(record),
         failure,
+        cost,
     )
 }
 
@@ -3277,6 +3343,7 @@ fn atomic_replace_journal_with_records(
     session_directory: &Path,
     records: &[JournalRecord],
     failure: Option<JournalReplacementFailurePoint>,
+    cost: Option<&mut JournalCost>,
 ) -> Result<(), StoreError> {
     let metadata = fs::symlink_metadata(journal_path)?;
     if metadata.file_type().is_symlink() || !metadata.is_file() {
@@ -3293,20 +3360,28 @@ fn atomic_replace_journal_with_records(
     let temporary_name = format!(".open-scribe-journal-{}.tmp", Uuid::now_v7());
     let _live = journal_replacement::LiveReplacement::begin(temporary_name.clone());
     let temporary_path = session_directory.join(&temporary_name);
+    let mut unmeasured = JournalCost::default();
+    let cost = cost.unwrap_or(&mut unmeasured);
     let result = (|| {
         let mut temporary = journal_replacement::create_temporary(&temporary_path)?;
-        temporary.write_all(&existing)?;
+        let mut counted = journal_cost::CountedWriter {
+            inner: &mut temporary,
+            cost,
+        };
+        counted.write_all(&existing)?;
+        counted.cost.bytes_copied += existing.len() as u64;
         #[cfg(test)]
         if failure == Some(JournalReplacementFailurePoint::PartialWriteNoSpace) {
             let encoded = serde_json::to_vec(&records[0])?;
-            temporary.write_all(&encoded[..encoded.len() / 2])?;
+            counted.write_all(&encoded[..encoded.len() / 2])?;
             return Err(std::io::Error::from_raw_os_error(28).into());
         }
         for record in records {
-            append_journal_record(&mut temporary, record)?;
+            append_journal_record(&mut counted, record)?;
         }
         interrupt_journal_replace_if(failure, JournalReplacementFailurePoint::TemporaryWrite)?;
-        temporary.sync_all()?;
+        counted.cost.sync_calls += 1;
+        counted.inner.sync_all()?;
         interrupt_journal_replace_if(failure, JournalReplacementFailurePoint::TemporarySync)?;
         fs::rename(&temporary_path, journal_path)?;
         #[cfg(test)]
@@ -3314,6 +3389,7 @@ fn atomic_replace_journal_with_records(
             return Err(std::io::Error::from_raw_os_error(28).into());
         }
         interrupt_journal_replace_if(failure, JournalReplacementFailurePoint::Rename)?;
+        counted.cost.sync_calls += 1;
         sync_directory(session_directory)?;
         interrupt_journal_replace_if(failure, JournalReplacementFailurePoint::DirectorySync)?;
         Ok(())
@@ -3992,6 +4068,78 @@ mod tests {
         SessionStore::open(temp.path().join("Open Scribe")).unwrap()
     }
 
+    #[test]
+    fn rename_session_replaces_only_the_title() {
+        let temp = TempDir::new().unwrap();
+        let mut store = open_store(&temp);
+        let receipt = store.prepare_session(request()).unwrap();
+        let before = store
+            .runtime_library_snapshot()
+            .unwrap()
+            .current_session
+            .unwrap();
+        assert_eq!(before.title, "Design review");
+        let updated_before: i64 = store
+            .connection
+            .query_row(
+                "SELECT updated_at_ms FROM sessions WHERE id = ?1",
+                [&receipt.session_id.0],
+                |row| row.get(0),
+            )
+            .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(2));
+
+        assert_eq!(
+            store
+                .rename_session(&receipt.session_id, "  Weekly sync  ")
+                .unwrap(),
+            "Weekly sync"
+        );
+        let after = store
+            .runtime_library_snapshot()
+            .unwrap()
+            .current_session
+            .unwrap();
+        assert_eq!(after.title, "Weekly sync");
+        assert_eq!(after.lifecycle, before.lifecycle);
+        assert_eq!(after.elapsed_seconds, before.elapsed_seconds);
+        let (persisted, updated_after): (String, i64) = store
+            .connection
+            .query_row(
+                "SELECT title, updated_at_ms FROM sessions WHERE id = ?1",
+                [&receipt.session_id.0],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(persisted, "Weekly sync");
+        assert_eq!(
+            updated_after, updated_before,
+            "renaming is not lifecycle activity"
+        );
+
+        let too_long = "x".repeat(MAX_TITLE_BYTES + 1);
+        for invalid in ["", "   ", "a\u{7}b", too_long.as_str()] {
+            assert!(matches!(
+                store.rename_session(&receipt.session_id, invalid),
+                Err(StoreError::InvalidRequest(_))
+            ));
+        }
+        assert!(matches!(
+            store.rename_session(&SessionId("missing".to_owned()), "Other"),
+            Err(StoreError::InvalidState(_))
+        ));
+        let reopened = SessionStore::open(temp.path().join("Open Scribe")).unwrap();
+        assert_eq!(
+            reopened
+                .runtime_library_snapshot()
+                .unwrap()
+                .current_session
+                .unwrap()
+                .title,
+            "Weekly sync"
+        );
+    }
+
     fn database_value(store: &SessionStore, query: &str) -> i64 {
         store
             .connection
@@ -4063,7 +4211,7 @@ mod tests {
         }
         assert_eq!(
             database_value(&store, "SELECT MAX(version) FROM schema_migrations"),
-            9
+            13
         );
         let segment_columns: BTreeSet<String> = store
             .connection
@@ -4121,7 +4269,7 @@ mod tests {
         assert_eq!(channels, 1);
         assert_eq!(
             database_value(&store, "SELECT MAX(version) FROM schema_migrations"),
-            9
+            13
         );
     }
 
@@ -4285,6 +4433,7 @@ mod tests {
                     &session_directory,
                     &replacement,
                     Some(failure),
+                    None,
                 ),
                 Err(StoreError::InjectedInterruption)
             ));

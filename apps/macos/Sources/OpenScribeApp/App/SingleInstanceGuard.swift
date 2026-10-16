@@ -22,7 +22,7 @@ final class SingleInstanceGuard {
     let descriptor = lockFileURL.path.withCString { path in
       Darwin.open(
         path,
-        O_CREAT | O_RDWR | O_CLOEXEC | O_EXLOCK | O_NONBLOCK,
+        O_CREAT | O_RDWR | O_CLOEXEC | O_EXLOCK | O_NONBLOCK | O_NOFOLLOW,
         S_IRUSR | S_IWUSR
       )
     }
@@ -34,20 +34,6 @@ final class SingleInstanceGuard {
       throw SingleInstanceGuardError.cannotOpen(openError)
     }
     fileDescriptor = descriptor
-  }
-
-  static func acquireDefault() throws -> SingleInstanceGuard {
-    let applicationSupport = try FileManager.default.url(
-      for: .applicationSupportDirectory,
-      in: .userDomainMask,
-      appropriateFor: nil,
-      create: true
-    )
-    let lockFile =
-      applicationSupport
-      .appendingPathComponent("Open Scribe", isDirectory: true)
-      .appendingPathComponent("open-scribe-instance.lock")
-    return try SingleInstanceGuard(lockFileURL: lockFile)
   }
 
   func release() {

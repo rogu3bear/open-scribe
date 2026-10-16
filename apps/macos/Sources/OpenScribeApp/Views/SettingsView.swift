@@ -9,7 +9,8 @@ struct DiagnosticsDocument: FileDocument {
   init(text: String) { self.text = text }
 
   init(configuration: ReadConfiguration) throws {
-    text = configuration.file.regularFileContents.flatMap { String(data: $0, encoding: .utf8) } ?? ""
+    text =
+      configuration.file.regularFileContents.flatMap { String(data: $0, encoding: .utf8) } ?? ""
   }
 
   func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
@@ -22,6 +23,8 @@ struct SettingsView: View {
   @ObservedObject var speech: SpeechTranscriptionModel
   @ObservedObject var library: RuntimeLibraryStore
   @ObservedObject var recovery: RecoveredSessionController
+  @ObservedObject var scheduler: TranscriptionScheduler
+  @ObservedObject var pressure: SystemPressureMonitor
   @State private var exportDocument = DiagnosticsDocument(text: "")
   @State private var exportPresented = false
   @ObservedObject private var diagnosticLog = DiagnosticLog.shared
@@ -29,11 +32,52 @@ struct SettingsView: View {
 
   var body: some View {
     Form {
+      Section("Transcription") {
+        Toggle("Transcribe new recordings automatically", isOn: $scheduler.isAutomatic)
+        Toggle("Pause automatic transcription", isOn: $scheduler.isPaused)
+          .disabled(!scheduler.isAutomatic)
+        LabeledContent("Queue", value: queueLabel)
+        if let hold = scheduler.hold {
+          Text(hold.text)
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+        }
+        Text(
+          "Transcription runs on this Mac with the installed model, one conversation at a time, and waits while a recording is in progress. A conversation you ask for is transcribed even while automatic work is paused."
+        )
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .fixedSize(horizontal: false, vertical: true)
+      }
+      Section("System") {
+        LabeledContent("Library disk", value: pressure.reading.diskText)
+        LabeledContent("Memory", value: pressure.reading.memoryText)
+        LabeledContent("Thermal", value: pressure.reading.thermalText)
+        if let processText = pressure.reading.processText {
+          LabeledContent("This app", value: processText)
+        }
+        Text(
+          "Measured by macOS: the space the library volume can still give this app, the kernel's memory-pressure level and free pages, the thermal state, and this process's own CPU time and resident memory. Transcription waits below \(SystemPressureReading.bytes(SystemPressureReading.minimumDiskBytesForTranscription)) of free disk, under critical memory pressure, or in a critical thermal state."
+        )
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .fixedSize(horizontal: false, vertical: true)
+      }
       Section("Diagnostics") {
         LabeledContent("Microphone", value: microphoneLabel)
         LabeledContent("Screen Recording", value: screenCaptureLabel)
         LabeledContent("Signature", value: signature)
         LabeledContent("Recovery", value: recoveryLabel)
+        if let warning = recovery.transcriptMaintenanceWarning {
+          Text(warning).font(.caption).foregroundStyle(.secondary)
+        }
+        if !recovery.recoveryFindings.isEmpty {
+          Text(
+            "\(recovery.recoveryFindings.count) per-conversation recovery findings retained for inspection."
+          )
+          .font(.caption).foregroundStyle(.secondary)
+        }
         LabeledContent("Library", value: libraryLabel)
         LabeledContent(
           "Models",
@@ -87,6 +131,21 @@ struct SettingsView: View {
         AppTelemetry.commandInvoked("export-diagnostics-failed")
       }
     }
+  }
+
+  private var queueLabel: String {
+    var parts: [String] = []
+    if let running = scheduler.runningSessionId {
+      let title =
+        library.savedSessions.first { $0.sessionId == running }
+        .map { ConversationIdentityPresentation.title($0.title) } ?? "1 conversation"
+      parts.append("Transcribing “\(title)”")
+    }
+    let waiting = scheduler.queue.count
+    if waiting > 0 {
+      parts.append(waiting == 1 ? "1 waiting" : "\(waiting) waiting")
+    }
+    return parts.isEmpty ? "Nothing waiting" : parts.joined(separator: ", ")
   }
 
   private var recoveryLabel: String {
@@ -152,7 +211,8 @@ struct SettingsView: View {
       recoveredCount: recovery.sessions.count,
       sessions: sessionLines,
       models: speech.models.map {
-        DiagnosticsReport.ModelLine(modelId: $0.modelId, fileName: $0.fileName, installed: $0.installed)
+        DiagnosticsReport.ModelLine(
+          modelId: $0.modelId, fileName: $0.fileName, installed: $0.installed)
       },
       events: DiagnosticJournal.shared.recent()
     )

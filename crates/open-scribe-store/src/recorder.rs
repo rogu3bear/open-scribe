@@ -60,6 +60,7 @@ impl SessionStore {
         session: SessionId,
         action: RecorderAction,
     ) -> Result<RecorderDetail, StoreError> {
+        let _writer = self.write_guard()?;
         // Below the capture reserve the volume may already be at ENOSPC. Free
         // emergency blocks and journal critical storage before a full detail
         // read can spend those blocks on WAL/SHM recovery.
@@ -503,6 +504,7 @@ impl SessionStore {
         session: &str,
         records: &[JournalRecord],
     ) -> Result<(), StoreError> {
+        let _writer = self.write_guard()?;
         for record in records.iter().filter(|r| {
             matches!(
                 r.body.event_kind.as_str(),

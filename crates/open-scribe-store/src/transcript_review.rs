@@ -175,6 +175,7 @@ impl SessionStore {
         sequence: u32,
         text: Option<&str>,
     ) -> Result<String, StoreError> {
+        let _writer = self.write_guard()?;
         let text = match text {
             Some(text) => {
                 let trimmed = text.trim();
@@ -230,6 +231,7 @@ impl SessionStore {
         track_id: &str,
         label: Option<&str>,
     ) -> Result<(), StoreError> {
+        let _writer = self.write_guard()?;
         let label = match label {
             Some(label) => {
                 let trimmed = label.trim();

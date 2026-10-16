@@ -2,6 +2,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use open_scribe_types::SessionId;
+use rusqlite::OptionalExtension;
 use serde_json::Value;
 
 use super::{
@@ -36,6 +37,66 @@ pub struct RuntimePlayableMediaSnapshot {
     pub byte_length: u64,
 }
 
+/// Coarse derived-transcript posture of one saved conversation. It is read
+/// from runs, chunks, and selections; it never claims more than the store
+/// has committed.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum RuntimeTranscriptState {
+    /// No transcribable track, or no run has been attempted on one.
+    #[default]
+    None,
+    /// At least one track has a run still in progress.
+    Running,
+    /// Every transcribable track has a selected Final revision.
+    Final,
+    /// Some tracks are Final; the rest have no attempt or were cancelled.
+    Partial,
+    /// A track without a selected revision has a latest run that failed.
+    Failed,
+    /// A track without a selected revision has a latest run the user
+    /// cancelled; nothing restarts it until they ask.
+    Cancelled,
+    Unknown,
+}
+
+impl RuntimeTranscriptState {
+    #[must_use]
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Running => "running",
+            Self::Final => "final",
+            Self::Partial => "partial",
+            Self::Failed => "failed",
+            Self::Cancelled => "cancelled",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+/// Content-free transcript progress for the native library surfaces.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct RuntimeTranscriptSnapshot {
+    pub document: open_scribe_types::DocumentAvailability,
+    pub replacement_resumable: bool,
+    pub state: RuntimeTranscriptState,
+    pub selected_revision_ids: Vec<String>,
+    /// Content-free identity of selection plus human edits, for native reloads.
+    pub document_version: String,
+    pub attempt: open_scribe_types::AttemptState,
+    pub attempt_failure: Option<String>,
+    /// Sealed tracks a transcript can cover.
+    pub total_tracks: u32,
+    /// Tracks with a selected Final revision.
+    pub final_tracks: u32,
+    /// Complete chunks across the running runs, when `state` is `Running`.
+    pub completed_chunks: u32,
+    /// Planned chunks across the running runs, when `state` is `Running`.
+    pub total_chunks: u32,
+    /// The failure class of the latest failed run, when `state` is `Failed`.
+    pub failure_class: Option<String>,
+}
+
 /// Rust-owned durable session projection for the native live and library surfaces.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RuntimeSessionSnapshot {
@@ -51,6 +112,7 @@ pub struct RuntimeSessionSnapshot {
     pub has_capture_timeline: bool,
     pub sources: Vec<RuntimeSourceSnapshot>,
     pub playable_media: Option<RuntimePlayableMediaSnapshot>,
+    pub transcript: RuntimeTranscriptSnapshot,
 }
 
 /// One read-only authority snapshot shared by the native live and library surfaces.
@@ -67,6 +129,13 @@ impl SessionStore {
     /// Reads one coarse snapshot from the durable library without mutating media or lifecycle.
     pub fn runtime_library_snapshot(&self) -> Result<RuntimeLibrarySnapshot, StoreError> {
         self.runtime_library_snapshot_at(wall_time_milliseconds())
+    }
+
+    pub fn runtime_library_snapshot_at_host(
+        &self,
+        host_time: u64,
+    ) -> Result<RuntimeLibrarySnapshot, StoreError> {
+        self.runtime_snapshot_observed(wall_time_milliseconds(), || {}, Some(host_time))
     }
 
     pub(super) fn runtime_library_snapshot_at(
@@ -96,6 +165,15 @@ impl SessionStore {
     where
         F: FnOnce(),
     {
+        self.runtime_snapshot_observed(now_milliseconds, after_sessions, None)
+    }
+
+    fn runtime_snapshot_observed<F: FnOnce()>(
+        &self,
+        now_milliseconds: i64,
+        after_sessions: F,
+        host_time: Option<u64>,
+    ) -> Result<RuntimeLibrarySnapshot, StoreError> {
         // One read snapshot; deferred so it never holds the write lock that
         // store connections otherwise take at BEGIN.
         let transaction = rusqlite::Transaction::new_unchecked(
@@ -136,7 +214,7 @@ impl SessionStore {
                         )
                  FROM sessions
                  WHERE sessions.lifecycle != 'deleted'
-                 ORDER BY sessions.updated_at_ms DESC, sessions.id DESC",
+                 ORDER BY sessions.created_at_ms DESC, sessions.id DESC",
             )?;
             let rows = statement.query_map([], |row| {
                 Ok((
@@ -236,7 +314,24 @@ impl SessionStore {
                             / 1_000
                     })
                 });
-            if matches!(lifecycle.as_str(), "paused" | "recording" | "preparing") {
+            if has_capture_timeline {
+                // Authoritative accepted frames and calibrated capture intervals.
+                // Wall-clock adjustments and metadata edits never advance these.
+                let durable: i64 = transaction.query_row("SELECT MAX(
+                    COALESCE((SELECT MAX(mapped_start_ns + sample_count * 1000000000 / 48000) FROM segments WHERE session_id = ?1 AND lifecycle = 'sealed'),0),
+                    COALESCE((SELECT MAX(session_nanoseconds) FROM session_events WHERE session_id = ?1 AND event_kind IN ('capture_paused','paused_session_finalized','segment_sealed')),0))",
+                    [&session_id], |row| row.get(0))?;
+                let observed = if lifecycle == "recording" {
+                    host_time
+                        .map(|host| self.map_capture_time(&session_id, host))
+                        .transpose()?
+                        .unwrap_or(durable)
+                } else {
+                    durable
+                };
+                elapsed_seconds = observed.max(durable).max(0) as u64 / 1_000_000_000;
+            } else if matches!(lifecycle.as_str(), "paused" | "recording" | "preparing") {
+                // Limited compatibility for legacy untimed captures only.
                 let mut boundary = transaction.prepare_cached("SELECT event_kind, session_nanoseconds, wall_time_ms FROM session_events WHERE session_id = ?1 AND event_kind IN ('capture_paused', 'capture_resumed') ORDER BY sequence DESC LIMIT 1")?;
                 let mut rows = boundary.query([&session_id])?;
                 if let Some(row) = rows.next()? {
@@ -251,6 +346,11 @@ impl SessionStore {
                     elapsed_seconds = (position.max(0) / 1_000_000_000 + advancing) as u64;
                 }
             }
+            let transcript = if lifecycle == "ready_for_review" {
+                self.runtime_transcript_snapshot(&transaction, &session_id)?
+            } else {
+                RuntimeTranscriptSnapshot::default()
+            };
             let snapshot = RuntimeSessionSnapshot {
                 session_id: SessionId(session_id),
                 title,
@@ -264,6 +364,7 @@ impl SessionStore {
                 has_capture_timeline,
                 sources,
                 playable_media,
+                transcript,
             };
             if lifecycle == "ready_for_review" {
                 saved_sessions.push(snapshot);
@@ -291,6 +392,146 @@ impl SessionStore {
             current_session,
             saved_sessions,
         })
+    }
+
+    /// Derived-transcript posture over the session's transcribable tracks.
+    pub(super) fn runtime_transcript_snapshot(
+        &self,
+        connection: &rusqlite::Connection,
+        session_id: &str,
+    ) -> Result<RuntimeTranscriptSnapshot, StoreError> {
+        let tracks = self.transcription_tracks(&SessionId(session_id.to_owned()))?;
+        let mut snapshot = RuntimeTranscriptSnapshot {
+            total_tracks: tracks.len() as u32,
+            ..RuntimeTranscriptSnapshot::default()
+        };
+        if tracks.is_empty() {
+            return Ok(snapshot);
+        }
+        let versions: Vec<(String, String, i64)> = connection.prepare_cached("SELECT selection.track_id, selection.revision_id,
+            COALESCE(epoch.epoch, 0) FROM transcript_selections selection LEFT JOIN transcript_selection_epochs epoch
+            ON epoch.session_id = selection.session_id AND epoch.track_id = selection.track_id
+            WHERE selection.session_id = ?1 ORDER BY selection.track_id")?
+            .query_map([session_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?.collect::<Result<_,_>>()?;
+        snapshot.selected_revision_ids = versions
+            .iter()
+            .map(|(_, revision, _)| revision.clone())
+            .collect();
+        snapshot.document_version = super::digest_json(&versions)?;
+        let mut selected = connection.prepare_cached(
+            "SELECT EXISTS(SELECT 1 FROM transcript_selections
+                           WHERE session_id = ?1 AND track_id = ?2)",
+        )?;
+        let mut latest = connection.prepare_cached(
+            "SELECT runs.state, runs.failure_class,
+                    (SELECT COUNT(*) FROM transcript_chunks
+                     WHERE run_id = runs.id AND state = 'complete'),
+                    (SELECT COUNT(*) FROM transcript_chunks WHERE run_id = runs.id)
+             FROM transcription_runs AS runs
+             WHERE runs.session_id = ?1 AND runs.track_id = ?2
+             ORDER BY runs.created_at_ms DESC, runs.id DESC LIMIT 1",
+        )?;
+        let mut running = 0_u32;
+        let mut failed = 0_u32;
+        let mut cancelled = 0_u32;
+        let mut unsupported = false;
+        for track in &tracks {
+            let is_selected: bool =
+                selected.query_row([session_id, track.as_str()], |row| row.get(0))?;
+            if is_selected {
+                snapshot.final_tracks += 1;
+            }
+            let run: Option<(String, Option<String>, i64, i64)> = latest
+                .query_row([session_id, track.as_str()], |row| {
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+                })
+                .optional()?;
+            match run {
+                Some((state, _, complete, total)) if state == "running" => {
+                    if !is_selected {
+                        running += 1;
+                    }
+                    snapshot.attempt = open_scribe_types::AttemptState::Running;
+                    snapshot.completed_chunks += u32::try_from(complete).unwrap_or(u32::MAX);
+                    snapshot.total_chunks += u32::try_from(total).unwrap_or(u32::MAX);
+                }
+                Some((state, failure_class, _, _)) if state == "failed" => {
+                    if !is_selected {
+                        failed += 1;
+                    }
+                    if snapshot.attempt != open_scribe_types::AttemptState::Running {
+                        snapshot.attempt = open_scribe_types::AttemptState::Failed;
+                        snapshot.attempt_failure = failure_class.clone();
+                    }
+                    if snapshot.failure_class.is_none() {
+                        snapshot.failure_class = failure_class;
+                    }
+                }
+                // A superseded cancellation always has a newer run, so the
+                // latest cancelled run is one the user stopped.
+                Some((state, failure_class, _, _))
+                    if state == "cancelled"
+                        && matches!(
+                            failure_class.as_deref(),
+                            Some("cancelled" | "capture_preempted")
+                        ) =>
+                {
+                    if !is_selected {
+                        cancelled += 1;
+                    }
+                    if snapshot.attempt == open_scribe_types::AttemptState::None {
+                        snapshot.attempt = if failure_class.as_deref() == Some("capture_preempted")
+                        {
+                            open_scribe_types::AttemptState::Preempted
+                        } else {
+                            open_scribe_types::AttemptState::Cancelled
+                        };
+                    }
+                }
+                Some((state, _, _, _)) if state == "complete" => {
+                    if snapshot.attempt == open_scribe_types::AttemptState::None {
+                        snapshot.attempt = open_scribe_types::AttemptState::Complete;
+                    }
+                }
+                Some(_) => {
+                    unsupported = true;
+                }
+                None => {}
+            }
+        }
+        if unsupported {
+            snapshot.attempt = open_scribe_types::AttemptState::Unknown;
+        }
+        snapshot.replacement_resumable = connection.query_row("SELECT EXISTS(SELECT 1 FROM transcription_intent WHERE session_id = ?1
+            AND admission IS NULL AND last_action = 'reprocess' AND last_outcome IN ('failed','preempted'))", [session_id], |r| r.get(0))?;
+        snapshot.document = if snapshot.final_tracks == snapshot.total_tracks {
+            open_scribe_types::DocumentAvailability::Final
+        } else if snapshot.final_tracks > 0 {
+            open_scribe_types::DocumentAvailability::Partial
+        } else if unsupported {
+            open_scribe_types::DocumentAvailability::Unavailable
+        } else {
+            open_scribe_types::DocumentAvailability::None
+        };
+        snapshot.state = if snapshot.final_tracks == snapshot.total_tracks {
+            RuntimeTranscriptState::Final
+        } else if unsupported {
+            RuntimeTranscriptState::Unknown
+        } else if running > 0 {
+            RuntimeTranscriptState::Running
+        } else if failed > 0 {
+            RuntimeTranscriptState::Failed
+        } else if cancelled > 0 {
+            RuntimeTranscriptState::Cancelled
+        } else if snapshot.final_tracks > 0 {
+            RuntimeTranscriptState::Partial
+        } else {
+            RuntimeTranscriptState::None
+        };
+        if snapshot.state != RuntimeTranscriptState::Failed {
+            snapshot.failure_class = None;
+        }
+        Ok(snapshot)
     }
 
     fn runtime_source_snapshots(

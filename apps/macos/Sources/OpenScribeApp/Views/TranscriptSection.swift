@@ -9,6 +9,7 @@ struct TranscriptSection: View {
   let session: RuntimeSessionPresentation
   @ObservedObject var transcripts: TranscriptLibraryModel
   @ObservedObject var speech: SpeechTranscriptionModel
+  @ObservedObject var scheduler: TranscriptionScheduler
   /// Captured recordings play from any timeline position and imported audio
   /// from any media position; without playable audio nothing can seek.
   let canSeek: Bool
@@ -19,6 +20,7 @@ struct TranscriptSection: View {
   @State private var renaming: NativeSessionSpeaker?
   @State private var draftLabel = ""
   @State private var showingModels = false
+  @State private var showingReprocessConfirmation = false
 
   var body: some View {
     VStack(alignment: .leading, spacing: 12) {
@@ -27,25 +29,30 @@ struct TranscriptSection: View {
           .font(.headline)
           .accessibilityAddTraits(.isHeader)
         Spacer()
+        if session.transcript.documentAvailability == .final
+          || session.transcript.replacementResumable
+        {
+          Menu("Transcription") {
+            if session.transcript.replacementResumable {
+              Button("Resume Replacement") {
+                scheduler.resumeReplacement(sessionId: session.sessionId)
+              }
+            }
+            Button("Reprocess All Tracks…") { showingReprocessConfirmation = true }
+          }
+        }
         exportMenu
       }
-      Text(session.transcriptionUnavailableReason ?? transcripts.availabilityText)
+      Text(session.transcriptionUnavailableReason ?? availabilityText)
         .font(.callout)
         .foregroundStyle(.secondary)
-      if transcripts.availability != .final || speech.transcribingSessionId == session.sessionId {
+      if session.transcript.documentAvailability != .final
+        || scheduler.runningSessionId == session.sessionId
+      {
         transcriptionControls
       }
-      if let message = speech.message, !showingModels,
-        session.transcriptionUnavailableReason == nil
-          || speech.transcribingSessionId == session.sessionId
-      {
-        if speech.messageIsFailure {
-          CaptureIssueLabel(message: message, isFailure: true).font(.callout)
-        } else {
-          Label(message, systemImage: "checkmark.circle")
-            .font(.callout)
-            .foregroundStyle(.secondary)
-        }
+      if !showingModels, session.transcriptionUnavailableReason == nil {
+        outcomeNote
       }
       if session.transcriptionUnavailableReason == nil, !transcripts.segments.isEmpty {
         speakerList
@@ -57,9 +64,12 @@ struct TranscriptSection: View {
         }
       }
     }
+    // Rust's transcript posture is part of the identity: launch recovery or a
+    // finished run changes it, and the document rereads itself.
     .task(
       id: session.sessionId
         + (session.transcriptionUnavailableReason == nil ? ":timed" : ":untimed")
+        + ":\(session.transcript.state.rawValue):\(session.transcript.documentVersion)"
     ) {
       transcripts.load(session: session)
     }
@@ -72,48 +82,149 @@ struct TranscriptSection: View {
     .sheet(isPresented: $showingModels) {
       SpeechModelSheet(speech: speech) { showingModels = false }
     }
+    .confirmationDialog("Reprocess all audio tracks?", isPresented: $showingReprocessConfirmation) {
+      Button("Reprocess All Tracks") {
+        scheduler.request(sessionId: session.sessionId, intent: .reprocessAll)
+      }
+    } message: {
+      Text(
+        "This creates replacement revisions, reusing compatible saved recognition when available. A replacement becomes selected only if its review selection and edits have not changed since this request. Earlier revisions and their corrections remain in history."
+      )
+    }
   }
 
-  /// Transcription runs on this Mac only after a verified model is installed;
-  /// progress and Cancel stay beside the transcript they will produce.
+  /// The last thing the scheduler did for this conversation, in the speech
+  /// model's own words, until the next request replaces it.
+  @ViewBuilder
+  private var outcomeNote: some View {
+    switch scheduler.state(for: session.sessionId) {
+    case .finished(let message):
+      Label(message, systemImage: "checkmark.circle")
+        .font(.callout)
+        .foregroundStyle(.secondary)
+    case .failed(let message):
+      CaptureIssueLabel(message: message, isFailure: true).font(.callout)
+    case .cancelled:
+      Text("Transcription was cancelled. The recorded audio is unchanged.")
+        .font(.callout)
+        .foregroundStyle(.secondary)
+    case .preempted:
+      Text("Transcription yielded to capture. Finished parts are kept.").font(.callout)
+        .foregroundStyle(.secondary)
+    case .deferred:
+      Text("Transcription is waiting to start.").font(.callout).foregroundStyle(.secondary)
+    default:
+      EmptyView()
+    }
+  }
+
+  /// What the transcript line says: the library's committed state, with the
+  /// plain-words reason when the latest run ended without a transcript.
+  private var availabilityText: String {
+    if session.transcript.state == .final, session.transcript.attempt == .failed {
+      return "The reviewed transcript remains selected. Replacement transcription failed. "
+        + RuntimeTranscriptPresentation.failureText(session.transcript.attemptFailure)
+    }
+    if transcripts.availability == .failed {
+      return "Transcription failed. "
+        + RuntimeTranscriptPresentation.failureText(session.transcript.failureClass)
+        + " The recorded audio is unaffected."
+    }
+    return transcripts.availabilityText
+  }
+
+  /// Transcription runs on this Mac only after a verified model is installed.
+  /// The queue position, the hold that keeps it waiting, progress, and the
+  /// way to retry or cancel all stay beside the transcript they produce.
   @ViewBuilder
   private var transcriptionControls: some View {
-    if speech.transcribingSessionId == session.sessionId {
+    let job = scheduler.state(for: session.sessionId)
+    if speech.transcribingSessionId == session.sessionId || job == .running {
       VStack(alignment: .leading, spacing: 6) {
         if let fraction = speech.progressFraction {
           ProgressView(value: fraction) { Text(speech.progressText) }
         } else {
           ProgressView { Text(speech.progressText) }
         }
-        Button("Cancel Transcription") { speech.cancel() }
+        Button("Cancel Transcription") { scheduler.cancel(sessionId: session.sessionId) }
       }
       .frame(maxWidth: 420, alignment: .leading)
-    } else if session.transcriptionUnavailableReason == nil, speech.installedModel != nil {
-      HStack(spacing: 12) {
-        Button("Transcribe on This Mac") {
-          Task {
-            await speech.transcribe(sessionId: session.sessionId)
-            transcripts.load(session: session)
+    } else if session.transcriptionUnavailableReason == nil,
+      speech.installedModel != nil || !scheduler.queue.isEmpty
+    {
+      VStack(alignment: .leading, spacing: 8) {
+        if case .queued(let position, let hold) = job {
+          Label(
+            position == 1
+              ? "Queued next for transcription." : "Queued for transcription, \(position) in line.",
+            systemImage: "clock"
+          )
+          .font(.callout)
+          if let hold {
+            Text(hold.text)
+              .font(.callout)
+              .foregroundStyle(.secondary)
+              .fixedSize(horizontal: false, vertical: true)
+          }
+          HStack(spacing: 12) {
+            if position > 1 || hold == .pausedByUser {
+              Button("Transcribe Now") { scheduler.request(sessionId: session.sessionId) }
+                .help("Move this conversation to the front of the queue")
+            }
+            Button("Remove from Queue") { scheduler.cancel(sessionId: session.sessionId) }
+          }
+        } else {
+          HStack(spacing: 12) {
+            Button(
+              transcripts.availability == .failed || job == .cancelled
+                || session.transcript.state == .failed || session.transcript.state == .cancelled
+                ? "Retry Transcription" : "Transcribe on This Mac"
+            ) {
+              scheduler.request(sessionId: session.sessionId)
+            }
+            .help(
+              "Resume incomplete tracks. Compatible selected Final transcripts and their corrections stay selected."
+            )
+            Button("Speech Model…") {
+              speech.dismissMessage()
+              showingModels = true
+            }
+            .buttonStyle(.link)
+          }
+          if scheduler.isPaused {
+            HStack(spacing: 12) {
+              Text("Automatic transcription is paused.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+              Button("Resume") { scheduler.isPaused = false }
+                .buttonStyle(.link)
+            }
+          } else if !scheduler.isAutomatic {
+            Text(
+              "Automatic transcription is off. Turn it on in Settings to transcribe new recordings as they are saved."
+            )
+            .font(.callout)
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
           }
         }
-        .disabled(speech.transcribingSessionId != nil)
-        .help(
-          speech.transcribingSessionId != nil
-            ? "Another conversation is being transcribed"
-            : "Transcribe every recorded track with the installed local model")
-        Button("Speech Model…") {
-          speech.dismissMessage()
-          showingModels = true
-        }
-        .buttonStyle(.link)
       }
     } else if session.transcriptionUnavailableReason == nil {
       VStack(alignment: .leading, spacing: 6) {
         Text("Transcription needs a verified local speech model.")
           .font(.callout)
+        if case .queued = job {
+          Text("This conversation is queued and will be transcribed once a model is installed.")
+            .font(.callout)
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+        }
         Button("Install Speech Model…") {
           speech.dismissMessage()
           showingModels = true
+        }
+        Button("Rebuild from Saved Parts") {
+          scheduler.request(sessionId: session.sessionId, intent: .reconcileRetained)
         }
       }
     }
@@ -127,10 +238,19 @@ struct TranscriptSection: View {
           transcripts.dismissMessage()
           renaming = speaker
         } label: {
-          Label(speaker.label, systemImage: "person.wave.2")
+          HStack(spacing: 4) {
+            Label(speaker.label, systemImage: "person.wave.2")
+            Image(systemName: "pencil")
+              .font(.caption)
+              .foregroundStyle(.secondary)
+              .accessibilityHidden(true)
+          }
         }
         .buttonStyle(.borderless)
-        .help(speaker.namedByUser ? "Named by you" : "Named from the capture source")
+        .help(
+          (speaker.namedByUser ? "Named by you. " : "Named from the capture source. ")
+            + "Click to rename"
+        )
         .accessibilityLabel("Rename speaker \(speaker.label)")
       }
     }
@@ -205,7 +325,9 @@ struct TranscriptSection: View {
         Section("Transcript") {
           Group {
             Button("Plain Text…") { export(.plainText, type: .plainText) }
-            Button("Markdown…") { export(.markdown, type: UTType(filenameExtension: "md") ?? .plainText) }
+            Button("Markdown…") {
+              export(.markdown, type: UTType(filenameExtension: "md") ?? .plainText)
+            }
             Button("WebVTT Subtitles…") {
               export(.webVtt, type: UTType(filenameExtension: "vtt") ?? .plainText)
             }
@@ -352,14 +474,18 @@ struct TranscriptSection: View {
     panel.allowedContentTypes = [packageType]
     panel.canCreateDirectories = true
     panel.nameFieldStringValue = Self.fileName(session.title, type: packageType)
+    panel.message =
+      "This format carries supported PCM audio, selected transcripts, speaker labels, and markers. Context evidence is omitted; failed transcript status restores as pending. Compressed imports are not a supported portable round-trip."
     guard panel.runModal() == .OK, var url = panel.url else { return }
     if url.pathExtension != "openscribe" { url.appendPathExtension("openscribe") }
     Task { await transcripts.export(.portablePackage, to: url) }
   }
 
   static func fileName(_ title: String, type: UTType) -> String {
-    let safe = title.components(separatedBy: CharacterSet(charactersIn: "/:\\")).joined(separator: "-")
-      .trimmingCharacters(in: .whitespacesAndNewlines)
+    let safe = title.components(separatedBy: CharacterSet(charactersIn: "/:\\")).joined(
+      separator: "-"
+    )
+    .trimmingCharacters(in: .whitespacesAndNewlines)
     let stem = safe.isEmpty || safe.hasPrefix(".") ? "Transcript" : safe
     return type.preferredFilenameExtension.map { "\(stem).\($0)" } ?? stem
   }

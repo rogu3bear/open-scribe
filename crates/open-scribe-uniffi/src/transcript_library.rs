@@ -84,6 +84,17 @@ pub struct NativeSessionDeletionInventory {
     pub export_bytes: u64,
 }
 
+/// One Final transcript rebuilt from retained chunks without a model.
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct NativeRetainedTranscriptRecovery {
+    pub session_id: String,
+    pub track_id: String,
+    pub run_id: String,
+    pub revision_id: String,
+    pub reused_chunks: u32,
+    pub segment_count: u32,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
 pub struct NativeSessionDeletionReceipt {
     pub receipt_id: String,
@@ -186,6 +197,33 @@ impl NativeTranscriptLibrary {
     ) -> Result<(), NativeStorageError> {
         self.library()?
             .rename_speaker(&SessionId(session_id), &track_id, label.as_deref())
+            .map_err(map_storage_error)
+    }
+
+    /// Rebuilds Final transcripts from chunks earlier runs retained but could
+    /// not commit, without loading a model. `session_id` limits the pass to
+    /// one conversation. Media, failed runs, and selected revisions are
+    /// untouched.
+    pub fn recover_retained_transcripts(
+        &self,
+        session_id: Option<String>,
+    ) -> Result<Vec<NativeRetainedTranscriptRecovery>, NativeStorageError> {
+        let session = session_id.map(SessionId);
+        self.library()?
+            .recover_retained_transcripts(session.as_ref())
+            .map(|recovered| {
+                recovered
+                    .into_iter()
+                    .map(|outcome| NativeRetainedTranscriptRecovery {
+                        session_id: outcome.session_id.0,
+                        track_id: outcome.track_id,
+                        run_id: outcome.run_id,
+                        revision_id: outcome.revision_id,
+                        reused_chunks: outcome.reused_chunks,
+                        segment_count: outcome.segment_count,
+                    })
+                    .collect()
+            })
             .map_err(map_storage_error)
     }
 

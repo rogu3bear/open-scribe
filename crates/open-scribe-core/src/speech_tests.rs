@@ -82,7 +82,9 @@ fn a_fresh_library_lists_the_catalog_uninstalled_and_refuses_wrong_files() {
             &AtomicBool::new(false),
             &mut |_, _, _| {}
         ),
-        Err(SpeechError::Model(SpeechModelError::NotInstalled))
+        Err(SpeechError::Transcription(TranscriptionError::Store(
+            StoreError::InvalidState(_)
+        )))
     ));
     assert!(models.statuses().iter().all(|status| !status.installed));
 }

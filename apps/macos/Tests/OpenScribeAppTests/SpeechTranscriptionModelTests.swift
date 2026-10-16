@@ -15,6 +15,9 @@ final class SpeechTranscriptionModelTests: XCTestCase {
     let root = temporaryRoot()
     defer { try? FileManager.default.removeItem(at: root) }
     let speech = SpeechTranscriptionModel(managedRoot: root)
+    XCTAssertTrue(
+      speech.isRefreshing, "discovery returns before native catalog verification completes")
+    for _ in 0..<100 where speech.isRefreshing { try await Task.sleep(for: .milliseconds(10)) }
     XCTAssertEqual(speech.models.map(\.modelId), ["whisper-small.en-q5_1", "whisper-small-q5_1"])
     XCTAssertTrue(speech.models.allSatisfy { !$0.installed && $0.engine == "whisper.cpp 1.8.3" })
     XCTAssertNil(speech.installedModel)
@@ -54,6 +57,7 @@ final class SpeechTranscriptionModelTests: XCTestCase {
       .sessionId
 
     let speech = SpeechTranscriptionModel(managedRoot: root)
+    for _ in 0..<100 where speech.isRefreshing { try await Task.sleep(for: .milliseconds(10)) }
     let model = try XCTUnwrap(speech.models.first)
     let installed = await speech.install(model, from: URL(fileURLWithPath: modelPath))
     XCTAssertTrue(installed, speech.message ?? "")
@@ -83,13 +87,17 @@ final class SpeechTranscriptionModelTests: XCTestCase {
         health: "healthy", elapsedSeconds: 3_900, journalDurable: true, mediaFilesOpen: false,
         interruptionReason: nil, recovered: false, hasCaptureTimeline: true, sources: [],
         playableMedia: nil))
-    func model(_ id: String, _ languages: [String], installed: Bool) -> NativeSpeechModel {
+    func model(
+      _ id: String, _ languages: [String], installed: Bool, readiness: NativeModelReadiness? = nil
+    ) -> NativeSpeechModel {
       NativeSpeechModel(
         modelId: id, profile: "balanced", languages: languages,
         fileName: "ggml-\(id.dropFirst(8)).bin", byteLength: 190_098_681,
         sha256: "bfdff4894dcb76bbf647d56263ea2a96645423f1669176f4844a1bf8e478ad30",
         downloadOrigin: "https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861/ggml.bin",
-        license: "MIT", engine: "whisper.cpp 1.8.3", installed: installed)
+        license: "MIT", engine: "whisper.cpp 1.8.3", installed: installed,
+        readiness: readiness ?? (installed ? .ready : .absent),
+        diagnostic: readiness == .invalid ? "digest mismatch" : nil)
     }
     let uninstalled = [
       model("whisper-small.en-q5_1", ["en"], installed: false),
@@ -113,8 +121,8 @@ final class SpeechTranscriptionModelTests: XCTestCase {
         name,
         AnyView(
           TranscriptSection(
-            session: session, transcripts: transcripts, speech: speech, canSeek: true,
-            onSeek: { _ in })
+            session: session, transcripts: transcripts, speech: speech,
+            scheduler: TranscriptionScheduler.inert(), canSeek: true, onSeek: { _ in })
         )
       )
     }
@@ -122,6 +130,16 @@ final class SpeechTranscriptionModelTests: XCTestCase {
       (
         "speech-model-sheet",
         AnyView(SpeechModelSheet(speech: SpeechTranscriptionModel(preview: uninstalled)) {})
+      ))
+    views.append(
+      (
+        "speech-model-repair",
+        AnyView(
+          SpeechModelSheet(
+            speech: SpeechTranscriptionModel(preview: [
+              model("whisper-small.en-q5_1", ["en"], installed: false, readiness: .invalid)
+            ])
+          ) {})
       ))
     XCTAssertEqual(states[2].1.progressFraction, 0.25)
     XCTAssertEqual(states[2].1.progressText, "Transcribing track 1 of 2…")

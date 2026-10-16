@@ -22,6 +22,11 @@ struct SpeechModelSheet: View {
       ForEach(speech.models, id: \.modelId) { model in
         modelDetail(model)
       }
+      if speech.isRefreshing { ProgressView("Verifying local model files…") }
+      if let warning = speech.catalogWarning {
+        Text(warning).foregroundStyle(.secondary)
+        Button("Refresh") { speech.refresh() }
+      }
       if let message = speech.message {
         if speech.messageIsFailure {
           CaptureIssueLabel(message: message, isFailure: true).font(.callout)
@@ -47,7 +52,7 @@ struct SpeechModelSheet: View {
         Text(Self.title(model))
           .font(.subheadline.weight(.semibold))
         Spacer()
-        Text(model.installed ? "Installed" : "Not installed")
+        Text(Self.readinessText(model.readiness))
           .font(.caption)
           .foregroundStyle(.secondary)
       }
@@ -72,7 +77,9 @@ struct SpeechModelSheet: View {
           ProgressView().controlSize(.small)
           Text("Checking…").font(.caption)
         } else if !model.installed {
-          Button("Install from File…") { choose(model) }
+          Button(model.readiness == .invalid ? "Repair from File…" : "Install from File…") {
+            choose(model)
+          }
         }
       }
     }
@@ -91,5 +98,15 @@ struct SpeechModelSheet: View {
 
   static func title(_ model: NativeSpeechModel) -> String {
     model.languages == ["en"] ? "English (small, q5_1)" : "Multilingual (small, q5_1)"
+  }
+  static func readinessText(_ state: NativeModelReadiness) -> String {
+    switch state {
+    case .absent: "Not installed"
+    case .presentUnverified: "Present, verification unavailable"
+    case .verifying: "Verifying"
+    case .ready: "Verified and ready"
+    case .invalid: "Invalid — repair required"
+    case .incompatible: "Incompatible with this engine"
+    }
   }
 }

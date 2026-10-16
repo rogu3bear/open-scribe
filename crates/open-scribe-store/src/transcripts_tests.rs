@@ -9,7 +9,7 @@ use tempfile::TempDir;
 use super::*;
 use crate::{
     CAF_HEADER, DATABASE_NAME, ImportMediaRequest, JOURNAL_NAME, RecoveryDisposition,
-    SESSIONS_DIRECTORY,
+    RuntimeTranscriptState, SESSIONS_DIRECTORY,
 };
 
 pub(crate) const SECOND: i64 = 1_000_000_000;
@@ -154,6 +154,90 @@ fn file_digest(path: &Path) -> String {
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect()
+}
+
+#[test]
+fn background_completion_does_not_replace_a_newer_human_selection() {
+    let mut fixture = imported_fixture(144_000);
+    let first_identity = identity(&fixture, "first");
+    let first = fixture
+        .store
+        .begin_transcription_run(&first_identity, &plan())
+        .unwrap();
+    let reviewed = complete_all(&mut fixture, &first, ["reviewed alpha", "reviewed bravo"]);
+    let replacement_identity = identity(&fixture, "replacement");
+    let replacement = fixture
+        .store
+        .begin_transcription_run(&replacement_identity, &plan())
+        .unwrap();
+    // Human explicitly reselects the reviewed document while derived work runs.
+    fixture
+        .store
+        .select_transcript_revision(&fixture.session, &fixture.track, &reviewed)
+        .unwrap();
+    let completed = complete_all(&mut fixture, &replacement, ["raw replacement", "raw tail"]);
+    let revisions = fixture
+        .store
+        .transcript_revisions(&fixture.session)
+        .unwrap();
+    assert!(
+        revisions
+            .iter()
+            .find(|revision| revision.revision_id == reviewed)
+            .unwrap()
+            .selected
+    );
+    assert!(
+        !revisions
+            .iter()
+            .find(|revision| revision.revision_id == completed)
+            .unwrap()
+            .selected
+    );
+}
+
+#[test]
+fn cancellation_wins_selection_even_when_a_completed_revision_crosses_the_stop_boundary() {
+    let mut fixture = imported_fixture(144_000);
+    let run = fixture
+        .store
+        .begin_transcription_run(&identity(&fixture, "cancel-commit"), &plan())
+        .unwrap();
+    fixture
+        .store
+        .cancel_transcription(&fixture.session)
+        .unwrap();
+    let revision = complete_all(&mut fixture, &run, ["alpha", "bravo"]);
+    let history = fixture
+        .store
+        .transcript_revisions(&fixture.session)
+        .unwrap();
+    assert!(
+        history
+            .iter()
+            .any(|r| r.revision_id == revision && !r.selected)
+    );
+    assert!(
+        fixture
+            .store
+            .transcript_document(&fixture.session)
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        fixture
+            .store
+            .search_transcripts("alpha", Some(&fixture.session), 10)
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        fixture.store.transcription_outcomes().unwrap(),
+        [(
+            fixture.session.0.clone(),
+            open_scribe_types::WorkOutcome::UserCancelled
+        )]
+    );
 }
 
 #[test]
@@ -562,7 +646,7 @@ fn schema_v4_fixture_migrates_without_rewriting_sealed_evidence() {
             .unwrap()
             .map(Result::unwrap)
             .collect();
-        assert_eq!(versions, [1, 2, 3, 4, 5, 6, 7, 8, 9]);
+        assert_eq!(versions, (1..=13).collect::<Vec<_>>());
         let derived: i64 = store
             .connection
             .query_row(
@@ -609,12 +693,21 @@ fn launch_fails_incomplete_running_transcription_as_orphaned() {
         recovery.pending_transcript_finalizations.is_empty(),
         "incomplete runs are not Class A"
     );
+    assert_eq!(
+        fixture.store.transcription_runs(&fixture.session).unwrap()[0].state,
+        "running",
+        "capture-safety recovery does not gate media on derived maintenance"
+    );
+    let (_, findings) = fixture.store.recover_orphan_transcription_runs().unwrap();
     let runs = fixture.store.transcription_runs(&fixture.session).unwrap();
     assert_eq!(runs.len(), 1);
     assert_eq!(runs[0].state, "failed");
     assert_eq!(runs[0].failure_class.as_deref(), Some("orphaned"));
     assert_eq!(
-        finding_for_session(&recovery, &fixture.session),
+        findings
+            .iter()
+            .find(|finding| finding.session_id == fixture.session)
+            .map(|finding| finding.disposition),
         Some(RecoveryDisposition::TranscriptRunOrphaned)
     );
 
@@ -650,10 +743,9 @@ fn launch_queues_complete_chunk_running_runs_for_finalize() {
         .unwrap();
 
     let recovery = fixture.store.recover_library().unwrap();
-    assert_eq!(
-        recovery.pending_transcript_finalizations,
-        vec![handle.run_id.clone()]
-    );
+    assert!(recovery.pending_transcript_finalizations.is_empty());
+    let (pending, _) = fixture.store.recover_orphan_transcription_runs().unwrap();
+    assert_eq!(pending, vec![handle.run_id.clone()]);
     let runs = fixture.store.transcription_runs(&fixture.session).unwrap();
     assert_eq!(
         runs[0].state, "running",
@@ -706,13 +798,240 @@ fn chunk_progress_bumps_run_updated_at() {
     assert!(updated_after > updated_before);
 }
 
-fn finding_for_session(
-    recovery: &crate::LibraryRecovery,
-    session: &SessionId,
-) -> Option<RecoveryDisposition> {
-    recovery
-        .findings
-        .iter()
-        .find(|finding| finding.session_id == *session)
-        .map(|finding| finding.disposition)
+fn complete_every_chunk(fixture: &mut Fixture, handle: &TranscriptionRunHandle) {
+    for (chunk, word) in handle.chunks.iter().zip(["alpha", "bravo"]) {
+        if chunk.state != TranscriptChunkState::Complete {
+            fixture
+                .store
+                .complete_transcript_chunk(&handle.run_id, chunk.sequence, "en", &hypothesis(word))
+                .unwrap();
+        }
+    }
+}
+
+#[test]
+fn retained_candidates_select_the_newest_complete_stale_run_per_unselected_track() {
+    let current = "overlap-midpoint-v3";
+    let mut fixture = imported_fixture(144_000);
+    let stale = identity(&fixture, "options-a");
+    assert_ne!(stale.reconciliation_version, current);
+
+    // A stale run whose chunks are all durable is a candidate while it still
+    // reports running and after it failed to commit.
+    let first = fixture
+        .store
+        .begin_transcription_run(&stale, &plan())
+        .unwrap();
+    complete_every_chunk(&mut fixture, &first);
+    assert_eq!(
+        fixture
+            .store
+            .retained_transcript_candidates(current)
+            .unwrap(),
+        vec![first.run_id.clone()]
+    );
+    fixture
+        .store
+        .fail_transcription_run(&first.run_id, None, TranscriptionFailure::InvalidResult)
+        .unwrap();
+    assert_eq!(
+        fixture
+            .store
+            .retained_transcript_candidates(current)
+            .unwrap(),
+        vec![first.run_id.clone()]
+    );
+    assert!(
+        fixture
+            .store
+            .retained_transcript_candidates(&stale.reconciliation_version)
+            .unwrap()
+            .is_empty(),
+        "a run under the current version is not stale"
+    );
+
+    // Only the newest complete stale run per track is offered.
+    std::thread::sleep(std::time::Duration::from_millis(2));
+    let second = fixture
+        .store
+        .begin_transcription_run(&stale, &plan())
+        .unwrap();
+    assert!(
+        second
+            .chunks
+            .iter()
+            .all(|chunk| chunk.state == TranscriptChunkState::Complete)
+    );
+    fixture
+        .store
+        .fail_transcription_run(&second.run_id, None, TranscriptionFailure::InvalidResult)
+        .unwrap();
+    // An incomplete stale run, newer still, never qualifies.
+    std::thread::sleep(std::time::Duration::from_millis(2));
+    let partial = fixture
+        .store
+        .begin_transcription_run(&identity(&fixture, "options-b"), &plan())
+        .unwrap();
+    fixture
+        .store
+        .complete_transcript_chunk(&partial.run_id, 0, "en", &hypothesis("alpha"))
+        .unwrap();
+    fixture
+        .store
+        .fail_transcription_run(&partial.run_id, None, TranscriptionFailure::EngineError)
+        .unwrap();
+    assert_eq!(
+        fixture
+            .store
+            .retained_transcript_candidates(current)
+            .unwrap(),
+        vec![second.run_id.clone()]
+    );
+
+    // A successor under the current version for the same identity retires
+    // the candidate, and a selected revision keeps the track out entirely.
+    let successor = fixture
+        .store
+        .begin_transcription_run(
+            &TranscriptionRunIdentity {
+                reconciliation_version: current.into(),
+                ..stale.clone()
+            },
+            &plan(),
+        )
+        .unwrap();
+    assert!(
+        successor
+            .chunks
+            .iter()
+            .all(|chunk| chunk.reused_from_run.is_some())
+    );
+    assert!(
+        fixture
+            .store
+            .retained_transcript_candidates(current)
+            .unwrap()
+            .is_empty()
+    );
+    complete_all(&mut fixture, &successor, ["alpha", "bravo"]);
+    let other = fixture
+        .store
+        .begin_transcription_run(&identity(&fixture, "options-c"), &plan())
+        .unwrap();
+    complete_every_chunk(&mut fixture, &other);
+    assert!(
+        fixture
+            .store
+            .retained_transcript_candidates(current)
+            .unwrap()
+            .is_empty()
+    );
+    let record = fixture
+        .store
+        .transcription_run_record(&second.run_id)
+        .unwrap();
+    assert_eq!(record.identity, stale);
+    assert_eq!(record.plan, plan());
+    assert_eq!(record.state, "failed");
+    assert_eq!(record.failure_class.as_deref(), Some("invalid_result"));
+    assert_eq!((record.complete_chunks, record.total_chunks), (2, 2));
+    assert!(matches!(
+        fixture.store.transcription_run_record("missing"),
+        Err(StoreError::InvalidState(_))
+    ));
+}
+
+#[test]
+fn runtime_snapshot_reports_transcript_posture_from_runs_and_selections() {
+    let mut fixture = imported_fixture(144_000);
+    let posture = |fixture: &Fixture| {
+        fixture
+            .store
+            .runtime_library_snapshot()
+            .unwrap()
+            .saved_sessions
+            .into_iter()
+            .find(|session| session.session_id == fixture.session)
+            .unwrap()
+            .transcript
+    };
+    let none = posture(&fixture);
+    assert_eq!(none.state, RuntimeTranscriptState::None);
+    assert_eq!((none.total_tracks, none.final_tracks), (1, 0));
+
+    let handle = fixture
+        .store
+        .begin_transcription_run(&identity(&fixture, "options-a"), &plan())
+        .unwrap();
+    fixture
+        .store
+        .complete_transcript_chunk(&handle.run_id, 0, "en", &hypothesis("alpha"))
+        .unwrap();
+    let running = posture(&fixture);
+    assert_eq!(running.state, RuntimeTranscriptState::Running);
+    assert_eq!((running.completed_chunks, running.total_chunks), (1, 2));
+    assert!(running.failure_class.is_none());
+
+    fixture
+        .store
+        .fail_transcription_run(&handle.run_id, Some(1), TranscriptionFailure::EngineError)
+        .unwrap();
+    let failed = posture(&fixture);
+    assert_eq!(failed.state, RuntimeTranscriptState::Failed);
+    assert_eq!(failed.failure_class.as_deref(), Some("engine_error"));
+    assert_eq!((failed.completed_chunks, failed.total_chunks), (0, 0));
+
+    let stopped = fixture
+        .store
+        .begin_transcription_run(&identity(&fixture, "options-a"), &plan())
+        .unwrap();
+    fixture
+        .store
+        .fail_transcription_run(&stopped.run_id, None, TranscriptionFailure::Cancelled)
+        .unwrap();
+    let cancelled = posture(&fixture);
+    assert_eq!(cancelled.state, RuntimeTranscriptState::Cancelled);
+    assert!(cancelled.failure_class.is_none());
+
+    let retry = fixture
+        .store
+        .begin_transcription_run(&identity(&fixture, "options-a"), &plan())
+        .unwrap();
+    let revision = complete_all(&mut fixture, &retry, ["alpha", "bravo"]);
+    let final_posture = posture(&fixture);
+    assert_eq!(final_posture.state, RuntimeTranscriptState::Final);
+    assert_eq!(
+        (final_posture.total_tracks, final_posture.final_tracks),
+        (1, 1)
+    );
+    assert!(final_posture.failure_class.is_none());
+    let revisions = fixture
+        .store
+        .transcript_revisions(&fixture.session)
+        .unwrap();
+    assert_eq!(revisions.len(), 1);
+    assert_eq!(revisions[0].revision_id, revision);
+    assert_eq!(revisions[0].reconciliation_version, "overlap-midpoint-v1");
+    let replacement = fixture
+        .store
+        .begin_transcription_run(&identity(&fixture, "replacement"), &plan())
+        .unwrap();
+    let during = posture(&fixture);
+    assert_eq!(during.state, RuntimeTranscriptState::Final);
+    assert_eq!(during.attempt, open_scribe_types::AttemptState::Running);
+    fixture
+        .store
+        .fail_transcription_run(&replacement.run_id, None, TranscriptionFailure::EngineError)
+        .unwrap();
+    let after = posture(&fixture);
+    assert_eq!(after.state, RuntimeTranscriptState::Final);
+    assert_eq!(after.attempt, open_scribe_types::AttemptState::Failed);
+    assert_eq!(after.attempt_failure.as_deref(), Some("engine_error"));
+    assert!(
+        !fixture
+            .store
+            .transcript_document(&fixture.session)
+            .unwrap()
+            .is_empty()
+    );
 }

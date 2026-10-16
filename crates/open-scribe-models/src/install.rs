@@ -1,5 +1,6 @@
 use crate::catalog::ModelRecord;
 use crate::verify::{VerifiedArtifact, modified_nanoseconds, open_no_follow};
+use sha2::{Digest, Sha256};
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read};
@@ -106,6 +107,7 @@ pub enum InstallError {
     NotStagingPath,
     ChangedSinceVerification,
     ConflictingInstallation,
+    StagingExists,
     Io(io::Error),
 }
 
@@ -117,6 +119,7 @@ impl InstallError {
             Self::NotStagingPath => "not_staging_path",
             Self::ChangedSinceVerification => "changed_since_verification",
             Self::ConflictingInstallation => "conflicting_installation",
+            Self::StagingExists => "staging_exists",
             Self::Io(_) => "io",
         }
     }
@@ -146,6 +149,27 @@ impl ModelLayout {
         verified: &VerifiedArtifact,
         staged: &Path,
     ) -> Result<InstalledArtifact, InstallError> {
+        self.install_checked(record, verified, staged, false)
+    }
+
+    /// Explicit repair retains the old invalid inode in the owned directory.
+    /// A foreign, redirected, or multiply-linked destination is never replaced.
+    pub fn repair_install(
+        &self,
+        record: &ModelRecord,
+        verified: &VerifiedArtifact,
+        staged: &Path,
+    ) -> Result<InstalledArtifact, InstallError> {
+        self.install_checked(record, verified, staged, true)
+    }
+
+    fn install_checked(
+        &self,
+        record: &ModelRecord,
+        verified: &VerifiedArtifact,
+        staged: &Path,
+        repair: bool,
+    ) -> Result<InstalledArtifact, InstallError> {
         if verified.model_id != record.id
             || verified.version != record.version
             || verified.sha256 != record.sha256
@@ -168,7 +192,7 @@ impl ModelLayout {
         file.sync_all()?;
 
         let directory = self.install_directory(record);
-        fs::create_dir_all(&directory)?;
+        self.ensure_owned_directory(&directory)?;
         let destination = self.installed_path(record);
         let installed = InstalledArtifact {
             model_id: record.id.clone(),
@@ -180,14 +204,40 @@ impl ModelLayout {
         };
         match fs::symlink_metadata(&destination) {
             Ok(existing) => {
-                if existing.file_type().is_file() && existing.len() == record.byte_length {
-                    // Identity of an existing installation is proven by the
-                    // caller's reverification before first use; never replace.
+                if !existing.is_file()
+                    || existing.nlink() != 1
+                    || existing.uid() != fs::metadata(self.models.parent().unwrap())?.uid()
+                {
+                    return Err(InstallError::ConflictingInstallation);
+                }
+                let mut prior = open_no_follow(&destination)?;
+                let mut digest = Sha256::new();
+                io::copy(&mut prior, &mut digest)?;
+                let unchanged = prior.metadata()?.len() == existing.len()
+                    && modified_nanoseconds(&prior.metadata()?) == modified_nanoseconds(&existing);
+                if unchanged
+                    && existing.len() == record.byte_length
+                    && format!("{:x}", digest.finalize()) == record.sha256
+                {
                     fs::remove_file(staged)?;
                     sync_directory(&self.staging_directory())?;
                     return Ok(installed);
                 }
-                return Err(InstallError::ConflictingInstallation);
+                if !repair || !unchanged {
+                    return Err(InstallError::ConflictingInstallation);
+                }
+                let retained = directory.join(format!(
+                    "{}.invalid.{}.{}",
+                    record.file_name,
+                    existing.ino(),
+                    modified_nanoseconds(&existing)
+                ));
+                // create-new hard link retains evidence before unlinking only
+                // the owned destination. A prior retained name refuses repair.
+                fs::hard_link(&destination, &retained)?;
+                sync_directory(&directory)?;
+                fs::remove_file(&destination)?;
+                sync_directory(&directory)?;
             }
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
             Err(error) => return Err(error.into()),
@@ -211,17 +261,30 @@ impl ModelLayout {
         if !input.metadata()?.is_file() {
             return Err(InstallError::NotRegularFile);
         }
-        fs::create_dir_all(self.staging_directory())?;
+        self.ensure_owned_directory(&self.staging_directory())?;
         let staged = self.partial_path(record);
         let mut output = OpenOptions::new()
             .write(true)
-            .create(true)
-            .truncate(true)
+            .create_new(true)
             .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
-            .open(&staged)?;
-        io::copy(&mut input.take(record.byte_length + 1), &mut output)?;
-        output.sync_all()?;
-        sync_directory(&self.staging_directory())?;
+            .open(&staged)
+            .map_err(|error| {
+                if error.kind() == io::ErrorKind::AlreadyExists {
+                    InstallError::StagingExists
+                } else {
+                    error.into()
+                }
+            })?;
+        let identity = output.metadata()?;
+        let result = (|| -> io::Result<()> {
+            io::copy(&mut input.take(record.byte_length + 1), &mut output)?;
+            output.sync_all()?;
+            sync_directory(&self.staging_directory())
+        })();
+        if let Err(error) = result {
+            let _ = self.discard_owned_partial(record, identity.dev(), identity.ino());
+            return Err(error.into());
+        }
         Ok(staged)
     }
 
@@ -231,6 +294,57 @@ impl ModelLayout {
             Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
             result => result,
         }
+    }
+
+    /// Cleanup for one created staging inode; substitutions remain untouched.
+    pub fn discard_owned_partial(
+        &self,
+        record: &ModelRecord,
+        device: u64,
+        inode: u64,
+    ) -> io::Result<()> {
+        let path = self.partial_path(record);
+        match fs::symlink_metadata(&path) {
+            Ok(metadata)
+                if metadata.is_file()
+                    && metadata.nlink() == 1
+                    && metadata.dev() == device
+                    && metadata.ino() == inode =>
+            {
+                fs::remove_file(path)?;
+                sync_directory(&self.staging_directory())
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+            Ok(_) => Err(io::Error::other("staging ownership changed")),
+            Err(error) => Err(error),
+        }
+    }
+
+    fn ensure_owned_directory(&self, directory: &Path) -> io::Result<()> {
+        let root = self.models.parent().expect("managed model parent");
+        let metadata = fs::symlink_metadata(root)?;
+        if !metadata.is_dir() || metadata.file_type().is_symlink() {
+            return Err(io::Error::other("model root is redirected"));
+        }
+        let owner = metadata.uid();
+        let mut path = root.to_path_buf();
+        for part in directory
+            .strip_prefix(root)
+            .map_err(io::Error::other)?
+            .components()
+        {
+            path.push(part);
+            match fs::create_dir(&path) {
+                Ok(()) => {}
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+                Err(error) => return Err(error),
+            }
+            let metadata = fs::symlink_metadata(&path)?;
+            if !metadata.is_dir() || metadata.file_type().is_symlink() || metadata.uid() != owner {
+                return Err(io::Error::other("model directory is not owned and direct"));
+            }
+        }
+        Ok(())
     }
 }
 
@@ -318,6 +432,72 @@ mod tests {
             b"someone else's file"
         );
         assert!(staged.exists());
+    }
+
+    #[test]
+    fn same_length_corruption_requires_explicit_repair_and_keeps_invalid_bytes() {
+        let root = tempfile::tempdir().unwrap();
+        let layout = ModelLayout::new(root.path());
+        let bytes = fixture_bytes(51864);
+        let record = fixture(&bytes);
+        let staged = stage(&layout, &record, &bytes);
+        let verified = verify_staged(&record, ENGINE, COMPATIBILITY, &staged).unwrap();
+        let installed = layout.install(&record, &verified, &staged).unwrap();
+        let mut corrupt = bytes.clone();
+        *corrupt.last_mut().unwrap() ^= 1;
+        fs::write(&installed.path, &corrupt).unwrap();
+        assert!(matches!(
+            verify_staged(&record, ENGINE, COMPATIBILITY, &installed.path),
+            Err(crate::VerifyError::DigestMismatch)
+        ));
+        let staged = stage(&layout, &record, &bytes);
+        let verified = verify_staged(&record, ENGINE, COMPATIBILITY, &staged).unwrap();
+        assert!(matches!(
+            layout.install(&record, &verified, &staged),
+            Err(InstallError::ConflictingInstallation)
+        ));
+        layout.repair_install(&record, &verified, &staged).unwrap();
+        verify_staged(&record, ENGINE, COMPATIBILITY, &installed.path).unwrap();
+        let retained = fs::read_dir(layout.install_directory(&record))
+            .unwrap()
+            .map(Result::unwrap)
+            .find(|entry| entry.file_name().to_string_lossy().contains(".invalid."))
+            .unwrap();
+        assert_eq!(fs::read(retained.path()).unwrap(), corrupt);
+        fs::write(&installed.path, &corrupt).unwrap();
+        assert!(
+            verify_staged(&record, ENGINE, COMPATIBILITY, &installed.path).is_err(),
+            "load-boundary verification remains mandatory"
+        );
+    }
+
+    #[test]
+    fn staging_refuses_existing_symlink_and_hardlink_without_touching_foreign_bytes() {
+        use std::os::unix::fs::symlink;
+        let root = tempfile::tempdir().unwrap();
+        let layout = ModelLayout::new(root.path());
+        let bytes = fixture_bytes(51864);
+        let record = fixture(&bytes);
+        let source = root.path().join("chosen.bin");
+        fs::write(&source, &bytes).unwrap();
+        fs::create_dir_all(layout.staging_directory()).unwrap();
+        let foreign = root.path().join("foreign.bin");
+        fs::write(&foreign, b"preserve").unwrap();
+        let path = layout.partial_path(&record);
+        symlink(&foreign, &path).unwrap();
+        assert!(matches!(
+            layout.stage_from_file(&record, &source),
+            Err(InstallError::StagingExists)
+        ));
+        assert_eq!(fs::read(&foreign).unwrap(), b"preserve");
+        fs::remove_file(&path).unwrap();
+        fs::hard_link(&foreign, &path).unwrap();
+        assert!(matches!(
+            layout.stage_from_file(&record, &source),
+            Err(InstallError::StagingExists)
+        ));
+        assert_eq!(fs::read(&foreign).unwrap(), b"preserve");
+        assert!(path.exists());
     }
 
     #[test]

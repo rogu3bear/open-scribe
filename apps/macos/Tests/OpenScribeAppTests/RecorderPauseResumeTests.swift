@@ -248,12 +248,14 @@ final class RecorderPauseResumeTests: XCTestCase {
     XCTAssertEqual(harness.controller.microphoneSourceHealth?.event, .routeInterrupted)
     XCTAssertEqual(harness.controller.failureCode, "capture-route-interrupted")
     XCTAssertEqual(harness.controller.statusText, "Recording continues with remaining audio")
-    XCTAssertTrue(harness.controller.recorderDetail?.events.contains { $0.kind == "source_failed" } == true,
+    XCTAssertTrue(
+      harness.controller.recorderDetail?.events.contains { $0.kind == "source_failed" } == true,
       "the durable failure must reach the native recorder event list")
     XCTAssertEqual(harness.telemetry.snapshot().map(\.observation.event), [.routeInterrupted])
     XCTAssertEqual(microphone.stopCount, 1)
     XCTAssertEqual(system.stopCount, 0)
-    XCTAssertEqual(try harness.preparation.recorderDetail(sessionId: sessionId).lifecycle, "recording")
+    XCTAssertEqual(
+      try harness.preparation.recorderDetail(sessionId: sessionId).lifecycle, "recording")
 
     await harness.controller.stop()
     XCTAssertEqual(harness.controller.phase, .saved)
@@ -403,12 +405,15 @@ final class RecorderPauseResumeTests: XCTestCase {
 
       XCTAssertEqual(
         harness.controller.phase, .capturing,
-        "the remaining source keeps recording after \(step): \(harness.controller.errorMessage ?? "")")
-      XCTAssertEqual(harness.controller.statusText, "Recording continues with remaining audio", "\(step)")
+        "the remaining source keeps recording after \(step): \(harness.controller.errorMessage ?? "")"
+      )
+      XCTAssertEqual(
+        harness.controller.statusText, "Recording continues with remaining audio", "\(step)")
       XCTAssertEqual(microphone.stopCount, 1, "\(step)")
       XCTAssertEqual(system.stopCount, 0, "\(step)")
       XCTAssertEqual(
-        try harness.preparation.recorderDetail(sessionId: sessionId).lifecycle, "recording", "\(step)")
+        try harness.preparation.recorderDetail(sessionId: sessionId).lifecycle, "recording",
+        "\(step)")
 
       harness.clock.advance(seconds: 1)
       await harness.controller.stop()
@@ -556,7 +561,8 @@ final class RecorderPauseResumeTests: XCTestCase {
     XCTAssertThrowsError(
       try harness.preparation.recorderAction(
         sessionId: sessionId,
-        action: .selectAudio(kind: nil, identity: "microphone-only", displayName: "Microphone only")),
+        action: .selectAudio(kind: nil, identity: "microphone-only", displayName: "Microphone only")
+      ),
       "Rust refuses a scope with no source that can capture")
 
     harness.permission.currentState = .denied
@@ -848,7 +854,9 @@ private final class PauseSources: @unchecked Sendable {
 private final class PauseTelemetry: @unchecked Sendable {
   private let lock = NSLock()
   private var records: [CaptureSourceHealthTelemetryRecord] = []
-  func append(_ record: CaptureSourceHealthTelemetryRecord) { lock.withLock { records.append(record) } }
+  func append(_ record: CaptureSourceHealthTelemetryRecord) {
+    lock.withLock { records.append(record) }
+  }
   func snapshot() -> [CaptureSourceHealthTelemetryRecord] { lock.withLock { records } }
 }
 
@@ -903,7 +911,6 @@ private final class PauseHarness {
   }
   func removeFiles() { try? FileManager.default.removeItem(at: root) }
 }
-
 
 private enum RotationFailureStep: CaseIterable { case writerInit, acceptMediaOpen, seal }
 
@@ -968,6 +975,11 @@ private final class RotationFailureInjectingPreparation: NativeRecordingPreparat
     try base.anchorCaptureClock(
       sessionId: sessionId, hostAnchor: hostAnchor, numerator: numerator, denominator: denominator)
   }
+
+  func runtimeLibrarySnapshotAtHost(hostTime: UInt64) throws -> NativeRuntimeLibrarySnapshot {
+    try base.runtimeLibrarySnapshotAtHost(hostTime: hostTime)
+  }
+  func recoverCaptureSafety() throws -> NativeMediaRecovery { try base.recoverCaptureSafety() }
   func authorizeInitialMedia(
     sessionId: String, sourceKind: NativeMediaSourceKind, sourceDisplayName: String
   ) throws -> NativeMediaOpenAuthorization {
@@ -1050,6 +1062,10 @@ private final class RotationFailureInjectingPreparation: NativeRecordingPreparat
     -> NativeSessionDeclaration
   {
     try base.declareSession(sessionId: sessionId, declaration: declaration)
+  }
+
+  func renameSession(sessionId: String, title: String) throws -> String {
+    try base.renameSession(sessionId: sessionId, title: title)
   }
   func proposeContextEvent(sessionId: String, proposal: NativeContextProposal) throws
     -> NativeContextDecision

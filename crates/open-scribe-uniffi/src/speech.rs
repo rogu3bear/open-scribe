@@ -23,6 +23,8 @@ pub struct NativeSpeechModel {
     pub license: String,
     pub engine: String,
     pub installed: bool,
+    pub readiness: NativeModelReadiness,
+    pub diagnostic: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, uniffi::Enum)]
@@ -56,12 +58,21 @@ pub enum NativeSpeechError {
     ModelNotInstalled,
     #[error("The speech model was rejected ({reason}).")]
     ModelRejected { reason: String },
+    #[error("The speech model is not ready ({reason}).")]
+    ModelReadiness {
+        state: NativeModelReadiness,
+        reason: String,
+    },
     #[error("The conversation has no recorded audio this build can transcribe.")]
     NoTranscribableAudio,
     #[error("The decoded audio did not match the imported recording.")]
     DecodedAudioRejected,
     #[error("Transcription was cancelled.")]
     Cancelled,
+    #[error("Transcription yielded to capture.")]
+    CapturePreempted,
+    #[error("Transcription is deferred by current admission.")]
+    Deferred,
     #[error("Transcription ended ({reason}); recorded audio is unchanged.")]
     TranscriptionFailed { reason: String },
     #[error("The durable storage operation failed.")]
@@ -72,6 +83,7 @@ pub enum NativeSpeechError {
 #[derive(uniffi::Object)]
 pub struct NativeTranscriptionJob {
     cancel: AtomicBool,
+    stop_reason: AtomicU32,
     stage: AtomicU32,
     track_index: AtomicU32,
     track_count: AtomicU32,
@@ -85,6 +97,7 @@ impl NativeTranscriptionJob {
     pub fn new() -> Arc<Self> {
         Arc::new(Self {
             cancel: AtomicBool::new(false),
+            stop_reason: AtomicU32::new(0),
             stage: AtomicU32::new(0),
             track_index: AtomicU32::new(0),
             track_count: AtomicU32::new(0),
@@ -94,11 +107,27 @@ impl NativeTranscriptionJob {
     }
 
     pub fn cancel(&self) {
+        self.stop_reason.store(1, Ordering::Release);
         self.cancel.store(true, Ordering::Relaxed);
+    }
+
+    pub fn preempt_for_capture(&self) {
+        let _ = self
+            .stop_reason
+            .compare_exchange(0, 2, Ordering::AcqRel, Ordering::Acquire);
+        self.cancel.store(true, Ordering::Release);
     }
 
     pub fn is_cancelled(&self) -> bool {
         self.cancel.load(Ordering::Relaxed)
+    }
+
+    pub fn stop_outcome(&self) -> Option<NativeWorkOutcome> {
+        match self.stop_reason.load(Ordering::Acquire) {
+            1 => Some(NativeWorkOutcome::UserCancelled),
+            2 => Some(NativeWorkOutcome::CapturePreempted),
+            _ => None,
+        }
     }
 
     pub fn progress(&self) -> NativeTranscriptionProgress {
@@ -118,6 +147,9 @@ impl NativeTranscriptionJob {
 }
 
 impl NativeTranscriptionJob {
+    pub(crate) fn cancellation(&self) -> &AtomicBool {
+        &self.cancel
+    }
     fn record(&self, track_index: usize, track_count: usize, update: TranscriptionProgressUpdate) {
         self.track_index
             .store(track_index as u32, Ordering::Relaxed);
@@ -174,6 +206,8 @@ impl NativeSpeechModels {
                 license: status.license,
                 engine: engine.clone(),
                 installed: status.installed,
+                readiness: status.readiness.into(),
+                diagnostic: status.diagnostic,
             })
             .collect()
     }
@@ -191,6 +225,17 @@ impl NativeSpeechModels {
             .map_err(map_model_error)
     }
 
+    pub fn repair_from_file(
+        &self,
+        model_id: String,
+        source_path: String,
+    ) -> Result<(), NativeSpeechError> {
+        self.models
+            .repair_from_file(&model_id, Path::new(&source_path))
+            .map(|_| ())
+            .map_err(map_model_error)
+    }
+
     /// Whether the app must first decode the session's compressed import to a
     /// 48 kHz 16-bit linear CAF companion and pass it to `transcribe_session`.
     pub fn needs_decoded_companion(&self, session_id: String) -> Result<bool, NativeSpeechError> {
@@ -200,6 +245,16 @@ impl NativeSpeechModels {
                 StoreError::InvalidState(_) => NativeSpeechError::NoTranscribableAudio,
                 _ => NativeSpeechError::StorageFailure,
             })
+    }
+
+    pub fn needs_decoded_companion_for_intent(
+        &self,
+        session_id: String,
+        intent: NativeTranscriptionIntent,
+    ) -> Result<bool, NativeSpeechError> {
+        self.models
+            .needs_decoded_companion_for_intent(&SessionId(session_id), intent.into())
+            .map_err(|_| NativeSpeechError::NoTranscribableAudio)
     }
 
     /// Reverifies the model, then transcribes every sealed track of one saved
@@ -212,11 +267,146 @@ impl NativeSpeechModels {
         decoded_companion_path: Option<String>,
         job: Arc<NativeTranscriptionJob>,
     ) -> Result<NativeTranscriptionSummary, NativeSpeechError> {
-        let outcomes = self
+        self.transcribe_intent(
+            model_id,
+            session_id,
+            NativeTranscriptionIntent::ResumeIncomplete,
+            None,
+            decoded_companion_path,
+            job,
+        )
+    }
+
+    pub fn transcribe_with_intent(
+        &self,
+        model_id: String,
+        session_id: String,
+        intent: NativeTranscriptionIntent,
+        admission: Option<String>,
+        decoded_companion_path: Option<String>,
+        job: Arc<NativeTranscriptionJob>,
+    ) -> NativeTranscriptionResult {
+        match self.transcribe_intent(
+            model_id,
+            session_id,
+            intent,
+            admission,
+            decoded_companion_path,
+            job.clone(),
+        ) {
+            Ok(summary) => NativeTranscriptionResult {
+                outcome: NativeWorkOutcome::Completed,
+                summary: Some(summary),
+                reason: None,
+            },
+            Err(error) => NativeTranscriptionResult {
+                outcome: match job.stop_reason.load(Ordering::Acquire) {
+                    1 => NativeWorkOutcome::UserCancelled,
+                    2 => NativeWorkOutcome::CapturePreempted,
+                    _ => {
+                        if matches!(error, NativeSpeechError::CapturePreempted) {
+                            NativeWorkOutcome::CapturePreempted
+                        } else if matches!(error, NativeSpeechError::Cancelled) {
+                            NativeWorkOutcome::UserCancelled
+                        } else if matches!(
+                            error,
+                            NativeSpeechError::Deferred
+                                | NativeSpeechError::ModelNotInstalled
+                                | NativeSpeechError::ModelReadiness { .. }
+                        ) {
+                            NativeWorkOutcome::Deferred
+                        } else {
+                            NativeWorkOutcome::Failed
+                        }
+                    }
+                },
+                summary: None,
+                reason: Some(error.to_string()),
+            },
+        }
+    }
+}
+
+#[derive(Clone, Debug, uniffi::Record)]
+pub struct NativeTranscriptionResult {
+    pub outcome: NativeWorkOutcome,
+    pub summary: Option<NativeTranscriptionSummary>,
+    pub reason: Option<String>,
+}
+
+impl NativeSpeechModels {
+    fn transcribe_intent(
+        &self,
+        model_id: String,
+        session_id: String,
+        intent: NativeTranscriptionIntent,
+        admission: Option<String>,
+        decoded_companion_path: Option<String>,
+        job: Arc<NativeTranscriptionJob>,
+    ) -> Result<NativeTranscriptionSummary, NativeSpeechError> {
+        if job.is_cancelled() {
+            return Err(NativeSpeechError::Cancelled);
+        }
+        let mut control = open_scribe_core::SessionStore::open(self.models.managed_root())
+            .map_err(|_| NativeSpeechError::StorageFailure)?;
+        let session = SessionId(session_id);
+        // Build before model loading, companion decoding, or a new admission.
+        let plan = open_scribe_core::plan_session_transcription(&control, &session, intent.into())
+            .map_err(|_| NativeSpeechError::NoTranscribableAudio)?;
+        if plan.tracks.is_empty() {
+            return Ok(NativeTranscriptionSummary {
+                tracks: 0,
+                segments: 0,
+                transcribed_chunks: 0,
+                reused_chunks: 0,
+            });
+        }
+        let owns_admission = admission.is_none();
+        let token = match admission {
+            Some(token) => token,
+            None => {
+                control
+                    .request_transcription(&session, intent.into())
+                    .map_err(|_| NativeSpeechError::StorageFailure)?;
+                let observations = open_scribe_types::WorkObservations {
+                    automatic: false,
+                    model: open_scribe_types::ModelReadiness::Ready,
+                    ..Default::default()
+                };
+                let first = control
+                    .transcription_queue(observations)
+                    .map_err(|_| NativeSpeechError::StorageFailure)?;
+                if first.first().is_none_or(|entry| {
+                    entry.session_id != session || entry.hold.is_some() || entry.admission.is_some()
+                }) {
+                    return Err(NativeSpeechError::Deferred);
+                }
+                control
+                    .admit_transcription(observations)
+                    .map_err(|_| NativeSpeechError::StorageFailure)?
+                    .and_then(|entry| entry.admission)
+                    .ok_or(NativeSpeechError::Deferred)?
+            }
+        };
+        if !control
+            .start_transcription_execution(&session, &token, intent.into())
+            .map_err(|_| NativeSpeechError::StorageFailure)?
+        {
+            if owns_admission {
+                let _ =
+                    control.finish_transcription(&token, open_scribe_types::WorkOutcome::Deferred);
+            }
+            return Err(NativeSpeechError::Deferred);
+        }
+        let operation = control
+            .transcription_operation(&session, &token)
+            .map_err(|_| NativeSpeechError::StorageFailure)?;
+        let result = self
             .models
-            .transcribe(
+            .transcribe_with_operation(
                 &model_id,
-                &SessionId(session_id),
+                &session,
+                &operation,
                 decoded_companion_path.as_deref().map(Path::new),
                 &job.cancel,
                 &mut |index, count, update| job.record(index, count, update),
@@ -226,7 +416,36 @@ impl NativeSpeechModels {
                 SpeechError::Transcription(error) => {
                     map_transcription_error(error, job.cancel.load(Ordering::Relaxed))
                 }
-            })?;
+            });
+        if owns_admission {
+            let outcome = if result.is_ok() {
+                open_scribe_types::WorkOutcome::Completed
+            } else {
+                match job.stop_reason.load(Ordering::Acquire) {
+                    1 => open_scribe_types::WorkOutcome::UserCancelled,
+                    2 => open_scribe_types::WorkOutcome::CapturePreempted,
+                    _ => match result.as_ref().err() {
+                        Some(NativeSpeechError::Cancelled) => {
+                            open_scribe_types::WorkOutcome::UserCancelled
+                        }
+                        Some(NativeSpeechError::CapturePreempted) => {
+                            open_scribe_types::WorkOutcome::CapturePreempted
+                        }
+                        Some(
+                            NativeSpeechError::Deferred
+                            | NativeSpeechError::ModelReadiness { .. }
+                            | NativeSpeechError::ModelNotInstalled
+                            | NativeSpeechError::ModelRejected { .. },
+                        ) => open_scribe_types::WorkOutcome::Deferred,
+                        _ => open_scribe_types::WorkOutcome::Failed,
+                    },
+                }
+            };
+            control
+                .finish_transcription(&token, outcome)
+                .map_err(|_| NativeSpeechError::StorageFailure)?;
+        }
+        let outcomes = result?;
         Ok(NativeTranscriptionSummary {
             tracks: outcomes.len() as u32,
             segments: outcomes.iter().map(|outcome| outcome.segment_count).sum(),
@@ -244,6 +463,14 @@ fn map_model_error(error: SpeechModelError) -> NativeSpeechError {
         SpeechModelError::NotInstalled | SpeechModelError::UnknownModel => {
             NativeSpeechError::ModelNotInstalled
         }
+        SpeechModelError::Verify(error) => NativeSpeechError::ModelReadiness {
+            state: if error.class() == "incompatible_engine" {
+                NativeModelReadiness::Incompatible
+            } else {
+                NativeModelReadiness::Invalid
+            },
+            reason: error.class().to_owned(),
+        },
         other => NativeSpeechError::ModelRejected {
             reason: other.class().to_owned(),
         },
@@ -252,6 +479,11 @@ fn map_model_error(error: SpeechModelError) -> NativeSpeechError {
 
 fn map_transcription_error(error: TranscriptionError, cancelled: bool) -> NativeSpeechError {
     match error {
+        TranscriptionError::Preempted => NativeSpeechError::CapturePreempted,
+        TranscriptionError::RunEnded {
+            failure: open_scribe_core::TranscriptionFailure::CapturePreempted,
+            ..
+        } => NativeSpeechError::CapturePreempted,
         TranscriptionError::RunEnded { .. } if cancelled => NativeSpeechError::Cancelled,
         TranscriptionError::RunEnded { failure, .. } => NativeSpeechError::TranscriptionFailed {
             reason: failure.class().to_owned(),

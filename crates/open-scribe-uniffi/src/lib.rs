@@ -233,6 +233,27 @@ pub struct NativeRuntimeSessionSnapshot {
     pub has_capture_timeline: bool,
     pub sources: Vec<NativeRuntimeSourceSnapshot>,
     pub playable_media: Option<NativeRuntimePlayableMediaSnapshot>,
+    /// Derived-transcript posture of a saved conversation; absent for a live one.
+    #[uniffi(default = None)]
+    pub transcript: Option<NativeRuntimeTranscriptSnapshot>,
+}
+
+/// Content-free transcript progress: `state` is `none`, `running`, `final`,
+/// `partial`, or `failed`; chunk counts cover the running runs only.
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct NativeRuntimeTranscriptSnapshot {
+    pub document: NativeDocumentAvailability,
+    pub replacement_resumable: bool,
+    pub state: NativeRuntimeTranscriptState,
+    pub selected_revision_ids: Vec<String>,
+    pub document_version: String,
+    pub attempt: NativeAttemptState,
+    pub attempt_failure: Option<String>,
+    pub total_tracks: u32,
+    pub final_tracks: u32,
+    pub completed_chunks: u32,
+    pub total_chunks: u32,
+    pub failure_class: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
@@ -598,6 +619,17 @@ impl NativeRecordingPreparation {
         }))
     }
 
+    /// Replaces a conversation's title. Nothing else about it changes.
+    pub fn rename_session(
+        &self,
+        session_id: String,
+        title: String,
+    ) -> Result<String, NativeStorageError> {
+        self.controller()?
+            .rename_session(open_scribe_types::SessionId(session_id), title)
+            .map_err(map_storage_error)
+    }
+
     pub fn prepare_session(
         &self,
         title: String,
@@ -841,26 +873,7 @@ impl NativeRecordingPreparation {
             .controller()?
             .recover_playable_sessions()
             .map_err(map_storage_error)?;
-        Ok(recovered
-            .into_iter()
-            .map(|recovered| NativeRecoveredPlayableSession {
-                session_id: recovered.session_id.0,
-                source_id: recovered.source_id,
-                track_id: recovered.track_id,
-                source_kind: map_native_media_source_kind(recovered.source_kind),
-                source_display_name: recovered.source_display_name,
-                segment_id: recovered.segment_id,
-                relative_path: recovered.relative_path,
-                sample_count: recovered.sample_count,
-                duration_nanoseconds: recovered.duration_nanoseconds,
-                byte_length: recovered.byte_length,
-                digest_sha256: recovered.digest_sha256,
-                media_preserved: recovered.media_preserved,
-                ready_for_review: recovered.ready_for_review,
-                recording_started: recovered.recording_started,
-                last_journal_sequence: recovered.last_journal_sequence,
-            })
-            .collect())
+        Ok(recovered.into_iter().map(recovery::map_recovered).collect())
     }
 
     pub fn import_recoverable_caf(
@@ -988,6 +1001,24 @@ impl NativeRecordingPreparation {
                 .collect(),
         })
     }
+
+    pub fn runtime_library_snapshot_at_host(
+        &self,
+        host_time: u64,
+    ) -> Result<NativeRuntimeLibrarySnapshot, NativeStorageError> {
+        let snapshot = self
+            .controller()?
+            .runtime_library_snapshot_at_host(host_time)
+            .map_err(map_storage_error)?;
+        Ok(NativeRuntimeLibrarySnapshot {
+            current_session: snapshot.current_session.map(map_runtime_session_snapshot),
+            saved_sessions: snapshot
+                .saved_sessions
+                .into_iter()
+                .map(map_runtime_session_snapshot)
+                .collect(),
+        })
+    }
 }
 
 impl NativeRecordingPreparation {
@@ -1078,6 +1109,21 @@ fn map_validated_mixdown(value: open_scribe_core::ValidatedMixdown) -> NativeVal
 fn map_runtime_session_snapshot(
     snapshot: open_scribe_core::RuntimeSessionSnapshot,
 ) -> NativeRuntimeSessionSnapshot {
+    let transcript =
+        (snapshot.lifecycle == "ready_for_review").then(|| NativeRuntimeTranscriptSnapshot {
+            document: snapshot.transcript.document.into(),
+            replacement_resumable: snapshot.transcript.replacement_resumable,
+            state: snapshot.transcript.state.into(),
+            selected_revision_ids: snapshot.transcript.selected_revision_ids.clone(),
+            document_version: snapshot.transcript.document_version.clone(),
+            attempt: snapshot.transcript.attempt.into(),
+            attempt_failure: snapshot.transcript.attempt_failure.clone(),
+            total_tracks: snapshot.transcript.total_tracks,
+            final_tracks: snapshot.transcript.final_tracks,
+            completed_chunks: snapshot.transcript.completed_chunks,
+            total_chunks: snapshot.transcript.total_chunks,
+            failure_class: snapshot.transcript.failure_class.clone(),
+        });
     NativeRuntimeSessionSnapshot {
         session_id: snapshot.session_id.0,
         title: snapshot.title,
@@ -1137,6 +1183,7 @@ fn map_runtime_session_snapshot(
                 sample_count: media.sample_count,
                 byte_length: media.byte_length,
             }),
+        transcript,
     }
 }
 
@@ -1489,6 +1536,10 @@ mod recorder;
 pub use recorder::*;
 mod speech;
 pub use speech::*;
+mod work;
+pub use work::*;
+mod recovery;
+pub use recovery::*;
 mod transcript_library;
 pub use transcript_library::*;
 uniffi::setup_scaffolding!();

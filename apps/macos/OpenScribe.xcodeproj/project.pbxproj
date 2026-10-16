@@ -7,6 +7,10 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		D47EC35DBAE0730DC717CC14 /* TranscriptionSchedulerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1003D5D4F9A95E6C4078E7C5 /* TranscriptionSchedulerTests.swift */; };
+		A837CE35B761C57E24477E29 /* ConversationDetailsEditing.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6A4A3171F63A64A60D0ADBF6 /* ConversationDetailsEditing.swift */; };
+		A217F149D989A3D3C0761F4A /* SystemPressureMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = FC2145CDC57782E82F62145E /* SystemPressureMonitor.swift */; };
+		9E61384A123CC88A80F3B4A8 /* TranscriptionScheduler.swift in Sources */ = {isa = PBXBuildFile; fileRef = E8138793F73B1D66711F99B7 /* TranscriptionScheduler.swift */; };
 		A1C0DE000000000000000002 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A1C0DE000000000000000001 /* Assets.xcassets */; };
 		AB61A3F920D148E6A9BCE306 /* M1ProofSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC61A3F920D148E6A9BCE306 /* M1ProofSupport.swift */; };
 		AB61A3F920D148E6A9BCE307 /* M1FailureRuntimeProof.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC61A3F920D148E6A9BCE307 /* M1FailureRuntimeProof.swift */; };
@@ -79,6 +83,11 @@
 		5E7C1A2B3D4F5061C0020001 /* ContextTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E7C1A2B3D4F5061C0020002 /* ContextTests.swift */; };
 		5E7C1A2B3D4F5061C0030001 /* LocalOnlyWorkflowProof.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E7C1A2B3D4F5061C0030002 /* LocalOnlyWorkflowProof.swift */; };
 		5E7C1A2B3D4F5061C0040001 /* DriftRunProof.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E7C1A2B3D4F5061C0040002 /* DriftRunProof.swift */; };
+		A14183000000000000000002 /* LaunchConfiguration.swift in Sources */ = {isa = PBXBuildFile; fileRef = A14183000000000000000001 /* LaunchConfiguration.swift */; };
+		A14183000000000000000004 /* ProofLaunchRunner.swift in Sources */ = {isa = PBXBuildFile; fileRef = A14183000000000000000003 /* ProofLaunchRunner.swift */; };
+		A14183000000000000000006 /* RuntimeLibraryStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A14183000000000000000005 /* RuntimeLibraryStore.swift */; };
+		A14183000000000000000008 /* StructuredNativeIO.swift in Sources */ = {isa = PBXBuildFile; fileRef = A14183000000000000000007 /* StructuredNativeIO.swift */; };
+		A14183000000000000000010 /* LaunchConfigurationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A14183000000000000000009 /* LaunchConfigurationTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -92,6 +101,10 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		1003D5D4F9A95E6C4078E7C5 /* TranscriptionSchedulerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptionSchedulerTests.swift; sourceTree = "<group>"; };
+		6A4A3171F63A64A60D0ADBF6 /* ConversationDetailsEditing.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationDetailsEditing.swift; sourceTree = "<group>"; };
+		FC2145CDC57782E82F62145E /* SystemPressureMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SystemPressureMonitor.swift; sourceTree = "<group>"; };
+		E8138793F73B1D66711F99B7 /* TranscriptionScheduler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptionScheduler.swift; sourceTree = "<group>"; };
 		A1C0DE000000000000000001 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		AC61A3F920D148E6A9BCE306 /* M1ProofSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = M1ProofSupport.swift; sourceTree = "<group>"; };
 		AC61A3F920D148E6A9BCE307 /* M1FailureRuntimeProof.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = M1FailureRuntimeProof.swift; sourceTree = "<group>"; };
@@ -166,6 +179,11 @@
 		5E7C1A2B3D4F5061C0020002 /* ContextTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContextTests.swift; sourceTree = "<group>"; };
 		5E7C1A2B3D4F5061C0030002 /* LocalOnlyWorkflowProof.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalOnlyWorkflowProof.swift; sourceTree = "<group>"; };
 		5E7C1A2B3D4F5061C0040002 /* DriftRunProof.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DriftRunProof.swift; sourceTree = "<group>"; };
+		A14183000000000000000001 /* LaunchConfiguration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LaunchConfiguration.swift; sourceTree = "<group>"; };
+		A14183000000000000000003 /* ProofLaunchRunner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProofLaunchRunner.swift; sourceTree = "<group>"; };
+		A14183000000000000000005 /* RuntimeLibraryStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RuntimeLibraryStore.swift; sourceTree = "<group>"; };
+		A14183000000000000000007 /* StructuredNativeIO.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StructuredNativeIO.swift; sourceTree = "<group>"; };
+		A14183000000000000000009 /* LaunchConfigurationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LaunchConfigurationTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
@@ -188,9 +206,11 @@
 		12C6110004107026CDFB4A6C /* Stores */ = {
 			isa = PBXGroup;
 			children = (
+				A14183000000000000000005 /* RuntimeLibraryStore.swift */,
 				87CA610842D2D723210F765F /* FixtureSessionStore.swift */,
 				5E7C1A2B3D4F5061728394A6 /* SpeechTranscriptionModel.swift */,
 				18C734C65CBC9FBD50993FB3 /* TranscriptLibraryModel.swift */,
+				E8138793F73B1D66711F99B7 /* TranscriptionScheduler.swift */,
 			);
 			path = Stores;
 			sourceTree = "<group>";
@@ -216,6 +236,8 @@
 		4CEC83BA4C2296F23519D224 /* App */ = {
 			isa = PBXGroup;
 			children = (
+				A14183000000000000000003 /* ProofLaunchRunner.swift */,
+				A14183000000000000000001 /* LaunchConfiguration.swift */,
 				32118F0168D462A2AF9207B5 /* OpenScribeApp.swift */,
 				F463A3F920D148E6A9BCE201 /* SingleInstanceGuard.swift */,
 			);
@@ -225,10 +247,12 @@
 		4F036DA076828A4DAC45FCC5 /* Support */ = {
 			isa = PBXGroup;
 			children = (
+				A14183000000000000000007 /* StructuredNativeIO.swift */,
 				6712658CEAD0838E764A5BBF /* AccessibilityAnnouncer.swift */,
 				BC2B884506AEDD909F7A06DD /* AppTelemetry.swift */,
 				D1A6N0000000000000000001 /* DiagnosticsReport.swift */,
 				46B615557F7DEE8F964B69CE /* SymbolResolver.swift */,
+				FC2145CDC57782E82F62145E /* SystemPressureMonitor.swift */,
 			);
 			path = Support;
 			sourceTree = "<group>";
@@ -281,6 +305,7 @@
 		709304684170899F88B322E6 /* OpenScribeAppTests */ = {
 			isa = PBXGroup;
 			children = (
+				A14183000000000000000009 /* LaunchConfigurationTests.swift */,
 				5E7C1A2B3D4F5061C0020002 /* ContextTests.swift */,
 				AA0000050000000000000013 /* RecorderPauseResumeTests.swift */,
 				A22A3F920D148E6A9BCE201 /* ImportedMediaAuthorityAdapterTests.swift */,
@@ -300,6 +325,7 @@
 				F563A3F920D148E6A9BCE201 /* SingleInstanceGuardTests.swift */,
 				F999B06ACC1C80F559FDEF6B /* RustStatusSourceTests.swift */,
 				D1A6T0000000000000000001 /* DiagnosticsReportTests.swift */,
+				1003D5D4F9A95E6C4078E7C5 /* TranscriptionSchedulerTests.swift */,
 			);
 			path = OpenScribeAppTests;
 			sourceTree = "<group>";
@@ -315,6 +341,7 @@
 				B0198AA144C943FF87190011 /* ConversationWorkspaceView.swift */,
 				8957201D2FE0F213BBA3D310 /* MenuBarContent.swift */,
 				74480CF189E8E48F995656F2 /* SettingsView.swift */,
+				6A4A3171F63A64A60D0ADBF6 /* ConversationDetailsEditing.swift */,
 			);
 			path = Views;
 			sourceTree = "<group>";
@@ -453,6 +480,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A14183000000000000000010 /* LaunchConfigurationTests.swift in Sources */,
 				AA0000050000000000000003 /* RecorderPauseResumeTests.swift in Sources */,
 				A21A3F920D148E6A9BCE201 /* ImportedMediaAuthorityAdapterTests.swift in Sources */,
 				1F1D1AD4B3B9F501CC0AB5DF /* FixtureSessionTests.swift in Sources */,
@@ -466,6 +494,7 @@
 				CA63A3F920D148E6A9BCE201 /* SystemAudioCaptureAdapterTests.swift in Sources */,
 				AB61A3F920D148E6A9BCE304 /* TimelineWorkflowTests.swift in Sources */,
 				5E7C1A2B3D4F5061728394A9 /* SpeechTranscriptionModelTests.swift in Sources */,
+				D47EC35DBAE0730DC717CC14 /* TranscriptionSchedulerTests.swift in Sources */,
 				5E7C1A2B3D4F5061C0020001 /* ContextTests.swift in Sources */,
 				5E7C1A2B3D4F5061728394B1 /* ConversationExportTests.swift in Sources */,
 				E29A4285E85FCA0A16EDD2F9 /* TranscriptLibraryModelTests.swift in Sources */,
@@ -479,6 +508,10 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A14183000000000000000008 /* StructuredNativeIO.swift in Sources */,
+				A14183000000000000000006 /* RuntimeLibraryStore.swift in Sources */,
+				A14183000000000000000004 /* ProofLaunchRunner.swift in Sources */,
+				A14183000000000000000002 /* LaunchConfiguration.swift in Sources */,
 				AA0000050000000000000001 /* RecorderCaptureSelection.swift in Sources */,
 				AA0000050000000000000002 /* RecorderControls.swift in Sources */,
 				A11A3F920D148E6A9BCE201 /* ImportedMediaAuthorityAdapter.swift in Sources */,
@@ -522,6 +555,9 @@
 				EAEBE58915F50FC0724ED498 /* TranscriptLibraryModel.swift in Sources */,
 				89EE15AE6098BDF5C5DADDAD /* TranscriptSection.swift in Sources */,
 				5E7C1A2B3D4F5061728394A5 /* SpeechTranscriptionModel.swift in Sources */,
+				A837CE35B761C57E24477E29 /* ConversationDetailsEditing.swift in Sources */,
+				A217F149D989A3D3C0761F4A /* SystemPressureMonitor.swift in Sources */,
+				9E61384A123CC88A80F3B4A8 /* TranscriptionScheduler.swift in Sources */,
 				5E7C1A2B3D4F5061728394A7 /* SpeechModelSheet.swift in Sources */,
 				5EF7FA04058A5A444EC69D6C /* MenuBarContent.swift in Sources */,
 				C061A3F920D148E6A9BCE201 /* MicrophoneCaptureAdapter.swift in Sources */,
@@ -798,7 +834,7 @@
 					"-framework",
 					Foundation,
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = "app.open-scribe.dev";
+				PRODUCT_BUNDLE_IDENTIFIER = "app.open-scribe.dev$(OPEN_SCRIBE_VERIFICATION_SUFFIX)";
 				PRODUCT_NAME = OpenScribeApp;
 				SDKROOT = macosx;
 				SWIFT_INCLUDE_PATHS = (

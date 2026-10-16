@@ -61,6 +61,7 @@ impl SessionStore {
         &mut self,
         request: PrepareSessionRequest,
     ) -> Result<PreparedSessionReceipt, StoreError> {
+        let _writer = self.write_guard()?;
         self.prepare_session_with_required_sources(request, vec![MediaSourceKind::Microphone])
     }
 
@@ -69,6 +70,7 @@ impl SessionStore {
         request: PrepareSessionRequest,
         required_sources: Vec<MediaSourceKind>,
     ) -> Result<PreparedSessionReceipt, StoreError> {
+        let _writer = self.write_guard()?;
         let required_sources = normalized_source_kinds(required_sources)?;
         let mut receipt = self.prepare_session_inner(request, None)?;
         let planned = self.plan_required_sources(receipt.session_id.clone(), required_sources)?;
@@ -76,11 +78,48 @@ impl SessionStore {
         Ok(receipt)
     }
 
+    /// Replaces the user-visible title of a conversation that is not deleted.
+    /// Updates metadata time. The legacy lifecycle timestamp retains its
+    /// compatibility meaning; timed duration comes from the media timeline.
+    pub fn rename_session(
+        &mut self,
+        session: &SessionId,
+        title: &str,
+    ) -> Result<String, StoreError> {
+        let _writer = self.write_guard()?;
+        let title = title.trim();
+        if title.is_empty() {
+            return Err(StoreError::InvalidRequest("title is empty"));
+        }
+        if title.len() > MAX_TITLE_BYTES {
+            return Err(StoreError::InvalidRequest("title exceeds byte limit"));
+        }
+        if title.chars().any(char::is_control) {
+            return Err(StoreError::InvalidRequest(
+                "title contains control characters",
+            ));
+        }
+        let transaction = self.connection.transaction()?;
+        let changed = transaction.execute(
+            "UPDATE sessions SET title = ?2 WHERE id = ?1 AND lifecycle <> 'deleted'",
+            params![session.0, title],
+        )?;
+        if changed != 1 {
+            return Err(StoreError::InvalidState(
+                "session is not available to rename",
+            ));
+        }
+        super::session_times::record_change(&transaction, &session.0, wall_time_milliseconds())?;
+        transaction.commit()?;
+        Ok(title.to_owned())
+    }
+
     pub(super) fn prepare_session_inner(
         &mut self,
         request: PrepareSessionRequest,
         failure: Option<FailurePoint>,
     ) -> Result<PreparedSessionReceipt, StoreError> {
+        let _writer = self.write_guard()?;
         self.prepare_session_recorded(request, failure, None)
     }
 
@@ -92,6 +131,7 @@ impl SessionStore {
         failure: Option<FailurePoint>,
         restoration: Option<&RestorationIntent<'_>>,
     ) -> Result<PreparedSessionReceipt, StoreError> {
+        let _writer = self.write_guard()?;
         validate_request(&request)?;
         require_real_directory(&self.sessions_root)?;
         if request.origin == SessionOrigin::Capture && restoration.is_none() {

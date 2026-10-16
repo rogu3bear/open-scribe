@@ -29,6 +29,8 @@ candidate_paths() {
 }
 
 candidate_assert() {
+	[[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app_bundle/Contents/Info.plist")" == app.open-scribe.dev.verification ]] ||
+		candidate_fail 'verification requires an isolated application preferences domain'
 	[[ "$(candidate_sha256 "$candidate_record")" == "$candidate_record_digest" ]] ||
 		candidate_fail 'candidate record changed during proof'
 	candidate_source

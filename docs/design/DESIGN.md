@@ -1,6 +1,6 @@
 # Open Scribe Design Contract
 
-**Status:** design strategy approved; M0 and bounded M1 truth surfaces implemented; the complete local conversation loop and rendered release verification remain pending.
+**Status (2026-10-15):** strategy remains applicable. The source now includes capture/import, recovery/playback, local transcription, correction/search, and export. Integration repair and exact-candidate/platform qualification are distinct from implementation; public capability and release holds remain unchanged.
 
 **Decision date:** 2026-08-20
 
@@ -11,6 +11,8 @@
 **Selected direction:** Field Instrument / Evidence Ledger.
 
 ## 1. Scope and proof boundary
+
+**Supersession (2026-10-15):** all present-tense M0 restrictions, the dated proximate objective/action schedule, section 13's original sequencing, and section 15's M0 acceptance below are historical. They do not restrict the current product UI or require removing later implementations. Current owners are `ARCHITECTURE.md`, `RuntimeLibraryStore.swift`, the Rust store/core, and the typed native projections. Dated inspection notes and receipts below remain historical evidence; none qualifies this repair's candidate.
 
 The current native interface is a developer-facing Milestone 0 proof. Preserve it as a small, honest diagnostic composition whose only jobs are to show that:
 
@@ -30,11 +32,11 @@ This document selects a direction for intended product and website work. It does
 
 ## Strategy kernel
 
-### Diagnosis — the crux
+### Historical diagnosis — 2026-08-27 strategy input
 
 Open Scribe is a chain-link product: explicit capture authority → durable independent media → recovery → local conversation library → timestamped transcript → speaker review → evidence-linked interpretation. The repository has proved important portions of the first links, but the chain still stops before one complete operator journey: the working candidate contains a ScreenCaptureKit system-audio path but has not qualified it through real simultaneous capture and synchronization, ordinary and recovered recordings do not yet share a useful library, and transcription remains unimplemented. The critical challenge is therefore not feature scarcity or visual polish; it is finishing one trustworthy local conversation loop without spreading work across later intelligence, context, website, and release lanes. This diagnosis is wrong if recurring operators do not value the complete local loop after using it for two real meetings, or if a materially smaller slice produces the same revisit behavior.
 
-### Guiding policy
+### Current guiding policy
 
 Concentrate all product and repository work on one native, local-first conversation loop: deliberate menu-bar capture or import → recoverable source audio → transcript and speaker review → searchable conversation document → evidence-linked export. Complete each weak link to an observable threshold before funding the next. Use native platform defaults outside this chain, because Open Scribe's specific advantage is inspectable local evidence and user-held capture authority—not an AI aesthetic, cloud collaboration, or visual novelty.
 
@@ -43,7 +45,7 @@ Therefore Open Scribe will not:
 - grow product UI around the M0 diagnostic shell or expose fixtures as product behavior;
 - implement website promotion in parallel with the native conversation loop;
 - use custom native fonts, a decorative native palette, recording red as branding, or motion as status;
-- build context observation, remote providers, autonomous actions, team workspaces, or a plugin platform before the local loop is useful;
+- expand context observation, remote providers, autonomous actions, team workspaces, or a plugin platform before the local loop is useful; preserve existing bounded implementations;
 - send frame-rate meters, waveforms, pointer samples, or media through the ordinary UniFFI state contract;
 - require an account, network connection, or remote model to record, recover, play, transcribe, review speakers, search, or export;
 - claim Recording, recovery, accessibility, website behavior, release, or deployment from a lower proof plane.
@@ -555,6 +557,8 @@ The implementation milestone must record:
 
 ## 13. Strategic sequencing and stop rule
 
+**Historical sequencing, superseded 2026-10-15:** the diagnostic preservation and authorization ordering below record the original milestone plan. Current authorized integration repair follows the existing local loop and retains optional implementations without expanding them. Current capability, signing, and release holds remain in force.
+
 The coherent-action table in the strategy kernel is the implementation sequence. The constraint is concentration, not calendar ambition:
 
 1. Preserve the current M0 diagnostic interface unchanged except for truthful maintenance.
@@ -600,6 +604,8 @@ Uncertainty is handled by making a testable decision, not by delegating design c
 | Custom motion | 160 ms luminance, 200 ms selected depth, ≤100 ms reduced-motion crossfade. | Reduced Motion testing or state-recognition timing shows discomfort or delayed truth. |
 
 ## 15. Acceptance statement
+
+**Historical acceptance:** the following records the design decision's original scope. Current source and candidate qualification must be reacquired separately.
 
 The research synthesis, strategy kernel, structural selection, and initial implementation decisions are complete. The direction is approved as a contract for future bounded implementation.
 

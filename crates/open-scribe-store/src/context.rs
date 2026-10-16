@@ -364,7 +364,7 @@ fn condition_from(value: &str) -> Result<ContextCondition, StoreError> {
 }
 
 impl SessionStore {
-    fn session_lifecycle(&self, session: &str) -> Result<String, StoreError> {
+    pub(super) fn session_lifecycle(&self, session: &str) -> Result<String, StoreError> {
         self.connection
             .query_row(
                 "SELECT lifecycle FROM sessions WHERE id = ?1",
@@ -400,6 +400,7 @@ impl SessionStore {
         session: SessionId,
         action: ContextAction,
     ) -> Result<ContextDetail, StoreError> {
+        let _writer = self.write_guard()?;
         let lifecycle = self.session_lifecycle(&session.0)?;
         if !OPEN_LIFECYCLES.contains(&lifecycle.as_str()) {
             return Err(StoreError::InvalidState(
@@ -509,6 +510,7 @@ impl SessionStore {
         session: SessionId,
         declaration: SessionDeclaration,
     ) -> Result<SessionDeclaration, StoreError> {
+        let _writer = self.write_guard()?;
         let lifecycle = self.session_lifecycle(&session.0)?;
         if !OPEN_LIFECYCLES.contains(&lifecycle.as_str()) && lifecycle != "ready_for_review" {
             return Err(StoreError::InvalidState("the session cannot be declared"));
@@ -630,6 +632,7 @@ impl SessionStore {
         session: &str,
         record: &JournalRecord,
     ) -> Result<(), StoreError> {
+        let _writer = self.write_guard()?;
         let present: bool = self.connection.query_row(
             "SELECT EXISTS(SELECT 1 FROM session_events WHERE id = ?1)",
             [&record.body.event_id],
@@ -737,6 +740,7 @@ impl SessionStore {
                         at
                     ],
                 )?;
+                super::session_times::record_change(&tx, session, at)?;
             }
             _ => return Err(StoreError::IntegrityMismatch("not a context record")),
         }
@@ -760,6 +764,7 @@ impl SessionStore {
         session: &str,
         records: &[JournalRecord],
     ) -> Result<(), StoreError> {
+        let _writer = self.write_guard()?;
         for record in records.iter().filter(|record| {
             matches!(
                 record.body.event_kind.as_str(),

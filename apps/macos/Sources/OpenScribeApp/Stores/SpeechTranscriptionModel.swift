@@ -8,6 +8,8 @@ import Foundation
 final class SpeechTranscriptionModel: ObservableObject {
   @Published private(set) var models: [NativeSpeechModel] = []
   @Published private(set) var isInstalling = false
+  @Published private(set) var isRefreshing = false
+  @Published private(set) var catalogWarning: String?
   @Published private(set) var transcribingSessionId: String?
   @Published private(set) var progress: NativeTranscriptionProgress?
   @Published private(set) var message: String?
@@ -18,6 +20,8 @@ final class SpeechTranscriptionModel: ObservableObject {
   /// Leases a compressed import's verified bytes for companion decoding.
   private let preparation: NativeRecordingPreparation?
   private var job: NativeTranscriptionJob?
+  private var refreshGeneration: UInt64 = 0
+  private var refreshTask: Task<Void, Never>?
 
   init(speech: NativeSpeechModels?, preparation: NativeRecordingPreparation? = nil) {
     self.speech = speech
@@ -28,7 +32,9 @@ final class SpeechTranscriptionModel: ObservableObject {
   convenience init(managedRoot: URL?) {
     self.init(
       speech: try? managedRoot.map { try NativeSpeechModels.open(managedRoot: $0.path) },
-      preparation: try? managedRoot.map { try NativeRecordingPreparation.open(managedRoot: $0.path) }
+      preparation: try? managedRoot.map {
+        try NativeRecordingPreparation.open(managedRoot: $0.path)
+      }
     )
   }
 
@@ -40,29 +46,48 @@ final class SpeechTranscriptionModel: ObservableObject {
     ) {
       self.init(speech: nil)
       self.models = models
+      self.catalogWarning = nil
       self.transcribingSessionId = sessionId
       self.progress = progress
     }
   #endif
 
   var installedModel: NativeSpeechModel? { models.first(where: \.installed) }
+  var readiness: NativeModelReadiness {
+    if isRefreshing { return .verifying }
+    return installedModel?.readiness ?? models.first(where: { $0.readiness != .absent })?.readiness
+      ?? .absent
+  }
 
   func refresh() {
+    refreshGeneration &+= 1
+    let generation = refreshGeneration
+    refreshTask?.cancel()
     guard let speech else {
       models = []
+      catalogWarning = "The local speech catalog is unavailable."
+      isRefreshing = false
       return
     }
-    // The catalog is part of the model's observable state, so callers can
-    // read it when this returns. The Rust read itself stays off the main
-    // thread; only the finished list is published here.
-    let loaded = DispatchQueue.global(qos: .utility).sync {
-      speech.models()
+    isRefreshing = true
+    refreshTask = Task {
+      do {
+        let loaded = try await StructuredNativeIO.read { speech.models() }
+        guard generation == refreshGeneration else { return }
+        models = loaded
+        catalogWarning = nil
+        isRefreshing = false
+        let summary = "count=\(loaded.count) ready=\(loaded.filter(\.installed).count)"
+        if summary != loggedCatalogSummary {
+          loggedCatalogSummary = summary
+          AppTelemetry.libraryNote(stage: "speech-catalog", detail: summary)
+        }
+      } catch {
+        guard generation == refreshGeneration else { return }
+        isRefreshing = false
+        catalogWarning = "Speech model discovery could not finish. Refresh to try again."
+      }
     }
-    models = loaded
-    let summary = "count=\(loaded.count) installed=\(loaded.filter(\.installed).count)"
-    guard summary != loggedCatalogSummary else { return }
-    loggedCatalogSummary = summary
-    AppTelemetry.libraryNote(stage: "speech-catalog", detail: summary)
   }
 
   /// Copies, verifies, self-tests, and installs the chosen file off the main
@@ -81,7 +106,11 @@ final class SpeechTranscriptionModel: ObservableObject {
     let path = url.path
     do {
       try await Task.detached(priority: .utility) {
-        try speech.installFromFile(modelId: modelId, sourcePath: path)
+        if model.readiness == .invalid {
+          try speech.repairFromFile(modelId: modelId, sourcePath: path)
+        } else {
+          try speech.installFromFile(modelId: modelId, sourcePath: path)
+        }
       }.value
       report("\(model.fileName) verified and installed.")
       AppTelemetry.libraryNote(
@@ -101,7 +130,13 @@ final class SpeechTranscriptionModel: ObservableObject {
   /// Rust committed a transcript; failure or cancellation leaves audio as-is.
   @discardableResult
   func transcribe(sessionId: String) async -> Bool {
-    guard let speech, let model = installedModel, transcribingSessionId == nil else { return false }
+    await process(sessionId: sessionId, intent: .resumeIncomplete) == .completed
+  }
+
+  func process(sessionId: String, intent: NativeTranscriptionIntent, admission: String? = nil) async
+    -> NativeWorkOutcome
+  {
+    guard let speech, transcribingSessionId == nil else { return .deferred }
     let job = NativeTranscriptionJob()
     self.job = job
     transcribingSessionId = sessionId
@@ -112,7 +147,7 @@ final class SpeechTranscriptionModel: ObservableObject {
       transcribingSessionId = nil
       progress = nil
     }
-    let modelId = model.modelId
+    let modelId = installedModel?.modelId ?? ""
     let sessionToken = DiagnosticPrivacy.token(sessionId)
     let modelToken = DiagnosticPrivacy.token(modelId)
     AppTelemetry.libraryNote(
@@ -121,7 +156,7 @@ final class SpeechTranscriptionModel: ObservableObject {
     let work = Task.detached(priority: .utility) {
       try Self.run(
         speech: speech, preparation: preparation, modelId: modelId, sessionId: sessionId,
-        job: job)
+        intent: intent, admission: admission, job: job)
     }
     // Progress is polled from Rust's job, never pushed per chunk.
     let poll = Task { [weak self] in
@@ -132,37 +167,63 @@ final class SpeechTranscriptionModel: ObservableObject {
     }
     defer { poll.cancel() }
     do {
-      let summary = try await work.value
+      let result = try await work.value
+      guard result.outcome == .completed, let summary = result.summary else {
+        report(Self.outcomeText(result.outcome), failure: result.outcome == .failed)
+        if result.outcome == .failed || result.outcome == .deferred { refresh() }
+        return result.outcome
+      }
       let tracks = summary.tracks == 1 ? "1 track" : "\(summary.tracks) tracks"
       let segments = summary.segments == 1 ? "1 segment" : "\(summary.segments) segments"
       report("Transcribed \(tracks) on this Mac: \(segments).")
       AppTelemetry.libraryNote(
         stage: "transcription",
-        detail: "committed session=\(sessionToken) tracks=\(summary.tracks) segments=\(summary.segments)"
+        detail:
+          "committed session=\(sessionToken) tracks=\(summary.tracks) segments=\(summary.segments)"
       )
-      return true
+      return .completed
     } catch {
-      report(Self.describe(error), failure: true)
+      let cancelled = (error as? NativeSpeechError) == .Cancelled || error is CancellationError
+      let outcome = job.stopOutcome() ?? (cancelled ? .userCancelled : .failed)
+      report(outcome == .failed ? Self.describe(error) : Self.outcomeText(outcome), failure: outcome == .failed)
       let code = error is CancellationError ? "cancelled" : Self.speechCode(error)
       AppTelemetry.libraryNote(
         stage: "transcription", detail: "failed session=\(sessionToken) code=\(code)")
-      return false
+      return outcome
     }
   }
 
   func cancel() {
     job?.cancel()
   }
+  func preemptForCapture() { job?.preemptForCapture() }
+
+  private static func outcomeText(_ outcome: NativeWorkOutcome) -> String {
+    switch outcome {
+    case .completed: "Transcript ready."
+    case .userCancelled: "Transcription was cancelled. The recorded audio is unchanged."
+    case .capturePreempted: "Transcription yielded to capture. Finished parts are kept."
+    case .failed: "Transcription did not finish. The recorded audio is unchanged."
+    case .deferred: "Transcription is waiting to start."
+    }
+  }
 
   /// A compressed import is first decoded, from its leased bytes, into a
   /// temporary PCM companion that Rust validates and reads; it is removed after.
   nonisolated private static func run(
     speech: NativeSpeechModels, preparation: NativeRecordingPreparation?, modelId: String,
-    sessionId: String, job: NativeTranscriptionJob
-  ) throws -> NativeTranscriptionSummary {
-    guard try speech.needsDecodedCompanion(sessionId: sessionId) else {
-      return try speech.transcribeSession(
-        modelId: modelId, sessionId: sessionId, decodedCompanionPath: nil, job: job)
+    sessionId: String, intent: NativeTranscriptionIntent, admission: String?,
+    job: NativeTranscriptionJob
+  ) throws -> NativeTranscriptionResult {
+    if intent == .reconcileRetained {
+      return speech.transcribeWithIntent(
+        modelId: modelId, sessionId: sessionId, intent: intent, admission: admission,
+        decodedCompanionPath: nil, job: job)
+    }
+    guard try speech.needsDecodedCompanionForIntent(sessionId: sessionId, intent: intent) else {
+      return speech.transcribeWithIntent(
+        modelId: modelId, sessionId: sessionId, intent: intent, admission: admission,
+        decodedCompanionPath: nil, job: job)
     }
     guard let preparation else { throw NativeSpeechError.StorageFailure }
     let directory = FileManager.default.temporaryDirectory
@@ -177,8 +238,9 @@ final class SpeechTranscriptionModel: ObservableObject {
     } catch is CancellationError {
       throw NativeSpeechError.Cancelled
     }
-    return try speech.transcribeSession(
-      modelId: modelId, sessionId: sessionId, decodedCompanionPath: companion.path, job: job)
+    return speech.transcribeWithIntent(
+      modelId: modelId, sessionId: sessionId, intent: intent, admission: admission,
+      decodedCompanionPath: companion.path, job: job)
   }
 
   func dismissMessage() {
@@ -222,12 +284,18 @@ final class SpeechTranscriptionModel: ObservableObject {
       return "No verified speech model is installed."
     case .ModelRejected(let reason):
       return "The model file was not installed: \(rejection(reason))."
+    case .ModelReadiness(_, let reason):
+      return "The model file was not installed: \(rejection(reason))."
     case .NoTranscribableAudio:
       return "This conversation has no recorded audio to transcribe."
     case .DecodedAudioRejected:
       return "The imported audio could not be decoded consistently, so nothing was transcribed."
     case .Cancelled:
       return "Transcription was cancelled. The recorded audio is unchanged."
+    case .CapturePreempted:
+      return "Transcription yielded to capture. Finished parts are kept."
+    case .Deferred:
+      return "Transcription is waiting for current work or capture to finish."
     case .TranscriptionFailed:
       return "Transcription stopped before it finished. The recorded audio is unchanged."
     case .StorageFailure, .none:

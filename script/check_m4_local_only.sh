@@ -14,7 +14,7 @@ set -euo pipefail
 
 script_dir="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
 repo_root="$(CDPATH='' cd -- "$script_dir/.." && pwd)"
-app="$repo_root/apps/macos/.build/xcode/Build/Products/Debug/OpenScribeApp.app/Contents/MacOS/OpenScribeApp"
+app="$repo_root/apps/macos/.build/xcode-verification/Build/Products/Debug/OpenScribeApp.app/Contents/MacOS/OpenScribeApp"
 profile='(version 1)(allow default)(deny network-outbound (remote ip))(deny network-inbound (local ip))(deny network-bind (local ip))'
 sentinels=(
 	LocalOnlyTitleSentinel7f3a LocalOnlyParticipantSentinel51c2 LocalOnlyTopicSentinel88d0
@@ -60,6 +60,7 @@ if rg -q 'URLSession|NWConnection|NWPathMonitor|import Network|CFSocket|URLReque
 fi
 
 root="$(mktemp -d "${TMPDIR:-/tmp}/open-scribe-local-only.XXXXXX")"
+root="$(CDPATH='' cd -- "$root" && pwd -P)"
 trap 'rm -rf "$root"' EXIT
 start="$(date '+%Y-%m-%d %H:%M:%S')"
 OPEN_SCRIBE_LOCAL_PROOF_MODEL="$OPEN_SCRIBE_LOCAL_PROOF_MODEL" \

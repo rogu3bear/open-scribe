@@ -2,6 +2,9 @@
 
 #![forbid(unsafe_code)]
 
+mod production;
+pub use production::{recording_evidence_sufficient, transcription_hold};
+
 use open_scribe_types::{
     DurabilityRecord, Lifecycle, PermissionRecord, PermissionState, RecoveryRecord, RecoveryStatus,
     SessionHealth, SessionId, SessionRecord, SourceActivity, SourceHealth, SourceId, SourceKind,
@@ -140,7 +143,12 @@ impl SessionMachine {
                     media_files_open,
                     media_safe: false,
                 };
-                if !durability.permits_recording() {
+                if !recording_evidence_sufficient(
+                    self.session.sources.len(),
+                    self.session.sources.len(),
+                    durability.journal_durable,
+                    durability.media_files_open,
+                ) {
                     return Err(TransitionError::DurabilityEvidenceMissing);
                 }
                 self.session.durability = durability;

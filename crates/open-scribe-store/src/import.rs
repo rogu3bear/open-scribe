@@ -182,6 +182,7 @@ impl SessionStore {
         &mut self,
         request: ImportMediaRequest,
     ) -> Result<ImportedMediaEvidence, StoreError> {
+        let _writer = self.write_guard()?;
         self.import_recoverable_caf_inner(request, None, None)
     }
 
@@ -190,6 +191,7 @@ impl SessionStore {
         request: ImportMediaRequest,
         original: OriginalImportMetadata,
     ) -> Result<ImportedMediaEvidence, StoreError> {
+        let _writer = self.write_guard()?;
         if original.byte_length > MAX_IMPORT_BYTES {
             return Err(StoreError::ImportSizeLimit);
         }
@@ -220,6 +222,7 @@ impl SessionStore {
         request: ImportMediaRequest,
         metadata: CompressedImportMetadata,
     ) -> Result<ImportedMediaEvidence, StoreError> {
+        let _writer = self.write_guard()?;
         validate_compressed_import_bounds(metadata.original.byte_length, metadata.sample_count)?;
         if metadata.original.duration_nanoseconds > MAX_IMPORT_DURATION_NANOSECONDS {
             return Err(StoreError::ImportDurationLimit);
@@ -756,6 +759,7 @@ impl SessionStore {
         records: &[JournalRecord],
         base: RecoveryDisposition,
     ) -> Result<RecoveryDisposition, StoreError> {
+        let _writer = self.write_guard()?;
         let (origin, lifecycle): (String, String) = self.connection.query_row(
             "SELECT origin, lifecycle FROM sessions WHERE id = ?1",
             [session_id],

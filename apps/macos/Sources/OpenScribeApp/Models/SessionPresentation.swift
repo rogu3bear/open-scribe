@@ -105,6 +105,178 @@ struct RecoveredTrackPresentation: Identifiable {
   }
 }
 
+/// The derived-transcript posture Rust projects for a saved conversation.
+/// Chunk counts cover the runs still in progress; the state names only what
+/// the store has committed.
+struct RuntimeTranscriptPresentation: Equatable, Sendable {
+  enum State: String, Equatable, Sendable {
+    case none
+    case running
+    case final
+    case partial
+    case failed
+    case cancelled
+    case unknown
+  }
+
+  let state: State
+  let documentAvailability: NativeDocumentAvailability
+  let replacementResumable: Bool
+  let selectedRevisionIds: [String]
+  let documentVersion: String
+  let attempt: NativeAttemptState
+  let attemptFailure: String?
+  let totalTracks: UInt32
+  let finalTracks: UInt32
+  let completedChunks: UInt32
+  let totalChunks: UInt32
+  let failureClass: String?
+
+  init(native: NativeRuntimeTranscriptSnapshot?) {
+    switch native?.state {
+    case .none?: state = .none
+    case .running?: state = .running
+    case .final?: state = .final
+    case .partial?: state = .partial
+    case .failed?: state = .failed
+    case .cancelled?: state = .cancelled
+    case .unknown?, nil: state = .unknown
+    }
+    attempt = native?.attempt ?? .unknown
+    documentAvailability = native?.document ?? .unavailable
+    replacementResumable = native?.replacementResumable ?? false
+    selectedRevisionIds = native?.selectedRevisionIds ?? []
+    documentVersion = native?.documentVersion ?? "unavailable"
+    attemptFailure = native?.attemptFailure
+    totalTracks = native?.totalTracks ?? 0
+    finalTracks = native?.finalTracks ?? 0
+    completedChunks = native?.completedChunks ?? 0
+    totalChunks = native?.totalChunks ?? 0
+    failureClass = native?.failureClass
+  }
+
+  init(
+    state: State, totalTracks: UInt32 = 1, finalTracks: UInt32 = 0, completedChunks: UInt32 = 0,
+    totalChunks: UInt32 = 0, failureClass: String? = nil
+  ) {
+    self.state = state
+    documentAvailability =
+      state == .final
+      ? .final : finalTracks > 0 ? .partial : state == .unknown ? .unavailable : .none
+    replacementResumable = false
+    selectedRevisionIds = []
+    documentVersion = "fixture"
+    attempt = state == .running ? .running : state == .failed ? .failed : .none
+    attemptFailure = failureClass
+    self.totalTracks = totalTracks
+    self.finalTracks = finalTracks
+    self.completedChunks = completedChunks
+    self.totalChunks = totalChunks
+    self.failureClass = failureClass
+  }
+
+  /// Whether the conversation has sealed audio a transcript can cover.
+  var hasTranscribableAudio: Bool { totalTracks > 0 }
+
+  /// Progress of the running runs as a fraction, when chunk counts exist.
+  var runningFraction: Double? {
+    guard attempt == .running, totalChunks > 0 else { return nil }
+    return min(1, Double(completedChunks) / Double(totalChunks))
+  }
+
+  /// One short phrase for lists: what is true about the transcript now.
+  var statusText: String {
+    if documentAvailability == .partial {
+      let document = "Transcript ready for \(finalTracks) of \(totalTracks) tracks"
+      switch attempt {
+      case .running: return document + " · transcription running"
+      case .failed: return document + " · latest attempt failed"
+      case .cancelled: return document + " · latest attempt cancelled"
+      case .preempted: return document + " · transcription yielded to capture"
+      case .unknown: return document + " · attempt status unavailable"
+      case .none, .complete: return document
+      }
+    }
+    return legacyStatusText
+  }
+
+  private var legacyStatusText: String {
+    switch state {
+    case .none: "No transcript yet"
+    case .running:
+      totalChunks > 0
+        ? "Transcribing, \(completedChunks) of \(totalChunks) parts"
+        : "Transcribing"
+    case .final:
+      switch attempt {
+      case .running: "Transcript ready · replacement running"
+      case .failed: "Transcript ready · replacement failed"
+      case .cancelled: "Transcript ready · replacement cancelled"
+      case .preempted: "Transcript ready · replacement yielded to capture"
+      case .unknown: "Transcript ready · attempt status unavailable"
+      case .none, .complete: "Transcript ready"
+      }
+    case .partial: "Transcript ready for \(finalTracks) of \(totalTracks) tracks"
+    case .failed: "Transcript failed"
+    case .cancelled:
+      attempt == .preempted ? "Transcription yielded to capture" : "Transcription cancelled"
+    case .unknown: "Transcript status unavailable"
+    }
+  }
+
+  /// Scheduling wording adds intent to the durable document/attempt projection.
+  /// It never changes availability or makes an eligibility decision.
+  func line(for work: TranscriptionJobState?) -> (symbol: String, text: String) {
+    let readable = documentAvailability == .final || documentAvailability == .partial
+    func message(_ text: String) -> String { readable ? statusText + " · " + text : text }
+    switch work {
+    case .queued(let position, _):
+      return ("clock", message(position == 1 ? "queued next" : "queued, \(position) in line"))
+    case .running where attempt != .running:
+      return ("ellipsis.circle", message("starting transcription"))
+    case .failed where attempt != .failed:
+      return ("exclamationmark.circle", message("latest request failed"))
+    case .cancelled where attempt != .cancelled:
+      return ("minus.circle", message("transcription cancelled"))
+    case .preempted where attempt != .preempted:
+      return ("pause.circle", message("transcription yielded to capture"))
+    case .deferred:
+      return ("clock", message("transcription deferred"))
+    default:
+      let symbol =
+        attempt == .running
+        ? "ellipsis.circle"
+        : attempt == .failed || attempt == .unknown ? "exclamationmark.circle" : "text.alignleft"
+      return (symbol, statusText)
+    }
+  }
+
+  /// Why the latest run ended without a transcript, in plain words. The
+  /// recorded audio is never affected by any of these.
+  static func failureText(_ failureClass: String?) -> String {
+    switch failureClass {
+    case "invalid_result", "stale_reconciliation":
+      "The transcript could not be assembled from the finished parts. Retry rebuilds it from the parts that were kept."
+    case "orphaned":
+      "Transcription was interrupted before it finished. Retry continues from the parts that were kept."
+    case "storage_error":
+      "Transcript storage did not finish. Finished parts are kept for retry; the source audio is unchanged."
+    case "cancelled":
+      "Transcription was cancelled."
+    case "model_unavailable":
+      "The speech model is not installed."
+    case "engine_error":
+      "The speech engine stopped before it finished."
+    case "resource_exhausted":
+      "The Mac ran out of memory or disk space while transcribing."
+    case "input_unavailable":
+      "The recorded audio could not be read for transcription."
+    default:
+      "Transcription stopped before it finished."
+    }
+  }
+}
+
 struct RuntimeSessionPresentation: Equatable, Sendable, Identifiable {
   let sessionId: String
   let title: String
@@ -118,6 +290,7 @@ struct RuntimeSessionPresentation: Equatable, Sendable, Identifiable {
   let hasCaptureTimeline: Bool
   let sources: [RuntimeSourcePresentation]
   let playableMedia: RuntimePlayableMediaPresentation?
+  let transcript: RuntimeTranscriptPresentation
 
   init(native: NativeRuntimeSessionSnapshot) {
     sessionId = native.sessionId
@@ -132,6 +305,7 @@ struct RuntimeSessionPresentation: Equatable, Sendable, Identifiable {
     hasCaptureTimeline = native.hasCaptureTimeline
     sources = native.sources.map(RuntimeSourcePresentation.init(native:))
     playableMedia = native.playableMedia.map(RuntimePlayableMediaPresentation.init(native:))
+    transcript = RuntimeTranscriptPresentation(native: native.transcript)
   }
 
   var id: String { sessionId }

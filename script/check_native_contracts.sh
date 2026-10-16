@@ -8,26 +8,15 @@ mode="${1:---all}"
 case "$mode" in --all | --coarse | --fixtures | --entitlements) ;; *) exit 64 ;; esac
 
 if [[ "$mode" == --all || "$mode" == --coarse ]]; then
-	# rg exit 1 means no match; distinguish a match from an inspection error.
-	if rg -ni '\b(pcm|cmsamplebuffer|avaudiopcmbuffer|audio_buffer|video_frame|waveform|meter|pointer)\b' \
-		crates/open-scribe-uniffi/src; then
-		printf '%s\n' 'NATIVE_CONTRACT_RED: hot-path media or telemetry crossed UniFFI' >&2
-		exit 1
-	elif [[ "$?" != 1 ]]; then
-		exit 1
+	ruby "$script_dir/check_ffi_surface.rb" --self-test
+	ruby "$script_dir/check_ffi_surface.rb"
+	# Vocabulary is advisory lint; a negative comment is not a boundary breach.
+	if rg -qi '\b(pcm|cmsamplebuffer|avaudiopcmbuffer|audio_buffer|video_frame|waveform|meter|pointer)\b' crates/open-scribe-uniffi/src; then
+		printf '%s\n' 'FFI_VOCABULARY_LINT: inspect media vocabulary in context; structural validation above owns this gate'
 	fi
 fi
 if [[ "$mode" == --all || "$mode" == --fixtures ]]; then
-	# Imports carry one bounded sample-rate scalar; no prefixed/suffixed alias.
-	coarse_status=0
-	coarse_matches="$(rg --no-config -n -o \
-		'\w*(effective_frame|audio_buffer|video_frame|pointer_sample|meter_value|waveform_value|sample_rate)\w*' \
-		crates/open-scribe-uniffi/src apps/macos/Sources/OpenScribeApp/Generated/OpenScribeCore.swift)" || coarse_status=$?
-	coarse_violations="$(grep -v ':sample_rate_hz$' <<<"$coarse_matches" || true)"
-	if ((coarse_status > 1)) || [[ -n "$coarse_violations" ]]; then
-		printf '%s\n' "$coarse_violations" 'STATE_FIXTURES_RED: frame-rate or media payload vocabulary crossed the coarse UniFFI surface' >&2
-		exit 1
-	fi
+	ruby "$script_dir/check_ffi_surface.rb"
 fi
 if [[ "$mode" == --all || "$mode" == --entitlements ]]; then
 	info_plist="apps/macos/Support/Info.plist"

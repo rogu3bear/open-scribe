@@ -2,9 +2,11 @@ import SwiftUI
 
 struct ConversationWorkspaceView: View {
   let session: RuntimeSessionPresentation
+  @ObservedObject var store: RuntimeLibraryStore
   @ObservedObject var playbackController: RecoveredSessionController
   @ObservedObject var transcripts: TranscriptLibraryModel
   @ObservedObject var speech: SpeechTranscriptionModel
+  @ObservedObject var scheduler: TranscriptionScheduler
   let reference: String?
   let audioReviewRequest: MainWorkspaceNavigation.AudioReviewRequest?
   let canStartNewRecording: Bool
@@ -14,6 +16,8 @@ struct ConversationWorkspaceView: View {
   @State private var recorderEvents: [NativeRecorderEvent] = []
   @State private var showsAudioDetails = false
   @State private var showsRecordingDetails = false
+  @State private var isRenaming = false
+  @State private var isEditingDetails = false
 
   private var recoveredTracks: [RecoveredTrackPresentation] {
     session.recoveredTracks(from: playbackController.sessions)
@@ -54,6 +58,7 @@ struct ConversationWorkspaceView: View {
               session: session,
               transcripts: transcripts,
               speech: speech,
+              scheduler: scheduler,
               canSeek: session.hasCaptureTimeline || session.playableMedia?.isPlayable == true,
               onSeek: { position in
                 // Captures seek on the shared timeline; imports within their media.
@@ -65,6 +70,9 @@ struct ConversationWorkspaceView: View {
                 }
               }
             )
+          }
+          if session.lifecycle == "ready_for_review" {
+            conversationDetails
           }
           ContextEventsSection(
             detail: transcripts.sessionId == session.sessionId ? transcripts.contextDetail : nil,
@@ -103,16 +111,38 @@ struct ConversationWorkspaceView: View {
     .task(id: "\(session.sessionId)|\(session.lifecycle)") {
       recorderEvents = loadRecorderEvents(session.sessionId)
     }
+    .sheet(isPresented: $isRenaming) {
+      ConversationRenameSheet(session: session, store: store) { isRenaming = false }
+    }
+    .sheet(isPresented: $isEditingDetails) {
+      ConversationDetailsSheet(
+        session: session,
+        declaration: transcripts.sessionId == session.sessionId
+          ? transcripts.contextDetail?.declaration : nil,
+        store: store,
+        onSaved: { transcripts.load(session: session) },
+        onClose: { isEditingDetails = false })
+    }
   }
 
   private func header(title: String) -> some View {
     VStack(alignment: .leading, spacing: 8) {
-      Text(title)
-        .font(.title2.weight(.semibold))
-        .fixedSize(horizontal: false, vertical: true)
-        .textSelection(.enabled)
-        .accessibilityAddTraits(.isHeader)
-        .accessibilityLabel(title)
+      HStack(alignment: .firstTextBaseline, spacing: 8) {
+        Text(title)
+          .font(.title2.weight(.semibold))
+          .fixedSize(horizontal: false, vertical: true)
+          .textSelection(.enabled)
+          .accessibilityAddTraits(.isHeader)
+          .accessibilityLabel(title)
+        Button {
+          isRenaming = true
+        } label: {
+          Image(systemName: "pencil")
+        }
+        .buttonStyle(.borderless)
+        .help("Rename this conversation")
+        .accessibilityLabel("Rename conversation")
+      }
       HStack(spacing: 8) {
         Label {
           Text(session.statusText)
@@ -133,6 +163,42 @@ struct ConversationWorkspaceView: View {
       .foregroundStyle(.secondary)
       .accessibilityElement(children: .combine)
     }
+  }
+
+  /// Who took part and what it was about, with one place to change them.
+  private var conversationDetails: some View {
+    let declaration =
+      transcripts.sessionId == session.sessionId ? transcripts.contextDetail?.declaration : nil
+    let participants = declaration?.participants ?? []
+    let topic = declaration?.topic
+    return VStack(alignment: .leading, spacing: 8) {
+      HStack(alignment: .firstTextBaseline) {
+        Text("Details")
+          .font(.headline)
+          .accessibilityAddTraits(.isHeader)
+        Spacer()
+        Button(participants.isEmpty && topic == nil ? "Add Details…" : "Edit Details…") {
+          store.dismissEditMessage()
+          isEditingDetails = true
+        }
+        .buttonStyle(.borderless)
+        .help("Record who took part and what the conversation was about")
+      }
+      if participants.isEmpty && topic == nil {
+        Text("No participants or topic recorded.")
+          .foregroundStyle(.secondary)
+      } else {
+        if let topic {
+          Text("Topic: \(topic)")
+            .textSelection(.enabled)
+        }
+        if !participants.isEmpty {
+          Text("Participants: \(ListFormatter.localizedString(byJoining: participants))")
+            .textSelection(.enabled)
+        }
+      }
+    }
+    .accessibilityElement(children: .contain)
   }
 
   private func attentionNotice(onReview: @escaping () -> Void) -> some View {

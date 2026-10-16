@@ -1,15 +1,19 @@
 import SwiftUI
 
 struct ContentView: View {
+  @Environment(\.isSceneVerification) private var isSceneVerification
   @ObservedObject var store: RuntimeLibraryStore
   @ObservedObject var importedMediaAuthority: ImportedMediaAuthorityAdapter
   @ObservedObject var liveRecording: LiveMicrophoneRecordingController
   @ObservedObject var recoveredSessions: RecoveredSessionController
   @ObservedObject var transcripts: TranscriptLibraryModel
   @ObservedObject var speech: SpeechTranscriptionModel
+  @ObservedObject var scheduler: TranscriptionScheduler
+  @ObservedObject var pressure: SystemPressureMonitor
   @ObservedObject var context: ContextScopeModel
   @ObservedObject var navigation: MainWorkspaceNavigation
   @State private var searchQuery = ""
+  @State private var renaming: RuntimeSessionPresentation?
 
   private var selectedSessionId: String? {
     navigation.selectedSessionId
@@ -113,16 +117,25 @@ struct ContentView: View {
     }
     .background {
       #if DEBUG
-        if ProcessInfo.processInfo.arguments.contains("--m0-proof-settings") {
-          if #available(macOS 14.0, *) {
-            SettingsProofTrigger()
-          }
-        }
+        if isSceneVerification { VerificationSettingsTrigger() }
       #endif
     }
   }
 
   private var conversationSidebar: some View {
+    VStack(spacing: 0) {
+      conversationList
+      LibraryActivityFooter(
+        scheduler: scheduler, speech: speech, pressure: pressure,
+        titles: Dictionary(
+          uniqueKeysWithValues: store.savedSessions.map {
+            ($0.sessionId, ConversationIdentityPresentation.title($0.title))
+          }))
+    }
+    .navigationSplitViewColumnWidth(min: 220, ideal: 260, max: 340)
+  }
+
+  private var conversationList: some View {
     let references = conversationReferences
     return List(selection: selectedSessionBinding) {
       if !searchQuery.trimmingCharacters(in: .whitespaces).isEmpty {
@@ -162,17 +175,24 @@ struct ContentView: View {
       if let current = store.currentSession {
         Section("Now") {
           if current.lifecycle == "interrupted" {
-            ConversationSidebarRow(session: current, reference: references[current.sessionId])
-              .tag(current.sessionId)
-              .contextMenu {
-                Button("Move to Trash…", role: .destructive) {
-                  requestDeletion(current)
-                }
-                .disabled(!liveRecording.canStart)
+            ConversationSidebarRow(
+              session: current, reference: references[current.sessionId],
+              transcription: scheduler.state(for: current.sessionId)
+            )
+            .tag(current.sessionId)
+            .contextMenu {
+              Button("Rename…") { renaming = current }
+              Button("Move to Trash…", role: .destructive) {
+                requestDeletion(current)
               }
+              .disabled(!liveRecording.canStart)
+            }
           } else {
-            ConversationSidebarRow(session: current, reference: references[current.sessionId])
-              .tag(current.sessionId)
+            ConversationSidebarRow(
+              session: current, reference: references[current.sessionId],
+              transcription: scheduler.state(for: current.sessionId)
+            )
+            .tag(current.sessionId)
           }
         }
       }
@@ -180,14 +200,18 @@ struct ContentView: View {
       if !LibraryConversationLists.interrupted(store.savedSessions).isEmpty {
         Section("Interrupted") {
           ForEach(LibraryConversationLists.interrupted(store.savedSessions)) { session in
-            ConversationSidebarRow(session: session, reference: references[session.sessionId])
-              .tag(session.sessionId)
-              .contextMenu {
-                Button("Move to Trash…", role: .destructive) {
-                  requestDeletion(session)
-                }
-                .disabled(!liveRecording.canStart)
+            ConversationSidebarRow(
+              session: session, reference: references[session.sessionId],
+              transcription: scheduler.state(for: session.sessionId)
+            )
+            .tag(session.sessionId)
+            .contextMenu {
+              Button("Rename…") { renaming = session }
+              Button("Move to Trash…", role: .destructive) {
+                requestDeletion(session)
               }
+              .disabled(!liveRecording.canStart)
+            }
           }
         }
       }
@@ -199,19 +223,26 @@ struct ContentView: View {
             .foregroundStyle(.secondary)
         } else {
           ForEach(saved) { session in
-            ConversationSidebarRow(session: session, reference: references[session.sessionId])
-              .tag(session.sessionId)
-              .contextMenu {
-                Button("Move to Trash…", role: .destructive) {
-                  requestDeletion(session)
-                }
-                .disabled(!liveRecording.canStart)
+            ConversationSidebarRow(
+              session: session, reference: references[session.sessionId],
+              transcription: scheduler.state(for: session.sessionId)
+            )
+            .tag(session.sessionId)
+            .contextMenu {
+              Button("Rename…") { renaming = session }
+              Button("Move to Trash…", role: .destructive) {
+                requestDeletion(session)
               }
+              .disabled(!liveRecording.canStart)
+            }
           }
         }
       }
     }
     .listStyle(.sidebar)
+    .sheet(item: $renaming) { session in
+      ConversationRenameSheet(session: session, store: store) { renaming = nil }
+    }
     .searchable(text: $searchQuery, placement: .sidebar, prompt: "Search transcripts")
     .onDeleteCommand {
       // Delete (or Edit > Delete) moves the selected saved conversation to
@@ -222,7 +253,6 @@ struct ContentView: View {
       requestDeletion(session)
     }
     .navigationTitle("Library")
-    .navigationSplitViewColumnWidth(min: 220, ideal: 260, max: 340)
   }
 
   @ViewBuilder
@@ -237,9 +267,11 @@ struct ContentView: View {
         } else {
           ConversationWorkspaceView(
             session: selectedSession,
+            store: store,
             playbackController: recoveredSessions,
             transcripts: transcripts,
             speech: speech,
+            scheduler: scheduler,
             reference: conversationReferences[selectedSession.sessionId],
             audioReviewRequest: navigation.audioReviewRequest,
             canStartNewRecording: MainWorkspaceActions.canRecord(
@@ -390,6 +422,9 @@ struct ContentView: View {
       notices.append(
         .init(id: "transcripts", message: message, isFailure: transcripts.messageIsFailure))
     }
+    if let message = store.editMessage, renaming == nil {
+      notices.append(.init(id: "edit", message: message, isFailure: store.editMessageIsFailure))
+    }
     if notices.isEmpty, liveRecording.phase == .saved,
       selectedSessionId == liveRecording.lastSavedSessionId,
       let message = liveRecording.mixdownStatus
@@ -432,7 +467,6 @@ struct ContentView: View {
     )
   }
 }
-
 private struct WorkspaceNotice: Identifiable {
   let id: String
   let message: String
@@ -607,11 +641,21 @@ enum LibraryConversationLists {
 private struct ConversationSidebarRow: View {
   let session: RuntimeSessionPresentation
   let reference: String?
+  var transcription: TranscriptionJobState?
 
   private var symbolName: String? {
     if session.isRecording { return "record.circle.fill" }
     if session.needsAttention { return "exclamationmark.triangle" }
     return nil
+  }
+
+  /// Transcript posture for saved conversations only: the store's committed
+  /// state, or the scheduler's position for work that has not started.
+  private var transcriptLine: (symbol: String, text: String)? {
+    guard session.lifecycle == "ready_for_review", session.transcriptionUnavailableReason == nil,
+      session.transcript.hasTranscribableAudio
+    else { return nil }
+    return session.transcript.line(for: transcription)
   }
 
   var body: some View {
@@ -637,13 +681,78 @@ private struct ConversationSidebarRow: View {
           .font(.caption)
           .foregroundStyle(.secondary)
           .lineLimit(1)
+        if let transcriptLine {
+          Label(transcriptLine.text, systemImage: transcriptLine.symbol)
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+        }
       }
     }
     .accessibilityElement(children: .combine)
     .help(session.title)
     .accessibilityLabel(
-      "\(title), \(session.timerText), \(session.statusText)\(reference.map { ", reference \($0)" } ?? "")"
+      "\(title), \(session.timerText), \(session.statusText)"
+        + (transcriptLine.map { ", \($0.text)" } ?? "")
+        + (reference.map { ", reference \($0)" } ?? "")
     )
+  }
+}
+
+/// What the app is doing for the library right now and what the Mac has to
+/// give it. Every figure is a macOS measurement; the line is silent when
+/// nothing is queued and nothing is scarce.
+struct LibraryActivityFooter: View {
+  @ObservedObject var scheduler: TranscriptionScheduler
+  @ObservedObject var speech: SpeechTranscriptionModel
+  @ObservedObject var pressure: SystemPressureMonitor
+  let titles: [String: String]
+
+  private var activityText: String? {
+    scheduler.summaryText(titles: titles, progress: speech.progressFraction)
+  }
+
+  private var pressureText: String {
+    var parts = [pressure.reading.diskText]
+    if pressure.reading.memoryPressure != .normal {
+      parts.append(pressure.reading.memoryText)
+    }
+    if pressure.reading.thermalState != .nominal {
+      parts.append(pressure.reading.thermalText)
+    }
+    return parts.joined(separator: " · ")
+  }
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 4) {
+      Divider()
+      VStack(alignment: .leading, spacing: 4) {
+        if let activityText {
+          HStack(alignment: .firstTextBaseline, spacing: 6) {
+            Image(systemName: scheduler.runningSessionId != nil ? "ellipsis.circle" : "clock")
+            Text(activityText)
+              .fixedSize(horizontal: false, vertical: true)
+          }
+          if scheduler.runningSessionId != nil, let fraction = speech.progressFraction {
+            ProgressView(value: fraction)
+              .controlSize(.small)
+              .accessibilityLabel("Transcription progress")
+          }
+        }
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+          Image(systemName: pressure.reading.diskIsLow ? "exclamationmark.triangle" : "internaldrive")
+          Text(pressureText)
+            .fixedSize(horizontal: false, vertical: true)
+        }
+      }
+      .font(.caption)
+      .foregroundStyle(pressure.reading.diskIsLow ? .primary : .secondary)
+      .padding(.horizontal, 16)
+      .padding(.vertical, 8)
+    }
+    .accessibilityElement(children: .combine)
+    .accessibilityLabel(
+      "Library activity. " + (activityText.map { "\($0). " } ?? "") + pressureText)
   }
 }
 
@@ -683,18 +792,3 @@ private struct EmptyConversationWorkspace: View {
     .accessibilityElement(children: .contain)
   }
 }
-
-#if DEBUG
-  @available(macOS 14.0, *)
-  private struct SettingsProofTrigger: View {
-    @Environment(\.openSettings) private var openSettings
-
-    var body: some View {
-      Color.clear
-        .frame(width: 0, height: 0)
-        .onAppear {
-          openSettings()
-        }
-    }
-  }
-#endif

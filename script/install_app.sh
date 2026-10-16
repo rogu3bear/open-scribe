@@ -25,6 +25,10 @@ source_app="${1:-$default_source}"
 	printf 'INSTALL_RED: built app is missing its executable: %s\n' "$source_app" >&2
 	exit 1
 }
+[[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$source_app/Contents/Info.plist")" == "$bundle_id" ]] || {
+	printf '%s\n' 'INSTALL_RED: verification artifacts cannot replace the ordinary development app' >&2
+	exit 64
+}
 
 quit_app() {
 	if ! pgrep -x OpenScribeApp >/dev/null; then

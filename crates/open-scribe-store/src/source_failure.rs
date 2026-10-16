@@ -80,6 +80,7 @@ impl SessionStore {
         &mut self,
         request: SourceFailureRequest,
     ) -> Result<SourceFailureEvidence, StoreError> {
+        let _writer = self.write_guard()?;
         if Uuid::parse_str(&request.session_id.0).is_err() {
             return Err(StoreError::InvalidRequest("session ID is not a UUID"));
         }
@@ -393,6 +394,7 @@ impl SessionStore {
         records: &[JournalRecord],
         base: RecoveryDisposition,
     ) -> Result<RecoveryDisposition, StoreError> {
+        let _writer = self.write_guard()?;
         let failures = records
             .iter()
             .filter(|record| record.body.event_kind == "source_failed")

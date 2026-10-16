@@ -1,0 +1,294 @@
+import AVFoundation
+import XCTest
+
+@testable import OpenScribeApp
+
+@MainActor
+final class TranscriptionSchedulerTests: XCTestCase {
+  /// Production coordinator and store against owned synthetic audio. Only the
+  /// ASR executor and native observations are injected, never a separate app.
+  @MainActor private final class Harness {
+    let root: URL
+    let defaults: UserDefaults
+    let coordinator: NativeWorkCoordinator
+    let session: String
+    var capture = false
+    var recovery = false
+    var readiness: NativeModelReadiness = .ready
+    var started: [NativeTranscriptionWork] = []
+    var continuation: CheckedContinuation<NativeWorkOutcome, Never>?
+    lazy var scheduler = TranscriptionScheduler(
+      coordinator: coordinator,
+      runner: { [unowned self] entry in
+        started.append(entry)
+        return await withCheckedContinuation { continuation = $0 }
+      },
+      observations: { [unowned self] in
+        NativeWorkObservations(
+          automatic: true, paused: false, captureActive: capture,
+          mediaRecoveryPending: recovery, model: readiness, availableDiskBytes: nil,
+          memoryCritical: false, thermalCritical: false)
+      }, stop: { [unowned self] preempt in finish(preempt ? .capturePreempted : .userCancelled) },
+      defaults: defaults)
+
+    init() throws {
+      root = FileManager.default.temporaryDirectory.appendingPathComponent("scheduler-\(UUID())")
+        .resolvingSymlinksInPath()
+      try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+      defaults = UserDefaults(suiteName: "OpenScribe.Proof.Scheduler.\(UUID())")!
+      let source = root.appendingPathComponent("source.caf")
+      do {
+        let file = try AVAudioFile(
+          forWriting: source,
+          settings: [
+            AVFormatIDKey: kAudioFormatLinearPCM, AVSampleRateKey: 48_000.0,
+            AVNumberOfChannelsKey: 1, AVLinearPCMBitDepthKey: 16,
+            AVLinearPCMIsFloatKey: false, AVLinearPCMIsBigEndianKey: false,
+          ], commonFormat: .pcmFormatInt16, interleaved: true)
+        let buffer = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: 4_800)!
+        buffer.frameLength = 4_800
+        buffer.int16ChannelData![0].initialize(repeating: 0, count: 4_800)
+        try file.write(from: buffer)
+      }
+      let preparation = try NativeRecordingPreparation.open(
+        managedRoot: root.appendingPathComponent("Library").path)
+      session = try preparation.importRecoverableCaf(title: "Synthetic", sourcePath: source.path)
+        .sessionId
+      coordinator = try NativeWorkCoordinator.open(
+        managedRoot: root.appendingPathComponent("Library").path)
+    }
+    func finish(_ outcome: NativeWorkOutcome) {
+      let pending = continuation
+      continuation = nil
+      pending?.resume(returning: outcome)
+    }
+    func removeOwnedFixture() { try? FileManager.default.removeItem(at: root) }
+  }
+  private func waitUntil(_ condition: () -> Bool) async {
+    for _ in 0..<500 {
+      if condition() { return }
+      try? await Task.sleep(for: .milliseconds(10))
+    }
+    XCTFail("The isolated scheduler did not reach the expected state.")
+  }
+  func testManualPausePreemptionAndRefreshPreserveOneManualRunner() async throws {
+    let h = try Harness()
+    defer { h.removeOwnedFixture() }
+    h.scheduler.isAutomatic = false
+    h.scheduler.isPaused = true
+    h.scheduler.request(sessionId: h.session)
+    await waitUntil { h.started.count == 1 }
+    XCTAssertTrue(h.started[0].manual)
+    for _ in 0..<20 { h.scheduler.reconsider() }
+    try? await Task.sleep(for: .milliseconds(100))
+    XCTAssertEqual(h.started.count, 1, "refresh cannot admit a second runner")
+    h.capture = true
+    h.scheduler.reconsider()
+    await waitUntil { h.scheduler.runningSessionId == nil }
+    await waitUntil { h.scheduler.queue.first?.requestedByUser == true }
+    XCTAssertEqual(h.scheduler.hold, .recordingInProgress)
+    h.capture = false
+    h.scheduler.reconsider()
+    await waitUntil { h.started.count == 2 }
+    XCTAssertTrue(h.started[1].manual)
+    h.finish(.completed)
+    await waitUntil { h.scheduler.runningSessionId == nil }
+  }
+  func testAutomaticOffDoesNotRestartPreemptedWorkAndCancellationIsNotFailure() async throws {
+    let h = try Harness()
+    defer { h.removeOwnedFixture() }
+    h.scheduler.reconsider()
+    await waitUntil { h.started.count == 1 }
+    h.scheduler.isAutomatic = false
+    h.capture = true
+    h.scheduler.reconsider()
+    await waitUntil { h.scheduler.runningSessionId == nil }
+    h.capture = false
+    h.scheduler.reconsider()
+    try? await Task.sleep(for: .milliseconds(100))
+    XCTAssertEqual(h.started.count, 1)
+    h.scheduler.request(sessionId: h.session)
+    await waitUntil { h.started.count == 2 }
+    h.scheduler.cancel(sessionId: h.session)
+    await waitUntil { h.scheduler.state(for: h.session) == .cancelled }
+    XCTAssertFalse(
+      h.scheduler.outcomes.values.contains {
+        if case .failed = $0 { return true }
+        return false
+      },
+      "the former cancellation-as-failure assertion described a defect, not a product invariant")
+  }
+  func testQueuedManualIntentSurvivesAReopenedCoordinatorWithAutomationOff() async throws {
+    let h = try Harness()
+    defer { h.removeOwnedFixture() }
+    h.capture = true
+    h.scheduler.isAutomatic = false
+    h.scheduler.request(sessionId: h.session)
+    await waitUntil { h.scheduler.queue.count == 1 }
+    let reopened = try NativeWorkCoordinator.open(
+      managedRoot: h.root.appendingPathComponent("Library").path)
+    let queue = try reopened.queue(
+      observations: NativeWorkObservations(
+        automatic: false, paused: true,
+        captureActive: true, mediaRecoveryPending: false, model: .absent, availableDiskBytes: nil,
+        memoryCritical: false, thermalCritical: false))
+    XCTAssertEqual(queue.map(\.sessionId), [h.session])
+    XCTAssertTrue(queue[0].manual)
+    XCTAssertEqual(queue[0].hold, .capture)
+  }
+
+  func testPressureReadingNamesOnlyMeasuredHolds() {
+    let base = SystemPressureReading(
+      availableDiskBytes: 40 << 30, memoryPressure: .normal, memoryPressureObserved: false,
+      freeMemoryBytes: 2 << 30, totalMemoryBytes: 16 << 30, thermalState: .nominal,
+      processCPUCores: 3.25, residentMemoryBytes: 900 << 20, sampledAt: Date())
+    XCTAssertNil(base.transcriptionHoldReason)
+    XCTAssertEqual(base.diskText, "42.95 GB free")
+    XCTAssertTrue(base.memoryText.hasPrefix("Memory no pressure reported, "))
+    XCTAssertEqual(base.processText, "Open Scribe using 3.2 CPU cores, 943.7 MB resident")
+
+    let low = SystemPressureReading(
+      availableDiskBytes: 512 << 20, memoryPressure: .warning, memoryPressureObserved: true,
+      freeMemoryBytes: nil, totalMemoryBytes: 16 << 30, thermalState: .serious,
+      processCPUCores: nil, residentMemoryBytes: nil, sampledAt: Date())
+    XCTAssertTrue(low.diskIsLow)
+    XCTAssertEqual(
+      low.transcriptionHoldReason, "Waiting: less than 1.07 GB is free on the library disk.")
+    XCTAssertEqual(low.memoryText, "Memory warning")
+    XCTAssertNil(low.processText)
+
+    let hot = SystemPressureReading(
+      availableDiskBytes: nil, memoryPressure: .critical, memoryPressureObserved: true,
+      freeMemoryBytes: nil, totalMemoryBytes: 16 << 30, thermalState: .critical,
+      processCPUCores: nil, residentMemoryBytes: nil, sampledAt: Date())
+    XCTAssertEqual(hot.transcriptionHoldReason, "Waiting: macOS reports critical memory pressure.")
+    XCTAssertEqual(hot.diskText, "Disk space unavailable")
+
+    // The monitor's measurements come from macOS and are present on this Mac.
+    XCTAssertNotNil(SystemPressureMonitor.hostFreeMemoryBytes())
+    XCTAssertNotNil(SystemPressureMonitor.residentMemoryBytes())
+    XCTAssertGreaterThan(SystemPressureMonitor.processCPUTime(), 0)
+    XCTAssertNotNil(
+      SystemPressureMonitor.availableDiskBytes(at: FileManager.default.temporaryDirectory))
+  }
+
+  func testTranscriptPresentationReadsTheSnapshot() {
+    let running = RuntimeTranscriptPresentation(
+      native: NativeRuntimeTranscriptSnapshot(
+        document: .partial, replacementResumable: false,
+        state: .running, selectedRevisionIds: ["reviewed-A"], documentVersion: "v1",
+        attempt: .running, attemptFailure: nil, totalTracks: 2, finalTracks: 1,
+        completedChunks: 43, totalChunks: 83,
+        failureClass: nil))
+    XCTAssertEqual(running.state, .running)
+    XCTAssertEqual(running.statusText, "Transcript ready for 1 of 2 tracks · transcription running")
+    XCTAssertEqual(running.runningFraction.map { ($0 * 100).rounded() }, 52)
+    let failed = RuntimeTranscriptPresentation(
+      native: NativeRuntimeTranscriptSnapshot(
+        document: .partial, replacementResumable: true,
+        state: .failed, selectedRevisionIds: ["reviewed-A"], documentVersion: "v1",
+        attempt: .failed, attemptFailure: "invalid_result", totalTracks: 2,
+        finalTracks: 1, completedChunks: 0, totalChunks: 0,
+        failureClass: "invalid_result"))
+    XCTAssertEqual(failed.statusText, "Transcript ready for 1 of 2 tracks · latest attempt failed")
+    XCTAssertTrue(failed.replacementResumable)
+    XCTAssertEqual(failed.selectedRevisionIds, ["reviewed-A"])
+    XCTAssertTrue(
+      RuntimeTranscriptPresentation.failureText(failed.failureClass).contains(
+        "rebuilds it from the parts that were kept"))
+    let absent = RuntimeTranscriptPresentation(native: nil)
+    XCTAssertEqual(absent.state, .unknown)
+    XCTAssertEqual(absent.documentAvailability, .unavailable)
+    XCTAssertFalse(absent.hasTranscribableAudio)
+    XCTAssertEqual(
+      RuntimeTranscriptPresentation(
+        native: NativeRuntimeTranscriptSnapshot(
+          document: .partial, replacementResumable: false,
+          state: .partial, selectedRevisionIds: ["reviewed-A"], documentVersion: "v1",
+          attempt: .none, attemptFailure: nil, totalTracks: 2, finalTracks: 1,
+          completedChunks: 0, totalChunks: 0,
+          failureClass: nil)
+      ).statusText,
+      "Transcript ready for 1 of 2 tracks")
+  }
+
+  func testReadableFinalAndReplacementOutcomesShareOneProjection() {
+    for attempt: NativeAttemptState in [.running, .failed, .cancelled, .preempted] {
+      let document = RuntimeTranscriptPresentation(
+        native: NativeRuntimeTranscriptSnapshot(
+          document: .final, replacementResumable: attempt == .failed,
+          state: .final, selectedRevisionIds: ["reviewed"], documentVersion: "reviewed-v1",
+          attempt: attempt, attemptFailure: attempt == .failed ? "engine_error" : nil,
+          totalTracks: 1, finalTracks: 1, completedChunks: 0, totalChunks: 0, failureClass: nil))
+      XCTAssertEqual(document.documentAvailability, .final)
+      XCTAssertTrue(document.line(for: nil).text.hasPrefix("Transcript ready · replacement"))
+      XCTAssertEqual(document.line(for: nil).text, document.statusText)
+    }
+    let available = RuntimeTranscriptPresentation(state: .final, finalTracks: 1)
+    XCTAssertTrue(available.line(for: .preempted).text.contains("yielded to capture"))
+    XCTAssertTrue(available.line(for: .cancelled).text.contains("cancelled"))
+    XCTAssertFalse(available.line(for: .cancelled).text.contains("failed"))
+  }
+
+  func testRenameRoutesThroughRustAndReportsRefusals() async {
+    let titles = TitleBox()
+    let store = RuntimeLibraryStore(
+      snapshotProvider: { titles.snapshot() },
+      renameProvider: { sessionId, title in
+        guard sessionId == "s1", !title.isEmpty else { throw NativeStorageError.InvalidRequest }
+        titles.set(title)
+        return title
+      },
+      startsPolling: false)
+    await waitUntil { store.savedSessions.first != nil }
+    XCTAssertEqual(store.savedSessions.first?.title, "Conversation 2026-10-13T17:00:14Z")
+    let renamed = await store.rename(sessionId: "s1", title: "Weekly planning")
+    XCTAssertEqual(renamed, "Weekly planning")
+    XCTAssertNil(store.editMessage)
+    for _ in 0..<20 where store.savedSessions.first?.title != "Weekly planning" {
+      try? await Task.sleep(for: .milliseconds(20))
+    }
+    XCTAssertEqual(store.savedSessions.first?.title, "Weekly planning", "the library is reread")
+
+    let refused = await store.rename(sessionId: "s1", title: "")
+    XCTAssertNil(refused)
+    XCTAssertTrue(store.editMessageIsFailure)
+    XCTAssertEqual(
+      store.editMessage,
+      "Open Scribe could not rename the conversation: the text is empty, too long, or contains characters that cannot be stored."
+    )
+    XCTAssertEqual(store.savedSessions.first?.title, "Weekly planning")
+  }
+
+  /// A one-session library whose title the test can change.
+  private final class TitleBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var title = "Conversation 2026-10-13T17:00:14Z"
+
+    func set(_ value: String) {
+      lock.lock()
+      title = value
+      lock.unlock()
+    }
+
+    func snapshot() -> NativeRuntimeLibrarySnapshot {
+      lock.lock()
+      defer { lock.unlock() }
+      return NativeRuntimeLibrarySnapshot(
+        currentSession: nil,
+        savedSessions: [
+          NativeRuntimeSessionSnapshot(
+            sessionId: "s1", title: title, lifecycle: "ready_for_review", health: "healthy",
+            elapsedSeconds: 1, journalDurable: true, mediaFilesOpen: false,
+            interruptionReason: nil, recovered: false, hasCaptureTimeline: true,
+            sources: [], playableMedia: nil,
+            transcript: NativeRuntimeTranscriptSnapshot(
+              document: .final, replacementResumable: false,
+              state: .final, selectedRevisionIds: ["reviewed-A"], documentVersion: "v1",
+              attempt: .complete, attemptFailure: nil, totalTracks: 1,
+              finalTracks: 1, completedChunks: 0, totalChunks: 0,
+              failureClass: nil))
+        ])
+    }
+  }
+}

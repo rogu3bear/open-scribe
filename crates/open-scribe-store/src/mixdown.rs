@@ -47,6 +47,7 @@ impl SessionStore {
         session_id: SessionId,
         available_bytes: u64,
     ) -> Result<MixdownAuthorization, StoreError> {
+        let _writer = self.write_guard()?;
         let (expected_frame_count, source_digest_sha256) = self.mix_source_plan(&session_id)?;
         if expected_frame_count == 0 {
             return Err(StoreError::InvalidState("mixdown has no source frames"));
@@ -97,6 +98,7 @@ impl SessionStore {
         &mut self,
         receipt: MixdownReceipt,
     ) -> Result<ValidatedMixdown, StoreError> {
+        let _writer = self.write_guard()?;
         if Uuid::parse_str(&receipt.session_id.0).is_err()
             || !valid_mix_path(&receipt.relative_path)
             || receipt.byte_length < 32

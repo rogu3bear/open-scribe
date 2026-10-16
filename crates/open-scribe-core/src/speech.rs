@@ -4,10 +4,7 @@
 //! and atomic installation, and it is reverified before every load. Nothing
 //! here touches the network.
 
-use crate::transcription::{
-    TrackRequest, TranscriptionError, TranscriptionOutcome, TranscriptionProgress,
-    transcribe_request,
-};
+use crate::transcription::{TranscriptionError, TranscriptionOutcome, TranscriptionProgress};
 use open_scribe_asr::{
     DecodeOptions, Language, MODEL_SAMPLE_RATE_HZ, RecognizerError, SpeechRecognizer,
     WHISPER_ENGINE, WHISPER_ENGINE_COMPATIBILITY, WhisperLoadError, WhisperRecognizer,
@@ -17,9 +14,10 @@ use open_scribe_models::{
     verify_staged,
 };
 use open_scribe_store::{SessionStore, StoreError};
-use open_scribe_types::SessionId;
+use open_scribe_types::{ModelReadiness, SessionId};
 use std::fmt;
 use std::fs;
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 
@@ -36,6 +34,8 @@ pub struct SpeechModelStatus {
     /// A regular file of the manifest length sits at the installed path. Its
     /// bytes are reverified before any load.
     pub installed: bool,
+    pub readiness: ModelReadiness,
+    pub diagnostic: Option<String>,
 }
 
 #[derive(Debug)]
@@ -96,6 +96,9 @@ pub struct SpeechModels {
 }
 
 impl SpeechModels {
+    pub fn managed_root(&self) -> &Path {
+        &self.managed_root
+    }
     pub fn open(managed_root: impl AsRef<Path>) -> Result<Self, SpeechModelError> {
         let managed_root = managed_root.as_ref().to_path_buf();
         Ok(Self {
@@ -110,18 +113,46 @@ impl SpeechModels {
             .records()
             .iter()
             .filter(|record| record.purpose == "asr")
-            .map(|record| SpeechModelStatus {
-                model_id: record.id.clone(),
-                profile: record.profile.clone(),
-                languages: record.languages.clone(),
-                file_name: record.file_name.clone(),
-                byte_length: record.byte_length,
-                sha256: record.sha256.clone(),
-                download_origin: record.download_origins.first().cloned().unwrap_or_default(),
-                license: record.license.clone(),
-                installed: fs::symlink_metadata(self.layout.installed_path(record)).is_ok_and(
-                    |metadata| metadata.is_file() && metadata.len() == record.byte_length,
-                ),
+            .map(|record| {
+                let path = self.layout.installed_path(record);
+                let (readiness, diagnostic) = match fs::symlink_metadata(&path) {
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                        (ModelReadiness::Absent, None)
+                    }
+                    Err(_) => (ModelReadiness::PresentUnverified, Some("unreadable".into())),
+                    Ok(metadata) if !metadata.is_file() => {
+                        (ModelReadiness::Invalid, Some("not_regular_file".into()))
+                    }
+                    Ok(_) => match verify_staged(
+                        record,
+                        WHISPER_ENGINE,
+                        WHISPER_ENGINE_COMPATIBILITY,
+                        &path,
+                    ) {
+                        Ok(_) => (ModelReadiness::Ready, None),
+                        Err(error) => (
+                            if matches!(error.class(), "incompatible_engine" | "engine_version") {
+                                ModelReadiness::Incompatible
+                            } else {
+                                ModelReadiness::Invalid
+                            },
+                            Some(error.class().to_owned()),
+                        ),
+                    },
+                };
+                SpeechModelStatus {
+                    model_id: record.id.clone(),
+                    profile: record.profile.clone(),
+                    languages: record.languages.clone(),
+                    file_name: record.file_name.clone(),
+                    byte_length: record.byte_length,
+                    sha256: record.sha256.clone(),
+                    download_origin: record.download_origins.first().cloned().unwrap_or_default(),
+                    license: record.license.clone(),
+                    installed: readiness == ModelReadiness::Ready,
+                    readiness,
+                    diagnostic,
+                }
             })
             .collect()
     }
@@ -136,11 +167,16 @@ impl SpeechModels {
         source: &Path,
     ) -> Result<InstalledArtifact, SpeechModelError> {
         let record = self.record(model_id)?;
-        let result = self.stage_verify_install(record, source);
-        if result.is_err() {
-            let _ = self.layout.discard_partial(record);
-        }
-        result
+        self.stage_verify_install(record, source, false)
+    }
+
+    pub fn repair_from_file(
+        &self,
+        model_id: &str,
+        source: &Path,
+    ) -> Result<InstalledArtifact, SpeechModelError> {
+        let record = self.record(model_id)?;
+        self.stage_verify_install(record, source, true)
     }
 
     /// Reverifies the installed bytes, then loads them.
@@ -167,6 +203,19 @@ impl SpeechModels {
         Ok(false)
     }
 
+    pub fn needs_decoded_companion_for_intent(
+        &self,
+        session: &SessionId,
+        intent: crate::TranscriptionIntent,
+    ) -> Result<bool, StoreError> {
+        let store = SessionStore::open(&self.managed_root)?;
+        let plan = crate::plan_session_transcription(&store, session, intent)?;
+        if !plan.needs_recognizer() {
+            return Ok(false);
+        }
+        self.needs_decoded_companion(session)
+    }
+
     /// Reverifies and loads the model, then transcribes every sealed track of
     /// one saved session with its own store connection.
     pub fn transcribe(
@@ -177,16 +226,72 @@ impl SpeechModels {
         cancel: &AtomicBool,
         progress: &mut dyn FnMut(usize, usize, TranscriptionProgress),
     ) -> Result<Vec<TranscriptionOutcome>, SpeechError> {
+        self.transcribe_with_intent(
+            model_id,
+            session,
+            crate::TranscriptionIntent::ResumeIncomplete,
+            decoded_companion,
+            cancel,
+            progress,
+        )
+    }
+
+    pub fn transcribe_with_intent(
+        &self,
+        model_id: &str,
+        session: &SessionId,
+        intent: crate::TranscriptionIntent,
+        decoded_companion: Option<&Path>,
+        cancel: &AtomicBool,
+        progress: &mut dyn FnMut(usize, usize, TranscriptionProgress),
+    ) -> Result<Vec<TranscriptionOutcome>, SpeechError> {
+        self.transcribe_with_operation(
+            model_id,
+            session,
+            &crate::TranscriptionOperation {
+                intent,
+                ..Default::default()
+            },
+            decoded_companion,
+            cancel,
+            progress,
+        )
+    }
+
+    pub fn transcribe_with_operation(
+        &self,
+        model_id: &str,
+        session: &SessionId,
+        operation: &crate::TranscriptionOperation,
+        decoded_companion: Option<&Path>,
+        cancel: &AtomicBool,
+        progress: &mut dyn FnMut(usize, usize, TranscriptionProgress),
+    ) -> Result<Vec<TranscriptionOutcome>, SpeechError> {
+        let mut store = SessionStore::open(&self.managed_root)
+            .map_err(|error| SpeechError::Transcription(error.into()))?;
+        let plan =
+            crate::plan_transcription_operation(&store, session, operation.intent, operation)
+                .map_err(|error| SpeechError::Transcription(error.into()))?;
+        if !plan.needs_recognizer() {
+            return crate::execute_transcription_plan(
+                &mut store,
+                None,
+                &DecodeOptions::final_pass(Language::Detect),
+                &plan,
+                decoded_companion,
+                cancel,
+                progress,
+            )
+            .map_err(SpeechError::Transcription);
+        }
         let record = self.record(model_id).map_err(SpeechError::Model)?;
         let options = DecodeOptions::final_pass(decode_language(&record.languages));
         let mut recognizer = self.load(model_id).map_err(SpeechError::Model)?;
-        let mut store = SessionStore::open(&self.managed_root)
-            .map_err(|error| SpeechError::Transcription(error.into()))?;
-        transcribe_session(
+        crate::execute_transcription_plan(
             &mut store,
-            &mut recognizer,
+            Some(&mut recognizer),
             &options,
-            session,
+            &plan,
             decoded_companion,
             cancel,
             progress,
@@ -198,22 +303,36 @@ impl SpeechModels {
         &self,
         record: &ModelRecord,
         source: &Path,
+        repair: bool,
     ) -> Result<InstalledArtifact, SpeechModelError> {
         let staged = self
             .layout
             .stage_from_file(record, source)
             .map_err(SpeechModelError::Install)?;
-        let verified = verify_staged(
-            record,
-            WHISPER_ENGINE,
-            WHISPER_ENGINE_COMPATIBILITY,
-            &staged,
-        )
-        .map_err(SpeechModelError::Verify)?;
-        self_test(&staged, record)?;
-        self.layout
-            .install(record, &verified, &staged)
+        let ownership = fs::symlink_metadata(&staged)
+            .map_err(|error| SpeechModelError::Install(InstallError::Io(error)))?;
+        let result = (|| {
+            let verified = verify_staged(
+                record,
+                WHISPER_ENGINE,
+                WHISPER_ENGINE_COMPATIBILITY,
+                &staged,
+            )
+            .map_err(SpeechModelError::Verify)?;
+            self_test(&staged, record)?;
+            (if repair {
+                self.layout.repair_install(record, &verified, &staged)
+            } else {
+                self.layout.install(record, &verified, &staged)
+            })
             .map_err(SpeechModelError::Install)
+        })();
+        if result.is_err() {
+            let _ = self
+                .layout
+                .discard_owned_partial(record, ownership.dev(), ownership.ino());
+        }
+        result
     }
 
     fn record(&self, model_id: &str) -> Result<&ModelRecord, SpeechModelError> {
@@ -246,30 +365,20 @@ pub fn transcribe_session(
     cancel: &AtomicBool,
     progress: &mut dyn FnMut(usize, usize, TranscriptionProgress),
 ) -> Result<Vec<TranscriptionOutcome>, TranscriptionError> {
-    let tracks = store.transcription_tracks(session)?;
-    if tracks.is_empty() {
-        return Err(
-            StoreError::InvalidState("session has no sealed PCM track to transcribe").into(),
-        );
-    }
-    let count = tracks.len();
-    let mut outcomes = Vec::with_capacity(count);
-    for (index, track) in tracks.iter().enumerate() {
-        let request = TrackRequest {
-            session,
-            track_id: track,
-            decoded_companion,
-        };
-        outcomes.push(transcribe_request(
-            store,
-            recognizer,
-            options,
-            request,
-            cancel,
-            &mut |update| progress(index, count, update),
-        )?);
-    }
-    Ok(outcomes)
+    let plan = crate::plan_session_transcription(
+        store,
+        session,
+        crate::TranscriptionIntent::ResumeIncomplete,
+    )?;
+    crate::execute_transcription_plan(
+        store,
+        Some(recognizer),
+        options,
+        &plan,
+        decoded_companion,
+        cancel,
+        progress,
+    )
 }
 
 /// One second of silence must decode before a model is installed. This

@@ -9,8 +9,8 @@ use super::*;
 pub struct LibraryRecovery {
     pub findings: Vec<RecoveryFinding>,
     pub playable: Vec<RecoveredPlayableSession>,
-    /// Running transcription runs whose chunks are all complete. Core must
-    /// finalize (reconcile + commit) on the launch path — store cannot.
+    /// Compatibility field, always empty for capture-safety recovery. Derived
+    /// finalization is obtained separately via recover_orphan_transcription_runs.
     pub pending_transcript_finalizations: Vec<String>,
 }
 
@@ -159,6 +159,7 @@ impl SessionStore {
     /// playable media of every reviewable session. Media digests are memoized
     /// for the duration of the pass so each segment is hashed at most once.
     pub fn recover_library(&mut self) -> Result<LibraryRecovery, StoreError> {
+        let _writer = self.write_guard()?;
         self.digest_memo.borrow_mut().begin_launch();
         let recovery = self.recover_library_pass();
         self.digest_memo.borrow_mut().end_launch();
@@ -182,29 +183,42 @@ impl SessionStore {
             merge_finding(&mut findings, finding);
         }
         let playable = self.list_recovered_playable(&mut findings)?;
-        let (pending_transcript_finalizations, transcript_findings) =
-            self.recover_orphan_transcription_runs()?;
-        for finding in transcript_findings {
-            merge_finding(&mut findings, finding);
-        }
         findings.sort_by(|left, right| left.session_id.0.cmp(&right.session_id.0));
         Ok(LibraryRecovery {
             findings,
             playable,
-            pending_transcript_finalizations,
+            pending_transcript_finalizations: Vec::new(),
         })
     }
 
     /// Launch-only transcription orphan handling. Class A (all chunks complete)
     /// is queued for core finalize. Class B (incomplete, worker gone) fails with
     /// `orphaned`. Never touches capture media or journals.
-    fn recover_orphan_transcription_runs(
+    pub fn recover_orphan_transcription_runs(
         &mut self,
     ) -> Result<(Vec<String>, Vec<RecoveryFinding>), StoreError> {
+        let _writer = self.write_guard()?;
+        if self.work_admission_active()? {
+            return Ok((Vec::new(), Vec::new()));
+        }
         let (class_a, class_b) = self.classify_running_transcription_orphans()?;
+        let mut pending = Vec::new();
+        for run in class_a {
+            let (session, _) = self.transcription_run_binding(&run)?;
+            if self.transcription_is_declined(&session)? {
+                self.fail_transcription_run(&run, None, TranscriptionFailure::Cancelled)?;
+            } else {
+                pending.push(run);
+            }
+        }
         let mut findings = Vec::new();
         for (run_id, session_id) in class_b {
-            match self.fail_transcription_run(&run_id, None, TranscriptionFailure::Orphaned) {
+            let failure = if self.transcription_is_declined(&SessionId(session_id.clone()))? {
+                TranscriptionFailure::Cancelled
+            } else {
+                TranscriptionFailure::Orphaned
+            };
+            match self.fail_transcription_run(&run_id, None, failure) {
                 Ok(()) => findings.push(RecoveryFinding {
                     session_id: SessionId(session_id),
                     disposition: RecoveryDisposition::TranscriptRunOrphaned,
@@ -217,7 +231,7 @@ impl SessionStore {
                 }
             }
         }
-        Ok((class_a, findings))
+        Ok((pending, findings))
     }
 
     /// A launch has no surviving capture to finish durable preparation. Mark
@@ -289,6 +303,7 @@ impl SessionStore {
     pub fn recover_playable_sessions(
         &mut self,
     ) -> Result<Vec<RecoveredPlayableSession>, StoreError> {
+        let _writer = self.write_guard()?;
         Ok(self.recover_library()?.playable)
     }
 
@@ -299,6 +314,7 @@ impl SessionStore {
         journal_durable: bool,
         records: &[JournalRecord],
     ) -> Result<RecoveryDisposition, StoreError> {
+        let _writer = self.write_guard()?;
         let base = self.recover_valid_journal(session_id, journal_durable, records)?;
         let imported = self.reconcile_import(session_id, records, base)?;
         let source_failure = self.reconcile_source_failures(session_id, records, imported)?;

@@ -63,7 +63,13 @@ final class RecoveredSessionController: ObservableObject {
   typealias PlaybackTerminationDecisionObserver = @Sendable (UUID, Bool) -> Void
 
   @Published private(set) var phase: RecoveredSessionPhase = .scanning
+  /// Only successful media-safety recovery releases capture. Derived work is
+  /// scheduled separately and never changes this completed barrier.
+  @Published private(set) var captureSafetyComplete = false
+  @Published private(set) var transcriptMaintenanceWarning: String?
+  func reportTranscriptMaintenance(_ warning: String?) { transcriptMaintenanceWarning = warning }
   @Published private(set) var sessions: [NativeRecoveredPlayableSession] = []
+  @Published private(set) var recoveryFindings: [NativeRecoveryFinding] = []
   @Published private(set) var activePlaybackSessionId: String?
   @Published private(set) var playingSessionId: String?
   @Published private(set) var activeMixdownSessionId: String?
@@ -211,6 +217,7 @@ final class RecoveredSessionController: ObservableObject {
       stopPlayback()
     }
     phase = .scanning
+    captureSafetyComplete = false
     clearPlaybackError()
     recoveryTask?.cancel()
     let generation = UUID()
@@ -220,14 +227,14 @@ final class RecoveredSessionController: ObservableObject {
     let started = ContinuousClock.now
     let signpost = AppTelemetry.signposter.beginInterval("launch_recovery")
     recoveryTask = Task { [weak self] in
-      let outcome: Result<[NativeRecoveredPlayableSession], Error>
+      let outcome: Result<NativeMediaRecovery, Error>
       do {
         outcome = .success(
-          try await StructuredNativeIO.read {
+          try await StructuredNativeIO.mutation {
             if Thread.isMainThread {
               AppTelemetry.performanceStall(operation: "launch_recovery_main", milliseconds: 0)
             }
-            return try recoveryFactory().recoverPlayableSessions()
+            return try recoveryFactory().recoverCaptureSafety()
           })
       } catch {
         outcome = .failure(error)
@@ -248,24 +255,29 @@ final class RecoveredSessionController: ObservableObject {
   }
 
   private func publishLaunchRecovery(
-    _ outcome: Result<[NativeRecoveredPlayableSession], Error>,
+    _ outcome: Result<NativeMediaRecovery, Error>,
     milliseconds: Int
   ) {
     do {
-      let recovered = try outcome.get()
+      let result = try outcome.get()
+      let recovered = result.playable
       guard
-        recovered.allSatisfy({
-          $0.mediaPreserved && $0.readyForReview && !$0.recordingStarted
-            && $0.sampleCount > 0 && $0.byteLength > 0
-        })
+        result.captureSafetyComplete
+          && recovered.allSatisfy({
+            $0.mediaPreserved && $0.readyForReview && !$0.recordingStarted
+              && $0.sampleCount > 0 && $0.byteLength > 0
+          })
       else {
         throw RecoveredSessionError.invalidEvidence
       }
       sessions = recovered
+      recoveryFindings = result.findings
+      captureSafetyComplete = true
       phase = recovered.isEmpty ? .none : .available
       AppTelemetry.recoveryProof(
         stage: "scan-finished",
-        detail: "phase=\(phase.diagnosticName) count=\(recovered.count) milliseconds=\(milliseconds)"
+        detail:
+          "phase=\(phase.diagnosticName) count=\(recovered.count) milliseconds=\(milliseconds)"
       )
     } catch is CancellationError {
       sessions = []

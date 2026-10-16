@@ -16,6 +16,7 @@ impl SessionStore {
         &mut self,
         blocked: &BTreeSet<String>,
     ) -> Result<Vec<RecoveryFinding>, StoreError> {
+        let _writer = self.write_guard()?;
         let candidates = {
             let mut query = self.connection.prepare(
                 "SELECT segments.session_id, segments.id, segments.track_id, segments.relative_path

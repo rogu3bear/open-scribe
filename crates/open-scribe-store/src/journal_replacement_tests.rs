@@ -3,6 +3,124 @@
 //! append is still writing. Replacements a terminated process left stay stale.
 use super::*;
 use std::sync::Arc;
+use std::sync::Barrier;
+
+#[test]
+fn overlapping_handles_preserve_every_accepted_marker_and_declaration() {
+    let temp = TempDir::new().unwrap();
+    let mut store = SessionStore::open(temp.path()).unwrap();
+    let (session, _) = recording_pair(&mut store);
+    let start = Arc::new(Barrier::new(3));
+    let mut workers = Vec::new();
+    for writer in 0..2 {
+        let root = temp.path().to_path_buf();
+        let session = session.clone();
+        let start = start.clone();
+        workers.push(std::thread::spawn(move || {
+            let mut handle = SessionStore::open(root).unwrap();
+            start.wait();
+            for index in 0..32 {
+                handle
+                    .recorder_action(
+                        session.clone(),
+                        RecorderAction::Marker {
+                            host_time: 1 + index,
+                            label: format!("writer-{writer}-{index}"),
+                        },
+                    )
+                    .unwrap();
+                handle
+                    .declare_session(
+                        session.clone(),
+                        SessionDeclaration {
+                            participants: vec![format!("writer {writer}")],
+                            topic: Some(format!("event {index}")),
+                        },
+                    )
+                    .unwrap();
+            }
+        }));
+    }
+    start.wait();
+    for worker in workers {
+        worker.join().unwrap();
+    }
+    let records = journal_records(&store, &session);
+    assert_eq!(
+        records
+            .iter()
+            .filter(|r| r.body.event_kind == "marker_added")
+            .count(),
+        64
+    );
+    assert_eq!(
+        records
+            .iter()
+            .filter(|r| r.body.event_kind == "session_declared")
+            .count(),
+        64
+    );
+    for pair in records.windows(2) {
+        assert_eq!(pair[1].body.sequence, pair[0].body.sequence + 1);
+    }
+    assert_eq!(
+        store
+            .recorder_detail(&session)
+            .unwrap()
+            .events
+            .iter()
+            .filter(|r| r.kind == "marker_added")
+            .count(),
+        64
+    );
+    store.recover_library().unwrap();
+    let once = journal_records(&store, &session);
+    store.recover_library().unwrap();
+    assert_eq!(
+        journal_records(&store, &session).len(),
+        once.len(),
+        "replay remains idempotent"
+    );
+}
+
+#[test]
+fn characterize_ordinary_v1_journal_growth_without_claiming_deadlines() {
+    let temp = TempDir::new().unwrap();
+    let mut store = SessionStore::open(temp.path()).unwrap();
+    let (session, _) = recording_pair(&mut store);
+    let before = store.journal_cost();
+    for index in 1..=128 {
+        store
+            .recorder_action(
+                session.clone(),
+                RecorderAction::Marker {
+                    host_time: 1 + index,
+                    label: "fixed-sized-event".into(),
+                },
+            )
+            .unwrap();
+        if [16, 32, 64, 128].contains(&index) {
+            let cost = store.journal_cost();
+            println!(
+                "JOURNAL_COST records={index} validated={} copied={} written={} write_calls={} sync_calls={} elapsed_ns={}",
+                cost.bytes_validated - before.bytes_validated,
+                cost.bytes_copied - before.bytes_copied,
+                cost.bytes_written - before.bytes_written,
+                cost.write_calls - before.write_calls,
+                cost.sync_calls - before.sync_calls,
+                cost.elapsed_nanoseconds - before.elapsed_nanoseconds
+            );
+        }
+    }
+    let cost = store.journal_cost();
+    assert_eq!(cost.appends - before.appends, 128);
+    assert_eq!(
+        cost.bytes_validated - before.bytes_validated,
+        cost.bytes_copied - before.bytes_copied
+    );
+    assert_eq!(cost.write_calls - before.write_calls, 128 * 3);
+    assert_eq!(cost.sync_calls - before.sync_calls, 128 * 2);
+}
 use std::sync::atomic::{AtomicBool, Ordering};
 
 #[test]

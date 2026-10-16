@@ -193,6 +193,7 @@ impl SessionStore {
         session: SessionId,
         proposal: ContextProposal,
     ) -> Result<ContextDecision, StoreError> {
+        let _writer = self.write_guard()?;
         let invalid = StoreError::InvalidRequest;
         if !bounded(&proposal.source.platform_id, 128)
             || !bounded(&proposal.source.name, 512)

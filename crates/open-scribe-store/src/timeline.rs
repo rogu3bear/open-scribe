@@ -74,6 +74,7 @@ impl SessionStore {
         session: SessionId,
         clock: CaptureClock,
     ) -> Result<(), StoreError> {
+        let _writer = self.write_guard()?;
         clock.map(clock.host_anchor)?;
         if let Some(existing) = self.capture_clock(&session.0)? {
             return if existing == clock {
@@ -148,6 +149,7 @@ impl SessionStore {
         session: &str,
         records: &[JournalRecord],
     ) -> Result<(), StoreError> {
+        let _writer = self.write_guard()?;
         for record in records
             .iter()
             .filter(|r| r.body.event_kind == "capture_clock_anchored")
@@ -201,6 +203,7 @@ impl SessionStore {
         session: SessionId,
         previous: String,
     ) -> Result<MediaOpenAuthorization, StoreError> {
+        let _writer = self.write_guard()?;
         self.require_storage_headroom(&session.0)?;
         if self.capture_clock(&session.0)?.is_none() {
             return Err(StoreError::InvalidState(
@@ -299,6 +302,7 @@ impl SessionStore {
         session: SessionId,
         segment: String,
     ) -> Result<(), StoreError> {
+        let _writer = self.write_guard()?;
         let (lifecycle, track_id, relative_path, original_start): (
             String,
             String,

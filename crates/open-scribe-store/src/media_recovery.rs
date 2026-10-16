@@ -7,6 +7,7 @@ impl SessionStore {
         journal_durable: bool,
         records: &[JournalRecord],
     ) -> Result<RecoveryDisposition, StoreError> {
+        let _writer = self.write_guard()?;
         let repaired_directory = if journal_durable {
             false
         } else {

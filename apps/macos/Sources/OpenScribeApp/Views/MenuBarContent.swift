@@ -9,6 +9,8 @@ struct MenuBarContent: View {
   @ObservedObject var recoveredSessions: RecoveredSessionController
   @ObservedObject var context: ContextScopeModel
   @ObservedObject var navigation: MainWorkspaceNavigation
+  @ObservedObject var scheduler: TranscriptionScheduler
+  @ObservedObject var speech: SpeechTranscriptionModel
 
   @MainActor
   init(
@@ -17,7 +19,9 @@ struct MenuBarContent: View {
     liveRecording: LiveMicrophoneRecordingController? = nil,
     recoveredSessions: RecoveredSessionController? = nil,
     context: ContextScopeModel? = nil,
-    navigation: MainWorkspaceNavigation? = nil
+    navigation: MainWorkspaceNavigation? = nil,
+    scheduler: TranscriptionScheduler? = nil,
+    speech: SpeechTranscriptionModel? = nil
   ) {
     self.store = store
     self.importedMediaAuthority = importedMediaAuthority
@@ -26,6 +30,8 @@ struct MenuBarContent: View {
       recoveredSessions ?? RecoveredSessionController(managedRoot: nil)
     self.context = context ?? ContextScopeModel(binding: { nil })
     self.navigation = navigation ?? MainWorkspaceNavigation()
+    self.scheduler = scheduler ?? TranscriptionScheduler.inert()
+    self.speech = speech ?? SpeechTranscriptionModel(speech: nil)
   }
 
   var body: some View {
@@ -55,6 +61,17 @@ struct MenuBarContent: View {
         "\(store.isSnapshotStale ? "Last known: " : "")\(savedCount) saved conversation\(savedCount == 1 ? "" : "s")"
       )
       .foregroundStyle(.secondary)
+    }
+    if let activity = scheduler.summaryText(
+      titles: Dictionary(
+        uniqueKeysWithValues: store.savedSessions.map {
+          ($0.sessionId, ConversationIdentityPresentation.title($0.title))
+        }),
+      progress: speech.progressFraction)
+    {
+      Text(activity)
+        .foregroundStyle(.secondary)
+        .accessibilityLabel(activity)
     }
     if liveRecording.canStart {
       Button(
@@ -175,6 +192,7 @@ struct MenuBarContent: View {
 }
 
 struct MenuBarLabel: View {
+  @Environment(\.isSceneVerification) private var isSceneVerification
   @Environment(\.openWindow) private var openWindow
   @ObservedObject var store: RuntimeLibraryStore
   @ObservedObject var liveRecording: LiveMicrophoneRecordingController
@@ -194,7 +212,7 @@ struct MenuBarLabel: View {
         #if DEBUG
           // The explicit scene proof must also work after macOS restores a
           // menu-bar-only launch. Its primary scene opens Settings in turn.
-          if ProcessInfo.processInfo.arguments.contains("--m0-proof-settings"),
+          if isSceneVerification,
             !MainWindow.focusExisting()
           {
             openWindow(id: "main")
