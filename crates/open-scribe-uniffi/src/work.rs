@@ -28,7 +28,8 @@ vocabulary!(
     UserCancelled,
     CapturePreempted,
     Failed,
-    Deferred
+    Deferred,
+    Incomplete
 );
 vocabulary!(
     NativeModelReadiness,

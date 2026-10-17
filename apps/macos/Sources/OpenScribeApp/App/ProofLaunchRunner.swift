@@ -23,53 +23,71 @@ extension EnvironmentValues {
       arguments["NSQuitAlwaysKeepsWindows"] = false
       UserDefaults.standard.setVolatileDomain(arguments, forName: UserDefaults.argumentDomain)
     }
+    typealias CaptureProof = @MainActor (LaunchConfiguration.Action) async -> Void
+
+    @discardableResult
     static func start(
       configuration: LaunchConfiguration, injected: M1FailureRuntimeProof?,
       controller: LiveMicrophoneRecordingController, runtime: RuntimeLibraryStore,
-      recovery: RecoveredSessionController
-    ) {
-      let root = configuration.proofRoot
-      switch configuration.action {
-      case .injected:
-        if let injected { Task { await injected.run(runtime: runtime) } }
-      case .injectedRecovery:
-        if let root {
-          Task {
+      recovery: RecoveredSessionController, captureProof: CaptureProof? = nil
+    ) -> Task<Void, Never> {
+      Task {
+        let root = configuration.proofRoot
+        switch configuration.action {
+        case .injected, .microphone, .forcedCapture, .drift:
+          // These runners use the same controller and launch hold as the UI.
+          // Complete media safety first; transcript maintenance is independent.
+          recovery.recoverOnLaunch()
+          await recovery.waitForLaunchRecovery()
+          guard recovery.captureSafetyComplete else {
+            AppTelemetry.recoveryProof(stage: "capture-proof-refused", detail: "media-recovery")
+            if let root {
+              try? "capture_safety_recovery_failed".write(
+                to: root.appendingPathComponent("proof-error"), atomically: true, encoding: .utf8)
+            }
+            if captureProof == nil { NSApp.terminate(nil) }
+            return
+          }
+          if let captureProof {
+            await captureProof(configuration.action)
+          } else {
+            switch configuration.action {
+            case .injected:
+              if let injected { await injected.run(runtime: runtime) }
+            case .microphone:
+              await runLiveMicrophoneProof(controller: controller)
+            case .forcedCapture:
+              await runForcedTerminationCaptureProof(controller: controller)
+            case .drift(let seconds):
+              if let root {
+                _ = await DriftRunProof.run(controller: controller, root: root, seconds: seconds)
+                NSApp.terminate(nil)
+              }
+            default: break
+            }
+          }
+        case .injectedRecovery:
+          if let root {
             await M1FailureRuntimeProof.recover(
               root: root, mediaRoot: configuration.mediaRoot ?? root, recovery: recovery,
               runtime: runtime)
           }
-        }
-      case .liveRecovery:
-        if let root { Task { await TimelineRuntimeProof.verifyLive(root: root) } }
-      case .syntheticCapture, .syntheticRecovery:
-        if let root {
-          Task {
+        case .liveRecovery:
+          if let root { await TimelineRuntimeProof.verifyLive(root: root) }
+        case .syntheticCapture, .syntheticRecovery:
+          if let root {
             await TimelineRuntimeProof.run(
               root: root, captureMode: configuration.action == .syntheticCapture)
           }
-        }
-      case .microphone:
-        Task { await runLiveMicrophoneProof(controller: controller) }
-      case .forcedCapture:
-        Task { await runForcedTerminationCaptureProof(controller: controller) }
-      case .localOnly:
-        if let root { Task { await LocalOnlyWorkflowProof.run(root: root) } }
-      case .drift(let seconds):
-        if let root {
-          Task {
-            _ = await DriftRunProof.run(controller: controller, root: root, seconds: seconds)
-            NSApp.terminate(nil)
-          }
-        }
-      case .forcedRecovery:
-        recovery.recoverOnLaunch()
-        Task {
+        case .localOnly:
+          if let root { await LocalOnlyWorkflowProof.run(root: root) }
+        case .forcedRecovery:
+          recovery.recoverOnLaunch()
           await recovery.waitForLaunchRecovery()
           await runForcedTerminationRecoveryProof(controller: recovery)
+        case .none, .review:
+          recovery.recoverOnLaunch()
         }
-      case .none, .review:
-        recovery.recoverOnLaunch()
       }
     }
 

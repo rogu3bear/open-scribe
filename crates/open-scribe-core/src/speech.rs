@@ -17,7 +17,6 @@ use open_scribe_store::{SessionStore, StoreError};
 use open_scribe_types::{ModelReadiness, SessionId};
 use std::fmt;
 use std::fs;
-use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 
@@ -309,30 +308,19 @@ impl SpeechModels {
             .layout
             .stage_from_file(record, source)
             .map_err(SpeechModelError::Install)?;
-        let ownership = fs::symlink_metadata(&staged)
-            .map_err(|error| SpeechModelError::Install(InstallError::Io(error)))?;
-        let result = (|| {
+        (|| {
             let verified = verify_staged(
                 record,
                 WHISPER_ENGINE,
                 WHISPER_ENGINE_COMPATIBILITY,
-                &staged,
+                staged.path(),
             )
             .map_err(SpeechModelError::Verify)?;
-            self_test(&staged, record)?;
-            (if repair {
-                self.layout.repair_install(record, &verified, &staged)
-            } else {
-                self.layout.install(record, &verified, &staged)
-            })
-            .map_err(SpeechModelError::Install)
-        })();
-        if result.is_err() {
-            let _ = self
-                .layout
-                .discard_owned_partial(record, ownership.dev(), ownership.ino());
-        }
-        result
+            self_test(staged.path(), record)?;
+            self.layout
+                .install_local(record, &verified, &staged, repair)
+                .map_err(SpeechModelError::Install)
+        })()
     }
 
     fn record(&self, model_id: &str) -> Result<&ModelRecord, SpeechModelError> {

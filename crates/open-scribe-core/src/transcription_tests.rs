@@ -1297,7 +1297,11 @@ fn finalize_accepts_verified_gapped_input_with_explicit_discontinuities() {
     );
 }
 
-fn complete_fixture_chunks(store: &mut SessionStore, session: &SessionId, track: &str) -> String {
+pub(crate) fn complete_fixture_chunks(
+    store: &mut SessionStore,
+    session: &SessionId,
+    track: &str,
+) -> String {
     let input = store.transcription_input(session, track).unwrap();
     let identity = TranscriptionRunIdentity {
         session_id: session.clone(),

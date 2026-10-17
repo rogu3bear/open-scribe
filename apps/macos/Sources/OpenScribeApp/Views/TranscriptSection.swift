@@ -113,6 +113,9 @@ struct TranscriptSection: View {
         .foregroundStyle(.secondary)
     case .deferred:
       Text("Transcription is waiting to start.").font(.callout).foregroundStyle(.secondary)
+    case .incomplete:
+      Text("Saved parts were checked. Some tracks still need transcription.")
+        .font(.callout).foregroundStyle(.secondary)
     default:
       EmptyView()
     }

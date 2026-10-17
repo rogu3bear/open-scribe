@@ -6,9 +6,36 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 const MODELS_DIRECTORY: &str = "Models";
 const STAGING_DIRECTORY: &str = ".staging";
+static LOCAL_ATTEMPT: AtomicU64 = AtomicU64::new(0);
+
+/// A local-file copy owns only the inode it created. Interrupted attempts and
+/// legacy download partials are preserved; a retry uses an independent path.
+#[derive(Debug)]
+pub struct LocalStagedModel {
+    path: PathBuf,
+    file: File,
+    model_id: String,
+    version: String,
+    device: u64,
+    inode: u64,
+}
+
+impl LocalStagedModel {
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for LocalStagedModel {
+    fn drop(&mut self) {
+        let _ = discard_owned_file(&self.path, self.device, self.inode);
+    }
+}
 
 /// Managed model paths under the application's managed root.
 #[derive(Clone, Debug)]
@@ -149,7 +176,7 @@ impl ModelLayout {
         verified: &VerifiedArtifact,
         staged: &Path,
     ) -> Result<InstalledArtifact, InstallError> {
-        self.install_checked(record, verified, staged, false)
+        self.install_checked(record, verified, staged, false, None)
     }
 
     /// Explicit repair retains the old invalid inode in the owned directory.
@@ -160,7 +187,19 @@ impl ModelLayout {
         verified: &VerifiedArtifact,
         staged: &Path,
     ) -> Result<InstalledArtifact, InstallError> {
-        self.install_checked(record, verified, staged, true)
+        self.install_checked(record, verified, staged, true, None)
+    }
+
+    /// Installs only this local attempt's verified inode. The private token
+    /// cannot authorize another staging path or a different catalog record.
+    pub fn install_local(
+        &self,
+        record: &ModelRecord,
+        verified: &VerifiedArtifact,
+        staged: &LocalStagedModel,
+        repair: bool,
+    ) -> Result<InstalledArtifact, InstallError> {
+        self.install_checked(record, verified, staged.path(), repair, Some(staged))
     }
 
     fn install_checked(
@@ -169,6 +208,7 @@ impl ModelLayout {
         verified: &VerifiedArtifact,
         staged: &Path,
         repair: bool,
+        local: Option<&LocalStagedModel>,
     ) -> Result<InstalledArtifact, InstallError> {
         if verified.model_id != record.id
             || verified.version != record.version
@@ -177,7 +217,17 @@ impl ModelLayout {
         {
             return Err(InstallError::RecordMismatch);
         }
-        if staged != self.partial_path(record) {
+        let local_matches = local.is_some_and(|attempt| {
+            attempt.path() == staged
+                && staged.parent() == Some(self.staging_directory().as_path())
+                && attempt.model_id == record.id
+                && attempt.version == record.version
+                && attempt.device == verified.device
+                && attempt.inode == verified.inode
+        });
+        if (local.is_some() && !local_matches)
+            || (local.is_none() && staged != self.partial_path(record))
+        {
             return Err(InstallError::NotStagingPath);
         }
         let file = open_no_follow(staged)?;
@@ -186,6 +236,7 @@ impl ModelLayout {
             || metadata.ino() != verified.inode
             || metadata.len() != verified.byte_length
             || modified_nanoseconds(&metadata) != verified.modified_nanoseconds
+            || (local_matches && metadata.nlink() != 1)
         {
             return Err(InstallError::ChangedSinceVerification);
         }
@@ -248,7 +299,7 @@ impl ModelLayout {
         Ok(installed)
     }
 
-    /// Copies a user-chosen local file into this record's staging path for
+    /// Copies a user-chosen local file into an independently owned staging path for
     /// verification. The source is only read. The copy stops one byte past
     /// the manifest length, so an oversized file fails verification without
     /// being staged whole. Nothing here loads the bytes.
@@ -256,33 +307,51 @@ impl ModelLayout {
         &self,
         record: &ModelRecord,
         source: &Path,
-    ) -> Result<PathBuf, InstallError> {
+    ) -> Result<LocalStagedModel, InstallError> {
         let input = File::open(source)?;
         if !input.metadata()?.is_file() {
             return Err(InstallError::NotRegularFile);
         }
         self.ensure_owned_directory(&self.staging_directory())?;
-        let staged = self.partial_path(record);
-        let mut output = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
-            .open(&staged)
-            .map_err(|error| {
-                if error.kind() == io::ErrorKind::AlreadyExists {
-                    InstallError::StagingExists
-                } else {
-                    error.into()
-                }
-            })?;
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let (staged, output) = loop {
+            let counter = LOCAL_ATTEMPT.fetch_add(1, Ordering::Relaxed);
+            let path = self.staging_directory().join(format!(
+                "{}-{}.local-{}-{timestamp}-{counter}.part",
+                record.id,
+                record.version,
+                std::process::id()
+            ));
+            match OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
+                .open(&path)
+            {
+                Ok(file) => break (path, file),
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+                Err(error) => return Err(error.into()),
+            }
+        };
         let identity = output.metadata()?;
+        let mut staged = LocalStagedModel {
+            path: staged,
+            model_id: record.id.clone(),
+            version: record.version.clone(),
+            device: identity.dev(),
+            inode: identity.ino(),
+            file: output,
+        };
         let result = (|| -> io::Result<()> {
-            io::copy(&mut input.take(record.byte_length + 1), &mut output)?;
-            output.sync_all()?;
+            io::copy(&mut input.take(record.byte_length + 1), &mut staged.file)?;
+            staged.file.sync_all()?;
             sync_directory(&self.staging_directory())
         })();
         if let Err(error) = result {
-            let _ = self.discard_owned_partial(record, identity.dev(), identity.ino());
             return Err(error.into());
         }
         Ok(staged)
@@ -303,21 +372,7 @@ impl ModelLayout {
         device: u64,
         inode: u64,
     ) -> io::Result<()> {
-        let path = self.partial_path(record);
-        match fs::symlink_metadata(&path) {
-            Ok(metadata)
-                if metadata.is_file()
-                    && metadata.nlink() == 1
-                    && metadata.dev() == device
-                    && metadata.ino() == inode =>
-            {
-                fs::remove_file(path)?;
-                sync_directory(&self.staging_directory())
-            }
-            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
-            Ok(_) => Err(io::Error::other("staging ownership changed")),
-            Err(error) => Err(error),
-        }
+        discard_owned_file(&self.partial_path(record), device, inode)
     }
 
     fn ensure_owned_directory(&self, directory: &Path) -> io::Result<()> {
@@ -345,6 +400,23 @@ impl ModelLayout {
             }
         }
         Ok(())
+    }
+}
+
+fn discard_owned_file(path: &Path, device: u64, inode: u64) -> io::Result<()> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata)
+            if metadata.is_file()
+                && metadata.nlink() == 1
+                && metadata.dev() == device
+                && metadata.ino() == inode =>
+        {
+            fs::remove_file(path)?;
+            sync_directory(path.parent().expect("managed staging parent"))
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Ok(_) => Err(io::Error::other("staging ownership changed")),
+        Err(error) => Err(error),
     }
 }
 
@@ -472,7 +544,7 @@ mod tests {
     }
 
     #[test]
-    fn staging_refuses_existing_symlink_and_hardlink_without_touching_foreign_bytes() {
+    fn local_staging_preserves_existing_symlink_and_hardlink_without_touching_foreign_bytes() {
         use std::os::unix::fs::symlink;
         let root = tempfile::tempdir().unwrap();
         let layout = ModelLayout::new(root.path());
@@ -485,17 +557,22 @@ mod tests {
         fs::write(&foreign, b"preserve").unwrap();
         let path = layout.partial_path(&record);
         symlink(&foreign, &path).unwrap();
-        assert!(matches!(
-            layout.stage_from_file(&record, &source),
-            Err(InstallError::StagingExists)
-        ));
+        let independent = layout.stage_from_file(&record, &source).unwrap();
+        assert_ne!(independent.path(), path);
+        drop(independent);
+        assert!(
+            fs::symlink_metadata(&path)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
         assert_eq!(fs::read(&foreign).unwrap(), b"preserve");
         fs::remove_file(&path).unwrap();
         fs::hard_link(&foreign, &path).unwrap();
-        assert!(matches!(
-            layout.stage_from_file(&record, &source),
-            Err(InstallError::StagingExists)
-        ));
+        let independent = layout.stage_from_file(&record, &source).unwrap();
+        assert_ne!(independent.path(), path);
+        drop(independent);
+        assert_eq!(fs::metadata(&path).unwrap().nlink(), 2);
         assert_eq!(fs::read(&foreign).unwrap(), b"preserve");
         assert!(path.exists());
     }
@@ -574,6 +651,34 @@ mod tests {
     }
 
     #[test]
+    fn local_install_restarts_after_an_interrupted_copy_without_removing_prior_bytes() {
+        let root = tempfile::tempdir().unwrap();
+        let layout = ModelLayout::new(root.path());
+        let bytes = fixture_bytes(51864);
+        let record = fixture(&bytes);
+        let abandoned = stage(&layout, &record, b"interrupted copy");
+        let source = root.path().join("chosen.bin");
+        fs::write(&source, &bytes).unwrap();
+
+        let reopened = ModelLayout::new(root.path());
+        let staged = reopened.stage_from_file(&record, &source).unwrap();
+        let interrupted_attempt = staged.path().to_path_buf();
+        // A killed process does not run Drop. Its independently owned bytes
+        // must not block a later attempt, or be mistaken for that attempt.
+        std::mem::forget(staged);
+        let staged = reopened.stage_from_file(&record, &source).unwrap();
+        assert_ne!(staged.path(), interrupted_attempt);
+        let verified = verify_staged(&record, ENGINE, COMPATIBILITY, staged.path()).unwrap();
+        reopened
+            .install_local(&record, &verified, &staged, false)
+            .unwrap();
+        assert_eq!(fs::read(&abandoned).unwrap(), b"interrupted copy");
+        assert_eq!(fs::read(&interrupted_attempt).unwrap(), bytes);
+        assert_eq!(fs::read(reopened.installed_path(&record)).unwrap(), bytes);
+        assert_eq!(fs::read(&source).unwrap(), bytes);
+    }
+
+    #[test]
     fn a_chosen_file_is_staged_verified_and_installed_without_changing_it() {
         let root = tempfile::tempdir().unwrap();
         let layout = ModelLayout::new(root.path());
@@ -583,9 +688,11 @@ mod tests {
         fs::write(&chosen, &bytes).unwrap();
 
         let staged = layout.stage_from_file(&record, &chosen).unwrap();
-        assert_eq!(staged, layout.partial_path(&record));
-        let verified = verify_staged(&record, ENGINE, COMPATIBILITY, &staged).unwrap();
-        let installed = layout.install(&record, &verified, &staged).unwrap();
+        assert_ne!(staged.path(), layout.partial_path(&record));
+        let verified = verify_staged(&record, ENGINE, COMPATIBILITY, staged.path()).unwrap();
+        let installed = layout
+            .install_local(&record, &verified, &staged, false)
+            .unwrap();
         assert_eq!(fs::read(&installed.path).unwrap(), bytes);
         assert_eq!(
             fs::read(&chosen).unwrap(),
@@ -598,14 +705,39 @@ mod tests {
         longer.extend_from_slice(&[0; 4096]);
         fs::write(&oversized, &longer).unwrap();
         let staged = layout.stage_from_file(&record, &oversized).unwrap();
-        assert_eq!(fs::metadata(&staged).unwrap().len(), record.byte_length + 1);
+        assert_eq!(
+            fs::metadata(staged.path()).unwrap().len(),
+            record.byte_length + 1
+        );
         assert!(matches!(
-            verify_staged(&record, ENGINE, COMPATIBILITY, &staged),
+            verify_staged(&record, ENGINE, COMPATIBILITY, staged.path()),
             Err(crate::VerifyError::Oversized { .. })
         ));
         assert!(matches!(
             layout.stage_from_file(&record, root.path()),
             Err(InstallError::NotRegularFile)
         ));
+    }
+
+    #[test]
+    fn local_attempt_refuses_substitution_and_cleanup_preserves_replacement() {
+        let root = tempfile::tempdir().unwrap();
+        let layout = ModelLayout::new(root.path());
+        let bytes = fixture_bytes(51864);
+        let record = fixture(&bytes);
+        let source = root.path().join("chosen.bin");
+        fs::write(&source, &bytes).unwrap();
+        let staged = layout.stage_from_file(&record, &source).unwrap();
+        let verified = verify_staged(&record, ENGINE, COMPATIBILITY, staged.path()).unwrap();
+        let path = staged.path().to_path_buf();
+        fs::remove_file(&path).unwrap();
+        fs::write(&path, b"foreign replacement").unwrap();
+        assert!(matches!(
+            layout.install_local(&record, &verified, &staged, true),
+            Err(InstallError::ChangedSinceVerification)
+        ));
+        drop(staged);
+        assert_eq!(fs::read(path).unwrap(), b"foreign replacement");
+        assert!(!layout.installed_path(&record).exists());
     }
 }

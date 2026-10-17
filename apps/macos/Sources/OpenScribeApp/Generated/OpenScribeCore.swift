@@ -10226,6 +10226,7 @@ public enum NativeWorkOutcome: Equatable, Hashable {
   case capturePreempted
   case failed
   case deferred
+  case incomplete
 
 }
 
@@ -10255,6 +10256,8 @@ public struct FfiConverterTypeNativeWorkOutcome: FfiConverterRustBuffer {
 
     case 5: return .deferred
 
+    case 6: return .incomplete
+
     default: throw UniffiInternalError.unexpectedEnumCase
     }
   }
@@ -10276,6 +10279,9 @@ public struct FfiConverterTypeNativeWorkOutcome: FfiConverterRustBuffer {
 
     case .deferred:
       writeInt(&buf, Int32(5))
+
+    case .incomplete:
+      writeInt(&buf, Int32(6))
 
     }
   }

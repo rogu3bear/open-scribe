@@ -1683,6 +1683,58 @@ mod tests {
         assert_eq!(snapshot.saved_sessions.len(), 1);
         assert_eq!(snapshot.saved_sessions[0].session_id, evidence.session_id);
         assert_eq!(snapshot.saved_sessions[0].title, "Customer interview");
+        let coordinator =
+            NativeWorkCoordinator::open(managed_root.to_string_lossy().into_owned()).unwrap();
+        let observations = NativeWorkObservations {
+            automatic: false,
+            paused: false,
+            capture_active: false,
+            media_recovery_pending: false,
+            model: NativeModelReadiness::Absent,
+            available_disk_bytes: None,
+            memory_critical: false,
+            thermal_critical: false,
+        };
+        coordinator
+            .request(
+                evidence.session_id.clone(),
+                NativeTranscriptionIntent::ReconcileRetained,
+            )
+            .unwrap();
+        let work = coordinator.admit(observations).unwrap().unwrap();
+        let speech = NativeSpeechModels::open(managed_root.to_string_lossy().into_owned()).unwrap();
+        let result = speech.transcribe_with_intent(
+            "no-model".into(),
+            evidence.session_id.clone(),
+            work.intent,
+            work.admission.clone(),
+            None,
+            NativeTranscriptionJob::new(),
+        );
+        assert_ne!(
+            result.outcome,
+            NativeWorkOutcome::Completed,
+            "no retained hypotheses cannot make a transcript ready"
+        );
+        assert_eq!(result.summary.unwrap().tracks, 0);
+        coordinator
+            .finish(work.admission.unwrap(), result.outcome)
+            .unwrap();
+        let reopened =
+            NativeWorkCoordinator::open(managed_root.to_string_lossy().into_owned()).unwrap();
+        assert!(
+            reopened.queue(observations).unwrap().is_empty(),
+            "the exhausted rebuild is not retried in a loop"
+        );
+        let queue = reopened
+            .queue(NativeWorkObservations {
+                automatic: true,
+                model: NativeModelReadiness::Ready,
+                ..observations
+            })
+            .unwrap();
+        assert_eq!(queue.len(), 1, "later recognition must remain eligible");
+        assert_eq!(queue[0].intent, NativeTranscriptionIntent::ResumeIncomplete);
         let lease = controller
             .lease_imported_playback(evidence.session_id)
             .unwrap();

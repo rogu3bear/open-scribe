@@ -47,14 +47,14 @@ struct TranscriptionQueueEntry: Equatable, Identifiable, Sendable {
 enum TranscriptionOutcome: Equatable, Sendable {
   case finished(String)
   case failed(String)
-  case cancelled, preempted, deferred
+  case cancelled, preempted, deferred, incomplete
 }
 enum TranscriptionJobState: Equatable, Sendable {
   case queued(position: Int, hold: TranscriptionHold?)
   case running
   case finished(String)
   case failed(String)
-  case cancelled, preempted, deferred
+  case cancelled, preempted, deferred, incomplete
 }
 
 /// Native measurements and execution adapter. Rust persists intent and owns
@@ -198,6 +198,7 @@ final class TranscriptionScheduler: ObservableObject {
     case .cancelled: return .cancelled
     case .preempted: return .preempted
     case .deferred: return .deferred
+    case .incomplete: return .incomplete
     case nil: return nil
     }
   }
@@ -322,6 +323,7 @@ final class TranscriptionScheduler: ObservableObject {
     case .capturePreempted: .preempted
     case .failed: .failed("Transcription did not finish. The recorded audio is unchanged.")
     case .deferred: .deferred
+    case .incomplete: .incomplete
     }
   }
   func summaryText(titles: [String: String], progress: Double?) -> String? {

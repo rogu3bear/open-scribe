@@ -12,8 +12,8 @@ mod verify;
 
 pub use catalog::{Catalog, CatalogError, ModelHeader, ModelRecord};
 pub use install::{
-    InstallError, InstalledArtifact, ModelLayout, ResumeDecision, TransferValidator,
-    resume_decision,
+    InstallError, InstalledArtifact, LocalStagedModel, ModelLayout, ResumeDecision,
+    TransferValidator, resume_decision,
 };
 pub use verify::{VerifiedArtifact, VerifyError, verify_staged};
 

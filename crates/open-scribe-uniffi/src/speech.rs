@@ -275,6 +275,7 @@ impl NativeSpeechModels {
             decoded_companion_path,
             job,
         )
+        .map(|completion| completion.summary)
     }
 
     pub fn transcribe_with_intent(
@@ -294,10 +295,11 @@ impl NativeSpeechModels {
             decoded_companion_path,
             job.clone(),
         ) {
-            Ok(summary) => NativeTranscriptionResult {
-                outcome: NativeWorkOutcome::Completed,
-                summary: Some(summary),
-                reason: None,
+            Ok(completion) => NativeTranscriptionResult {
+                outcome: completion.outcome,
+                summary: Some(completion.summary),
+                reason: (completion.outcome == NativeWorkOutcome::Incomplete)
+                    .then(|| "Some tracks still need recognition; no complete saved parts were available for them.".into()),
             },
             Err(error) => NativeTranscriptionResult {
                 outcome: match job.stop_reason.load(Ordering::Acquire) {
@@ -334,6 +336,11 @@ pub struct NativeTranscriptionResult {
     pub reason: Option<String>,
 }
 
+struct IntentCompletion {
+    summary: NativeTranscriptionSummary,
+    outcome: NativeWorkOutcome,
+}
+
 impl NativeSpeechModels {
     fn transcribe_intent(
         &self,
@@ -343,7 +350,7 @@ impl NativeSpeechModels {
         admission: Option<String>,
         decoded_companion_path: Option<String>,
         job: Arc<NativeTranscriptionJob>,
-    ) -> Result<NativeTranscriptionSummary, NativeSpeechError> {
+    ) -> Result<IntentCompletion, NativeSpeechError> {
         if job.is_cancelled() {
             return Err(NativeSpeechError::Cancelled);
         }
@@ -353,12 +360,17 @@ impl NativeSpeechModels {
         // Build before model loading, companion decoding, or a new admission.
         let plan = open_scribe_core::plan_session_transcription(&control, &session, intent.into())
             .map_err(|_| NativeSpeechError::NoTranscribableAudio)?;
-        if plan.tracks.is_empty() {
-            return Ok(NativeTranscriptionSummary {
-                tracks: 0,
-                segments: 0,
-                transcribed_chunks: 0,
-                reused_chunks: 0,
+        let completion_outcome = plan.completion_outcome();
+        if plan.tracks.is_empty() && completion_outcome == open_scribe_types::WorkOutcome::Completed
+        {
+            return Ok(IntentCompletion {
+                summary: NativeTranscriptionSummary {
+                    tracks: 0,
+                    segments: 0,
+                    transcribed_chunks: 0,
+                    reused_chunks: 0,
+                },
+                outcome: completion_outcome.into(),
             });
         }
         let owns_admission = admission.is_none();
@@ -419,7 +431,7 @@ impl NativeSpeechModels {
             });
         if owns_admission {
             let outcome = if result.is_ok() {
-                open_scribe_types::WorkOutcome::Completed
+                completion_outcome
             } else {
                 match job.stop_reason.load(Ordering::Acquire) {
                     1 => open_scribe_types::WorkOutcome::UserCancelled,
@@ -446,14 +458,17 @@ impl NativeSpeechModels {
                 .map_err(|_| NativeSpeechError::StorageFailure)?;
         }
         let outcomes = result?;
-        Ok(NativeTranscriptionSummary {
-            tracks: outcomes.len() as u32,
-            segments: outcomes.iter().map(|outcome| outcome.segment_count).sum(),
-            transcribed_chunks: outcomes
-                .iter()
-                .map(|outcome| outcome.transcribed_chunks)
-                .sum(),
-            reused_chunks: outcomes.iter().map(|outcome| outcome.reused_chunks).sum(),
+        Ok(IntentCompletion {
+            summary: NativeTranscriptionSummary {
+                tracks: outcomes.len() as u32,
+                segments: outcomes.iter().map(|outcome| outcome.segment_count).sum(),
+                transcribed_chunks: outcomes
+                    .iter()
+                    .map(|outcome| outcome.transcribed_chunks)
+                    .sum(),
+                reused_chunks: outcomes.iter().map(|outcome| outcome.reused_chunks).sum(),
+            },
+            outcome: completion_outcome.into(),
         })
     }
 }

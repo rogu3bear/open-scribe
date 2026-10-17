@@ -8,6 +8,25 @@ Rust owns durable lifecycle, journal, timing, evidence, recovery, policy, and ex
 
 Current source implements capture/import, local transcription, correction/search, and playback/export. Media-safety recovery completes before optional retained-transcript maintenance. Rust persists minimal per-session work intent and admits one runner; Swift supplies preferences and pressure observations and executes admitted work. Retry resumes incomplete tracks. Explicit reprocess creates replacement history under transactional selection/edit guards. Selected document availability and latest processing attempt are independent typed dimensions.
 
+Rebuild from Saved Parts does no recognition. An empty or partial rebuild ends
+its explicit request as `Incomplete` while missing tracks remain eligible for
+later automatic or explicit transcription. It reports `Completed` only when its
+plan covers every required incomplete track. The additional durable outcome is
+read fail-closed by older builds; it does not change the SQLite schema version,
+session v4, journal v1, or transcript reconciliation v3.
+
+Local model-file copies use private per-attempt staging tokens and retain their
+open inode through verification and installation. Retry creates a fresh attempt;
+abandoned attempts and legacy download partials remain untouched. Normal failure
+cleanup removes only the current attempt's unchanged single-link inode. Download
+resume validators, manifest validation and pre-load verification retain their
+existing contracts. This is no automatic model download or staging purge.
+
+Development proof dispatch that uses the app's capture controller first awaits
+the same isolated capture-safety recovery as the UI. A failed barrier refuses
+the proof before it can request capture. Synthetic timeline recovery retains its
+own evidence-preserving recovery entry point.
+
 [Dated evidence](docs/TESTING.md#foundational-recording-workflow) binds short synthetic/live dual-source rotation, forced termination, unchanged recovery, and playback to unsigned artifacts. Those receipts do not qualify current source. M1 remains incomplete. Source loss, active revocation, application selection, long-session synchronization, signing, deployment, and release require their corresponding proof. Public capability statuses and model-review holds remain unchanged.
 
 ## Owners

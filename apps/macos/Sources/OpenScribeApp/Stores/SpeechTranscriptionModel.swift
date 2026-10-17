@@ -185,7 +185,9 @@ final class SpeechTranscriptionModel: ObservableObject {
     } catch {
       let cancelled = (error as? NativeSpeechError) == .Cancelled || error is CancellationError
       let outcome = job.stopOutcome() ?? (cancelled ? .userCancelled : .failed)
-      report(outcome == .failed ? Self.describe(error) : Self.outcomeText(outcome), failure: outcome == .failed)
+      report(
+        outcome == .failed ? Self.describe(error) : Self.outcomeText(outcome),
+        failure: outcome == .failed)
       let code = error is CancellationError ? "cancelled" : Self.speechCode(error)
       AppTelemetry.libraryNote(
         stage: "transcription", detail: "failed session=\(sessionToken) code=\(code)")
@@ -205,6 +207,7 @@ final class SpeechTranscriptionModel: ObservableObject {
     case .capturePreempted: "Transcription yielded to capture. Finished parts are kept."
     case .failed: "Transcription did not finish. The recorded audio is unchanged."
     case .deferred: "Transcription is waiting to start."
+    case .incomplete: "Saved parts were checked. Some tracks still need transcription."
     }
   }
 

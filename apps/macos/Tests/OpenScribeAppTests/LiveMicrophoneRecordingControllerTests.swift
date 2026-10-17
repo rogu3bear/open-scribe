@@ -1155,6 +1155,80 @@ final class LiveMicrophoneRecordingControllerTests: XCTestCase {
     XCTAssertEqual(preparationCalls.value, 1)
   }
 
+  #if DEBUG
+    func testCaptureProofDispatchWaitsForSuccessfulCaptureSafetyRecovery() async throws {
+      let actions: [LaunchConfiguration.Action] = [
+        .injected("storage-warning"), .microphone, .forcedCapture, .drift(1),
+      ]
+      for action in actions {
+        let preparation = RecoveryPreparationFake()
+        let recovery = RecoveredSessionController(
+          recoveryFactory: { preparation }, player: RecoveredAudioPlayerFake())
+        let controller = LiveMicrophoneRecordingController(
+          permission: AuthorizedMicrophonePermission(),
+          preparationFactory: { RecordingPreparationFake() },
+          writerFactory: { SegmentWriterFake(authorization: $0) },
+          captureFactory: { _ in MicrophoneCaptureFake() })
+        controller.isLaunchRecoveryPending = { !recovery.captureSafetyComplete }
+        let runtime = RuntimeLibraryStore(
+          snapshotProvider: {
+            NativeRuntimeLibrarySnapshot(currentSession: nil, savedSessions: [])
+          },
+          startsPolling: false)
+        let defaults = UserDefaults(suiteName: "OpenScribe.Proof.Dispatch.\(UUID())")!
+        let configuration = LaunchConfiguration(
+          mode: .synthetic, action: action,
+          libraryRoot: FileManager.default.temporaryDirectory, proofRoot: nil,
+          mediaRoot: nil, preferences: defaults)
+        var dispatched = false
+        XCTAssertFalse(controller.canStart)
+        await ProofLaunchRunner.start(
+          configuration: configuration, injected: nil, controller: controller,
+          runtime: runtime, recovery: recovery,
+          captureProof: { observed in
+            XCTAssertEqual(observed, action)
+            XCTAssertTrue(recovery.captureSafetyComplete)
+            XCTAssertTrue(controller.canStart)
+            dispatched = true
+          }
+        ).value
+        XCTAssertTrue(dispatched)
+        XCTAssertEqual(preparation.recoveredOnMainThread, false)
+        XCTAssertEqual(controller.phase, .idle, "dispatch test never requests audio or permissions")
+      }
+    }
+
+    func testCaptureProofDoesNotDispatchAfterUnsafeRecovery() async {
+      let preparation = RecoveryPreparationFake()
+      preparation.recoveryError = CocoaError(.fileReadCorruptFile)
+      let recovery = RecoveredSessionController(
+        recoveryFactory: { preparation }, player: RecoveredAudioPlayerFake())
+      let controller = LiveMicrophoneRecordingController(
+        permission: AuthorizedMicrophonePermission(),
+        preparationFactory: { RecordingPreparationFake() },
+        writerFactory: { SegmentWriterFake(authorization: $0) },
+        captureFactory: { _ in MicrophoneCaptureFake() })
+      controller.isLaunchRecoveryPending = { !recovery.captureSafetyComplete }
+      let runtime = RuntimeLibraryStore(
+        snapshotProvider: { NativeRuntimeLibrarySnapshot(currentSession: nil, savedSessions: []) },
+        startsPolling: false)
+      let configuration = LaunchConfiguration(
+        mode: .synthetic, action: .injected("storage-warning"),
+        libraryRoot: FileManager.default.temporaryDirectory, proofRoot: nil,
+        mediaRoot: nil, preferences: UserDefaults(suiteName: "OpenScribe.Proof.Dispatch.\(UUID())")!
+      )
+      var dispatched = false
+      await ProofLaunchRunner.start(
+        configuration: configuration, injected: nil, controller: controller,
+        runtime: runtime, recovery: recovery, captureProof: { _ in dispatched = true }
+      ).value
+      XCTAssertFalse(dispatched)
+      XCTAssertFalse(recovery.captureSafetyComplete)
+      XCTAssertFalse(controller.canStart)
+      XCTAssertEqual(recovery.phase, .failed)
+    }
+  #endif
+
   /// G7: status text names only the audio the selection records; the default
   /// selection keeps its dual-source wording.
   func testStatusTextNamesOnlyTheSelectedAudio() async throws {
@@ -1234,7 +1308,8 @@ final class LiveMicrophoneRecordingControllerTests: XCTestCase {
     XCTAssertEqual(controller.statusText, "Conversation capture failed")
     XCTAssertFalse(controller.statusText.hasPrefix("Recording "))
     XCTAssertEqual(preparation.interruptionReasons, [.captureStartFailed])
-    XCTAssertTrue(preparation.sourceFailureReasons.isEmpty, "start-abort is not mid-session source_failed")
+    XCTAssertTrue(
+      preparation.sourceFailureReasons.isEmpty, "start-abort is not mid-session source_failed")
   }
 
   func testPostPreparationSetupFailureRecordsInterruptedState() async {

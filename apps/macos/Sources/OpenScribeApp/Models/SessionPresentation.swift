@@ -242,6 +242,8 @@ struct RuntimeTranscriptPresentation: Equatable, Sendable {
       return ("pause.circle", message("transcription yielded to capture"))
     case .deferred:
       return ("clock", message("transcription deferred"))
+    case .incomplete:
+      return ("text.badge.plus", message("some tracks still need transcription"))
     default:
       let symbol =
         attempt == .running

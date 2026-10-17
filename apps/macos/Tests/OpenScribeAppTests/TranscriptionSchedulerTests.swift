@@ -137,6 +137,31 @@ final class TranscriptionSchedulerTests: XCTestCase {
     XCTAssertEqual(queue[0].hold, .capture)
   }
 
+  func testIncompleteRebuildEndsManualIntentAndLeavesRecognitionEligible() async throws {
+    let h = try Harness()
+    defer { h.removeOwnedFixture() }
+    h.readiness = .absent
+    h.scheduler.isAutomatic = false
+    h.scheduler.request(sessionId: h.session, intent: .reconcileRetained)
+    await waitUntil { h.started.count == 1 }
+    XCTAssertEqual(h.started[0].intent, .reconcileRetained)
+    h.finish(.incomplete)
+    await waitUntil { h.scheduler.state(for: h.session) == .incomplete }
+    h.scheduler.reconsider()
+    try? await Task.sleep(for: .milliseconds(100))
+    XCTAssertEqual(h.started.count, 1, "an exhausted rebuild must not spin")
+    h.scheduler.isAutomatic = true
+    await waitUntil { h.scheduler.hold == .noSpeechModel }
+    XCTAssertEqual(h.scheduler.queue.map(\.sessionId), [h.session])
+    h.readiness = .ready
+    h.scheduler.reconsider()
+    await waitUntil { h.started.count == 2 }
+    XCTAssertEqual(h.started[1].intent, .resumeIncomplete)
+    XCTAssertFalse(h.started[1].manual)
+    h.finish(.userCancelled)
+    await waitUntil { h.scheduler.runningSessionId == nil }
+  }
+
   func testPressureReadingNamesOnlyMeasuredHolds() {
     let base = SystemPressureReading(
       availableDiskBytes: 40 << 30, memoryPressure: .normal, memoryPressureObserved: false,

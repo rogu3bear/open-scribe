@@ -6,7 +6,7 @@ use crate::{
 };
 use open_scribe_asr::{DecodeOptions, SpeechRecognizer};
 use open_scribe_store::{SessionStore, StoreError, TranscriptionOperation, TranscriptionRunPolicy};
-use open_scribe_types::{SessionId, TranscriptionIntent};
+use open_scribe_types::{SessionId, TranscriptionIntent, WorkOutcome};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -21,10 +21,20 @@ pub struct SessionTranscriptionPlan {
     pub session: SessionId,
     pub intent: TranscriptionIntent,
     pub tracks: Vec<PlannedTrack>,
+    /// Required incomplete tracks without complete compatible retained chunks.
+    /// Reconciliation cannot recognize them, but future recognition may.
+    pub unreconciled_tracks: usize,
 }
 impl SessionTranscriptionPlan {
     pub fn needs_recognizer(&self) -> bool {
         self.tracks.iter().any(|track| track.retained_run.is_none())
+    }
+    pub fn completion_outcome(&self) -> WorkOutcome {
+        if self.unreconciled_tracks > 0 {
+            WorkOutcome::Incomplete
+        } else {
+            WorkOutcome::Completed
+        }
     }
 }
 pub fn plan_session_transcription(
@@ -61,6 +71,7 @@ pub fn plan_transcription_operation(
     });
     let runs = store.transcription_runs(session)?;
     let mut planned = Vec::new();
+    let mut unreconciled_tracks = 0;
     for track in tracks {
         let input = store.transcription_input(session, &track)?;
         if let Some(key) = &operation_key {
@@ -96,6 +107,7 @@ pub fn plan_transcription_operation(
             }
         }
         if intent == TranscriptionIntent::ReconcileRetained && retained.is_none() {
+            unreconciled_tracks += 1;
             continue;
         }
         planned.push(PlannedTrack {
@@ -114,6 +126,7 @@ pub fn plan_transcription_operation(
         session: session.clone(),
         intent,
         tracks: planned,
+        unreconciled_tracks,
     })
 }
 pub fn execute_transcription_plan(

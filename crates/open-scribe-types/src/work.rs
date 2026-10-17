@@ -62,6 +62,8 @@ pub enum WorkOutcome {
     CapturePreempted,
     Failed,
     Deferred,
+    /// The requested rebuild ended, but some required tracks still need ASR.
+    Incomplete,
 }
 impl WorkOutcome {
     pub const fn code(self) -> &'static str {
@@ -71,6 +73,7 @@ impl WorkOutcome {
             Self::CapturePreempted => "preempted",
             Self::Failed => "failed",
             Self::Deferred => "deferred",
+            Self::Incomplete => "incomplete",
         }
     }
     pub fn from_code(code: &str) -> Option<Self> {
@@ -80,6 +83,7 @@ impl WorkOutcome {
             "preempted" => Some(Self::CapturePreempted),
             "failed" => Some(Self::Failed),
             "deferred" => Some(Self::Deferred),
+            "incomplete" => Some(Self::Incomplete),
             _ => None,
         }
     }
