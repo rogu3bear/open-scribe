@@ -28,6 +28,18 @@ does not allocate a version, execute milestone proofs, sign, notarize, package,
 publish, deploy, or mutate the tree. `./script/check.sh --release-prepare`
 validates that contract.
 
+The contributor gate checks the generated dependency inventory against the
+locked graph. Freshness does not close shipped-target classification, license
+review or notice obligations. After contributor qualification,
+`./script/check.sh --m4-local-only --candidate <absolute-record> --synthetic`
+can exercise the core offline workflow without real capture or screen context,
+using explicitly supplied model and nonprivate spoken inputs. The candidate
+consumer and its limits are documented in [Testing](../TESTING.md#candidate-bound-offline-workflow).
+Its receipt is development evidence, not authenticated M4 or release admission.
+The launch checklist's [operator decisions](0.1.0-LAUNCH-CHECKLIST.md#operator-decisions-before-the-protected-lane)
+identify the remaining scope, custody and adoption choices; no policy is
+activated by preparing this source path.
+
 Milestone, closed-P0, adoption, and qualification receipts are post-candidate
 evidence and therefore live outside the tracked tree. Preparation may inspect
 them from the absolute
@@ -72,8 +84,9 @@ semantics; and repository-root containment across every path component. That
 future design requires separate architecture and authority. M0-M4 receipts
 remain separate predecessor gates.
 
-`script/verify_bundle.sh` remains intentionally fail-closed until the signed
-artifact lane is implemented and authorized. `RELEASE_PREPARE_READY` is
+`script/verify_bundle.sh` implements read-only rejection and verification paths,
+but remains fail-closed without an approved signing policy and qualifying
+artifact. `RELEASE_PREPARE_READY` is
 currently unreachable by design because M0-M4 authenticated admission, legal,
 security, P0, supply-chain, signing-policy, and other candidate gates remain
 open. Structural claim consistency is not command execution, qualification,
