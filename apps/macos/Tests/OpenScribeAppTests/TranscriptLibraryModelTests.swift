@@ -100,6 +100,62 @@ final class TranscriptLibraryModelTests: XCTestCase {
     return (root, capture.sessionId, capture)
   }
 
+  func testDetailsSaveCompletionCannotReplaceANewerSelectedConversation() async throws {
+    final class Checkpoint: @unchecked Sendable {
+      let entered = DispatchSemaphore(value: 0)
+      let release = DispatchSemaphore(value: 0)
+      func waitUntilEntered() { entered.wait() }
+    }
+    let (root, sessionId, capture) = try capturedSession()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let preparation = try NativeRecordingPreparation.open(managedRoot: root.path)
+    let checkpoint = Checkpoint()
+    let store = RuntimeLibraryStore(
+      snapshotProvider: { NativeRuntimeLibrarySnapshot(currentSession: nil, savedSessions: []) },
+      declareProvider: { id, participants, topic in
+        checkpoint.entered.signal()
+        checkpoint.release.wait()
+        _ = try preparation.declareSession(
+          sessionId: id,
+          declaration: NativeSessionDeclaration(participants: participants, topic: topic))
+      }, startsPolling: false)
+    let library = TranscriptTimingLibraryFake()
+    let model = TranscriptLibraryModel(library: library)
+    let original = session(sessionId, calibrated: true, sources: [.microphone, .systemAudio])
+    let selected = session("other-conversation", calibrated: false, sources: [])
+    model.load(session: original)
+    let saving = Task {
+      let saved = await store.declare(
+        sessionId: sessionId, participants: ["Synthetic participant"], topic: "Saved for A")
+      if saved { model.reloadAfterDetailsSave(session: original) }
+      return saved
+    }
+    await Task.detached { checkpoint.waitUntilEntered() }.value
+    // Dismissing the old sheet does not undo a mutation already admitted to
+    // Rust. A different conversation owns the presentation before it finishes.
+    model.load(session: selected)
+    let before = model.segments
+    let reads = library.transcriptReads
+    checkpoint.release.signal()
+    let saved = await saving.value
+    XCTAssertTrue(saved)
+    XCTAssertEqual(
+      try preparation.contextDetail(sessionId: sessionId).declaration.topic, "Saved for A")
+    XCTAssertEqual(model.sessionId, selected.sessionId)
+    XCTAssertEqual(model.segments, before)
+    XCTAssertEqual(library.transcriptReads, reads)
+    XCTAssertTrue(
+      model.export(format: .plainText, to: root.appendingPathComponent("route-probe.txt")))
+    XCTAssertEqual(library.lastExportedSessionId, selected.sessionId)
+
+    model.load(session: original)
+    let currentReads = library.transcriptReads
+    model.reloadAfterDetailsSave(session: original)
+    XCTAssertEqual(
+      library.transcriptReads, currentReads + 2, "the selected document still refreshes")
+    withExtendedLifetime(capture) {}
+  }
+
   func testSavedRecordingReportsNoInventedTranscriptAndNamesSpeakersFromSources() throws {
     let (root, sessionId, capture) = try capturedSession()
     defer { try? FileManager.default.removeItem(at: root) }
@@ -264,7 +320,9 @@ private final class TranscriptTimingLibraryFake: NativeTranscriptLibrary, @unche
   private let lock = NSLock()
   private let rejectsHistoricalAudioOptions: Bool
   private var reads = 0
+  private var exportedSessionId: String?
   var transcriptReads: Int { lock.withLock { reads } }
+  var lastExportedSessionId: String? { lock.withLock { exportedSessionId } }
 
   init(rejectsHistoricalAudioOptions: Bool = false) {
     self.rejectsHistoricalAudioOptions = rejectsHistoricalAudioOptions
@@ -311,6 +369,14 @@ private final class TranscriptTimingLibraryFake: NativeTranscriptLibrary, @unche
   }
 
   override func contextEvents(sessionId: String) throws -> [NativeContextEvent] { [] }
+  override func export(
+    sessionId: String, format: NativeTranscriptExportFormat, destinationPath: String
+  )
+    throws -> NativeTranscriptExportReceipt
+  {
+    lock.withLock { exportedSessionId = sessionId }
+    return NativeTranscriptExportReceipt(availability: .final, byteLength: 0, segmentCount: 1)
+  }
   override func renameSpeaker(sessionId: String, trackId: String, label: String?) throws {}
 
   override func search(query: String, sessionId: String?, limit: UInt32) throws

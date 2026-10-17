@@ -27,6 +27,7 @@ struct SettingsView: View {
   @ObservedObject var pressure: SystemPressureMonitor
   @State private var exportDocument = DiagnosticsDocument(text: "")
   @State private var exportPresented = false
+  @State private var showingModels = false
   @ObservedObject private var diagnosticLog = DiagnosticLog.shared
   @State private var signature = "checking"
 
@@ -36,6 +37,10 @@ struct SettingsView: View {
         Toggle("Transcribe new recordings automatically", isOn: $scheduler.isAutomatic)
         Toggle("Pause automatic transcription", isOn: $scheduler.isPaused)
           .disabled(!scheduler.isAutomatic)
+        Button("Speech Models…") {
+          speech.dismissMessage()
+          showingModels = true
+        }
         LabeledContent("Queue", value: queueLabel)
         if let hold = scheduler.hold {
           Text(hold.text)
@@ -106,6 +111,9 @@ struct SettingsView: View {
     }
     .formStyle(.grouped)
     .frame(minWidth: 460, minHeight: 320)
+    .sheet(isPresented: $showingModels) {
+      SpeechModelSheet(speech: speech) { showingModels = false }
+    }
     .onAppear {
       AppTelemetry.sceneAppeared("settings", status: status)
       speech.refresh()

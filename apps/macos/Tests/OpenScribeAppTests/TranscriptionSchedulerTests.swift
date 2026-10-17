@@ -1,4 +1,6 @@
 import AVFoundation
+import AppKit
+import SwiftUI
 import XCTest
 
 @testable import OpenScribeApp
@@ -160,6 +162,59 @@ final class TranscriptionSchedulerTests: XCTestCase {
     XCTAssertFalse(h.started[1].manual)
     h.finish(.userCancelled)
     await waitUntil { h.scheduler.runningSessionId == nil }
+  }
+
+  /// Render the production controls beside real durable absent/invalid holds.
+  /// Keep PNGs with OPEN_SCRIBE_RENDER_DIR for visual inspection: SwiftUI's
+  /// in-process accessibility tree does not expose all controls on every SDK.
+  func testQueuedConversationsRenderModelHoldsAndControls() async throws {
+    let readinesses: [NativeModelReadiness] = [.absent, .invalid]
+    for readiness in readinesses {
+      let h = try Harness()
+      defer { h.removeOwnedFixture() }
+      h.readiness = readiness
+      h.scheduler.reconsider()
+      await waitUntil { h.scheduler.queue.map(\.sessionId) == [h.session] }
+      let root = h.root.appendingPathComponent("Library")
+      let preparation = try NativeRecordingPreparation.open(managedRoot: root.path)
+      let session = RuntimeSessionPresentation(
+        native: try XCTUnwrap(preparation.runtimeLibrarySnapshot().savedSessions.first))
+      let model = NativeSpeechModel(
+        modelId: "whisper-small.en-q5_1", profile: "fixture", languages: ["en"],
+        fileName: "fixture.bin", byteLength: 10, sha256: String(repeating: "a", count: 64),
+        downloadOrigin: "https://example.invalid/fixture", license: "MIT", engine: "fixture",
+        installed: false, readiness: readiness, diagnostic: nil)
+      let content = TranscriptSection(
+        session: session, transcripts: TranscriptLibraryModel(managedRoot: root),
+        speech: SpeechTranscriptionModel(preview: [model]), scheduler: h.scheduler,
+        canSeek: true, onSeek: { _ in }
+      ).padding(24).frame(width: 600).background(Color(nsColor: .windowBackgroundColor))
+      XCTAssertNotNil(h.scheduler.hold)
+      let host = NSHostingView(rootView: content)
+      let window = NSWindow(
+        contentRect: NSRect(x: 0, y: 0, width: 600, height: 500),
+        styleMask: [.titled], backing: .buffered, defer: false)
+      window.isReleasedWhenClosed = false
+      window.contentView = host
+      window.orderFront(nil)
+      defer { window.close() }
+      try await Task.sleep(for: .milliseconds(30))
+      host.layoutSubtreeIfNeeded()
+      let size = host.fittingSize
+      XCTAssertLessThanOrEqual(size.width, 601)
+      XCTAssertGreaterThan(size.height, 80)
+      if let directory = ProcessInfo.processInfo.environment["OPEN_SCRIBE_RENDER_DIR"] {
+        // Render this mounted view in process, including its AppKit controls;
+        // this does not read the screen or request screen-capture permission.
+        let image = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+        host.cacheDisplay(in: host.bounds, to: image)
+        let png = try XCTUnwrap(
+          image.representation(using: .png, properties: [:]))
+        try png.write(
+          to: URL(fileURLWithPath: directory).appendingPathComponent(
+            "queued-model-\(readiness).png"))
+      }
+    }
   }
 
   func testPressureReadingNamesOnlyMeasuredHolds() {

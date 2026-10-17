@@ -152,9 +152,7 @@ struct TranscriptSection: View {
         Button("Cancel Transcription") { scheduler.cancel(sessionId: session.sessionId) }
       }
       .frame(maxWidth: 420, alignment: .leading)
-    } else if session.transcriptionUnavailableReason == nil,
-      speech.installedModel != nil || !scheduler.queue.isEmpty
-    {
+    } else if session.transcriptionUnavailableReason == nil {
       VStack(alignment: .leading, spacing: 8) {
         if case .queued(let position, let hold) = job {
           Label(
@@ -176,7 +174,7 @@ struct TranscriptSection: View {
             }
             Button("Remove from Queue") { scheduler.cancel(sessionId: session.sessionId) }
           }
-        } else {
+        } else if speech.installedModel != nil {
           HStack(spacing: 12) {
             Button(
               transcripts.availability == .failed || job == .cancelled
@@ -188,11 +186,6 @@ struct TranscriptSection: View {
             .help(
               "Resume incomplete tracks. Compatible selected Final transcripts and their corrections stay selected."
             )
-            Button("Speech Model…") {
-              speech.dismissMessage()
-              showingModels = true
-            }
-            .buttonStyle(.link)
           }
           if scheduler.isPaused {
             HStack(spacing: 12) {
@@ -210,24 +203,20 @@ struct TranscriptSection: View {
             .foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
           }
-        }
-      }
-    } else if session.transcriptionUnavailableReason == nil {
-      VStack(alignment: .leading, spacing: 6) {
-        Text("Transcription needs a verified local speech model.")
-          .font(.callout)
-        if case .queued = job {
-          Text("This conversation is queued and will be transcribed once a model is installed.")
+        } else {
+          Text("Transcription needs a verified local speech model.")
             .font(.callout)
-            .foregroundStyle(.secondary)
-            .fixedSize(horizontal: false, vertical: true)
         }
-        Button("Install Speech Model…") {
-          speech.dismissMessage()
-          showingModels = true
-        }
-        Button("Rebuild from Saved Parts") {
-          scheduler.request(sessionId: session.sessionId, intent: .reconcileRetained)
+        HStack(spacing: 12) {
+          Button("Speech Model…") {
+            speech.dismissMessage()
+            showingModels = true
+          }
+          if speech.installedModel == nil {
+            Button("Rebuild from Saved Parts") {
+              scheduler.request(sessionId: session.sessionId, intent: .reconcileRetained)
+            }
+          }
         }
       }
     }

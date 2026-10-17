@@ -100,6 +100,13 @@ final class TranscriptLibraryModel: ObservableObject {
       transcriptionUnavailableReason: session.transcriptionUnavailableReason)
   }
 
+  /// Completion of a metadata save may arrive after its sheet was dismissed.
+  /// Keep the callback bound to the document that currently owns this model.
+  func reloadAfterDetailsSave(session: RuntimeSessionPresentation) {
+    guard sessionId == session.sessionId else { return }
+    load(session: session)
+  }
+
   private func load(sessionId: String, transcriptionUnavailableReason: String?) {
     self.sessionId = sessionId
     self.transcriptionUnavailableReason = transcriptionUnavailableReason

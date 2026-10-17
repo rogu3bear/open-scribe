@@ -120,7 +120,7 @@ struct ConversationWorkspaceView: View {
         declaration: transcripts.sessionId == session.sessionId
           ? transcripts.contextDetail?.declaration : nil,
         store: store,
-        onSaved: { transcripts.load(session: session) },
+        onSaved: { transcripts.reloadAfterDetailsSave(session: session) },
         onClose: { isEditingDetails = false })
     }
   }

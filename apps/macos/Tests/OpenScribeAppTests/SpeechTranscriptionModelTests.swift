@@ -38,6 +38,62 @@ final class SpeechTranscriptionModelTests: XCTestCase {
     XCTAssertNil(speech.transcribingSessionId)
   }
 
+  func testSuccessfulInstallAndRepairPublishReadinessBeforeReturning() async throws {
+    let readinesses: [NativeModelReadiness] = [.absent, .invalid]
+    for initial in readinesses {
+      let native = DelayedInstalledCatalog(initial: initial)
+      let speech = SpeechTranscriptionModel(speech: native)
+      for _ in 0..<500 where speech.isRefreshing { try await Task.sleep(for: .milliseconds(10)) }
+      let record = try XCTUnwrap(speech.models.first)
+      var returned = false
+      let installing = Task {
+        let success = await speech.install(
+          record, from: URL(fileURLWithPath: "/unused-fixture.bin"))
+        returned = true
+        return success
+      }
+      let verifying = await Task.detached {
+        native.waitForVerification()
+      }.value
+      XCTAssertTrue(verifying)
+      XCTAssertFalse(returned, "success must wait for the installed catalog result to be published")
+      XCTAssertTrue(speech.isInstalling)
+      native.releaseVerification.signal()
+      let installed = await installing.value
+      XCTAssertTrue(installed)
+      XCTAssertEqual(speech.installedModel?.modelId, record.modelId)
+      XCTAssertEqual(speech.readiness, .ready)
+      XCTAssertFalse(speech.isInstalling)
+      XCTAssertFalse(speech.isRefreshing)
+      let outcome = await speech.process(sessionId: "fixture", intent: .resumeIncomplete)
+      XCTAssertEqual(outcome, .completed)
+      XCTAssertEqual(
+        native.transcribedModelId, record.modelId,
+        "an immediate caller never passes an empty model id")
+    }
+  }
+
+  func testCommittedInstallDoesNotClaimReadinessWhenReverificationRejectsIt() async throws {
+    let native = DelayedInstalledCatalog(initial: .absent, afterInstall: .invalid)
+    let speech = SpeechTranscriptionModel(speech: native)
+    await speech.refreshAndWait()
+    let record = try XCTUnwrap(speech.models.first)
+    let installing = Task {
+      await speech.install(record, from: URL(fileURLWithPath: "/unused-fixture.bin"))
+    }
+    let verifying = await Task.detached { native.waitForVerification() }.value
+    XCTAssertTrue(verifying)
+    native.releaseVerification.signal()
+    let installed = await installing.value
+    XCTAssertFalse(installed)
+    XCTAssertNil(speech.installedModel)
+    XCTAssertEqual(speech.readiness, .invalid)
+    XCTAssertTrue(speech.messageIsFailure)
+    XCTAssertTrue(speech.message?.contains("was installed") == true)
+    XCTAssertTrue(speech.message?.contains("readiness could not be confirmed") == true)
+    XCTAssertFalse(speech.isInstalling)
+  }
+
   /// The complete consumer path on the real pinned model: install from the
   /// chosen file, transcribe an imported conversation, then review and
   /// search it. Set `OPEN_SCRIBE_WHISPER_MODEL` and
@@ -57,7 +113,7 @@ final class SpeechTranscriptionModelTests: XCTestCase {
       .sessionId
 
     let speech = SpeechTranscriptionModel(managedRoot: root)
-    for _ in 0..<100 where speech.isRefreshing { try await Task.sleep(for: .milliseconds(10)) }
+    await speech.refreshAndWait()
     let model = try XCTUnwrap(speech.models.first)
     let installed = await speech.install(model, from: URL(fileURLWithPath: modelPath))
     XCTAssertTrue(installed, speech.message ?? "")
@@ -229,6 +285,7 @@ final class SpeechTranscriptionModelTests: XCTestCase {
     XCTAssertTrue(evidence.relativePath.hasSuffix(".m4a"), "kept compressed")
 
     let speech = SpeechTranscriptionModel(managedRoot: managedRoot)
+    await speech.refreshAndWait()
     let installed = await speech.install(
       try XCTUnwrap(speech.models.first), from: URL(fileURLWithPath: modelPath))
     XCTAssertTrue(installed, speech.message ?? "")
@@ -240,5 +297,67 @@ final class SpeechTranscriptionModelTests: XCTestCase {
     XCTAssertEqual(transcripts.availability, .final)
     let text = transcripts.segments.map(\.effectiveText).joined(separator: " ").lowercased()
     XCTAssertTrue(text.contains("recording safe"), text)
+  }
+}
+
+/// Coarse native adapter only: no file access, weights, ASR, or downloads.
+/// Holds post-install discovery so the production model's return ordering is deterministic.
+private final class DelayedInstalledCatalog: NativeSpeechModels, @unchecked Sendable {
+  let verificationEntered = DispatchSemaphore(value: 0)
+  let releaseVerification = DispatchSemaphore(value: 0)
+  private let lock = NSLock()
+  private let initial: NativeModelReadiness
+  private let afterInstall: NativeModelReadiness
+  private var installed = false
+  private var processedModelId: String?
+  var transcribedModelId: String? { lock.withLock { processedModelId } }
+  func waitForVerification() -> Bool {
+    verificationEntered.wait(timeout: .now() + 5) == .success
+  }
+
+  init(initial: NativeModelReadiness, afterInstall: NativeModelReadiness = .ready) {
+    self.initial = initial
+    self.afterInstall = afterInstall
+    super.init(noHandle: NoHandle())
+  }
+  required init(unsafeFromHandle handle: UInt64) {
+    initial = .absent
+    afterInstall = .ready
+    super.init(unsafeFromHandle: handle)
+  }
+  override func models() -> [NativeSpeechModel] {
+    let ready = lock.withLock { installed }
+    if ready {
+      verificationEntered.signal()
+      _ = releaseVerification.wait(timeout: .now() + 5)
+    }
+    return [
+      NativeSpeechModel(
+        modelId: "whisper-small.en-q5_1", profile: "fixture", languages: ["en"],
+        fileName: "fixture.bin", byteLength: 10, sha256: String(repeating: "a", count: 64),
+        downloadOrigin: "https://example.invalid/fixture", license: "MIT", engine: "fixture",
+        installed: ready && afterInstall == .ready,
+        readiness: ready ? afterInstall : initial, diagnostic: nil)
+    ]
+  }
+  override func installFromFile(modelId: String, sourcePath: String) throws {
+    lock.withLock { installed = true }
+  }
+  override func repairFromFile(modelId: String, sourcePath: String) throws {
+    lock.withLock { installed = true }
+  }
+  override func needsDecodedCompanionForIntent(sessionId: String, intent: NativeTranscriptionIntent)
+    throws -> Bool
+  { false }
+  override func transcribeWithIntent(
+    modelId: String, sessionId: String, intent: NativeTranscriptionIntent, admission: String?,
+    decodedCompanionPath: String?, job: NativeTranscriptionJob
+  ) -> NativeTranscriptionResult {
+    lock.withLock { processedModelId = modelId }
+    return NativeTranscriptionResult(
+      outcome: .completed,
+      summary: NativeTranscriptionSummary(
+        tracks: 1, segments: 0, transcribedChunks: 1, reusedChunks: 0),
+      reason: nil)
   }
 }

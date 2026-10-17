@@ -90,17 +90,24 @@ final class SpeechTranscriptionModel: ObservableObject {
     }
   }
 
+  /// Join the latest catalog publication, including a refresh that supersedes
+  /// this one while native verification is in progress. Waiting yields the actor.
+  func refreshAndWait() async {
+    refresh()
+    while isRefreshing, let current = refreshTask {
+      await current.value
+    }
+  }
+
   /// Copies, verifies, self-tests, and installs the chosen file off the main
-  /// actor. The chosen file is not changed; a rejected file installs nothing.
+  /// actor. Success also requires the current catalog to publish readiness.
+  /// The chosen source file is not changed; rejected bytes install nothing.
   @discardableResult
   func install(_ model: NativeSpeechModel, from url: URL) async -> Bool {
     guard let speech, !isInstalling else { return false }
     isInstalling = true
     report(nil)
-    defer {
-      isInstalling = false
-      refresh()
-    }
+    defer { isInstalling = false }
     let modelId = model.modelId
     let modelToken = DiagnosticPrivacy.token(modelId)
     let path = url.path
@@ -112,11 +119,23 @@ final class SpeechTranscriptionModel: ObservableObject {
           try speech.installFromFile(modelId: modelId, sourcePath: path)
         }
       }.value
+      await refreshAndWait()
+      guard catalogWarning == nil,
+        models.contains(where: { $0.modelId == modelId && $0.installed && $0.readiness == .ready })
+      else {
+        report(
+          "\(model.fileName) was installed, but its readiness could not be confirmed. Refresh the model catalog to check it again.",
+          failure: true)
+        AppTelemetry.libraryNote(
+          stage: "speech-install", detail: "model=\(modelToken) result=readiness_unavailable")
+        return false
+      }
       report("\(model.fileName) verified and installed.")
       AppTelemetry.libraryNote(
         stage: "speech-install", detail: "model=\(modelToken) result=installed")
       return true
     } catch {
+      refresh()
       report(Self.describe(error), failure: true)
       AppTelemetry.libraryNote(
         stage: "speech-install",
