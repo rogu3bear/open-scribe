@@ -88,11 +88,13 @@ final class LaunchConfigurationTests: XCTestCase {
   }
 
   func testLocalOnlyProofKeepsSyntheticAndExplicitLiveModesDistinct() throws {
-    let root = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
+    let directory = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
       .appendingPathComponent("open-scribe-local-proof-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let root = directory.appendingPathComponent("Proof")
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
-    defer { try? FileManager.default.removeItem(at: root) }
-    let normal = root.appendingPathComponent("unused-production")
+    let normal = directory.appendingPathComponent("unused-production")
     let suite = "OpenScribe.Proof.\(UUID().uuidString)"
     for (flag, expected) in [
       ("--local-only-synthetic-proof-root", LaunchConfiguration.Mode.synthetic),
