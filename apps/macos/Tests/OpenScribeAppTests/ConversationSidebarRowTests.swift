@@ -125,6 +125,7 @@ final class ConversationSidebarRowTests: XCTestCase {
         window.makeKeyAndOrderFront(nil)
         defer { window.close() }
         try await Task.sleep(for: .milliseconds(150))
+        try await makeKeyWhenActive(window)
         let table = try XCTUnwrap(findTable(in: host))
         XCTAssertTrue(window.makeFirstResponder(table))
         XCTAssertTrue(NSApp.isActive)
@@ -140,9 +141,8 @@ final class ConversationSidebarRowTests: XCTestCase {
           contentRect: NSRect(x: 0, y: 0, width: 200, height: 80),
           styleMask: [.titled], backing: .buffered, defer: false)
         other.isReleasedWhenClosed = false
-        other.makeKeyAndOrderFront(nil)
         defer { other.close() }
-        try await Task.sleep(for: .milliseconds(150))
+        try await makeKeyWhenActive(other)
         XCTAssertTrue(other.isKeyWindow)
         XCTAssertFalse(window.isKeyWindow)
         try await captureFocus(
@@ -162,11 +162,26 @@ final class ConversationSidebarRowTests: XCTestCase {
     return view.subviews.lazy.compactMap { self.findTable(in: $0) }.first
   }
 
+  private func makeKeyWhenActive(_ window: NSWindow) async throws {
+    // Activation and launch/window restoration are asynchronous. A fixed sleep
+    // does not establish the AppKit state required by the contrast test.
+    let deadline = ContinuousClock.now + .seconds(3)
+    repeat {
+      NSApp.activate(ignoringOtherApps: true)
+      NSRunningApplication.current.activate(options: [.activateIgnoringOtherApps])
+      window.makeKeyAndOrderFront(nil)
+      if NSApp.isActive && window.isKeyWindow { return }
+      try await Task.sleep(for: .milliseconds(25))
+    } while ContinuousClock.now < deadline
+    XCTFail("The native focus fixture did not become the active key window within three seconds.")
+  }
+
   private func captureFocus<V: View>(
     _ host: NSHostingView<V>, window: NSWindow, appearance: NSAppearance.Name,
     width: Double, phase: String
   ) async throws {
     try await Task.sleep(for: .milliseconds(150))
+    XCTAssertEqual(window.isKeyWindow, phase != "inactive", "native state at the actual capture")
     host.layoutSubtreeIfNeeded()
     let mode = appearance == .aqua ? "light" : "dark"
     let responder = window.firstResponder.map { String(describing: type(of: $0)) } ?? "none"
