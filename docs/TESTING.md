@@ -100,6 +100,17 @@ bundle with `build-for-testing`. It retains source/native logs and their digests
 It then runs the complete Swift suite, scene launch, recorder components, and
 synthetic foundational recovery. Device-dependent proofs remain separate.
 
+`DiagnosticsUnifiedLogTests` observes the production logger in that isolated
+test host through an owned, read-only `log stream` subprocess with a six-second
+timeout. Unique start/end controls and all eight expected redacted records must
+arrive from the exact host PID and subsystem; empty output fails. Fictional
+content canaries exercise the production telemetry entry points and the local
+diagnostic journal. Raw stdout/stderr remain attached to the native test result,
+including on failure. Parser regressions reject missing controls, foreign
+records, unexpected framing, and leaked canaries. This checks the live logging
+sink for those exercised calls; it does not qualify every capture, ASR, OCR,
+provider, or crash path, a signed artifact, or the release-wide privacy P0.
+
 The native dependency CPU policy lives in `.cargo/config.toml`: `GGML_NATIVE=OFF`
 and `GGML_CPU_ARM_ARCH=armv8-a`, with Metal and Accelerate enabled. Cargo forces
 these values for both the application target and host-side binding generator.

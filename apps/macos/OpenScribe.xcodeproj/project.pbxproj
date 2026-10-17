@@ -48,6 +48,7 @@
 		7B61FB95E7DAEDF66275BDED /* AppTelemetry.swift in Sources */ = {isa = PBXBuildFile; fileRef = BC2B884506AEDD909F7A06DD /* AppTelemetry.swift */; };
 		D1A6N0000000000000000002 /* DiagnosticsReport.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1A6N0000000000000000001 /* DiagnosticsReport.swift */; };
 		D1A6T0000000000000000002 /* DiagnosticsReportTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1A6T0000000000000000001 /* DiagnosticsReportTests.swift */; };
+		B7C001F00000000000000002 /* DiagnosticsUnifiedLogTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B7C001F00000000000000001 /* DiagnosticsUnifiedLogTests.swift */; };
 		80867FCED39F6D49A72CD0FB /* SessionPresentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = 68710CE895B2216A5675AE4A /* SessionPresentation.swift */; };
 		A11A3F920D148E6A9BCE201 /* ImportedMediaAuthorityAdapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = A12A3F920D148E6A9BCE201 /* ImportedMediaAuthorityAdapter.swift */; };
 		B11A3F920D148E6A9BCE201 /* BoundedAudioImport.swift in Sources */ = {isa = PBXBuildFile; fileRef = B01A3F920D148E6A9BCE201 /* BoundedAudioImport.swift */; };
@@ -154,6 +155,7 @@
 		BC2B884506AEDD909F7A06DD /* AppTelemetry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppTelemetry.swift; sourceTree = "<group>"; };
 		D1A6N0000000000000000001 /* DiagnosticsReport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiagnosticsReport.swift; sourceTree = "<group>"; };
 		D1A6T0000000000000000001 /* DiagnosticsReportTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiagnosticsReportTests.swift; sourceTree = "<group>"; };
+		B7C001F00000000000000001 /* DiagnosticsUnifiedLogTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiagnosticsUnifiedLogTests.swift; sourceTree = "<group>"; };
 		C62801D03FDD064235316905 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		B0198AA144C943FF87190102 /* ConversationSidebarRowTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationSidebarRowTests.swift; sourceTree = "<group>"; };
 		B0198AA144C943FF87190011 /* ConversationWorkspaceView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationWorkspaceView.swift; sourceTree = "<group>"; };
@@ -340,6 +342,7 @@
 				F563A3F920D148E6A9BCE201 /* SingleInstanceGuardTests.swift */,
 				F999B06ACC1C80F559FDEF6B /* RustStatusSourceTests.swift */,
 				D1A6T0000000000000000001 /* DiagnosticsReportTests.swift */,
+				B7C001F00000000000000001 /* DiagnosticsUnifiedLogTests.swift */,
 				1003D5D4F9A95E6C4078E7C5 /* TranscriptionSchedulerTests.swift */,
 			);
 			path = OpenScribeAppTests;
@@ -522,6 +525,7 @@
 				E563A3F920D148E6A9BCE201 /* SingleInstanceGuardTests.swift in Sources */,
 				3D25B82DFEFE01398833B042 /* RustStatusSourceTests.swift in Sources */,
 				D1A6T0000000000000000002 /* DiagnosticsReportTests.swift in Sources */,
+				B7C001F00000000000000002 /* DiagnosticsUnifiedLogTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
