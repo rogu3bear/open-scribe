@@ -28,10 +28,9 @@ final class RuntimeLibraryStore: ObservableObject {
   /// The result of the last title or details edit, for the workspace notice.
   @Published private(set) var editMessage: String?
   @Published private(set) var editMessageIsFailure = false
-  /// The app sets this while launch recovery scans the library. Capture waits
-  /// for that scan, so a current session read meanwhile is a terminated one
-  /// awaiting recovery and is never presented as live.
-  var isLaunchRecoveryPending: @MainActor () -> Bool = { false }
+  /// Supplied before the first snapshot starts. A read begun during recovery
+  /// can still contain a terminated recording after the barrier completes.
+  private let isLaunchRecoveryPending: @MainActor () -> Bool
 
   private let snapshotProvider: SnapshotProvider
   private let announce: @MainActor (String) -> Void
@@ -56,6 +55,7 @@ final class RuntimeLibraryStore: ObservableObject {
     packageImportProvider: PackageImportProvider? = nil,
     renameProvider: RenameProvider? = nil,
     declareProvider: DeclareProvider? = nil,
+    isLaunchRecoveryPending: @escaping @MainActor () -> Bool = { false },
     announce: @escaping @MainActor (String) -> Void = AccessibilityAnnouncer.post,
     startsPolling: Bool = true,
     refreshesImmediately: Bool = true
@@ -68,6 +68,7 @@ final class RuntimeLibraryStore: ObservableObject {
     self.packageImportProvider = packageImportProvider
     self.renameProvider = renameProvider
     self.declareProvider = declareProvider
+    self.isLaunchRecoveryPending = isLaunchRecoveryPending
     if refreshesImmediately {
       refresh()
       if startsPolling {
@@ -105,7 +106,11 @@ final class RuntimeLibraryStore: ObservableObject {
     return ["preparing", "recording", "paused", "finalizing"].contains(lifecycle)
   }
 
-  convenience init(managedRoot: URL?, refreshesImmediately: Bool = true) {
+  convenience init(
+    managedRoot: URL?,
+    isLaunchRecoveryPending: @escaping @MainActor () -> Bool = { false },
+    refreshesImmediately: Bool = true
+  ) {
     let controller = try? managedRoot.map {
       try NativeRecordingPreparation.open(managedRoot: $0.path)
     }
@@ -159,6 +164,7 @@ final class RuntimeLibraryStore: ObservableObject {
           sessionId: sessionId,
           declaration: NativeSessionDeclaration(participants: participants, topic: topic))
       },
+      isLaunchRecoveryPending: isLaunchRecoveryPending,
       refreshesImmediately: refreshesImmediately
     )
   }

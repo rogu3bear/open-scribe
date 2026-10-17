@@ -936,9 +936,9 @@ final class FixtureSessionTests: XCTestCase {
       snapshotProvider: {
         NativeRuntimeLibrarySnapshot(currentSession: leftover, savedSessions: [saved])
       },
+      isLaunchRecoveryPending: { scan.pending },
       startsPolling: false
     )
-    store.isLaunchRecoveryPending = { scan.pending }
 
     store.refresh()
     await assertEventually { store.savedSessions.map(\.sessionId) == ["session-saved"] }
@@ -947,6 +947,47 @@ final class FixtureSessionTests: XCTestCase {
     scan.pending = false
     store.refresh()
     await assertEventually { store.currentSession?.sessionId == "session-left-recording" }
+  }
+
+  func testInitialSnapshotRemembersRecoveryAfterItsBarrierCompletes() async {
+    let scan = RecoveryScanFlag()
+    let firstRead = FixtureBlockingGate()
+    defer { firstRead.release() }
+    let leftover = NativeRuntimeSessionSnapshot(
+      sessionId: "abandoned-recording", title: "Interrupted conversation",
+      lifecycle: "recording", health: "healthy", elapsedSeconds: 65,
+      journalDurable: true, mediaFilesOpen: true, interruptionReason: nil,
+      recovered: false, hasCaptureTimeline: true,
+      sources: [
+        NativeRuntimeSourceSnapshot(
+          kind: .microphone, displayName: "Fixture microphone", lifecycle: "capturing")
+      ], playableMedia: nil)
+    let saved = NativeRuntimeSessionSnapshot(
+      sessionId: "saved-after-startup", title: "Saved conversation",
+      lifecycle: "ready_for_review", health: "healthy", elapsedSeconds: 1,
+      journalDurable: true, mediaFilesOpen: false, interruptionReason: nil,
+      recovered: true, hasCaptureTimeline: false, sources: [], playableMedia: nil)
+    var announcements: [String] = []
+    let store = RuntimeLibraryStore(
+      snapshotProvider: {
+        firstRead.enterAndWait()
+        return NativeRuntimeLibrarySnapshot(currentSession: leftover, savedSessions: [saved])
+      },
+      isLaunchRecoveryPending: { scan.pending },
+      announce: { announcements.append($0) }, startsPolling: false)
+    await assertEventually { firstRead.hasEntered }
+    // The initial read still contains the terminated process's recording,
+    // even though its result arrives after capture-safety recovery completes.
+    scan.pending = false
+    firstRead.release()
+    await assertEventually { store.savedSessions.map(\.sessionId) == [saved.sessionId] }
+    XCTAssertNil(store.currentSession, "the initial read predates capture-safety recovery")
+    let menu = MenuBarLabel.presentation(
+      session: store.currentSession, snapshotStale: store.isSnapshotStale,
+      livePhase: .idle, liveStatus: "Ready to record")
+    XCTAssertFalse(menu.text.contains("Recording"))
+    XCTAssertFalse(menu.accessibilityText.contains("Recording"))
+    XCTAssertTrue(announcements.isEmpty, "an abandoned recording must not be announced as live")
   }
 
   func testRecoveredPartialSessionRetainsAttentionTruthAndExactSourceDurations() {

@@ -46,9 +46,7 @@ struct TranscriptSection: View {
       Text(session.transcriptionUnavailableReason ?? availabilityText)
         .font(.callout)
         .foregroundStyle(.secondary)
-      if session.transcript.documentAvailability != .final
-        || scheduler.runningSessionId == session.sessionId
-      {
+      if showsTranscriptionControls {
         transcriptionControls
       }
       if !showingModels, session.transcriptionUnavailableReason == nil {
@@ -91,6 +89,17 @@ struct TranscriptSection: View {
         "This creates replacement revisions, reusing compatible saved recognition when available. A replacement becomes selected only if its review selection and edits have not changed since this request. Earlier revisions and their corrections remain in history."
       )
     }
+  }
+
+  var showsTranscriptionControls: Bool {
+    session.transcript.documentAvailability != .final
+      || scheduler.runningSessionId == session.sessionId
+      || hasQueuedWork
+  }
+
+  private var hasQueuedWork: Bool {
+    if case .queued = scheduler.state(for: session.sessionId) { return true }
+    return false
   }
 
   /// The last thing the scheduler did for this conversation, in the speech
@@ -152,7 +161,7 @@ struct TranscriptSection: View {
         Button("Cancel Transcription") { scheduler.cancel(sessionId: session.sessionId) }
       }
       .frame(maxWidth: 420, alignment: .leading)
-    } else if session.transcriptionUnavailableReason == nil {
+    } else if session.transcriptionUnavailableReason == nil || hasQueuedWork {
       VStack(alignment: .leading, spacing: 8) {
         if case .queued(let position, let hold) = job {
           Label(
@@ -211,14 +220,16 @@ struct TranscriptSection: View {
           Text("Transcription needs a verified local speech model.")
             .font(.callout)
         }
-        HStack(spacing: 12) {
-          Button("Speech Model…") {
-            speech.dismissMessage()
-            showingModels = true
-          }
-          if speech.installedModel == nil {
-            Button("Rebuild from Saved Parts") {
-              scheduler.request(sessionId: session.sessionId, intent: .reconcileRetained)
+        if session.transcriptionUnavailableReason == nil {
+          HStack(spacing: 12) {
+            Button("Speech Model…") {
+              speech.dismissMessage()
+              showingModels = true
+            }
+            if speech.installedModel == nil {
+              Button("Rebuild from Saved Parts") {
+                scheduler.request(sessionId: session.sessionId, intent: .reconcileRetained)
+              }
             }
           }
         }

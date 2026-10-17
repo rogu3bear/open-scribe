@@ -196,8 +196,9 @@ struct OpenScribeApp: App {
       injectedProof?.controller
       ?? managedRoot.map(LiveMicrophoneRecordingController.init(managedRoot:))
       ?? LiveMicrophoneRecordingController(managedRoot: nil)
-    let runtime = RuntimeLibraryStore(managedRoot: managedRoot)
     let recovery = RecoveredSessionController(managedRoot: managedRoot)
+    let runtime = RuntimeLibraryStore(
+      managedRoot: managedRoot, isLaunchRecoveryPending: { !recovery.captureSafetyComplete })
     let importAuthority = ImportedMediaAuthorityAdapter(
       canBeginImport: { controller.canStart },
       importer: { title, sourceURL in
@@ -226,7 +227,6 @@ struct OpenScribeApp: App {
     _scheduler = StateObject(wrappedValue: scheduler)
     _context = StateObject(wrappedValue: ContextScopeModel(recorder: controller))
     controller.isLaunchRecoveryPending = { !recovery.captureSafetyComplete }
-    runtime.isLaunchRecoveryPending = { !recovery.captureSafetyComplete }
     #if DEBUG
       ProofLaunchRunner.start(
         configuration: configuration, injected: injectedProof,

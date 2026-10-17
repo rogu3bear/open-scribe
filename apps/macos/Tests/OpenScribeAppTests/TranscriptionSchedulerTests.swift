@@ -293,6 +293,86 @@ final class TranscriptionSchedulerTests: XCTestCase {
     }
   }
 
+  func testFinalDocumentKeepsHeldReplacementControlsAndDurableWithdrawal() async throws {
+    let h = try Harness()
+    defer { h.removeOwnedFixture() }
+    h.capture = true
+    h.scheduler.isAutomatic = false
+    h.scheduler.request(sessionId: h.session, intent: .reprocessAll)
+    await waitUntil { h.scheduler.queue.first?.requestedByUser == true }
+    XCTAssertEqual(
+      h.scheduler.state(for: h.session), .queued(position: 1, hold: .recordingInProgress))
+    let libraryRoot = h.root.appendingPathComponent("Library")
+    let preparation = try NativeRecordingPreparation.open(managedRoot: libraryRoot.path)
+    let saved = try XCTUnwrap(preparation.runtimeLibrarySnapshot().savedSessions.first)
+    // Document availability and durable scheduling intent are independent:
+    // render the selected Final projection beside the real held native request.
+    let session = RuntimeSessionPresentation(
+      native: NativeRuntimeSessionSnapshot(
+        sessionId: saved.sessionId, title: saved.title, lifecycle: saved.lifecycle,
+        health: saved.health, elapsedSeconds: saved.elapsedSeconds,
+        journalDurable: saved.journalDurable, mediaFilesOpen: saved.mediaFilesOpen,
+        interruptionReason: saved.interruptionReason, recovered: saved.recovered,
+        hasCaptureTimeline: saved.hasCaptureTimeline, sources: saved.sources,
+        playableMedia: saved.playableMedia,
+        transcript: NativeRuntimeTranscriptSnapshot(
+          document: .final, replacementResumable: false, state: .final,
+          selectedRevisionIds: ["reviewed-revision"], documentVersion: "reviewed-document",
+          attempt: .complete, attemptFailure: nil, totalTracks: 1, finalTracks: 1,
+          completedChunks: 1, totalChunks: 1, failureClass: nil)))
+    let transcript = TranscriptLibraryModel(
+      preview: .final,
+      segments: [
+        NativeTranscriptSegment(
+          revisionId: "reviewed-revision", trackId: "fixture", sequence: 0,
+          startNanoseconds: 0, endNanoseconds: 100_000_000,
+          verbatimText: "Machine reading", effectiveText: "Human corrected reading",
+          corrected: true, speakerLabel: "Local user", speakerNamedByUser: false)
+      ], speakers: [])
+    let section = TranscriptSection(
+      session: session, transcripts: transcript,
+      speech: SpeechTranscriptionModel(speech: nil), scheduler: h.scheduler,
+      canSeek: true, onSeek: { _ in })
+    XCTAssertTrue(section.showsTranscriptionControls, "queued replacement must remain withdrawable")
+    let host = NSHostingView(
+      rootView: section.padding(24).frame(width: 600)
+        .background(Color(nsColor: .windowBackgroundColor)))
+    let window = NSWindow(
+      contentRect: NSRect(x: 0, y: 0, width: 600, height: 500),
+      styleMask: [.titled], backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    window.contentView = host
+    window.orderFront(nil)
+    defer { window.close() }
+    try await Task.sleep(for: .milliseconds(30))
+    host.layoutSubtreeIfNeeded()
+    if let directory = ProcessInfo.processInfo.environment["OPEN_SCRIBE_RENDER_DIR"] {
+      let image = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+      host.cacheDisplay(in: host.bounds, to: image)
+      let png = try XCTUnwrap(image.representation(using: .png, properties: [:]))
+      try png.write(
+        to: URL(fileURLWithPath: directory).appendingPathComponent("final-held-replacement.png"))
+    }
+    h.scheduler.cancel(sessionId: h.session)
+    await waitUntil { h.scheduler.queue.isEmpty }
+    XCTAssertFalse(
+      section.showsTranscriptionControls, "an idle Final document needs no queue controls")
+    XCTAssertEqual(transcript.availability, .final)
+    XCTAssertEqual(transcript.segments.first?.effectiveText, "Human corrected reading")
+    h.capture = false
+    h.scheduler.reconsider()
+    try await Task.sleep(for: .milliseconds(100))
+    XCTAssertTrue(h.started.isEmpty, "withdrawing the held replacement prevents later admission")
+    let reopened = try NativeWorkCoordinator.open(managedRoot: libraryRoot.path)
+    XCTAssertTrue(
+      try reopened.queue(
+        observations: NativeWorkObservations(
+          automatic: true, paused: false, captureActive: false,
+          mediaRecoveryPending: false, model: .ready, availableDiskBytes: nil,
+          memoryCritical: false, thermalCritical: false)
+      ).isEmpty, "withdrawal remains durable across restart, including automatic processing")
+  }
+
   func testPressureReadingNamesOnlyMeasuredHolds() {
     let base = SystemPressureReading(
       availableDiskBytes: 40 << 30, memoryPressure: .normal, memoryPressureObserved: false,
