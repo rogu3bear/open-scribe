@@ -41,6 +41,16 @@ does not allocate a version, execute milestone proofs, sign, notarize, package,
 publish, deploy, or mutate the tree. `./script/check.sh --release-prepare`
 validates that contract.
 
+Non-admitting prerequisite preparation is available without entering the protected
+lane. The [offline native document reader](../../apps/macos/README.md#offline-policy-documents)
+uses byte-identical copies of canonical policy sources and compiled digest checks;
+it does not adopt drafts. The [license-material collector](../supply-chain/README.md#offline-native-license-materials)
+verifies local package archives against the lockfile and exposes gaps for review;
+it does not establish shipped-component completeness or generate admitted notices.
+[Support](../../SUPPORT.md) documents actual recovery/export limits and privacy-safe
+issue intake. Support response ownership, legal/security adoption and third-party
+clearance remain open. These source paths do not remove any preparation blocker.
+
 The contributor gate checks the generated dependency inventory against the
 locked graph. Freshness does not close shipped-target classification, license
 review or notice obligations. After contributor qualification,
