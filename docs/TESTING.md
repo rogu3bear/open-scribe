@@ -148,8 +148,9 @@ downloads weights or installs them into the ordinary library. Source inputs
 are hashed before and after use.
 
 Synthetic is the default mode. It uses the production runtime components with
-synthetic capture inputs, omits screen context, and neither queries screen
-permission nor requests a microphone or screen stream. The separate
+synthetic capture inputs and omits screen context. The ordinary UI may read
+permission status; the workload requests no permission grant and opens no
+microphone or screen stream. The separate
 `--live-context` mode retains the legacy `--local-only-proof-root` route and
 requires explicit authorization for real screen content; its report must show
 an authorized frame and accepted event. Synthetic uses
