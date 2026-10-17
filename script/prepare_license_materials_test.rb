@@ -100,6 +100,24 @@ class LicenseMaterialsTest < Minitest::Test
     end
   end
 
+  def test_expanded_limit_includes_tar_headers_and_padding
+    original_limit = LicenseMaterials::MAX_EXPANDED
+    LicenseMaterials.send(:remove_const, :MAX_EXPANDED)
+    LicenseMaterials.const_set(:MAX_EXPANDED, 1024)
+    entries = 4.times.to_h { |index| ["example-1.0.0/empty-#{index}", ''] }
+    with_archive(entries) do |path, sha|
+      error = assert_raises(RuntimeError) { LicenseMaterials.archive_texts(path, PACKAGE, sha) }
+      assert_includes error.message, 'expanded archive exceeds size bound'
+    end
+    with_archive('example-1.0.0/padded' => 'a') do |path, sha|
+      error = assert_raises(RuntimeError) { LicenseMaterials.archive_texts(path, PACKAGE, sha) }
+      assert_includes error.message, 'expanded archive exceeds size bound'
+    end
+  ensure
+    LicenseMaterials.send(:remove_const, :MAX_EXPANDED)
+    LicenseMaterials.const_set(:MAX_EXPANDED, original_limit)
+  end
+
   def test_graph_excludes_dev_and_separates_build_and_proc_macro
     package = lambda { |id, kind| { 'id' => id, 'name' => id == 'root' ? 'open-scribe-uniffi' : id, 'targets' => [{ 'kind' => [kind] }] } }
     dep = lambda { |id, kind| { 'pkg' => id, 'dep_kinds' => [{ 'kind' => kind }] } }

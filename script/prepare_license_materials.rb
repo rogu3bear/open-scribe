@@ -16,6 +16,29 @@ module LicenseMaterials
   MAX_TEXT = 512 * 1024
   MAX_EXPANDED = 256 * 1024 * 1024
 
+  # Count bytes actually consumed from gzip, including tar headers/padding.
+  # Deliberately expose no seek operation: TarReader must drain through read.
+  class BoundedTarStream
+    attr_reader :pos
+
+    def initialize(stream, limit)
+      @stream = stream
+      @limit = limit
+      @pos = 0
+    end
+
+    def eof?
+      @stream.eof?
+    end
+
+    def read(length)
+      bytes = @stream.read([length, @limit - @pos + 1].min)
+      @pos += bytes ? bytes.bytesize : 0
+      raise 'expanded archive exceeds size bound' if @pos > @limit
+      bytes
+    end
+  end
+
   def self.command(*args, root:)
     output, error, status = Open3.capture3(*args, chdir: root)
     raise "command failed: #{args.first(2).join(' ')}: #{error.strip}" unless status.success?
@@ -64,13 +87,10 @@ module LicenseMaterials
     raise 'archive differs from Cargo.lock checksum' unless Digest::SHA256.hexdigest(bytes) == checksum
     prefix = "#{package.fetch('name')}-#{package.fetch('version')}/"
     texts = []
-    total = 0
     long_name = nil
     gzip = Zlib::GzipReader.new(StringIO.new(bytes))
-    Gem::Package::TarReader.new(gzip) do |tar|
+    Gem::Package::TarReader.new(BoundedTarStream.new(gzip, MAX_EXPANDED)) do |tar|
       tar.each do |entry|
-        total += entry.header.size
-        raise 'expanded archive exceeds size bound' if total > MAX_EXPANDED
         if entry.header.typeflag == 'L'
           raise 'invalid GNU long-name entry' if long_name || entry.header.size > MAX_TEXT
           long_name = entry.read.delete_suffix("\0")
@@ -90,7 +110,7 @@ module LicenseMaterials
         next if entry.directory?
         raise 'license entry is not a regular file' unless entry.file?
         raise 'license text exceeds size bound' if entry.header.size > MAX_TEXT
-        text = entry.read
+        text = entry.read || ''.b
         raise 'license text is empty or not UTF-8' unless !text.empty? && text.dup.force_encoding('UTF-8').valid_encoding?
         raise 'duplicate license entry' if texts.any? { |item| item.fetch('package_path') == relative }
         texts << { 'package_path' => relative, 'sha256' => Digest::SHA256.hexdigest(text), 'bytes' => text.bytesize, 'text' => text }
