@@ -257,6 +257,21 @@ RustBuffer
 uniffi_open_scribe_uniffi_fn_method_nativeimportedplaybacklease_playback_path(
     uint64_t ptr, RustCallStatus *_Nonnull out_status);
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_FN_CLONE_NATIVEMIXDOWNWORK
+#define UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_FN_CLONE_NATIVEMIXDOWNWORK
+uint64_t uniffi_open_scribe_uniffi_fn_clone_nativemixdownwork(
+    uint64_t handle, RustCallStatus *_Nonnull out_status);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_FN_FREE_NATIVEMIXDOWNWORK
+#define UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_FN_FREE_NATIVEMIXDOWNWORK
+void uniffi_open_scribe_uniffi_fn_free_nativemixdownwork(
+    uint64_t handle, RustCallStatus *_Nonnull out_status);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_FN_METHOD_NATIVEMIXDOWNWORK_SESSION_ID
+#define UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_FN_METHOD_NATIVEMIXDOWNWORK_SESSION_ID
+RustBuffer uniffi_open_scribe_uniffi_fn_method_nativemixdownwork_session_id(
+    uint64_t ptr, RustCallStatus *_Nonnull out_status);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_FN_CLONE_NATIVERECORDINGPREPARATION
 #define UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_FN_CLONE_NATIVERECORDINGPREPARATION
 uint64_t uniffi_open_scribe_uniffi_fn_clone_nativerecordingpreparation(
@@ -1159,6 +1174,13 @@ uint16_t uniffi_open_scribe_uniffi_checksum_func_verify_portable_package(void
 uint16_t
 uniffi_open_scribe_uniffi_checksum_method_nativeimportedplaybacklease_playback_path(
     void
+
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_CHECKSUM_METHOD_NATIVEMIXDOWNWORK_SESSION_ID
+#define UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_CHECKSUM_METHOD_NATIVEMIXDOWNWORK_SESSION_ID
+uint16_t
+uniffi_open_scribe_uniffi_checksum_method_nativemixdownwork_session_id(void
 
 );
 #endif

@@ -85,7 +85,7 @@ pub use open_scribe_store::{
     AuthorizeMediaOpenRequest, CaptureClock, CompressedImportMetadata, FirstSampleEvidence,
     FirstSampleReceipt, ImportMediaRequest, ImportPolicy, ImportedMediaEvidence,
     ImportedPlaybackLease, InterruptSessionRequest, MediaOpenAuthorization, MediaOpenEvidence,
-    MediaOpenReceipt, MediaSourceKind, MixdownAuthorization, MixdownReceipt,
+    MediaOpenReceipt, MediaSourceKind, MixdownAuthorization, MixdownReceipt, MixdownWork,
     OriginalImportMetadata, PrepareSessionRequest, PreparedSessionReceipt, RecorderAction,
     RecorderDetail, RecorderEvent, RecordingStartedEvidence, RecoveredPlayableSession,
     RequiredSourcePlanEvidence, RuntimeLibrarySnapshot, RuntimePlayableMediaAvailability,

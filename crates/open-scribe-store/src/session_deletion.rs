@@ -11,7 +11,7 @@
 //! Emptying Trash is the separate, user-owned permanent deletion.
 
 use super::library_recovery::isolated_disposition;
-use super::{SCHEMA_VERSION, SessionStore, StoreError, wall_time_milliseconds};
+use super::{MixdownWork, SCHEMA_VERSION, SessionStore, StoreError, wall_time_milliseconds};
 use open_scribe_types::SessionId;
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use std::fs;
@@ -120,6 +120,10 @@ impl SessionStore {
                 "processing must finish or acknowledge cancellation before deletion",
             ));
         }
+        // Rendering owns only this session's lease, never the library writer.
+        // Fail without waiting or committing intent; Cancel must not discard
+        // an otherwise valid in-flight mix. Hold until intent commits below.
+        let _mixdown = MixdownWork::try_acquire(&self.managed_root, session)?;
 
         let count = |sql: &str| -> Result<u32, StoreError> {
             Ok(transaction.query_row(sql, [&session.0], |row| row.get(0))?)

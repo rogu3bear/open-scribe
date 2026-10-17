@@ -236,6 +236,79 @@ fn derived_mixdown_uses_fresh_capacity_without_changing_saved_recorder_state() {
 }
 
 #[test]
+fn deletion_waits_for_the_active_mixdown_and_cancellation_keeps_its_result() {
+    let temp = TempDir::new().unwrap();
+    let mut store = SessionStore::open(temp.path()).unwrap();
+    let (session, sources) = recording_pair(&mut store);
+    for source in &sources {
+        seal(&mut store, source, 1_000_000_001, 48_000);
+    }
+    let authorization = store.authorize_mixdown(session.clone(), u64::MAX).unwrap();
+    let mut other = SessionStore::open(temp.path()).unwrap();
+    assert!(matches!(
+        other.begin_session_deletion(&session),
+        Err(StoreError::InvalidState(_))
+    ));
+    let (independent, independent_sources) = recording_pair(&mut store);
+    for source in &independent_sources {
+        seal(&mut store, source, 1_000_000_001, 48_000);
+    }
+    other.begin_session_deletion(&independent).unwrap();
+    other.abandon_session_deletion(&independent).unwrap();
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&authorization.absolute_path)
+        .unwrap();
+    // Native tests own AAC decoding; exercise the accepted coarse receipt here.
+    file.write_all(&[0, 0, 0, 32]).unwrap();
+    file.write_all(b"ftyp").unwrap();
+    file.write_all(&[0; 24]).unwrap();
+    file.sync_all().unwrap();
+    drop(file);
+    let mix = store
+        .accept_mixdown(MixdownReceipt {
+            session_id: session.clone(),
+            relative_path: authorization.relative_path.clone(),
+            byte_length: 32,
+            decoded_frame_count: 48_000,
+            sample_rate_hz: 48_000,
+            channels: 2,
+            codec: "aac".into(),
+            boundary_frames_readable: true,
+        })
+        .unwrap();
+    drop(authorization);
+    other.begin_session_deletion(&session).unwrap();
+    other.abandon_session_deletion(&session).unwrap();
+    assert_eq!(other.validated_mixdown(&session).unwrap(), Some(mix));
+    assert_eq!(other.playback_timeline(&session).unwrap().len(), 2);
+}
+
+#[test]
+fn abandoned_mixdown_history_is_deletable_after_its_last_live_owner_drops() {
+    let temp = TempDir::new().unwrap();
+    let mut store = SessionStore::open(temp.path()).unwrap();
+    let (session, sources) = recording_pair(&mut store);
+    for source in &sources {
+        seal(&mut store, source, 1_000_000_001, 48_000);
+    }
+    let authorization = store.authorize_mixdown(session.clone(), u64::MAX).unwrap();
+    drop(store);
+    let mut reopened = SessionStore::open(temp.path()).unwrap();
+    assert!(reopened.begin_session_deletion(&session).is_err());
+    drop(authorization);
+    reopened.begin_session_deletion(&session).unwrap();
+    assert!(
+        reopened
+            .authorize_mixdown(session.clone(), u64::MAX)
+            .is_err()
+    );
+    reopened.abandon_session_deletion(&session).unwrap();
+    assert!(reopened.authorize_mixdown(session, u64::MAX).is_ok());
+}
+
+#[test]
 fn lost_derived_mixdown_does_not_take_source_playback_with_it() {
     let temp = TempDir::new().unwrap();
     let mut store = SessionStore::open(temp.path()).unwrap();

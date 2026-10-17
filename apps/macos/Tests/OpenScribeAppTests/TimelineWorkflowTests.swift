@@ -4,6 +4,52 @@ import XCTest
 @testable import OpenScribeApp
 
 final class TimelineWorkflowTests: XCTestCase {
+  func testDeletionWaitsForNativeMixdownAndCancellationKeepsTheAcceptedMix() throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let capture = try TimelineRuntimeProof.capture(root: root)
+    _ = try TimelineRuntimeProof.verify(root: root, sessionId: capture.sessionId)
+    let preparation = try NativeRecordingPreparation.open(managedRoot: root.path)
+    let library = try NativeTranscriptLibrary.open(managedRoot: root.path)
+    let sessionId = capture.sessionId
+    let mix = try ValidatedMixdownBuilder.buildIfNeeded(
+      preparation: preparation, sessionId: capture.sessionId, storagePath: root.path,
+      beforeEncoding: {
+        XCTAssertThrowsError(try library.beginDeletion(sessionId: sessionId)) { error in
+          XCTAssertEqual(error as? NativeStorageError, .InvalidState)
+        }
+      })
+    let inventory = try library.beginDeletion(sessionId: capture.sessionId)
+    XCTAssertGreaterThan(inventory.exportFiles, 0)
+    try library.abandonDeletion(sessionId: capture.sessionId)
+    XCTAssertEqual(
+      try preparation.validatedMixdown(sessionId: capture.sessionId)?.digestSha256, mix.digestSha256
+    )
+    withExtendedLifetime(capture) {}
+  }
+
+  func testFailedNativeMixdownReleasesDeletionAdmissionAfterOutputCleanup() throws {
+    enum InjectedFailure: Error { case encoding }
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let capture = try TimelineRuntimeProof.capture(root: root)
+    _ = try TimelineRuntimeProof.verify(root: root, sessionId: capture.sessionId)
+    let preparation = try NativeRecordingPreparation.open(managedRoot: root.path)
+    let library = try NativeTranscriptLibrary.open(managedRoot: root.path)
+    XCTAssertThrowsError(
+      try ValidatedMixdownBuilder.buildIfNeeded(
+        preparation: preparation, sessionId: capture.sessionId, storagePath: root.path,
+        beforeEncoding: { throw InjectedFailure.encoding })
+    ) { error in
+      XCTAssertTrue(error is InjectedFailure)
+    }
+    let inventory = try library.beginDeletion(sessionId: capture.sessionId)
+    XCTAssertEqual(inventory.exportFiles, 0, "failed output is removed before releasing activity")
+    try library.abandonDeletion(sessionId: capture.sessionId)
+    XCTAssertNil(try preparation.validatedMixdown(sessionId: capture.sessionId))
+    withExtendedLifetime(capture) {}
+  }
+
   func testTwoSegmentTracksRecoverAndRenderAtTheirOriginalOffsets() throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }
@@ -55,8 +101,9 @@ final class TimelineWorkflowTests: XCTestCase {
         .appendingPathComponent(mix.relativePath))
     XCTAssertEqual(decoded.fileFormat.channelCount, 2)
     decoded.framePosition = 62_400
-    let probe = try XCTUnwrap(AVAudioPCMBuffer(
-      pcmFormat: decoded.processingFormat, frameCapacity: 1_024))
+    let probe = try XCTUnwrap(
+      AVAudioPCMBuffer(
+        pcmFormat: decoded.processingFormat, frameCapacity: 1_024))
     try decoded.read(into: probe, frameCount: 1_024)
     XCTAssertEqual(probe.frameLength, 1_024)
     let samples = try XCTUnwrap(probe.floatChannelData)

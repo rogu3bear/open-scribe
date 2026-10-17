@@ -44,8 +44,9 @@ Use the app's confirmed **Move to Trash** action for a saved conversation. It
 does not securely erase media, empty Trash, delete original imports, or remove
 backup/export copies. Keep needed copies before deletion. Do not manually move
 internal folders back into the library as a restore.
-The confirmation freezes changes to that conversation; finish or cancel active
-processing before deletion. Cancelling the confirmation restores its eligibility.
+The confirmation freezes changes to that conversation. Wait for an active stereo
+mix to finish, or finish/cancel transcription, before deletion. A failed mix releases
+the hold after its output cleanup. Cancelling the confirmation restores eligibility.
 Trash preserves the session files, but moving them back does not restore the
 deleted review database. If database cleanup is waiting for a reader, or a move
 or database result could not be confirmed, keep the warning and restart Open

@@ -736,6 +736,118 @@ public func FfiConverterTypeNativeImportedPlaybackLease_lower(_ value: NativeImp
   return FfiConverterTypeNativeImportedPlaybackLease.lower(value)
 }
 
+/// Opaque session activity; its lifetime excludes deletion without holding
+/// capture's library writer during native encoding or decoding.
+public protocol NativeMixdownWorkProtocol: AnyObject, Sendable {
+
+  func sessionId() -> String
+
+}
+/// Opaque session activity; its lifetime excludes deletion without holding
+/// capture's library writer during native encoding or decoding.
+open class NativeMixdownWork: NativeMixdownWorkProtocol, @unchecked Sendable {
+  fileprivate let handle: UInt64
+
+  /// Used to instantiate a [FFIObject] without an actual handle, for fakes in tests, mostly.
+  #if swift(>=5.8)
+    @_documentation(visibility: private)
+  #endif
+  public struct NoHandle {
+    public init() {}
+  }
+
+  // TODO: We'd like this to be `private` but for Swifty reasons,
+  // we can't implement `FfiConverter` without making this `required` and we can't
+  // make it `required` without making it `public`.
+  #if swift(>=5.8)
+    @_documentation(visibility: private)
+  #endif
+  required public init(unsafeFromHandle handle: UInt64) {
+    self.handle = handle
+  }
+
+  // This constructor can be used to instantiate a fake object.
+  // - Parameter noHandle: Placeholder value so we can have a constructor separate from the default empty one that may be implemented for classes extending [FFIObject].
+  //
+  // - Warning:
+  //     Any object instantiated with this constructor cannot be passed to an actual Rust-backed object. Since there isn't a backing handle the FFI lower functions will crash.
+  #if swift(>=5.8)
+    @_documentation(visibility: private)
+  #endif
+  public init(noHandle: NoHandle) {
+    self.handle = 0
+  }
+
+  #if swift(>=5.8)
+    @_documentation(visibility: private)
+  #endif
+  public func uniffiCloneHandle() -> UInt64 {
+    return try! rustCall { uniffi_open_scribe_uniffi_fn_clone_nativemixdownwork(self.handle, $0) }
+  }
+  // No primary constructor declared for this class.
+
+  deinit {
+    if handle == 0 {
+      // Mock objects have handle=0 don't try to free them
+      return
+    }
+
+    try! rustCall { uniffi_open_scribe_uniffi_fn_free_nativemixdownwork(handle, $0) }
+  }
+
+  open func sessionId() -> String {
+    return try! FfiConverterString.lift(
+      try! rustCall {
+        uniffiCallStatus in
+        uniffi_open_scribe_uniffi_fn_method_nativemixdownwork_session_id(
+          self.uniffiCloneHandle(), uniffiCallStatus
+        )
+      })
+  }
+
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeNativeMixdownWork: FfiConverter {
+  typealias FfiType = UInt64
+  typealias SwiftType = NativeMixdownWork
+
+  public static func lift(_ handle: UInt64) throws -> NativeMixdownWork {
+    return NativeMixdownWork(unsafeFromHandle: handle)
+  }
+
+  public static func lower(_ value: NativeMixdownWork) -> UInt64 {
+    return value.uniffiCloneHandle()
+  }
+
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws
+    -> NativeMixdownWork
+  {
+    let handle: UInt64 = try readInt(&buf)
+    return try lift(handle)
+  }
+
+  public static func write(_ value: NativeMixdownWork, into buf: inout [UInt8]) {
+    writeInt(&buf, lower(value))
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeMixdownWork_lift(_ handle: UInt64) throws -> NativeMixdownWork {
+  return try FfiConverterTypeNativeMixdownWork.lift(handle)
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeMixdownWork_lower(_ value: NativeMixdownWork) -> UInt64 {
+  return FfiConverterTypeNativeMixdownWork.lower(value)
+}
+
 public protocol NativeRecordingPreparationProtocol: AnyObject, Sendable {
 
   func abandonReservedSegment(sessionId: String, segmentId: String) throws
@@ -4261,19 +4373,20 @@ public func FfiConverterTypeNativeMediaRecovery_lower(_ value: NativeMediaRecove
   return FfiConverterTypeNativeMediaRecovery.lower(value)
 }
 
-public struct NativeMixdownAuthorization: Equatable, Hashable {
+public struct NativeMixdownAuthorization {
   public let sessionId: String
   public let relativePath: String
   public let absolutePath: String
   public let expectedFrameCount: UInt64
   public let sourceDigestSha256: String
   public let writeFloorBytes: UInt64
+  public let work: NativeMixdownWork
 
   // Default memberwise initializers are never public by default, so we
   // declare one manually.
   public init(
     sessionId: String, relativePath: String, absolutePath: String, expectedFrameCount: UInt64,
-    sourceDigestSha256: String, writeFloorBytes: UInt64
+    sourceDigestSha256: String, writeFloorBytes: UInt64, work: NativeMixdownWork
   ) {
     self.sessionId = sessionId
     self.relativePath = relativePath
@@ -4281,6 +4394,7 @@ public struct NativeMixdownAuthorization: Equatable, Hashable {
     self.expectedFrameCount = expectedFrameCount
     self.sourceDigestSha256 = sourceDigestSha256
     self.writeFloorBytes = writeFloorBytes
+    self.work = work
   }
 
 }
@@ -4303,7 +4417,8 @@ public struct FfiConverterTypeNativeMixdownAuthorization: FfiConverterRustBuffer
         absolutePath: FfiConverterString.read(from: &buf),
         expectedFrameCount: FfiConverterUInt64.read(from: &buf),
         sourceDigestSha256: FfiConverterString.read(from: &buf),
-        writeFloorBytes: FfiConverterUInt64.read(from: &buf)
+        writeFloorBytes: FfiConverterUInt64.read(from: &buf),
+        work: FfiConverterTypeNativeMixdownWork.read(from: &buf)
       )
   }
 
@@ -4314,6 +4429,7 @@ public struct FfiConverterTypeNativeMixdownAuthorization: FfiConverterRustBuffer
     FfiConverterUInt64.write(value.expectedFrameCount, into: &buf)
     FfiConverterString.write(value.sourceDigestSha256, into: &buf)
     FfiConverterUInt64.write(value.writeFloorBytes, into: &buf)
+    FfiConverterTypeNativeMixdownWork.write(value.work, into: &buf)
   }
 }
 
@@ -11333,6 +11449,9 @@ private let initializationResult: InitializationResult = {
     return InitializationResult.apiChecksumMismatch
   }
   if uniffi_open_scribe_uniffi_checksum_method_nativeimportedplaybacklease_playback_path() != 168 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_open_scribe_uniffi_checksum_method_nativemixdownwork_session_id() != 10818 {
     return InitializationResult.apiChecksumMismatch
   }
   if uniffi_open_scribe_uniffi_checksum_method_nativerecordingpreparation_abandon_reserved_segment()

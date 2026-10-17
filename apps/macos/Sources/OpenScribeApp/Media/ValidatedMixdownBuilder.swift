@@ -16,17 +16,18 @@ enum ValidatedMixdownBuilder {
 
   static func buildIfNeeded(
     preparation: NativeRecordingPreparationProtocol, sessionId: String,
-    storagePath: String, beforeEncoding: @Sendable () -> Void = {}
+    storagePath: String, beforeEncoding: @Sendable () throws -> Void = {}
   ) throws -> NativeValidatedMixdown {
     try buildLock.withLock {
-      try build(preparation: preparation, sessionId: sessionId, storagePath: storagePath,
+      try build(
+        preparation: preparation, sessionId: sessionId, storagePath: storagePath,
         beforeEncoding: beforeEncoding)
     }
   }
 
   private static func build(
     preparation: NativeRecordingPreparationProtocol, sessionId: String,
-    storagePath: String, beforeEncoding: @Sendable () -> Void
+    storagePath: String, beforeEncoding: @Sendable () throws -> Void
   ) throws -> NativeValidatedMixdown {
     if let existing = try preparation.validatedMixdown(sessionId: sessionId) {
       return existing
@@ -35,6 +36,9 @@ enum ValidatedMixdownBuilder {
     let authorization = try preparation.authorizeMixdown(
       sessionId: sessionId,
       availableBytes: RecorderStorage.availableBytes(at: storagePath))
+    // Register first so reader/output cleanup happens before the Rust-owned
+    // activity lease is released on success or any thrown error.
+    defer { withExtendedLifetime(authorization.work) {} }
     let reader = try TimelinePCMReader(segments: plan)
     defer { reader.close() }
     let plannedFrames = reader.totalFrames > 0 ? UInt64(reader.totalFrames) : 0
@@ -68,7 +72,7 @@ enum ValidatedMixdownBuilder {
     writer = try AVAudioFile(
       forWriting: outputURL, settings: settings,
       commonFormat: .pcmFormatFloat32, interleaved: false)
-    beforeEncoding()
+    try beforeEncoding()
     var writtenFrames: UInt64 = 0
     var lastStorageCheckFrame: UInt64 = 0
     while let buffer = try reader.read(maximumFrames: 16_384) {

@@ -57,6 +57,8 @@ pub use transcription_work::TranscriptionWork;
 mod media_recovery;
 mod mixdown;
 pub use mixdown::{MixdownAuthorization, MixdownReceipt, ValidatedMixdown};
+mod mixdown_activity;
+pub use mixdown_activity::MixdownWork;
 mod package_restore;
 pub use package_restore::{
     PackageRestoreReceipt, PackageRestoreRequest, RestoredMarker, RestoredSegment, RestoredTrack,

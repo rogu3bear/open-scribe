@@ -316,7 +316,7 @@ final class TranscriptLibraryModel: ObservableObject {
       pendingDeletion = nil
       if (error as? NativeStorageError) == .InvalidState {
         report(
-          "Finish capture or cancel processing before moving this conversation to Trash.",
+          "Wait for capture or audio processing to finish before moving this conversation to Trash.",
           failure: true)
       } else {
         report(Self.describe(error, action: "prepare the deletion"), failure: true)

@@ -2,7 +2,7 @@
 //! authority; this module never changes a source track or session lifecycle.
 use super::*;
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct MixdownAuthorization {
     pub session_id: SessionId,
     pub relative_path: String,
@@ -10,6 +10,8 @@ pub struct MixdownAuthorization {
     pub expected_frame_count: u64,
     pub source_digest_sha256: String,
     pub write_floor_bytes: u64,
+    /// Retain through encoding, acceptance, and failure cleanup.
+    pub work: std::sync::Arc<MixdownWork>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -67,6 +69,7 @@ impl SessionStore {
                 "storage reserve prohibits derived mixdown",
             ));
         }
+        let work = std::sync::Arc::new(MixdownWork::try_acquire(&self.managed_root, &session_id)?);
         let relative_path = format!("exports/mix-{}.m4a", Uuid::now_v7());
         let absolute_path = self.session_directory(&session_id.0)?.join(&relative_path);
         if fs::symlink_metadata(&absolute_path).is_ok() {
@@ -92,6 +95,7 @@ impl SessionStore {
             expected_frame_count,
             source_digest_sha256,
             write_floor_bytes,
+            work,
         })
     }
 

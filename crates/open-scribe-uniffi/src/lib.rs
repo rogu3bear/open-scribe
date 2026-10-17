@@ -379,7 +379,7 @@ pub struct NativeTimelineSegment {
     pub media: Arc<NativeTimelineMedia>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+#[derive(Clone, Debug, uniffi::Record)]
 pub struct NativeMixdownAuthorization {
     pub session_id: String,
     pub relative_path: String,
@@ -387,6 +387,21 @@ pub struct NativeMixdownAuthorization {
     pub expected_frame_count: u64,
     pub source_digest_sha256: String,
     pub write_floor_bytes: u64,
+    pub work: Arc<NativeMixdownWork>,
+}
+
+/// Opaque session activity; its lifetime excludes deletion without holding
+/// capture's library writer during native encoding or decoding.
+#[derive(Debug, uniffi::Object)]
+pub struct NativeMixdownWork {
+    work: Arc<open_scribe_core::MixdownWork>,
+}
+
+#[uniffi::export]
+impl NativeMixdownWork {
+    pub fn session_id(&self) -> String {
+        self.work.session_id().0.clone()
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
@@ -564,6 +579,7 @@ impl NativeRecordingPreparation {
                 expected_frame_count: value.expected_frame_count,
                 source_digest_sha256: value.source_digest_sha256,
                 write_floor_bytes: value.write_floor_bytes,
+                work: Arc::new(NativeMixdownWork { work: value.work }),
             })
     }
 
