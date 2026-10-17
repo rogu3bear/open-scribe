@@ -613,3 +613,7 @@ fn discontinuities(input: &TranscriptionInput) -> serde_json::Value {
 #[cfg(test)]
 #[path = "transcription_tests.rs"]
 pub(crate) mod tests;
+
+#[cfg(all(test, unix))]
+#[path = "workflow_recovery_tests.rs"]
+mod workflow_recovery_tests;
