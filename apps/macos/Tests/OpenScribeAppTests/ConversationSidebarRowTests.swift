@@ -131,12 +131,14 @@ final class ConversationSidebarRowTests: XCTestCase {
         XCTAssertTrue(NSApp.isActive)
         XCTAssertTrue(window.isKeyWindow)
         try await captureFocus(
-          host, window: window, appearance: appearance, width: width, phase: "list")
+          host, window: window, expectedKeyWindow: window,
+          appearance: appearance, width: width, phase: "list")
         XCTAssertTrue(window.makeFirstResponder(editor))
         XCTAssertNotNil(editor.currentEditor())
         XCTAssertTrue(window.isKeyWindow)
         try await captureFocus(
-          host, window: window, appearance: appearance, width: width, phase: "editor")
+          host, window: window, expectedKeyWindow: window,
+          appearance: appearance, width: width, phase: "editor")
         let other = NSWindow(
           contentRect: NSRect(x: 0, y: 0, width: 200, height: 80),
           styleMask: [.titled], backing: .buffered, defer: false)
@@ -146,7 +148,8 @@ final class ConversationSidebarRowTests: XCTestCase {
         XCTAssertTrue(other.isKeyWindow)
         XCTAssertFalse(window.isKeyWindow)
         try await captureFocus(
-          host, window: window, appearance: appearance, width: width, phase: "inactive")
+          host, window: window, expectedKeyWindow: other,
+          appearance: appearance, width: width, phase: "inactive")
       }
     }
   }
@@ -177,10 +180,17 @@ final class ConversationSidebarRowTests: XCTestCase {
   }
 
   private func captureFocus<V: View>(
-    _ host: NSHostingView<V>, window: NSWindow, appearance: NSAppearance.Name,
+    _ host: NSHostingView<V>, window: NSWindow, expectedKeyWindow: NSWindow,
+    appearance: NSAppearance.Name,
     width: Double, phase: String
   ) async throws {
     try await Task.sleep(for: .milliseconds(150))
+    // Activation may change while layout settles. Establish the real AppKit
+    // state after that yield, then assert and render without another suspension.
+    try await makeKeyWhenActive(expectedKeyWindow)
+    XCTAssertTrue(NSApp.isActive)
+    XCTAssertTrue(expectedKeyWindow.isKeyWindow)
+    XCTAssertTrue(NSApp.keyWindow === expectedKeyWindow)
     XCTAssertEqual(window.isKeyWindow, phase != "inactive", "native state at the actual capture")
     host.layoutSubtreeIfNeeded()
     let mode = appearance == .aqua ? "light" : "dark"
