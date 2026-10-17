@@ -194,9 +194,44 @@ final class TranscriptionSchedulerTests: XCTestCase {
   /// Render the production controls beside real durable absent/invalid holds.
   /// Keep PNGs with OPEN_SCRIBE_RENDER_DIR for visual inspection: SwiftUI's
   /// in-process accessibility tree does not expose all controls on every SDK.
+  func testPriorityActionUsesDurableRequestOriginAndPreservesManualOrder() async throws {
+    let h = try Harness()
+    defer { h.removeOwnedFixture() }
+    h.readiness = .absent
+    let preparation = try NativeRecordingPreparation.open(
+      managedRoot: h.root.appendingPathComponent("Library").path)
+    let second = try preparation.importRecoverableCaf(
+      title: "Second request", sourcePath: h.root.appendingPathComponent("source.caf").path
+    )
+    .sessionId
+    h.scheduler.request(sessionId: h.session)
+    await waitUntil { h.scheduler.queue.first?.requestedByUser == true }
+    h.scheduler.request(sessionId: second)
+    await waitUntil {
+      h.scheduler.queue.count == 2 && h.scheduler.queue.allSatisfy(\.requestedByUser)
+    }
+    XCTAssertEqual(h.scheduler.queue.map(\.sessionId), [h.session, second])
+    XCTAssertFalse(h.scheduler.canPrioritize(sessionId: second))
+    let third = try preparation.importRecoverableCaf(
+      title: "Automatic arrival", sourcePath: h.root.appendingPathComponent("source.caf").path
+    )
+    .sessionId
+    h.scheduler.reconsider()
+    await waitUntil { h.scheduler.queue.count == 3 }
+    XCTAssertTrue(h.scheduler.canPrioritize(sessionId: third))
+    h.scheduler.request(sessionId: third)
+    await waitUntil { h.scheduler.queue.last?.requestedByUser == true }
+    XCTAssertEqual(
+      h.scheduler.queue.map(\.sessionId), [h.session, second, third],
+      "new requests follow earlier explicit requests")
+    XCTAssertFalse(h.scheduler.canPrioritize(sessionId: third))
+  }
+
   func testQueuedConversationsRenderModelHoldsAndControls() async throws {
-    let readinesses: [NativeModelReadiness] = [.absent, .invalid]
-    for readiness in readinesses {
+    let cases: [(NativeModelReadiness, Bool)] = [
+      (.absent, false), (.invalid, false), (.absent, true),
+    ]
+    for (readiness, manualSecond) in cases {
       let h = try Harness()
       defer { h.removeOwnedFixture() }
       h.readiness = readiness
@@ -204,8 +239,22 @@ final class TranscriptionSchedulerTests: XCTestCase {
       await waitUntil { h.scheduler.queue.map(\.sessionId) == [h.session] }
       let root = h.root.appendingPathComponent("Library")
       let preparation = try NativeRecordingPreparation.open(managedRoot: root.path)
+      var target = h.session
+      if manualSecond {
+        h.scheduler.request(sessionId: h.session)
+        await waitUntil { h.scheduler.queue.first?.requestedByUser == true }
+        target = try preparation.importRecoverableCaf(
+          title: "Second manual request",
+          sourcePath: h.root.appendingPathComponent("source.caf").path
+        ).sessionId
+        h.scheduler.request(sessionId: target)
+        await waitUntil {
+          h.scheduler.queue.count == 2 && h.scheduler.queue.allSatisfy(\.requestedByUser)
+        }
+      }
       let session = RuntimeSessionPresentation(
-        native: try XCTUnwrap(preparation.runtimeLibrarySnapshot().savedSessions.first))
+        native: try XCTUnwrap(
+          preparation.runtimeLibrarySnapshot().savedSessions.first { $0.sessionId == target }))
       let model = NativeSpeechModel(
         modelId: "whisper-small.en-q5_1", profile: "fixture", languages: ["en"],
         fileName: "fixture.bin", byteLength: 10, sha256: String(repeating: "a", count: 64),
@@ -239,7 +288,7 @@ final class TranscriptionSchedulerTests: XCTestCase {
           image.representation(using: .png, properties: [:]))
         try png.write(
           to: URL(fileURLWithPath: directory).appendingPathComponent(
-            "queued-model-\(readiness).png"))
+            manualSecond ? "queued-manual-second.png" : "queued-model-\(readiness).png"))
       }
     }
   }

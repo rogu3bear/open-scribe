@@ -7,6 +7,12 @@ import XCTest
 
 @MainActor
 final class TranscriptLibraryModelTests: XCTestCase {
+  private final class MetadataCheckpoint: @unchecked Sendable {
+    let entered = DispatchSemaphore(value: 0)
+    let release = DispatchSemaphore(value: 0)
+    func waitUntilEntered() { entered.wait() }
+  }
+
   private func session(
     _ id: String, calibrated: Bool, sources: [NativeMediaSourceKind], recovered: Bool = false
   ) -> RuntimeSessionPresentation {
@@ -153,6 +159,86 @@ final class TranscriptLibraryModelTests: XCTestCase {
     model.reloadAfterDetailsSave(session: original)
     XCTAssertEqual(
       library.transcriptReads, currentReads + 2, "the selected document still refreshes")
+    withExtendedLifetime(capture) {}
+  }
+
+  func testDelayedRenameCannotDismissANewerMetadataPresentation() async throws {
+    for sameConversation in [false, true] {
+      let (root, sessionId, capture) = try capturedSession()
+      defer { try? FileManager.default.removeItem(at: root) }
+      let preparation = try NativeRecordingPreparation.open(managedRoot: root.path)
+      let checkpoint = MetadataCheckpoint()
+      let store = RuntimeLibraryStore(
+        snapshotProvider: { NativeRuntimeLibrarySnapshot(currentSession: nil, savedSessions: []) },
+        renameProvider: { id, title in
+          checkpoint.entered.signal()
+          checkpoint.release.wait()
+          return try preparation.renameSession(sessionId: id, title: title)
+        }, startsPolling: false)
+      let original = session(sessionId, calibrated: true, sources: [.microphone, .systemAudio])
+      let opening = ConversationMetadataPresentation(session: original)
+      var presented: ConversationMetadataPresentation? = opening
+      let saving = Task {
+        let renamed = await store.rename(sessionId: sessionId, title: "Saved title for A")
+        if renamed != nil { opening.close(&presented) }
+        return renamed
+      }
+      await Task.detached { checkpoint.waitUntilEntered() }.value
+      opening.close(&presented)
+      XCTAssertNil(presented, "the originating Cancel closes its own sheet")
+      let replacement = ConversationMetadataPresentation(
+        session: sameConversation ? original : session("B", calibrated: false, sources: []))
+      presented = replacement
+      XCTAssertNotEqual(opening.id, replacement.id)
+      checkpoint.release.signal()
+      let saved = await saving.value
+      XCTAssertEqual(saved, "Saved title for A")
+      XCTAssertEqual(
+        try preparation.runtimeLibrarySnapshot().savedSessions.first?.title, "Saved title for A")
+      XCTAssertEqual(
+        presented?.id, replacement.id,
+        "the new sheet and its draft must keep their SwiftUI presentation identity")
+      replacement.close(&presented)
+      XCTAssertNil(presented, "the new sheet can still close itself")
+      withExtendedLifetime(capture) {}
+    }
+  }
+
+  func testDelayedDetailsSaveCannotDismissAReopenedSheetForTheSameConversation() async throws {
+    let (root, sessionId, capture) = try capturedSession()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let preparation = try NativeRecordingPreparation.open(managedRoot: root.path)
+    let checkpoint = MetadataCheckpoint()
+    let store = RuntimeLibraryStore(
+      snapshotProvider: { NativeRuntimeLibrarySnapshot(currentSession: nil, savedSessions: []) },
+      declareProvider: { id, participants, topic in
+        checkpoint.entered.signal()
+        checkpoint.release.wait()
+        _ = try preparation.declareSession(
+          sessionId: id,
+          declaration: NativeSessionDeclaration(participants: participants, topic: topic))
+      }, startsPolling: false)
+    let original = session(sessionId, calibrated: true, sources: [.microphone, .systemAudio])
+    let opening = ConversationMetadataPresentation(session: original)
+    var presented: ConversationMetadataPresentation? = opening
+    let saving = Task {
+      let saved = await store.declare(
+        sessionId: sessionId, participants: [], topic: "Saved topic A")
+      if saved { opening.close(&presented) }
+      return saved
+    }
+    await Task.detached { checkpoint.waitUntilEntered() }.value
+    opening.close(&presented)
+    let replacement = ConversationMetadataPresentation(session: original)
+    presented = replacement
+    checkpoint.release.signal()
+    let saved = await saving.value
+    XCTAssertTrue(saved)
+    XCTAssertEqual(
+      try preparation.contextDetail(sessionId: sessionId).declaration.topic, "Saved topic A")
+    XCTAssertEqual(presented?.id, replacement.id, "same-session reopen is a new presentation")
+    replacement.close(&presented)
+    XCTAssertNil(presented)
     withExtendedLifetime(capture) {}
   }
 

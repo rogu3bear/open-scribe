@@ -16,8 +16,8 @@ struct ConversationWorkspaceView: View {
   @State private var recorderEvents: [NativeRecorderEvent] = []
   @State private var showsAudioDetails = false
   @State private var showsRecordingDetails = false
-  @State private var isRenaming = false
-  @State private var isEditingDetails = false
+  @State private var renaming: ConversationMetadataPresentation?
+  @State private var editingDetails: ConversationMetadataPresentation?
 
   private var recoveredTracks: [RecoveredTrackPresentation] {
     session.recoveredTracks(from: playbackController.sessions)
@@ -111,17 +111,19 @@ struct ConversationWorkspaceView: View {
     .task(id: "\(session.sessionId)|\(session.lifecycle)") {
       recorderEvents = loadRecorderEvents(session.sessionId)
     }
-    .sheet(isPresented: $isRenaming) {
-      ConversationRenameSheet(session: session, store: store) { isRenaming = false }
+    .sheet(item: $renaming) { presentation in
+      ConversationRenameSheet(session: presentation.session, store: store) {
+        presentation.close(&renaming)
+      }
     }
-    .sheet(isPresented: $isEditingDetails) {
+    .sheet(item: $editingDetails) { presentation in
       ConversationDetailsSheet(
-        session: session,
-        declaration: transcripts.sessionId == session.sessionId
+        session: presentation.session,
+        declaration: transcripts.sessionId == presentation.session.sessionId
           ? transcripts.contextDetail?.declaration : nil,
         store: store,
-        onSaved: { transcripts.reloadAfterDetailsSave(session: session) },
-        onClose: { isEditingDetails = false })
+        onSaved: { transcripts.reloadAfterDetailsSave(session: presentation.session) },
+        onClose: { presentation.close(&editingDetails) })
     }
   }
 
@@ -135,7 +137,7 @@ struct ConversationWorkspaceView: View {
           .accessibilityAddTraits(.isHeader)
           .accessibilityLabel(title)
         Button {
-          isRenaming = true
+          renaming = ConversationMetadataPresentation(session: session)
         } label: {
           Image(systemName: "pencil")
         }
@@ -179,7 +181,7 @@ struct ConversationWorkspaceView: View {
         Spacer()
         Button(participants.isEmpty && topic == nil ? "Add Details…" : "Edit Details…") {
           store.dismissEditMessage()
-          isEditingDetails = true
+          editingDetails = ConversationMetadataPresentation(session: session)
         }
         .buttonStyle(.borderless)
         .help("Record who took part and what the conversation was about")

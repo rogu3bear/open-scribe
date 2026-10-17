@@ -13,7 +13,7 @@ struct ContentView: View {
   @ObservedObject var context: ContextScopeModel
   @ObservedObject var navigation: MainWorkspaceNavigation
   @State private var searchQuery = ""
-  @State private var renaming: RuntimeSessionPresentation?
+  @State private var renaming: ConversationMetadataPresentation?
 
   private var selectedSessionId: String? {
     navigation.selectedSessionId
@@ -181,7 +181,9 @@ struct ContentView: View {
             )
             .tag(current.sessionId)
             .contextMenu {
-              Button("Rename…") { renaming = current }
+              Button("Rename…") {
+                renaming = ConversationMetadataPresentation(session: current)
+              }
               Button("Move to Trash…", role: .destructive) {
                 requestDeletion(current)
               }
@@ -207,7 +209,9 @@ struct ContentView: View {
             )
             .tag(session.sessionId)
             .contextMenu {
-              Button("Rename…") { renaming = session }
+              Button("Rename…") {
+                renaming = ConversationMetadataPresentation(session: session)
+              }
               Button("Move to Trash…", role: .destructive) {
                 requestDeletion(session)
               }
@@ -231,7 +235,9 @@ struct ContentView: View {
             )
             .tag(session.sessionId)
             .contextMenu {
-              Button("Rename…") { renaming = session }
+              Button("Rename…") {
+                renaming = ConversationMetadataPresentation(session: session)
+              }
               Button("Move to Trash…", role: .destructive) {
                 requestDeletion(session)
               }
@@ -243,8 +249,10 @@ struct ContentView: View {
       }
     }
     .listStyle(.sidebar)
-    .sheet(item: $renaming) { session in
-      ConversationRenameSheet(session: session, store: store) { renaming = nil }
+    .sheet(item: $renaming) { presentation in
+      ConversationRenameSheet(session: presentation.session, store: store) {
+        presentation.close(&renaming)
+      }
     }
     .searchable(text: $searchQuery, placement: .sidebar, prompt: "Search transcripts")
     .onDeleteCommand {

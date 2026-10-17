@@ -202,6 +202,9 @@ final class TranscriptionScheduler: ObservableObject {
     case nil: return nil
     }
   }
+  func canPrioritize(sessionId: String) -> Bool {
+    queue.contains { $0.sessionId == sessionId && !$0.requestedByUser }
+  }
   func dismissOutcome(sessionId: String) { outcomes[sessionId] = nil }
   private var currentObservations: NativeWorkObservations {
     let value = observations()

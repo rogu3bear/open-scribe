@@ -168,9 +168,13 @@ struct TranscriptSection: View {
               .fixedSize(horizontal: false, vertical: true)
           }
           HStack(spacing: 12) {
-            if position > 1 || hold == .pausedByUser {
-              Button("Transcribe Now") { scheduler.request(sessionId: session.sessionId) }
-                .help("Move this conversation to the front of the queue")
+            if (position > 1 || hold == .pausedByUser)
+              && scheduler.canPrioritize(sessionId: session.sessionId)
+            {
+              Button("Prioritize Transcription") { scheduler.request(sessionId: session.sessionId) }
+                .help(
+                  "Request transcription ahead of automatic work. Earlier requests keep their place."
+                )
             }
             Button("Remove from Queue") { scheduler.cancel(sessionId: session.sessionId) }
           }

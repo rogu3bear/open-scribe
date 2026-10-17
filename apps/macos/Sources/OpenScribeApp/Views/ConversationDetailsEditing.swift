@@ -1,5 +1,17 @@
 import SwiftUI
 
+/// Each explicit opening owns one sheet, including another opening for the
+/// same conversation while a prior durable save is still completing.
+struct ConversationMetadataPresentation: Identifiable {
+  let id = UUID()
+  let session: RuntimeSessionPresentation
+
+  func close(_ active: inout ConversationMetadataPresentation?) {
+    guard active?.id == id else { return }
+    active = nil
+  }
+}
+
 /// Renames a saved or interrupted conversation. The stored title is what
 /// exports, packages, and search show; the session identity never changes.
 struct ConversationRenameSheet: View {

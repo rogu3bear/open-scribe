@@ -204,13 +204,10 @@ impl SessionStore {
         let Some(mut next) = self
             .transcription_queue(observations)?
             .into_iter()
-            .find(|entry| entry.admission.is_none())
+            .find(|entry| entry.admission.is_none() && entry.hold.is_none())
         else {
             return Ok(None);
         };
-        if next.hold.is_some() {
-            return Ok(None);
-        }
         self.record_work_admission(&mut next)?;
         Ok(Some(next))
     }
