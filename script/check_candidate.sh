@@ -29,6 +29,7 @@ source_checks() {
 	ruby "$script_dir/check_m1_injected_contract.rb"
 	"$script_dir/check_scaffold.sh"
 	cargo clippy --locked -p open-scribe-store -p open-scribe-core -p open-scribe-uniffi --all-targets -- -D warnings
+	"$script_dir/generate_supply_chain_manifest.sh" --check
 	"$script_dir/check_native_contracts.sh"
 	"$script_dir/build_web.sh"
 	candidate_base="$(git merge-base HEAD main 2>/dev/null || true)"
@@ -57,5 +58,5 @@ jq -n --arg candidate "$candidate_record_digest" \
 candidate_require_checks
 candidate_receipt
 printf '%s\n' 'CONTRIBUTOR_CANDIDATE_GREEN' \
-	'proof=scaffold,clippy,coarse_boundaries,entitlements,web,fresh_bindings,single_native_build,macos13_floor,no_project_swift_warnings,all_swift_tests,scene_launch,recording_components,synthetic_recovery,candidate_range_and_worktree_diff_hygiene' \
+	'proof=scaffold,clippy,current_locked_dependency_inventory,coarse_boundaries,entitlements,web,fresh_bindings,single_native_build,macos13_floor,no_project_swift_warnings,all_swift_tests,scene_launch,recording_components,synthetic_recovery,candidate_range_and_worktree_diff_hygiene' \
 	'excludes=live_capture,permission_matrix,audible_output,long_sessions,m1_completion,signing,release'

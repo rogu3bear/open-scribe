@@ -2,7 +2,9 @@
 
 `components.v1.json` is generated deterministically from the locked Cargo
 dependency graph by `./script/generate_supply_chain_manifest.sh`. Use `--check`
-to detect drift.
+to detect drift. The contributor candidate gate also runs this check, so a
+lockfile change must include its regenerated inventory before qualification.
+Generation does not approve an external component or close its obligations.
 
 The current inventory is intentionally `open`: workspace crates are admitted as
 repository-owned inputs, while external dependencies remain `Pending` until
