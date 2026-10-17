@@ -6,6 +6,12 @@ Open Scribe tests the evidence chain in order: source/configuration, determinist
 
 Characterization tests pin observed behavior before correction. Safety-critical invariants—durable media before capture claims, audio survival independent of transcription, required-source truth, and recovery—need tests at the layer that owns the claim plus runtime evidence on an exact artifact.
 
+The [reviewed-conversation validation](product/experiments/2026-10-16-reviewed-conversation-validation.md)
+records a paired SIGKILL/restart test against a competent transactional baseline
+(a tie), a real-model import/review/export component check using supplied files
+read-only, and the still-unrun repeat-use trial. Its bounded results do not
+promote public or platform capability status.
+
 Repository and source tests currently cover managed local CAF and M4A (AAC/Apple Lossless) import, deterministic deduplication and rejection, imported-conversation projection, validated-byte playback leasing, and shared recovered/imported playback failures. One dated real-file receipt (September 27, commit `3e51b72`, `~/Documents/Codex/2026-09-27/open-scribe-large-import/RETURN.md`) imported an operator-selected 865 MB stereo 48 kHz Apple Lossless M4A through the normal workflow and passed a 41-test run covering reopen, first- and last-frame decode, silent player startup, and bounded memory. Those tests do not prove other real files or formats, audible or full-duration playback, long-running sessions, source-loss recovery, an installed or signed artifact, or public delivery.
 
 ### September 29 — M2 final-transcription pipeline without an engine
