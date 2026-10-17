@@ -185,7 +185,8 @@ struct ContentView: View {
               Button("Move to Trash…", role: .destructive) {
                 requestDeletion(current)
               }
-              .disabled(!liveRecording.canStart)
+              .disabled(!liveRecording.canStart || current.deletionUnavailableReason != nil)
+              .help(current.deletionUnavailableReason ?? "Move this conversation to Trash.")
             }
           } else {
             ConversationSidebarRow(
@@ -210,7 +211,8 @@ struct ContentView: View {
               Button("Move to Trash…", role: .destructive) {
                 requestDeletion(session)
               }
-              .disabled(!liveRecording.canStart)
+              .disabled(!liveRecording.canStart || session.deletionUnavailableReason != nil)
+              .help(session.deletionUnavailableReason ?? "Move this conversation to Trash.")
             }
           }
         }
@@ -233,7 +235,8 @@ struct ContentView: View {
               Button("Move to Trash…", role: .destructive) {
                 requestDeletion(session)
               }
-              .disabled(!liveRecording.canStart)
+              .disabled(!liveRecording.canStart || session.deletionUnavailableReason != nil)
+              .help(session.deletionUnavailableReason ?? "Move this conversation to Trash.")
             }
           }
         }
@@ -453,6 +456,7 @@ struct ContentView: View {
   }
 
   private func requestDeletion(_ session: RuntimeSessionPresentation) {
+    guard session.deletionUnavailableReason == nil else { return }
     if recoveredSessions.activePlaybackSessionId == session.sessionId {
       recoveredSessions.stopPlayback()
     }
@@ -634,7 +638,7 @@ enum LibraryConversationLists {
 
   static func interrupted(_ sessions: [RuntimeSessionPresentation]) -> [RuntimeSessionPresentation]
   {
-    sessions.filter { $0.lifecycle == "interrupted" }
+    sessions.filter { $0.lifecycle == "interrupted" || $0.captureRecoveryIsolated }
   }
 }
 

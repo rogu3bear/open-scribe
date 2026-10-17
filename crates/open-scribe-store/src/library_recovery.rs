@@ -14,6 +14,54 @@ pub struct LibraryRecovery {
     pub pending_transcript_finalizations: Vec<String>,
 }
 
+/// Recovery assessments bind to accepted journal evidence, never wall time.
+/// Old rows have no assessment and remain conservative capture holds.
+pub(super) fn apply_schema(tx: &Transaction<'_>) -> Result<(), StoreError> {
+    let columns = tx
+        .prepare("PRAGMA table_info(recovery_runs)")?
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<Result<Vec<_>, _>>()?;
+    if !columns.iter().any(|name| name == "capture_event_digest") {
+        tx.execute_batch("ALTER TABLE recovery_runs ADD COLUMN capture_event_digest TEXT")?;
+    }
+    tx.execute_batch(
+        "CREATE INDEX IF NOT EXISTS recovery_capture_assessment
+        ON recovery_runs(session_id, capture_event_digest)
+        WHERE disposition = 'capture_safety_isolated';",
+    )?;
+    tx.execute(
+        "INSERT OR IGNORE INTO schema_migrations VALUES(14, ?1)",
+        [wall_time_milliseconds()],
+    )?;
+    Ok(())
+}
+
+/// A completed launch scan can leave damaged evidence in its original
+/// lifecycle. That history is not a live writer. Any newly accepted event
+/// changes the tip and makes this old assessment inapplicable immediately.
+pub(super) const ISOLATED_CAPTURE_SQL: &str = "EXISTS(SELECT 1 FROM recovery_runs assessment
+        WHERE assessment.session_id = capture.id
+          AND assessment.disposition = 'capture_safety_isolated'
+          AND assessment.capture_event_digest = COALESCE((
+            SELECT digest FROM session_events WHERE session_id = capture.id
+            ORDER BY sequence DESC LIMIT 1), ''))";
+
+pub(super) fn active_capture_sql() -> String {
+    format!(
+        "SELECT EXISTS(SELECT 1 FROM sessions capture WHERE capture.origin = 'capture'
+        AND capture.lifecycle IN ('preparing','recording','paused','finalizing')
+        AND NOT ({ISOLATED_CAPTURE_SQL}))"
+    )
+}
+
+pub(super) fn capture_isolated(connection: &Connection, session: &str) -> Result<bool, StoreError> {
+    Ok(connection.query_row(
+        &format!("SELECT {ISOLATED_CAPTURE_SQL} FROM sessions capture WHERE capture.id = ?1"),
+        [session],
+        |row| row.get(0),
+    )?)
+}
+
 /// One evidence rule for "playable recovered", shared by the launch listing and
 /// the playback lease: the session's projected recovery event and its recovery
 /// run agree, whichever recovery produced them (promoted capturing media or a
@@ -184,11 +232,33 @@ impl SessionStore {
         }
         let playable = self.list_recovered_playable(&mut findings)?;
         findings.sort_by(|left, right| left.session_id.0.cmp(&right.session_id.0));
+        self.record_capture_assessments(&findings)?;
         Ok(LibraryRecovery {
             findings,
             playable,
             pending_transcript_finalizations: Vec::new(),
         })
+    }
+
+    /// Persist only the launch's assessed, unrecovered capture identities.
+    /// The original lifecycle, journal, media and failure evidence stay intact.
+    /// Repeated scans of the same accepted tip do not duplicate this receipt.
+    fn record_capture_assessments(
+        &mut self,
+        findings: &[RecoveryFinding],
+    ) -> Result<(), StoreError> {
+        let tx = self.connection.transaction()?;
+        for finding in findings {
+            tx.execute(&format!("INSERT INTO recovery_runs(id, schema_version, session_id, disposition, created_at_ms, capture_event_digest)
+                SELECT ?1, ?2, capture.id, 'capture_safety_isolated', ?4,
+                    COALESCE((SELECT digest FROM session_events WHERE session_id = capture.id ORDER BY sequence DESC LIMIT 1), '')
+                FROM sessions capture WHERE capture.id = ?3 AND capture.origin = 'capture'
+                  AND capture.lifecycle IN ('preparing','recording','paused','finalizing')
+                  AND NOT ({ISOLATED_CAPTURE_SQL})"),
+                params![Uuid::now_v7().to_string(), SCHEMA_VERSION, finding.session_id.0, wall_time_milliseconds()])?;
+        }
+        tx.commit()?;
+        Ok(())
     }
 
     /// Launch-only transcription orphan handling. Class A (all chunks complete)

@@ -110,6 +110,9 @@ pub struct RuntimeSessionSnapshot {
     pub interruption_reason: Option<SessionInterruptionReason>,
     pub recovered: bool,
     pub has_capture_timeline: bool,
+    /// A completed launch assessed this unchanged nonterminal capture as
+    /// unrecoverable history. Its stored lifecycle remains the last accepted one.
+    pub capture_recovery_isolated: bool,
     pub sources: Vec<RuntimeSourceSnapshot>,
     pub playable_media: Option<RuntimePlayableMediaSnapshot>,
     pub transcript: RuntimeTranscriptSnapshot,
@@ -255,7 +258,19 @@ impl SessionStore {
             recovered,
         ) in sessions
         {
-            let sources = Self::runtime_source_snapshots(&transaction, &session_id, &lifecycle)?;
+            let capture_recovery_isolated = origin == "capture"
+                && matches!(
+                    lifecycle.as_str(),
+                    "preparing" | "recording" | "paused" | "finalizing"
+                )
+                && super::library_recovery::capture_isolated(&transaction, &session_id)?;
+            let mut sources =
+                Self::runtime_source_snapshots(&transaction, &session_id, &lifecycle)?;
+            if capture_recovery_isolated {
+                for source in &mut sources {
+                    source.lifecycle = "unavailable".to_owned();
+                }
+            }
             // Recovered tracks have their own validated playback authority. The
             // ordinary saved-audio query deliberately excludes them.
             let has_capture_timeline: bool = transaction.query_row(
@@ -303,13 +318,14 @@ impl SessionStore {
                 })
                 .unwrap_or_else(|| {
                     recording_started_at_ms.map_or(0, |started_at_ms| {
-                        let end_milliseconds = if lifecycle == "recording" {
-                            now_milliseconds.max(started_at_ms)
-                        } else {
-                            interruption_at_ms
-                                .unwrap_or(updated_at_ms)
-                                .max(started_at_ms)
-                        };
+                        let end_milliseconds =
+                            if lifecycle == "recording" && !capture_recovery_isolated {
+                                now_milliseconds.max(started_at_ms)
+                            } else {
+                                interruption_at_ms
+                                    .unwrap_or(updated_at_ms)
+                                    .max(started_at_ms)
+                            };
                         u64::try_from(end_milliseconds.saturating_sub(started_at_ms)).unwrap_or(0)
                             / 1_000
                     })
@@ -321,7 +337,7 @@ impl SessionStore {
                     COALESCE((SELECT MAX(mapped_start_ns + sample_count * 1000000000 / 48000) FROM segments WHERE session_id = ?1 AND lifecycle = 'sealed'),0),
                     COALESCE((SELECT MAX(session_nanoseconds) FROM session_events WHERE session_id = ?1 AND event_kind IN ('capture_paused','paused_session_finalized','segment_sealed')),0))",
                     [&session_id], |row| row.get(0))?;
-                let observed = if lifecycle == "recording" {
+                let observed = if lifecycle == "recording" && !capture_recovery_isolated {
                     host_time
                         .map(|host| self.map_capture_time(&session_id, host))
                         .transpose()?
@@ -338,7 +354,10 @@ impl SessionStore {
                     let kind: String = row.get(0)?;
                     let position: i64 = row.get(1)?;
                     let wall: i64 = row.get(2)?;
-                    let advancing = if lifecycle == "recording" && kind == "capture_resumed" {
+                    let advancing = if lifecycle == "recording"
+                        && !capture_recovery_isolated
+                        && kind == "capture_resumed"
+                    {
                         now_milliseconds.saturating_sub(wall).max(0) / 1000
                     } else {
                         0
@@ -362,11 +381,12 @@ impl SessionStore {
                 interruption_reason,
                 recovered,
                 has_capture_timeline,
+                capture_recovery_isolated,
                 sources,
                 playable_media,
                 transcript,
             };
-            if lifecycle == "ready_for_review" {
+            if lifecycle == "ready_for_review" || capture_recovery_isolated {
                 saved_sessions.push(snapshot);
             } else if lifecycle == "interrupted" {
                 // The newest nonterminal session stays in Now. Older

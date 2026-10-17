@@ -48,7 +48,7 @@ Optional Meeting/context/intelligence remain intended lanes with existing bounde
 |---|---|
 | Product and decisions | founding PRD; approved ADRs supersede only named clauses |
 | Storage | Rust store, ADR 0006; session schema v4 and journal v1 retain their meanings |
-| Review/scheduling/metadata additions | SQLite migrations 10–13; immutable runs/chunks/revisions, replacement scopes, append-only corrections |
+| Review/scheduling/recovery additions | SQLite migrations 10–14; immutable runs/chunks/revisions, replacement scopes, append-only corrections |
 | Evidence/export | evidence-ref/v1 and checked data-format schemas |
 | Capability/model metadata | checked manifests; no parallel definitions |
 | Commands and proof | `ACTOR.md`, `docs/TESTING.md`, named exact-artifact receipts |

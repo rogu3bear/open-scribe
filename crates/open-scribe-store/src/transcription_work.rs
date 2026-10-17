@@ -47,12 +47,9 @@ pub(super) fn apply_schema(tx: &Transaction<'_>) -> Result<(), StoreError> {
 
 impl SessionStore {
     pub fn capture_active(&self) -> Result<bool, StoreError> {
-        Ok(self.connection.query_row(
-            "SELECT EXISTS(SELECT 1 FROM sessions WHERE origin = 'capture'
-            AND lifecycle IN ('preparing','recording','paused','finalizing'))",
-            [],
-            |r| r.get(0),
-        )?)
+        Ok(self
+            .connection
+            .query_row(&library_recovery::active_capture_sql(), [], |r| r.get(0))?)
     }
     pub fn work_admission_active(&self) -> Result<bool, StoreError> {
         Ok(self.connection.query_row(
@@ -100,8 +97,7 @@ impl SessionStore {
         mut observations: WorkObservations,
     ) -> Result<Vec<TranscriptionWork>, StoreError> {
         // Native observations can add holds, never relax durable capture truth.
-        observations.capture_active |= self.connection.query_row("SELECT EXISTS(SELECT 1 FROM sessions
-            WHERE origin = 'capture' AND lifecycle IN ('preparing', 'recording', 'paused', 'finalizing'))", [], |row| row.get::<_, bool>(0))?;
+        observations.capture_active |= self.capture_active()?;
         let active: bool = self.connection.query_row(
             "SELECT EXISTS(SELECT 1 FROM transcription_intent WHERE admission IS NOT NULL)",
             [],
@@ -317,12 +313,13 @@ impl SessionStore {
         intent: TranscriptionIntent,
     ) -> Result<bool, StoreError> {
         let _writer = self.write_guard()?;
+        if self.capture_active()? {
+            return Ok(false);
+        }
         Ok(self.connection.execute(
             "UPDATE transcription_intent SET runner_started = 1
             WHERE session_id = ?1 AND admission = ?2 AND admitted_action = ?3
-              AND runner_started = 0 AND last_outcome IS NOT 'cancelled'
-              AND NOT EXISTS(SELECT 1 FROM sessions WHERE origin = 'capture'
-                AND lifecycle IN ('preparing','recording','paused','finalizing'))",
+              AND runner_started = 0 AND last_outcome IS NOT 'cancelled'",
             params![session.0, token, intent.code()],
         )? == 1)
     }

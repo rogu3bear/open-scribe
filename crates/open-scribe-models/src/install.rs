@@ -180,7 +180,8 @@ impl ModelLayout {
     }
 
     /// Explicit repair retains the old invalid inode in the owned directory.
-    /// A foreign, redirected, or multiply-linked destination is never replaced.
+    /// Foreign or redirected names and unowned additional links are never replaced.
+    /// Only the exact owned retention pair can resume an interrupted repair.
     pub fn repair_install(
         &self,
         record: &ModelRecord,
@@ -255,8 +256,19 @@ impl ModelLayout {
         };
         match fs::symlink_metadata(&destination) {
             Ok(existing) => {
+                let retained = directory.join(format!(
+                    "{}.invalid.{}.{}",
+                    record.file_name,
+                    existing.ino(),
+                    modified_nanoseconds(&existing)
+                ));
+                // Exactly two links, both at the owned repair names, can be
+                // our durable post-retention/pre-unlink interruption point.
+                // A third link or a redirected/unrelated retained name refuses.
+                let resuming_retention =
+                    repair && existing.nlink() == 2 && retained_invalid_pair(&existing, &retained)?;
                 if !existing.is_file()
-                    || existing.nlink() != 1
+                    || (existing.nlink() != 1 && !resuming_retention)
                     || existing.uid() != fs::metadata(self.models.parent().unwrap())?.uid()
                 {
                     return Err(InstallError::ConflictingInstallation);
@@ -264,8 +276,12 @@ impl ModelLayout {
                 let mut prior = open_no_follow(&destination)?;
                 let mut digest = Sha256::new();
                 io::copy(&mut prior, &mut digest)?;
-                let unchanged = prior.metadata()?.len() == existing.len()
-                    && modified_nanoseconds(&prior.metadata()?) == modified_nanoseconds(&existing);
+                let observed = prior.metadata()?;
+                let unchanged = observed.dev() == existing.dev()
+                    && observed.ino() == existing.ino()
+                    && observed.nlink() == existing.nlink()
+                    && observed.len() == existing.len()
+                    && modified_nanoseconds(&observed) == modified_nanoseconds(&existing);
                 if unchanged
                     && existing.len() == record.byte_length
                     && format!("{:x}", digest.finalize()) == record.sha256
@@ -277,16 +293,19 @@ impl ModelLayout {
                 if !repair || !unchanged {
                     return Err(InstallError::ConflictingInstallation);
                 }
-                let retained = directory.join(format!(
-                    "{}.invalid.{}.{}",
-                    record.file_name,
-                    existing.ino(),
-                    modified_nanoseconds(&existing)
-                ));
                 // create-new hard link retains evidence before unlinking only
-                // the owned destination. A prior retained name refuses repair.
-                fs::hard_link(&destination, &retained)?;
+                // the owned destination. Restart reuses only that exact pair.
+                if !resuming_retention {
+                    fs::hard_link(&destination, &retained)?;
+                }
                 sync_directory(&directory)?;
+                let current = fs::symlink_metadata(&destination)?;
+                if current.dev() != existing.dev()
+                    || current.ino() != existing.ino()
+                    || !retained_invalid_pair(&current, &retained)?
+                {
+                    return Err(InstallError::ConflictingInstallation);
+                }
                 fs::remove_file(&destination)?;
                 sync_directory(&directory)?;
             }
@@ -401,6 +420,21 @@ impl ModelLayout {
         }
         Ok(())
     }
+}
+
+fn retained_invalid_pair(existing: &fs::Metadata, retained: &Path) -> io::Result<bool> {
+    let retained = match fs::symlink_metadata(retained) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error),
+    };
+    Ok(existing.is_file()
+        && existing.nlink() == 2
+        && retained.is_file()
+        && retained.nlink() == 2
+        && retained.dev() == existing.dev()
+        && retained.ino() == existing.ino()
+        && retained.uid() == existing.uid())
 }
 
 fn discard_owned_file(path: &Path, device: u64, inode: u64) -> io::Result<()> {
@@ -541,6 +575,107 @@ mod tests {
             verify_staged(&record, ENGINE, COMPATIBILITY, &installed.path).is_err(),
             "load-boundary verification remains mandatory"
         );
+    }
+
+    #[test]
+    fn repair_resumes_after_preserved_invalid_inode_was_linked_before_interruption() {
+        let root = tempfile::tempdir().unwrap();
+        let layout = ModelLayout::new(root.path());
+        let bytes = fixture_bytes(51864);
+        let record = fixture(&bytes);
+        let staged = stage(&layout, &record, &bytes);
+        let verified = verify_staged(&record, ENGINE, COMPATIBILITY, &staged).unwrap();
+        let installed = layout.install(&record, &verified, &staged).unwrap();
+        let mut corrupt = bytes.clone();
+        *corrupt.last_mut().unwrap() ^= 1;
+        fs::write(&installed.path, &corrupt).unwrap();
+        let old = fs::metadata(&installed.path).unwrap();
+        let retained = layout.install_directory(&record).join(format!(
+            "{}.invalid.{}.{}",
+            record.file_name,
+            old.ino(),
+            modified_nanoseconds(&old)
+        ));
+        // Exact durable post-link/pre-unlink checkpoint of explicit repair.
+        // A new layout/attempt represents restart; no model is loaded here.
+        fs::hard_link(&installed.path, &retained).unwrap();
+        sync_directory(&layout.install_directory(&record)).unwrap();
+        assert_eq!(fs::metadata(&installed.path).unwrap().nlink(), 2);
+        let layout = ModelLayout::new(root.path());
+        let chosen = root.path().join("chosen.bin");
+        fs::write(&chosen, &bytes).unwrap();
+        let staged = layout.stage_from_file(&record, &chosen).unwrap();
+        let verified = verify_staged(&record, ENGINE, COMPATIBILITY, staged.path()).unwrap();
+        assert!(
+            matches!(
+                layout.install_local(&record, &verified, &staged, false),
+                Err(InstallError::ConflictingInstallation)
+            ),
+            "resuming quarantine is explicit repair only"
+        );
+        layout
+            .install_local(&record, &verified, &staged, true)
+            .unwrap();
+        verify_staged(&record, ENGINE, COMPATIBILITY, &installed.path).unwrap();
+        assert_eq!(fs::read(&retained).unwrap(), corrupt);
+        assert_eq!(fs::metadata(&retained).unwrap().nlink(), 1);
+        assert_eq!(fs::read(&chosen).unwrap(), bytes);
+    }
+
+    #[test]
+    fn repair_never_reuses_unrelated_or_redirected_retained_links() {
+        for kind in ["unrelated", "symlink", "extra-link"] {
+            let root = tempfile::tempdir().unwrap();
+            let layout = ModelLayout::new(root.path());
+            let bytes = fixture_bytes(51864);
+            let record = fixture(&bytes);
+            let staged = stage(&layout, &record, &bytes);
+            let verified = verify_staged(&record, ENGINE, COMPATIBILITY, &staged).unwrap();
+            let installed = layout.install(&record, &verified, &staged).unwrap();
+            let corrupt = b"preserve this invalid file";
+            fs::write(&installed.path, corrupt).unwrap();
+            let old = fs::metadata(&installed.path).unwrap();
+            let retained = layout.install_directory(&record).join(format!(
+                "{}.invalid.{}.{}",
+                record.file_name,
+                old.ino(),
+                modified_nanoseconds(&old)
+            ));
+            let external = root.path().join("foreign-link");
+            fs::hard_link(&installed.path, &external).unwrap();
+            match kind {
+                "unrelated" => fs::write(&retained, b"unrelated retention").unwrap(),
+                "symlink" => std::os::unix::fs::symlink(&installed.path, &retained).unwrap(),
+                _ => fs::hard_link(&installed.path, &retained).unwrap(),
+            }
+            let staged = stage(&layout, &record, &bytes);
+            let verified = verify_staged(&record, ENGINE, COMPATIBILITY, &staged).unwrap();
+            assert!(
+                matches!(
+                    layout.repair_install(&record, &verified, &staged),
+                    Err(InstallError::ConflictingInstallation)
+                ),
+                "{kind}"
+            );
+            assert_eq!(fs::read(&installed.path).unwrap(), corrupt, "{kind}");
+            assert_eq!(fs::read(&external).unwrap(), corrupt, "{kind}");
+            assert!(
+                staged.exists(),
+                "rejected input remains owned by the caller"
+            );
+            if kind == "unrelated" {
+                assert_eq!(fs::read(&retained).unwrap(), b"unrelated retention");
+            } else if kind == "symlink" {
+                assert!(
+                    fs::symlink_metadata(&retained)
+                        .unwrap()
+                        .file_type()
+                        .is_symlink()
+                );
+            } else {
+                assert_eq!(fs::metadata(&retained).unwrap().nlink(), 3);
+            }
+        }
     }
 
     #[test]

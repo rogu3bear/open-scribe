@@ -3227,6 +3227,7 @@ fn apply_schema(connection: &mut Connection) -> Result<(), StoreError> {
     transcription_work::apply_schema(&transaction)?;
     session_times::apply_schema(&transaction)?;
     transcription_operation::apply_schema(&transaction)?;
+    library_recovery::apply_schema(&transaction)?;
     transaction.commit()?;
     Ok(())
 }
@@ -4211,7 +4212,7 @@ mod tests {
         }
         assert_eq!(
             database_value(&store, "SELECT MAX(version) FROM schema_migrations"),
-            13
+            14
         );
         let segment_columns: BTreeSet<String> = store
             .connection
@@ -4269,7 +4270,7 @@ mod tests {
         assert_eq!(channels, 1);
         assert_eq!(
             database_value(&store, "SELECT MAX(version) FROM schema_migrations"),
-            13
+            14
         );
     }
 

@@ -21,16 +21,26 @@ final class TranscriptionSchedulerTests: XCTestCase {
     var continuation: CheckedContinuation<NativeWorkOutcome, Never>?
     lazy var scheduler = TranscriptionScheduler(
       coordinator: coordinator,
-      runner: { [unowned self] entry in
+      runner: { [weak self] entry in
+        guard let self else { return .deferred }
         started.append(entry)
         return await withCheckedContinuation { continuation = $0 }
       },
-      observations: { [unowned self] in
-        NativeWorkObservations(
+      observations: { [weak self] in
+        guard let self else {
+          return NativeWorkObservations(
+            automatic: false, paused: false, captureActive: false,
+            mediaRecoveryPending: true, model: .absent, availableDiskBytes: nil,
+            memoryCritical: false, thermalCritical: false)
+        }
+        return NativeWorkObservations(
           automatic: true, paused: false, captureActive: capture,
           mediaRecoveryPending: recovery, model: readiness, availableDiskBytes: nil,
           memoryCritical: false, thermalCritical: false)
-      }, stop: { [unowned self] preempt in finish(preempt ? .capturePreempted : .userCancelled) },
+      },
+      stop: { [weak self] preempt in
+        self?.finish(preempt ? .capturePreempted : .userCancelled)
+      },
       defaults: defaults)
 
     init() throws {
@@ -73,6 +83,23 @@ final class TranscriptionSchedulerTests: XCTestCase {
     }
     XCTFail("The isolated scheduler did not reach the expected state.")
   }
+
+  func testRefreshAfterFixtureOwnerEndsHasNoBorrowedObservation() async throws {
+    weak var departed: Harness?
+    let scheduler: TranscriptionScheduler
+    do {
+      let fixture = try Harness()
+      fixture.readiness = .absent
+      departed = fixture
+      scheduler = fixture.scheduler
+      fixture.removeOwnedFixture()
+    }
+    XCTAssertNil(departed)
+    scheduler.reconsider()
+    await waitUntil { scheduler.hold == .launchRecoveryPending }
+    XCTAssertNil(scheduler.runningSessionId)
+  }
+
   func testManualPausePreemptionAndRefreshPreserveOneManualRunner() async throws {
     let h = try Harness()
     defer { h.removeOwnedFixture() }
@@ -308,6 +335,40 @@ final class TranscriptionSchedulerTests: XCTestCase {
     XCTAssertTrue(available.line(for: .preempted).text.contains("yielded to capture"))
     XCTAssertTrue(available.line(for: .cancelled).text.contains("cancelled"))
     XCTAssertFalse(available.line(for: .cancelled).text.contains("failed"))
+  }
+
+  func testIsolatedHistoricalCaptureCannotClaimRecordingOrLeaveTheAttentionList() {
+    for lifecycle in ["preparing", "recording", "paused", "finalizing"] {
+      let session = RuntimeSessionPresentation(
+        native: NativeRuntimeSessionSnapshot(
+          sessionId: "historical", title: "Unavailable history", lifecycle: lifecycle,
+          health: "healthy", elapsedSeconds: 1, journalDurable: true, mediaFilesOpen: true,
+          interruptionReason: nil, recovered: false, hasCaptureTimeline: true,
+          sources: [], playableMedia: nil, captureRecoveryIsolated: true))
+      XCTAssertEqual(session.lifecycle, lifecycle)
+      XCTAssertFalse(session.isRecording)
+      XCTAssertFalse(session.isDegradedRecording)
+      XCTAssertNil(session.pausedStatusSymbolName)
+      XCTAssertTrue(session.needsAttention)
+      XCTAssertEqual(session.statusText, "Capture recovery unavailable")
+      XCTAssertTrue(session.interruptionText?.contains(lifecycle) == true)
+      XCTAssertNotNil(session.transcriptionUnavailableReason)
+      XCTAssertTrue(session.deletionUnavailableReason?.contains("recovery") == true)
+      XCTAssertEqual(
+        LibraryConversationLists.interrupted([session]).map(\.sessionId), ["historical"])
+    }
+  }
+
+  func testSavedAndInterruptedConversationsRetainTheirTrashAction() {
+    for lifecycle in ["ready_for_review", "interrupted"] {
+      let session = RuntimeSessionPresentation(
+        native: NativeRuntimeSessionSnapshot(
+          sessionId: "saved", title: "Saved conversation", lifecycle: lifecycle,
+          health: "healthy", elapsedSeconds: 1, journalDurable: true, mediaFilesOpen: false,
+          interruptionReason: nil, recovered: lifecycle == "interrupted", hasCaptureTimeline: true,
+          sources: [], playableMedia: nil))
+      XCTAssertNil(session.deletionUnavailableReason)
+    }
   }
 
   func testRenameRoutesThroughRustAndReportsRefusals() async {

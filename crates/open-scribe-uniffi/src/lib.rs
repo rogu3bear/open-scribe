@@ -236,6 +236,9 @@ pub struct NativeRuntimeSessionSnapshot {
     /// Derived-transcript posture of a saved conversation; absent for a live one.
     #[uniffi(default = None)]
     pub transcript: Option<NativeRuntimeTranscriptSnapshot>,
+    /// Historical recovery failure, not a currently owned capture.
+    #[uniffi(default = false)]
+    pub capture_recovery_isolated: bool,
 }
 
 /// Content-free transcript progress: `state` is `none`, `running`, `final`,
@@ -1155,6 +1158,7 @@ fn map_runtime_session_snapshot(
         }),
         recovered: snapshot.recovered,
         has_capture_timeline: snapshot.has_capture_timeline,
+        capture_recovery_isolated: snapshot.capture_recovery_isolated,
         sources: snapshot
             .sources
             .into_iter()

@@ -5393,6 +5393,10 @@ public struct NativeRuntimeSessionSnapshot: Equatable, Hashable {
    * Derived-transcript posture of a saved conversation; absent for a live one.
    */
   public let transcript: NativeRuntimeTranscriptSnapshot?
+  /**
+   * Historical recovery failure, not a currently owned capture.
+   */
+  public let captureRecoveryIsolated: Bool
 
   // Default memberwise initializers are never public by default, so we
   // declare one manually.
@@ -5404,7 +5408,11 @@ public struct NativeRuntimeSessionSnapshot: Equatable, Hashable {
     /**
      * Derived-transcript posture of a saved conversation; absent for a live one.
      */
-    transcript: NativeRuntimeTranscriptSnapshot? = nil
+    transcript: NativeRuntimeTranscriptSnapshot? = nil,
+    /**
+     * Historical recovery failure, not a currently owned capture.
+     */
+    captureRecoveryIsolated: Bool = false
   ) {
     self.sessionId = sessionId
     self.title = title
@@ -5419,6 +5427,7 @@ public struct NativeRuntimeSessionSnapshot: Equatable, Hashable {
     self.sources = sources
     self.playableMedia = playableMedia
     self.transcript = transcript
+    self.captureRecoveryIsolated = captureRecoveryIsolated
   }
 
 }
@@ -5448,7 +5457,8 @@ public struct FfiConverterTypeNativeRuntimeSessionSnapshot: FfiConverterRustBuff
         hasCaptureTimeline: FfiConverterBool.read(from: &buf),
         sources: FfiConverterSequenceTypeNativeRuntimeSourceSnapshot.read(from: &buf),
         playableMedia: FfiConverterOptionTypeNativeRuntimePlayableMediaSnapshot.read(from: &buf),
-        transcript: FfiConverterOptionTypeNativeRuntimeTranscriptSnapshot.read(from: &buf)
+        transcript: FfiConverterOptionTypeNativeRuntimeTranscriptSnapshot.read(from: &buf),
+        captureRecoveryIsolated: FfiConverterBool.read(from: &buf)
       )
   }
 
@@ -5466,6 +5476,7 @@ public struct FfiConverterTypeNativeRuntimeSessionSnapshot: FfiConverterRustBuff
     FfiConverterSequenceTypeNativeRuntimeSourceSnapshot.write(value.sources, into: &buf)
     FfiConverterOptionTypeNativeRuntimePlayableMediaSnapshot.write(value.playableMedia, into: &buf)
     FfiConverterOptionTypeNativeRuntimeTranscriptSnapshot.write(value.transcript, into: &buf)
+    FfiConverterBool.write(value.captureRecoveryIsolated, into: &buf)
   }
 }
 

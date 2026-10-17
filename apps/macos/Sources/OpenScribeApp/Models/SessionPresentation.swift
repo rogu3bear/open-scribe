@@ -290,6 +290,7 @@ struct RuntimeSessionPresentation: Equatable, Sendable, Identifiable {
   let interruptionReason: String?
   let recovered: Bool
   let hasCaptureTimeline: Bool
+  let captureRecoveryIsolated: Bool
   let sources: [RuntimeSourcePresentation]
   let playableMedia: RuntimePlayableMediaPresentation?
   let transcript: RuntimeTranscriptPresentation
@@ -305,12 +306,23 @@ struct RuntimeSessionPresentation: Equatable, Sendable, Identifiable {
     interruptionReason = native.interruptionReason
     recovered = native.recovered
     hasCaptureTimeline = native.hasCaptureTimeline
+    captureRecoveryIsolated = native.captureRecoveryIsolated
     sources = native.sources.map(RuntimeSourcePresentation.init(native:))
     playableMedia = native.playableMedia.map(RuntimePlayableMediaPresentation.init(native:))
     transcript = RuntimeTranscriptPresentation(native: native.transcript)
   }
 
   var id: String { sessionId }
+
+  var deletionUnavailableReason: String? {
+    if captureRecoveryIsolated {
+      return "Move to Trash is unavailable until recovery can verify this capture's saved state."
+    }
+    guard lifecycle == "ready_for_review" || lifecycle == "interrupted" else {
+      return "Finish the current capture before moving this conversation to Trash."
+    }
+    return nil
+  }
 
   func hasVerifiedPreservedAudio(from recoveredSessions: [NativeRecoveredPlayableSession]) -> Bool {
     playableMedia?.isPlayable == true || !recoveredTracks(from: recoveredSessions).isEmpty
@@ -319,21 +331,25 @@ struct RuntimeSessionPresentation: Equatable, Sendable, Identifiable {
   /// Imports have no required capture sources. Captures need Rust's saved
   /// clock calibration before transcripts or exports can use a shared timeline.
   var transcriptionUnavailableReason: String? {
+    if captureRecoveryIsolated {
+      return "This capture needs recovery before its audio can be transcribed or exported."
+    }
     guard !hasCaptureTimeline, !sources.isEmpty else { return nil }
     return
       "This recording has no saved timing for its audio sources, so it cannot be transcribed or exported."
   }
 
   var isRecording: Bool {
-    lifecycle == "recording" && health == "healthy" && journalDurable && mediaFilesOpen
+    !captureRecoveryIsolated && lifecycle == "recording" && health == "healthy" && journalDurable
+      && mediaFilesOpen
   }
 
   var isDegradedRecording: Bool {
-    lifecycle == "recording" && health == "degraded"
+    !captureRecoveryIsolated && lifecycle == "recording" && health == "degraded"
   }
 
   var needsAttention: Bool {
-    lifecycle == "interrupted" || health == "degraded"
+    captureRecoveryIsolated || lifecycle == "interrupted" || health == "degraded"
   }
 
   var pausedStatusSymbolName: String? {
@@ -342,7 +358,7 @@ struct RuntimeSessionPresentation: Equatable, Sendable, Identifiable {
   }
 
   var captureStatusSymbolName: String {
-    if lifecycle == "interrupted" || (recovered && needsAttention) {
+    if captureRecoveryIsolated || lifecycle == "interrupted" || (recovered && needsAttention) {
       return SymbolResolver.captureSymbol(for: .recoveryRequired)
     }
     if needsAttention { return SymbolResolver.captureSymbol(for: .degraded) }
@@ -376,6 +392,7 @@ struct RuntimeSessionPresentation: Equatable, Sendable, Identifiable {
   }
 
   var statusText: String {
+    if captureRecoveryIsolated { return "Capture recovery unavailable" }
     if recovered && needsAttention { return "Recovered partial recording" }
     if isDegradedRecording { return "Recording — degraded" }
     if let playableMedia { return playableMedia.statusText }
@@ -398,6 +415,10 @@ struct RuntimeSessionPresentation: Equatable, Sendable, Identifiable {
   }
 
   var interruptionText: String? {
+    if captureRecoveryIsolated {
+      return
+        "Recovery could not verify this capture's evidence. Last accepted state: \(lifecycle.replacingOccurrences(of: "_", with: " "))."
+    }
     guard let interruptionReason else { return nil }
     return switch interruptionReason {
     case "capture_start_failed": "Capture could not start; durable recovery state was preserved."

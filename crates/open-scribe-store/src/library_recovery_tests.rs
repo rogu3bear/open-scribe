@@ -309,6 +309,62 @@ fn assert_damage_is_isolated(
     assert_eq!(playable_count(&first, &damaged), 0);
     assert_eq!(store.playback_timeline(&healthy).unwrap().len(), 2);
     assert_eq!(store.recorder_detail(&damaged).unwrap().lifecycle, "paused");
+    let presentation = store.runtime_library_snapshot().unwrap();
+    assert!(
+        presentation.current_session.is_none(),
+        "damaged history is not the current capture"
+    );
+    assert!(
+        presentation
+            .saved_sessions
+            .iter()
+            .any(|session| session.session_id == damaged),
+        "unrecoverable history remains visible for inspection"
+    );
+    let historical = presentation
+        .saved_sessions
+        .iter()
+        .find(|session| session.session_id == damaged)
+        .unwrap();
+    assert!(historical.capture_recovery_isolated);
+    assert_eq!(
+        historical.lifecycle, "paused",
+        "last accepted lifecycle remains evidence"
+    );
+    assert!(
+        historical
+            .sources
+            .iter()
+            .all(|source| source.lifecycle == "unavailable")
+    );
+    assert!(
+        !store.capture_active().unwrap(),
+        "assessed historical damage is not a live capture after the safety barrier"
+    );
+    let observations = open_scribe_types::WorkObservations {
+        model: open_scribe_types::ModelReadiness::Ready,
+        ..Default::default()
+    };
+    let claim = store
+        .admit_transcription(observations)
+        .unwrap()
+        .expect("healthy audio remains eligible");
+    assert_eq!(claim.session_id, healthy);
+    assert!(
+        store
+            .start_transcription_execution(
+                &healthy,
+                claim.admission.as_deref().unwrap(),
+                claim.intent
+            )
+            .unwrap()
+    );
+    store
+        .finish_transcription(
+            claim.admission.as_deref().unwrap(),
+            open_scribe_types::WorkOutcome::CapturePreempted,
+        )
+        .unwrap();
     assert_eq!(
         media_bytes(&healthy_sources),
         healthy_bytes,
@@ -327,6 +383,155 @@ fn assert_damage_is_isolated(
     assert_eq!(second.playable, first.playable);
     assert_eq!(store.playback_timeline(&healthy).unwrap().len(), 2);
     assert_eq!(media_bytes(&healthy_sources), healthy_bytes);
+    assert!(
+        !store.capture_active().unwrap(),
+        "another handle retains the assessment"
+    );
+    let claim = store
+        .admit_transcription(observations)
+        .unwrap()
+        .expect("healthy retry survives restart");
+    assert!(
+        store
+            .start_transcription_execution(
+                &healthy,
+                claim.admission.as_deref().unwrap(),
+                claim.intent
+            )
+            .unwrap()
+    );
+}
+
+#[test]
+fn historical_capture_assessment_cannot_hide_new_accepted_capture_work() {
+    use open_scribe_types::{ModelReadiness, TranscriptionIntent, WorkHold, WorkObservations};
+    let temp = TempDir::new().unwrap();
+    let mut store = SessionStore::open(temp.path()).unwrap();
+    let (damaged, _) = paused_pair(&mut store);
+    let (healthy, _) = recording_pair(&mut store);
+    let journal = store
+        .session_directory(&damaged.0)
+        .unwrap()
+        .join(JOURNAL_NAME);
+    let original = fs::read(&journal).unwrap();
+    fs::write(&journal, &original[..original.len() - 1]).unwrap();
+    assert!(
+        store.capture_active().unwrap(),
+        "unassessed nonterminal capture holds work"
+    );
+    store.recover_library().unwrap();
+    let damaged_bytes = fs::read(&journal).unwrap();
+    let observations = WorkObservations {
+        model: ModelReadiness::Ready,
+        ..Default::default()
+    };
+    assert!(!store.capture_active().unwrap());
+    store
+        .request_transcription(&healthy, TranscriptionIntent::ResumeIncomplete)
+        .unwrap();
+    let claim = store.admit_transcription(observations).unwrap().unwrap();
+    assert_eq!(fs::read(&journal).unwrap(), damaged_bytes);
+    let receipts: i64 = store
+        .connection
+        .query_row(
+            "SELECT COUNT(*) FROM recovery_runs WHERE disposition = 'capture_safety_isolated'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    store.recover_library().unwrap();
+    assert_eq!(
+        store
+            .connection
+            .query_row(
+                "SELECT COUNT(*) FROM recovery_runs WHERE disposition = 'capture_safety_isolated'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+        receipts
+    );
+    // Operator fixture restoration permits a new real journal command. Its
+    // accepted digest, not a wall-clock comparison, invalidates the old receipt.
+    fs::write(&journal, &original).unwrap();
+    store
+        .recorder_action(damaged.clone(), RecorderAction::PrepareResume)
+        .unwrap();
+    let mut other = SessionStore::open(temp.path()).unwrap();
+    assert!(other.capture_active().unwrap());
+    assert_eq!(
+        other.transcription_queue(observations).unwrap()[0].hold,
+        Some(WorkHold::Capture)
+    );
+    assert!(
+        !other
+            .start_transcription_execution(
+                &healthy,
+                claim.admission.as_deref().unwrap(),
+                claim.intent
+            )
+            .unwrap()
+    );
+    assert_eq!(
+        other.recorder_detail(&damaged).unwrap().lifecycle,
+        "preparing"
+    );
+    let current = other
+        .runtime_library_snapshot()
+        .unwrap()
+        .current_session
+        .unwrap();
+    assert_eq!(current.session_id, damaged);
+    assert!(!current.capture_recovery_isolated);
+}
+
+#[test]
+fn isolated_recording_history_cannot_advance_a_live_clock_or_occupy_now() {
+    let temp = TempDir::new().unwrap();
+    let mut store = SessionStore::open(temp.path()).unwrap();
+    let (session, sources) = recording_pair(&mut store);
+    let journal = store
+        .session_directory(&session.0)
+        .unwrap()
+        .join(JOURNAL_NAME);
+    let bytes = fs::read(&journal).unwrap();
+    fs::write(&journal, &bytes[..bytes.len() - 1]).unwrap();
+    let preserved = fs::read(&journal).unwrap();
+    let media = media_bytes(&sources);
+    drop(store);
+    let mut store = SessionStore::open(temp.path()).unwrap();
+    let recovered = store.recover_library().unwrap();
+    assert_eq!(
+        finding_for(&recovered, &session),
+        Some(RecoveryDisposition::TruncatedJournal)
+    );
+    let first = store
+        .runtime_library_snapshot_at_host(2_000_000_001)
+        .unwrap();
+    let later = store
+        .runtime_library_snapshot_at_host(900_000_000_001)
+        .unwrap();
+    assert!(first.current_session.is_none());
+    assert!(later.current_session.is_none());
+    let historical = &first.saved_sessions[0];
+    assert!(historical.capture_recovery_isolated);
+    assert_eq!(historical.lifecycle, "recording");
+    assert_eq!(
+        historical.elapsed_seconds,
+        later.saved_sessions[0].elapsed_seconds
+    );
+    assert!(
+        historical
+            .sources
+            .iter()
+            .all(|source| source.lifecycle == "unavailable")
+    );
+    assert_eq!(
+        store.recorder_detail(&session).unwrap().lifecycle,
+        "recording"
+    );
+    assert_eq!(fs::read(&journal).unwrap(), preserved);
+    assert_eq!(media_bytes(&sources), media);
 }
 
 #[test]
