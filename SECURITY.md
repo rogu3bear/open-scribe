@@ -4,22 +4,33 @@ Open Scribe handles highly sensitive conversation and screen-derived evidence. S
 
 ## Current status
 
-This repository contains a bounded unsigned native development application and
-M1 development evidence, but no supported release or deployed product. Exact
-earlier runtime candidates captured microphone plus all-authorized system audio
-and recovered playable media after forced termination. Those bounded receipts
-do not prove the current candidate, source-loss continuation, permission
-revocation, disk pressure, long-session synchronization, transcription,
-providers, updates, signing, or release. There are no supported release
-versions.
+This repository contains an unsigned native development application and bounded
+candidate evidence, but no supported release. ACTOR.md and its named receipts
+identify the exact capture/recovery, isolated failure, and synthetic offline
+workflow checks that actually ran. Those receipts do not establish arbitrary
+later candidates, supported-platform behavior, live permission revocation,
+long-session synchronization, remote providers, updates, signing, or release.
+There are no supported release versions.
 
 ## Reporting a vulnerability
 
 Do not disclose suspected vulnerabilities or sensitive reproduction data in a public issue.
 
-The repository does not yet have a verified private disclosure address or enabled GitHub private-vulnerability channel. Until one is established, contact the repository owner through an already trusted private channel and share the minimum metadata needed to coordinate a secure handoff. Do not send transcript, OCR, audio, credentials, provider secrets, or private screen content without an agreed encrypted path.
+Use [GitHub private vulnerability reporting](https://github.com/rogu3bear/open-scribe/security/advisories/new).
+Sign in to GitHub, open the repository's Security → Advisories page, and choose
+**Report a vulnerability**. Reporting is enabled: authenticated repository
+readback and the public reporting link were checked on 2026-10-17. No test report
+was submitted, and intake handling, response ownership, and security-policy
+adoption remain release prerequisites. Channel availability is not a response
+time or remediation guarantee.
 
-The disclosure channel is an unresolved bootstrap decision; this document must be updated before public release.
+Include the affected version or source commit, a minimal description, and
+nonprivate reproduction steps. Start with metadata rather than a real
+conversation. Do not attach transcript, OCR, audio, credentials, provider
+secrets, or private screen content without an agreed secure handoff. If GitHub
+reporting is inaccessible, contact the repository owner through an already
+trusted private channel; do not fall back to publishing sensitive details in an
+issue.
 
 ## Founding security boundaries
 

@@ -2,6 +2,19 @@
 
 Open Scribe is a greenfield, open-source macOS conversation instrument intended to record conversations reliably, preserve local evidence, and connect derived meeting memory back to its sources.
 
+**Open-source developer preview:** build and verify from source. This preview
+is for contributors working with the pinned toolchains and the isolated,
+unsigned candidate workflow in [Contributing](CONTRIBUTING.md). The default
+candidate checks use synthetic capture; real-device checks require a separate,
+deliberate invocation. There is no supported installer or binary release.
+
+The [source repository](https://github.com/rogu3bear/open-scribe) is public and
+repository-authored source code is licensed under [MIT](LICENSE). Reading,
+modifying, and building the source does not require a Developer ID certificate.
+The unsigned contributor workflow below is separate from publishing an
+installable macOS app. Signing and notarization remain requirements for that
+future app distribution; they do not change the open-source license.
+
 > **Repository status: Milestone 0 development proof; M1 remains incomplete.** Current source gives Rust ownership of required-source decisions, lifecycle, shared capture timing, recovery, and the coarse live-and-library snapshot consumed by the native window and menu bar. [Dated runtime evidence](docs/TESTING.md#foundational-recording-workflow) records synthetic and short live dual-source capture, segment rotation, forced termination, unchanged recovered media, and shared native playback on an exact unsigned artifact. Those historical receipts do not qualify a new candidate or prove source-loss continuation, permission revocation, application-scoped selection, two-hour synchronization, transcription, signing, distribution, or public release. Transcript review, search, export, two-phase deletion, and opening a portable package exported on another Mac exist in source with Rust and Swift tests. Local transcription runs in process through whisper.cpp 1.8.3 once the user installs a manifest-verified model from a file they downloaded; its dated receipts are development proof, not an Available capability.
 
 The [founding product contract](docs/product/FOUNDING_PRD.md) owns intent. Start with [AGENTS.md](AGENTS.md) for task routing, [ANCHOR.md](ANCHOR.md) for invariants, and [NORTH_STAR.md](NORTH_STAR.md) for purpose.
@@ -89,4 +102,8 @@ All default product/release scripts intentionally fail until their corresponding
 
 ## License
 
-Repository-authored material is intended to use the MIT License. Dependency, model, asset, signing, and legal-text treatment remains subject to review. See `LICENSE` and `THIRD_PARTY_NOTICES.md`.
+Repository-authored source code uses the MIT License. Dependencies, models, and
+other third-party materials retain their own licenses and release-review
+requirements. See [LICENSE](LICENSE), [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md),
+and the [release proof contract](docs/release/README.md). The privacy notice and
+terms remain explicit drafts; preparing them does not adopt them.

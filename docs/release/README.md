@@ -2,6 +2,19 @@
 
 No Open Scribe release exists.
 
+The [source repository](https://github.com/rogu3bear/open-scribe) is already
+public under the repository's [MIT License](../../LICENSE). Source access,
+modification, and the unsigned contributor build do not require a Developer ID
+identity. The release contract below governs a supported, downloadable macOS
+application. Signing/notarization establish distribution identity and trust;
+they do not grant or restrict Open Scribe's open-source permissions. Public
+source availability is not a supported-app or public-product qualification.
+
+The open-source developer preview consists of that source and its unsigned
+contributor workflow. It does not allocate the production `0.1.0` version,
+publish an installer, adopt the legal drafts, or promote a capability. The
+supported-app requirements below remain in force.
+
 `0.1.0-LAUNCH-CHECKLIST.md` coordinates the working cross-functional path to a
 first public release. Its dates are planning targets, not evidence or release
 authority. The checklist remains on hold until every blocker closes against
