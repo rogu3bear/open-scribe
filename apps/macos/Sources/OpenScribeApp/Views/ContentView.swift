@@ -664,9 +664,12 @@ struct ConversationSidebarRow: View {
 
   private var secondaryText: Color { isSelected ? selectedText : .secondary }
 
-  private var symbolName: String? {
+  private var hasMediaWarning: Bool { session.playableMedia.map { !$0.isPlayable } ?? false }
+
+  var statusSymbolName: String? {
     if session.isRecording { return "record.circle.fill" }
-    if session.needsAttention { return "exclamationmark.triangle" }
+    if session.needsAttention || hasMediaWarning { return "exclamationmark.triangle" }
+    if transcriptLine?.symbol == "exclamationmark.circle" { return "exclamationmark.circle" }
     return nil
   }
 
@@ -679,10 +682,15 @@ struct ConversationSidebarRow: View {
     return session.transcript.line(for: transcription)
   }
 
+  var detailStatusText: String {
+    if let transcriptLine, !session.needsAttention, !hasMediaWarning { return transcriptLine.text }
+    return session.statusText
+  }
+
   var body: some View {
     let title = ConversationIdentityPresentation.title(session.title)
     HStack(alignment: .firstTextBaseline, spacing: 8) {
-      if let symbolName {
+      if let symbolName = statusSymbolName {
         if isSelected {
           Image(systemName: symbolName)
         } else {
@@ -705,11 +713,7 @@ struct ConversationSidebarRow: View {
         HStack(spacing: 6) {
           Text(session.timerText).monospacedDigit()
           Text("·")
-          if let transcriptLine, !session.needsAttention {
-            Text(transcriptLine.text)
-          } else {
-            Text(session.statusText)
-          }
+          Text(detailStatusText)
         }
         .font(.caption)
         .foregroundStyle(secondaryText)

@@ -13,6 +13,12 @@ final class ConversationSidebarRowTests: XCTestCase {
       session("reviewed", title: "Reviewed agreement", lifecycle: "ready_for_review"),
       session("recording", title: "Deliberate recording", lifecycle: "recording"),
       session("interrupted", title: "Interrupted conversation", lifecycle: "interrupted"),
+      session(
+        "unavailable", title: "Missing source audio", lifecycle: "ready_for_review",
+        media: unavailableMedia("unavailable")),
+      session(
+        "corrupt", title: "Damaged source audio", lifecycle: "ready_for_review",
+        media: unavailableMedia("corrupt")),
     ]
     for appearance in [NSAppearance.Name.aqua, .darkAqua] {
       for selected in sessions {
@@ -53,7 +59,135 @@ final class ConversationSidebarRowTests: XCTestCase {
     }
   }
 
-  private func session(_ id: String, title: String, lifecycle: String)
+  func testUnavailableAudioTakesPriorityOverTranscriptPosture() {
+    for availability in ["unavailable", "corrupt"] {
+      for state in [NativeRuntimeTranscriptState.none, .final] {
+        let saved = session(
+          "unreadable", title: "Preserved import", lifecycle: "ready_for_review",
+          media: unavailableMedia(availability), transcriptState: state)
+        XCTAssertFalse(
+          saved.needsAttention, "capture health and media availability are independent")
+        XCTAssertTrue(saved.transcript.hasTranscribableAudio, "sealed track metadata survives")
+        let row = ConversationSidebarRow(session: saved, reference: nil, isSelected: true)
+        XCTAssertEqual(row.detailStatusText, saved.statusText)
+        XCTAssertEqual(row.statusSymbolName, "exclamationmark.triangle")
+        XCTAssertEqual(
+          row.detailStatusText,
+          availability == "corrupt" ? "Audio appears corrupt" : "Audio unavailable")
+      }
+    }
+  }
+
+  func testReplacementFailureKeepsAVisibleWarningWithoutAddingRoutineIcons() {
+    let failed = session(
+      "failed-replacement", title: "Reviewed agreement", lifecycle: "ready_for_review",
+      attempt: .failed)
+    let failedRow = ConversationSidebarRow(session: failed, reference: nil, isSelected: true)
+    XCTAssertEqual(failedRow.detailStatusText, "Transcript ready · replacement failed")
+    XCTAssertEqual(failedRow.statusSymbolName, "exclamationmark.circle")
+    let complete = session(
+      "reviewed", title: "Reviewed agreement", lifecycle: "ready_for_review")
+    let completeRow = ConversationSidebarRow(session: complete, reference: nil, isSelected: false)
+    XCTAssertEqual(completeRow.detailStatusText, "Transcript ready")
+    XCTAssertNil(completeRow.statusSymbolName)
+  }
+
+  /// Use actual first-responder and key-window transitions. Injecting a SwiftUI
+  /// controlActiveState does not change AppKit's List highlight and is not this test.
+  func testSelectedRowAcrossNativeFocusAndWindowTransitions() async throws {
+    let saved = session(
+      "failed-replacement", title: "Reviewed agreement", lifecycle: "ready_for_review",
+      attempt: .failed)
+    for appearance in [NSAppearance.Name.aqua, .darkAqua] {
+      for width in [220.0, 260.0] {
+        let host = NSHostingView(
+          rootView: List(selection: Binding<String?>.constant(saved.sessionId)) {
+            ConversationSidebarRow(session: saved, reference: "a1b2c3", isSelected: true)
+              .tag(saved.sessionId)
+          }
+          .listStyle(.sidebar)
+          .frame(width: width, height: 240)
+          .environment(\.colorScheme, appearance == .aqua ? .light : .dark))
+        let content = NSView(frame: NSRect(x: 0, y: 0, width: width + 360, height: 240))
+        host.frame = NSRect(x: 0, y: 0, width: width, height: 240)
+        content.addSubview(host)
+        let editor = NSTextField(string: "Review editor")
+        editor.frame = NSRect(x: width + 24, y: 140, width: 300, height: 30)
+        content.addSubview(editor)
+        let window = NSWindow(
+          contentRect: content.bounds, styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.appearance = NSAppearance(named: appearance)
+        window.contentView = content
+        NSApp.setActivationPolicy(.regular)
+        NSApp.activate(ignoringOtherApps: true)
+        NSRunningApplication.current.activate(options: [.activateIgnoringOtherApps])
+        window.makeKeyAndOrderFront(nil)
+        defer { window.close() }
+        try await Task.sleep(for: .milliseconds(150))
+        let table = try XCTUnwrap(findTable(in: host))
+        XCTAssertTrue(window.makeFirstResponder(table))
+        XCTAssertTrue(NSApp.isActive)
+        XCTAssertTrue(window.isKeyWindow)
+        try await captureFocus(
+          host, window: window, appearance: appearance, width: width, phase: "list")
+        XCTAssertTrue(window.makeFirstResponder(editor))
+        XCTAssertNotNil(editor.currentEditor())
+        XCTAssertTrue(window.isKeyWindow)
+        try await captureFocus(
+          host, window: window, appearance: appearance, width: width, phase: "editor")
+        let other = NSWindow(
+          contentRect: NSRect(x: 0, y: 0, width: 200, height: 80),
+          styleMask: [.titled], backing: .buffered, defer: false)
+        other.isReleasedWhenClosed = false
+        other.makeKeyAndOrderFront(nil)
+        defer { other.close() }
+        try await Task.sleep(for: .milliseconds(150))
+        XCTAssertTrue(other.isKeyWindow)
+        XCTAssertFalse(window.isKeyWindow)
+        try await captureFocus(
+          host, window: window, appearance: appearance, width: width, phase: "inactive")
+      }
+    }
+  }
+
+  private func unavailableMedia(_ availability: String) -> NativeRuntimePlayableMediaSnapshot {
+    NativeRuntimePlayableMediaSnapshot(
+      sourceDisplayName: "Fixture import", availability: availability, absolutePath: nil,
+      durationNanoseconds: 125_000_000_000, sampleCount: 6_000_000, byteLength: 12_000_068)
+  }
+
+  private func findTable(in view: NSView) -> NSTableView? {
+    if let table = view as? NSTableView { return table }
+    return view.subviews.lazy.compactMap { self.findTable(in: $0) }.first
+  }
+
+  private func captureFocus<V: View>(
+    _ host: NSHostingView<V>, window: NSWindow, appearance: NSAppearance.Name,
+    width: Double, phase: String
+  ) async throws {
+    try await Task.sleep(for: .milliseconds(150))
+    host.layoutSubtreeIfNeeded()
+    let mode = appearance == .aqua ? "light" : "dark"
+    let responder = window.firstResponder.map { String(describing: type(of: $0)) } ?? "none"
+    print(
+      "SIDEBAR_FOCUS mode=\(mode) width=\(width) phase=\(phase) key=\(window.isKeyWindow) main=\(window.isMainWindow) appActive=\(NSApp.isActive) policy=\(NSApp.activationPolicy().rawValue) canKey=\(window.canBecomeKey) running=\(NSApp.isRunning) responder=\(responder)"
+    )
+    if let directory = ProcessInfo.processInfo.environment["OPEN_SCRIBE_RENDER_DIR"] {
+      let image = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+      host.cacheDisplay(in: host.bounds, to: image)
+      let png = try XCTUnwrap(image.representation(using: .png, properties: [:]))
+      try png.write(
+        to: URL(fileURLWithPath: directory).appendingPathComponent(
+          "focus-\(mode)-\(Int(width))-\(phase).png"))
+    }
+  }
+
+  private func session(
+    _ id: String, title: String, lifecycle: String,
+    media: NativeRuntimePlayableMediaSnapshot? = nil,
+    transcriptState: NativeRuntimeTranscriptState = .final, attempt: NativeAttemptState = .complete
+  )
     -> RuntimeSessionPresentation
   {
     RuntimeSessionPresentation(
@@ -62,11 +196,14 @@ final class ConversationSidebarRowTests: XCTestCase {
         health: lifecycle == "interrupted" ? "degraded" : "healthy",
         elapsedSeconds: 125, journalDurable: true,
         mediaFilesOpen: lifecycle == "recording", interruptionReason: nil,
-        recovered: false, hasCaptureTimeline: false, sources: [], playableMedia: nil,
+        recovered: false, hasCaptureTimeline: false, sources: [], playableMedia: media,
         transcript: NativeRuntimeTranscriptSnapshot(
-          document: .final, replacementResumable: false, state: .final,
-          selectedRevisionIds: ["reviewed-final"], documentVersion: "visual-fixture",
-          attempt: .complete, attemptFailure: nil, totalTracks: 1, finalTracks: 1,
+          document: transcriptState == .final ? .final : .none, replacementResumable: false,
+          state: transcriptState,
+          selectedRevisionIds: transcriptState == .final ? ["reviewed-final"] : [],
+          documentVersion: "visual-fixture",
+          attempt: attempt, attemptFailure: attempt == .failed ? "engine_error" : nil,
+          totalTracks: 1, finalTracks: transcriptState == .final ? 1 : 0,
           completedChunks: 1, totalChunks: 1, failureClass: nil)
       ))
   }
