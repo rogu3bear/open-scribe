@@ -4,12 +4,14 @@ import Foundation
 /// Explicit process proof that Open Scribe stays useful with networking
 /// denied (ADR 0013 Proof; M4 local-only). The harness launches this
 /// process under a sandbox profile that refuses every IP connection and
-/// listener, then runs the whole local workflow: record, declare, add
-/// context, recover, play back, mix, transcribe with an installed model,
-/// correct, search, export, and delete. The report holds identifiers and
+/// listener, then runs record, declare, recover, play back, mix, transcribe
+/// with a supplied model copied into the isolated library, correct, search,
+/// export, and delete. Screen context is limited to explicit live mode.
+/// The report holds identifiers and
 /// counts only; the harness then searches every diagnostic surface for the
 /// sentinel strings below, which must never appear there.
 enum LocalOnlyWorkflowProof {
+  enum ContextInput: String { case omitted, liveIfAuthorized }
   static let title = "LocalOnlyTitleSentinel7f3a"
   static let participant = "LocalOnlyParticipantSentinel51c2"
   static let topic = "LocalOnlyTopicSentinel88d0"
@@ -22,9 +24,9 @@ enum LocalOnlyWorkflowProof {
   }
 
   @MainActor
-  static func run(root: URL) async {
+  static func run(root: URL, contextInput: ContextInput) async {
     do {
-      let report = try await perform(root: root)
+      let report = try await perform(root: root, contextInput: contextInput)
       try JSONSerialization.data(withJSONObject: report, options: [.sortedKeys])
         .write(to: root.appendingPathComponent("local-only-verified.json"), options: .atomic)
     } catch {
@@ -36,7 +38,7 @@ enum LocalOnlyWorkflowProof {
   }
 
   @MainActor
-  private static func perform(root: URL) async throws -> [String: Any] {
+  private static func perform(root: URL, contextInput: ContextInput) async throws -> [String: Any] {
     let environment = ProcessInfo.processInfo.environment
     guard let modelPath = environment["OPEN_SCRIBE_LOCAL_PROOF_MODEL"] else {
       throw ProofError.missingInput("OPEN_SCRIBE_LOCAL_PROOF_MODEL")
@@ -48,6 +50,13 @@ enum LocalOnlyWorkflowProof {
     let exports = root.appendingPathComponent("Exports", isDirectory: true)
     try FileManager.default.createDirectory(at: exports, withIntermediateDirectories: true)
     var report: [String: Any] = [:]
+    report["context_input"] = contextInput.rawValue
+    report["screen_recording_permission"] = "not_requested"
+    report["screen_capture_performed"] = false
+    report["context_events_accepted"] = 0
+    report["context_frame_pixels"] = 0
+    report["context_frame_text_blocks"] = 0
+    report["model_scope"] = "isolated_proof_library"
 
     // Record: a synthetic two-source capture on the real recording writer.
     let capture = try TimelineRuntimeProof.capture(root: library)
@@ -56,11 +65,13 @@ enum LocalOnlyWorkflowProof {
       sessionId: session,
       declaration: NativeSessionDeclaration(participants: [participant], topic: topic))
 
-    // Context: one real frame reduced in memory (its text is only counted),
-    // then one reduced event through Rust under an explicit display scope.
-    let permission = ScreenCapturePermission.current()
-    report["screen_recording_permission"] = permission == .granted ? "granted" : "not_granted"
-    if permission == .granted {
+    // Real screen content belongs only to the separate explicit live mode.
+    // Synthetic qualification omits this optional lane and cannot qualify it.
+    let permission = contextInput == .liveIfAuthorized ? ScreenCapturePermission.current() : nil
+    if let permission {
+      report["screen_recording_permission"] = permission == .granted ? "granted" : "not_granted"
+    }
+    if let permission, permission == .granted {
       let displays = ContextTopology.current()
       guard let main = displays.first(where: \.isMain) ?? displays.first else {
         throw ProofError.step("topology")
@@ -97,6 +108,7 @@ enum LocalOnlyWorkflowProof {
           blocks: [NativeContextTextBlock(text: contextText, x: 0.1, y: 0.1, width: 0.4, height: 0.05)]))
       guard case .accepted = decision else { throw ProofError.step("context event") }
       report["context_events_accepted"] = 1
+      report["screen_capture_performed"] = true
     }
 
     // Recover and render playback, then build and verify the mix.
@@ -107,11 +119,15 @@ enum LocalOnlyWorkflowProof {
       preparation: capture.preparation, sessionId: session, storagePath: library.path)
     report["validated_mix_bytes"] = mix.byteLength
 
-    // Transcribe a spoken import with a locally installed model.
-    let spoken = try capture.preparation.importRecoverableCaf(title: title, sourcePath: speechPath)
-      .sessionId
+    // Copy a supplied model only into this proof's isolated library, then
+    // transcribe the spoken import. No download or ordinary-library install.
+    let imported = try capture.preparation.importRecoverableCaf(title: title, sourcePath: speechPath)
+    let spoken = imported.sessionId
+    report["speech_input_sha256"] = imported.digestSha256
+    report["original_speech_untouched"] = imported.originalUntouched
     let speech = SpeechTranscriptionModel(managedRoot: library)
-    guard let model = speech.models.first,
+    await speech.refreshAndWait()
+    guard speech.catalogWarning == nil, let model = speech.models.first,
       await speech.install(model, from: URL(fileURLWithPath: modelPath))
     else { throw ProofError.step("model install") }
     guard await speech.transcribe(sessionId: spoken) else { throw ProofError.step("transcribe") }
@@ -134,9 +150,14 @@ enum LocalOnlyWorkflowProof {
       throw ProofError.step("final transcript")
     }
     report["transcript_segments"] = review.segments.count
-    guard review.export(format: .plainText, to: exports.appendingPathComponent("verbatim.txt")) else {
+    let verbatim = exports.appendingPathComponent("verbatim.txt")
+    guard review.export(format: .plainText, to: verbatim) else {
       throw ProofError.step("verbatim export")
     }
+    guard try String(contentsOf: verbatim, encoding: .utf8)
+      .localizedCaseInsensitiveContains("recording safe")
+    else { throw ProofError.step("speech known answer") }
+    report["speech_known_answer"] = true
     guard review.correct(first, text: correction) else { throw ProofError.step("correction") }
     review.search(correction)
     report["correction_search_hits"] = review.searchResults.count

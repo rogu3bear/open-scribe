@@ -58,6 +58,7 @@ struct LaunchConfiguration {
       "--m1-forced-termination-capture-root": (.live, .forcedCapture),
       "--m1-forced-termination-recovery-root": (.live, .forcedRecovery),
       "--local-only-proof-root": (.live, .localOnly),
+      "--local-only-synthetic-proof-root": (.synthetic, .localOnly),
       "--m1-drift-run-root": (.live, .drift(0)),
     ]
     let valueFlags = Set(rootFlags.keys).union([

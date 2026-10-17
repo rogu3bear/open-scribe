@@ -98,3 +98,30 @@ candidate_receipt() {
 		"$candidate_record" "$candidate_record_digest" "$candidate_sha" "$candidate_tree"
 	jq -r '.artifacts | to_entries[] | "artifact_sha256=\(.value.sha256) \(.key)"' "$candidate_record"
 }
+
+# One report contract for the producer and completion consumer. It proves a
+# bounded development workflow, never authenticated release admission.
+candidate_local_only_report_valid() {
+	local report="$1" mode="$2" speech_digest="$3"
+	jq -e --arg mode "$mode" --arg speech "$speech_digest" '
+      ([.validated_mix_bytes,.transcript_segments,.context_frame_pixels]
+        | all(type == "number" and . >= 0 and floor == .))
+      and .recovered_segments == 4 and .rendered_frames == 1548000 and .validated_mix_bytes > 0
+      and .transcript_segments >= 1 and .correction_search_hits == 1 and .package_files == 7
+      and .restored_package_media_files == 4 and .restored_timeline_segments == 4
+      and .deleted_sessions == 1 and .declared_participants == 1
+      and .speech_input_sha256 == $speech and .original_speech_untouched == true
+      and .speech_known_answer == true
+      and .model_scope == "isolated_proof_library"
+      and (if $mode == "synthetic" then
+        .context_input == "omitted" and .screen_capture_performed == false
+        and .screen_recording_permission == "not_requested"
+        and .context_events_accepted == 0 and .saved_context_events == 0
+        and .context_frame_pixels == 0
+      elif $mode == "live-context" then
+        .context_input == "liveIfAuthorized" and .screen_capture_performed == true
+        and .screen_recording_permission == "granted"
+        and .context_events_accepted == 1 and .saved_context_events == 1
+        and .context_frame_pixels > 0
+      else false end)' "$report" >/dev/null
+}

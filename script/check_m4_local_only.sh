@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Runs the development app's local-only workflow proof as a direct child of
+# Runs one qualified candidate's local-only workflow as a direct child of
 # a sandbox profile that refuses every IP connection, listener, and bind.
 # Then it checks that the workflow completed, that no IP socket appeared in
 # once-a-second samples, and that no diagnostic surface contains session
@@ -11,10 +11,27 @@ set -euo pipefail
 # Local inputs: OPEN_SCRIBE_LOCAL_PROOF_MODEL (the pinned speech model file)
 # and OPEN_SCRIBE_LOCAL_PROOF_SPEECH_CAF (a 48 kHz spoken CAF whose words
 # include "recording safe").
+# Default mode is synthetic and omits screen context. --live-context is a
+# separate explicitly authorized screen-capture check, never an implicit retry.
 
 script_dir="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
 repo_root="$(CDPATH='' cd -- "$script_dir/.." && pwd)"
-app="$repo_root/apps/macos/.build/xcode-verification/Build/Products/Debug/OpenScribeApp.app/Contents/MacOS/OpenScribeApp"
+cd "$repo_root"
+# shellcheck source=script/candidate.sh
+source "$script_dir/candidate.sh"
+[[ "$#" -ge 2 && "$1" == --candidate ]] ||
+	candidate_fail 'usage: check_m4_local_only.sh --candidate /absolute/candidate.json [--synthetic|--live-context]'
+candidate_load "$2"
+candidate_require_checks
+shift 2
+mode=synthetic
+if [[ "$#" != 0 ]]; then
+	[[ "$#" == 1 && ("$1" == --synthetic || "$1" == --live-context) ]] ||
+		candidate_fail 'expected --synthetic or --live-context'
+	[[ "$1" != --live-context ]] || mode=live-context
+fi
+app="$app_binary"
+rust_lib="$rust_library"
 profile='(version 1)(allow default)(deny network-outbound (remote ip))(deny network-inbound (local ip))(deny network-bind (local ip))'
 sentinels=(
 	LocalOnlyTitleSentinel7f3a LocalOnlyParticipantSentinel51c2 LocalOnlyTopicSentinel88d0
@@ -30,21 +47,38 @@ fail() {
 	exit 1
 }
 
-[[ -x "$app" ]] || hold "development_app_not_built next=./script/build_and_run.sh --verify"
-# The development builder keys its Rust output by the Cargo policy digest.
-native_policy_digest="$(shasum -a 256 "$repo_root/.cargo/config.toml" | cut -d ' ' -f 1)"
-rust_lib="$repo_root/apps/macos/.build/rust-macos13-${native_policy_digest:0:12}/aarch64-apple-darwin/debug/libopen_scribe_uniffi.a"
-[[ -f "$rust_lib" ]] || hold "rust_static_library_not_built"
-[[ -f "${OPEN_SCRIBE_LOCAL_PROOF_MODEL:-}" ]] || hold "OPEN_SCRIBE_LOCAL_PROOF_MODEL_unset"
-[[ -f "${OPEN_SCRIBE_LOCAL_PROOF_SPEECH_CAF:-}" ]] || hold "OPEN_SCRIBE_LOCAL_PROOF_SPEECH_CAF_unset"
+model_source="${OPEN_SCRIBE_LOCAL_PROOF_MODEL:-}"
+speech_source="${OPEN_SCRIBE_LOCAL_PROOF_SPEECH_CAF:-}"
+[[ "$model_source" == /* && -f "$model_source" && ! -L "$model_source" ]] ||
+	hold "OPEN_SCRIBE_LOCAL_PROOF_MODEL_requires_absolute_regular_file"
+[[ "$speech_source" == /* && -f "$speech_source" && ! -L "$speech_source" ]] ||
+	hold "OPEN_SCRIBE_LOCAL_PROOF_SPEECH_CAF_requires_absolute_regular_file"
+model_digest="$(candidate_sha256 "$model_source")"
+speech_digest="$(candidate_sha256 "$speech_source")"
+receipt="$candidate_root/m4-local-only-$mode.json"
+[[ ! -e "$receipt" && ! -L "$receipt" ]] || hold "receipt_already_exists:$receipt"
 if pgrep -x OpenScribeApp >/dev/null; then
 	hold "another_open_scribe_process_is_running"
 fi
 
-# The profile must itself refuse IP traffic before it can prove anything.
-if sandbox-exec -p "$profile" /usr/bin/curl -sS -m 5 -o /dev/null https://1.1.1.1 2>/dev/null; then
-	fail "sandbox_profile_allowed_an_ip_connection"
-fi
+# Distinguish policy denial from an unavailable external host. Neither control
+# sends content: connect must deny even a closed loopback port; bind must deny
+# before any listener is created. Other failures are not denial evidence.
+sandbox-exec -p "$profile" /usr/bin/ruby -rsocket -e '
+  [:connect, :bind].each do |operation|
+    socket = Socket.new(Socket::AF_INET, Socket::SOCK_STREAM, 0)
+    begin
+      address = Socket.sockaddr_in(operation == :connect ? 9 : 0, "127.0.0.1")
+      socket.public_send(operation, address)
+      abort "IP_DENIAL_CONTROL_RED: #{operation} was allowed"
+    rescue Errno::EPERM, Errno::EACCES
+      # The kernel refused this operation, independent of network reachability.
+    ensure
+      socket.close
+    end
+  end
+  puts "IP_DENIAL_CONTROL_GREEN"
+' || fail "sandbox_profile_did_not_prove_ip_denial"
 
 # Static: no Open Scribe code uses networking. Socket imports may come only
 # from Rust std's precompiled object, which is linked whole.
@@ -59,15 +93,27 @@ if rg -q 'URLSession|NWConnection|NWPathMonitor|import Network|CFSocket|URLReque
 	fail "networking_api_in_source"
 fi
 
-root="$(mktemp -d "${TMPDIR:-/tmp}/open-scribe-local-only.XXXXXX")"
+root="$(mktemp -d "$candidate_root/m4-local-only-$mode.XXXXXX")"
 root="$(CDPATH='' cd -- "$root" && pwd -P)"
-trap 'rm -rf "$root"' EXIT
+pid=""
+cleanup() {
+	if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+		kill -KILL "$pid" 2>/dev/null || true
+		wait "$pid" 2>/dev/null || true
+	fi
+	printf 'proof_root_retained=%s\n' "$root"
+}
+trap cleanup EXIT
+launch_flag=--local-only-synthetic-proof-root
+[[ "$mode" != live-context ]] || launch_flag=--local-only-proof-root
+candidate_assert
 start="$(date '+%Y-%m-%d %H:%M:%S')"
 OPEN_SCRIBE_LOCAL_PROOF_MODEL="$OPEN_SCRIBE_LOCAL_PROOF_MODEL" \
 	OPEN_SCRIBE_LOCAL_PROOF_SPEECH_CAF="$OPEN_SCRIBE_LOCAL_PROOF_SPEECH_CAF" \
-	sandbox-exec -p "$profile" "$app" --local-only-proof-root "$root" \
+	sandbox-exec -p "$profile" "$app" "$launch_flag" "$root" \
 	>"$root/stdout.log" 2>"$root/stderr.log" &
 pid=$!
+proof_pid="$pid"
 sockets=0
 for _ in $(seq 1 600); do
 	kill -0 "$pid" 2>/dev/null || break
@@ -79,27 +125,28 @@ for _ in $(seq 1 600); do
 done
 if kill -0 "$pid" 2>/dev/null; then
 	kill -9 "$pid" 2>/dev/null || true
+	wait "$pid" 2>/dev/null || true
+	pid=""
 	fail "proof_timed_out"
 fi
-wait "$pid" || true
+process_status=0
+wait "$pid" || process_status=$?
+pid=""
+[[ "$process_status" == 0 ]] || fail "proof_process_exit:$process_status"
 
 report="$root/local-only-verified.json"
 if [[ ! -f "$report" ]]; then
 	fail "proof_failed:$(tr -c '[:alnum:]_:.() -' '_' <"$root/proof-error" 2>/dev/null | head -c 300)"
 fi
-jq -e '
-	.recovered_segments == 4 and .rendered_frames == 1548000 and .validated_mix_bytes > 0
-	and .transcript_segments >= 1 and .correction_search_hits == 1 and .package_files == 7
-	and .restored_package_media_files == 4 and .restored_timeline_segments == 4
-	and .deleted_sessions == 1 and .declared_participants == 1
-	and (.screen_recording_permission != "granted"
-		or (.context_events_accepted == 1 and .saved_context_events == 1
-			and .context_frame_pixels > 0))
-' "$report" >/dev/null || fail "workflow_report_incomplete:$(jq -c . "$report")"
+candidate_local_only_report_valid "$report" "$mode" "$speech_digest" ||
+	fail "workflow_report_incomplete:$(jq -c . "$report")"
+[[ "$(candidate_sha256 "$model_source")" == "$model_digest" &&
+"$(candidate_sha256 "$speech_source")" == "$speech_digest" ]] || fail "supplied_inputs_changed"
 
 sleep 2
-log show --start "$start" --info --debug --style compact \
-	--predicate 'process == "OpenScribeApp"' >"$root/unified.log" 2>/dev/null || true
+/usr/bin/log show --start "$start" --info --debug --style compact \
+	--predicate "processIdentifier == $proof_pid" >"$root/unified.log" 2>"$root/unified-error.log" ||
+	fail "unified_log_unavailable"
 [[ "$sockets" == 0 ]] || fail "ip_socket_observed_in_samples:$sockets"
 
 for sentinel in "${sentinels[@]}"; do
@@ -111,10 +158,30 @@ for sentinel in "${sentinels[@]}"; do
 done
 images="$(find "$root/Library" -type f \( -iname '*.png' -o -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.heic' -o -iname '*.tiff' \) | wc -l | tr -d ' ')"
 [[ "$images" == 0 ]] || fail "screen_images_retained:$images"
+candidate_assert
+candidate_require_checks
+report_digest="$(candidate_sha256 "$report")"
+jq -n --arg candidate "$candidate_record_digest" --arg mode "$mode" \
+	--arg root "$root" --arg report "$report_digest" \
+	--arg model "$model_digest" --arg speech "$speech_digest" \
+	--arg stdout "$(candidate_sha256 "$root/stdout.log")" \
+	--arg stderr "$(candidate_sha256 "$root/stderr.log")" \
+	--arg unified "$(candidate_sha256 "$root/unified.log")" \
+	'{schema:1, candidate_sha256:$candidate, result:"M4_LOCAL_ONLY_GREEN", mode:$mode,
+      proof_root:$root, report_sha256:$report,
+      inputs:{model_sha256:$model,speech_sha256:$speech},
+      logs:{stdout:$stdout,stderr:$stderr,unified:$unified},
+      qualification_scope:"development_candidate_only", release_admission:false}' >"$root/receipt.json"
+# Atomic no-replace publication preserves any concurrent accepted receipt.
+ruby -e 'File.link(ARGV[0], ARGV[1])' "$root/receipt.json" "$receipt" ||
+	fail "receipt_publication_refused"
+candidate_receipt
 
 printf '%s\n' \
 	'M4_LOCAL_ONLY_GREEN' \
+	"mode=$mode receipt=$receipt" \
 	"report=$(jq -c . "$report")" \
 	"unified_log_lines=$(wc -l <"$root/unified.log" | tr -d ' ') ip_socket_samples=0 retained_images=0" \
-	'proof=no_network_symbols_outside_rust_std,no_networking_api_in_source,ip_denied_process,no_ip_socket_in_one_second_samples,recording,declaration,context_frame_and_event,recovery,playback_render,validated_mix,model_install,transcription,correction,search,exports,package_verification,package_open_in_a_second_library,two_phase_deletion,content_free_stdout_stderr_unified_log' \
-	'excludes=candidate_binding,signed_sandbox,system_firewall,live_microphone,crash_reports,providers'
+	'proof=exact_candidate_and_input_binding,no_network_symbols_outside_rust_std,no_networking_api_in_source,ip_denied_process,no_ip_socket_in_one_second_samples,synthetic_recording,declaration,recovery,playback_render,validated_mix,isolated_model_copy,transcription,correction,search,exports,package_verification,package_open_in_a_second_library,two_phase_deletion,content_free_stdout_stderr_unified_log' \
+	'context=omitted_in_synthetic_mode;explicit_live_context_requires_its_own_successful_frame_and_event' \
+	'excludes=signed_sandbox,system_firewall,live_microphone,crash_reports,providers,system_trash,release'

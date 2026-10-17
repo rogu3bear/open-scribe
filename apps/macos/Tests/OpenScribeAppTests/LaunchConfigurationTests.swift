@@ -60,7 +60,7 @@ final class LaunchConfigurationTests: XCTestCase {
       "--foundation-live-recovery-root", "--foundation-synthetic-capture-root",
       "--foundation-synthetic-recovery-root", "--m1-live-microphone-proof-root",
       "--m1-forced-termination-capture-root", "--m1-forced-termination-recovery-root",
-      "--local-only-proof-root", "--m1-drift-run-root",
+      "--local-only-proof-root", "--local-only-synthetic-proof-root", "--m1-drift-run-root",
     ]
     for flag in flags {
       for badRoot in [normal.path, "relative", "", normal.appendingPathComponent("child").path] {
@@ -85,6 +85,31 @@ final class LaunchConfigurationTests: XCTestCase {
     XCTAssertEqual(try Data(contentsOf: sentinel), bytes)
     XCTAssertEqual(
       try FileManager.default.contentsOfDirectory(atPath: normal.path), ["Library.sqlite3"])
+  }
+
+  func testLocalOnlyProofKeepsSyntheticAndExplicitLiveModesDistinct() throws {
+    let root = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
+      .appendingPathComponent("open-scribe-local-proof-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let normal = root.appendingPathComponent("unused-production")
+    let suite = "OpenScribe.Proof.\(UUID().uuidString)"
+    for (flag, expected) in [
+      ("--local-only-synthetic-proof-root", LaunchConfiguration.Mode.synthetic),
+      ("--local-only-proof-root", .live),
+    ] {
+      let configuration = try LaunchConfiguration.resolve(
+        arguments: ["app", flag, root.path, "--verification-preferences", suite],
+        environment: [:], normalRoot: normal)
+      XCTAssertEqual(configuration.mode, expected)
+      XCTAssertEqual(configuration.action, .localOnly)
+      XCTAssertEqual(configuration.libraryRoot.path, root.appendingPathComponent("Library").path)
+      XCTAssertTrue(configuration.suspendsAutomation)
+      XCTAssertFalse(configuration.preferences === UserDefaults.standard)
+      configuration.preferences.removePersistentDomain(forName: suite)
+    }
+    XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: root.path).isEmpty)
+    XCTAssertFalse(FileManager.default.fileExists(atPath: normal.path))
   }
 
   func testSceneAndTestHostUseExplicitRootAndIsolatedPreferencesWithoutRecoveryFallback() throws {
@@ -131,10 +156,15 @@ final class LaunchConfigurationTests: XCTestCase {
     let production = root.appendingPathComponent("production")
     try FileManager.default.createDirectory(at: production, withIntermediateDirectories: false)
     try FileManager.default.createSymbolicLink(at: nested, withDestinationURL: production)
-    XCTAssertThrowsError(
-      try LaunchConfiguration.resolve(
-        arguments: ["app", "--local-only-proof-root", proof.path], environment: [:],
-        normalRoot: production))
+    for flag in ["--local-only-proof-root", "--local-only-synthetic-proof-root"] {
+      XCTAssertThrowsError(
+        try LaunchConfiguration.resolve(
+          arguments: ["app", flag, root.path], environment: [:], normalRoot: production,
+          permitsProofs: false))
+      XCTAssertThrowsError(
+        try LaunchConfiguration.resolve(
+          arguments: ["app", flag, proof.path], environment: [:], normalRoot: production))
+    }
     XCTAssertThrowsError(
       try LaunchConfiguration.resolve(
         arguments: [

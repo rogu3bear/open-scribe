@@ -80,7 +80,10 @@ extension EnvironmentValues {
               root: root, captureMode: configuration.action == .syntheticCapture)
           }
         case .localOnly:
-          if let root { await LocalOnlyWorkflowProof.run(root: root) }
+          if let root {
+            await LocalOnlyWorkflowProof.run(
+              root: root, contextInput: configuration.mode == .live ? .liveIfAuthorized : .omitted)
+          }
         case .forcedRecovery:
           recovery.recoverOnLaunch()
           await recovery.waitForLaunchRecovery()

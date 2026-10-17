@@ -121,12 +121,58 @@ consumes that record with `test-without-building` and runs the microphone, syste
 recording-controller, pause/resume, media-open, and timeline workflow suites. It uses synthetic buffers and
 injected capture backends; it never starts a live capture stream or a playback
 engine. A successful run emits `RECORDING_COMPONENTS_GREEN`.
-All four consumers validate the record's commit/tree against clean source and
+Runtime consumers validate the record's commit/tree against clean source and
 compare the executable, debug dylib, Info.plist, Rust library, test executable,
 test-run description, and build log against their SHA-256 digests before and
 after execution. They require the matching contributor-check receipt. They
 never repair a mismatch by rebuilding. The receipt prints the record digest,
 commit/tree, and artifact digests for same-candidate comparison.
+
+### Candidate-bound offline workflow
+
+The current local-only consumer requires the exact contributor-qualified
+candidate; it does not use or rebuild the development output directory:
+
+```sh
+OPEN_SCRIBE_LOCAL_PROOF_MODEL=/absolute/supplied/pinned-model.bin \
+OPEN_SCRIBE_LOCAL_PROOF_SPEECH_CAF=/absolute/nonprivate/known-answer.caf \
+  ./script/check.sh --m4-local-only --candidate "$candidate" --synthetic
+./script/check.sh --m4-complete --candidate "$candidate"
+```
+
+Use normal Disk Guard admission before these checks. The spoken CAF must be
+48 kHz and include “recording safe.” The proof awaits asynchronous model
+discovery, verifies and copies the supplied model only into its newly owned
+proof library, and checks the recognized phrase before correction. It never
+downloads weights or installs them into the ordinary library. Source inputs
+are hashed before and after use.
+
+Synthetic is the default mode. It uses the production runtime components with
+synthetic capture inputs, omits screen context, and neither queries screen
+permission nor requests a microphone or screen stream. The separate
+`--live-context` mode retains the legacy `--local-only-proof-root` route and
+requires explicit authorization for real screen content; its report must show
+an authorized frame and accepted event. Synthetic uses
+`--local-only-synthetic-proof-root`. Both resolve through the same typed launch
+configuration, isolated preferences and root validation before storage opens;
+neither is available in a release build.
+
+The harness proves kernel IP connect/bind refusal independently of external
+host reachability, then launches the candidate under that policy. It requires
+successful process exit, no sampled IP sockets, and content-free stdout,
+stderr and readable process-scoped unified logs. Once-per-second socket
+sampling does not count every attempted connection. Static source/symbol
+inspection has a different scope from runtime denial.
+
+The candidate directory retains the proof root, reports, diagnostic logs and
+an atomically published, non-replacing `m4-local-only-<mode>.json` receipt.
+Candidate, artifact, input, report and log identities remain bound; failures
+retain their evidence. Completion rejects changed, redirected or stale
+evidence and reports qualified modes, but still returns `M4_COMPLETE_HOLD`
+for the remaining provider, deletion, crash-report and intelligence boundaries.
+This development-artifact result does not qualify signed sandboxing, system
+Trash, live capture, omitted context, platform support or public release.
+Earlier dated commands and receipts below retain their historical scope.
 
 The September 25, 2026 run passed 58 tests, including accepted-buffer draining
 before seal, callbacks after detachment, an already-stopped system stream,
