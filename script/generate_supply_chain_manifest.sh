@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+if [[ "$#" -gt 1 || ("$#" -eq 1 && "$1" != --check) ]]; then
+	printf 'SUPPLY_CHAIN_MANIFEST_USAGE: ./script/generate_supply_chain_manifest.sh [--check]\n' >&2
+	exit 64
+fi
+
 script_dir="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
 repo_root="$(CDPATH='' cd -- "$script_dir/.." && pwd)"
 output_path="$repo_root/docs/supply-chain/components.v1.json"
@@ -8,7 +13,9 @@ temporary_path="$(mktemp "${TMPDIR:-/tmp}/open-scribe-components.XXXXXX")"
 trap 'rm -f "$temporary_path"' EXIT
 
 cd "$repo_root"
-metadata_json="$(cargo metadata --locked --format-version 1)"
+# Inventory preparation must not fetch dependencies or update the lockfile.
+# An incomplete local Cargo cache is an explicit prerequisite failure.
+metadata_json="$(cargo metadata --locked --offline --format-version 1)"
 lock_sha="$(shasum -a 256 Cargo.lock | awk '{print $1}')"
 lock_packages_json="$(awk '
   function emit() {
@@ -65,11 +72,6 @@ if [[ "${1:-}" == "--check" ]]; then
 	printf 'SUPPLY_CHAIN_MANIFEST_CURRENT: %s\n' "$output_path"
 	exit 0
 fi
-
-[[ "$#" -eq 0 ]] || {
-	printf 'SUPPLY_CHAIN_MANIFEST_USAGE: ./script/generate_supply_chain_manifest.sh [--check]\n' >&2
-	exit 64
-}
 
 mv "$temporary_path" "$output_path"
 printf 'SUPPLY_CHAIN_MANIFEST_WRITTEN: %s\n' "$output_path"
