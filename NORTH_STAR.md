@@ -4,22 +4,23 @@
 
 ## Mission
 
-Open Scribe exists to help demanding individual Mac operators preserve conversations as recoverable local evidence and review what mattered without surrendering capture authority or mistaking model output for fact.
+Open Scribe helps demanding individual Mac operators preserve conversations as recoverable local evidence and review what mattered while retaining capture authority and distinguishing model output from fact.
 
 ## Problem
 
-- Important conversations are easy to lose, while upload-first meeting tools make capture scope, retention, and provider access difficult to inspect.
-- A transcript alone does not establish what was decided, and a fluent summary without source links is not defensible meeting memory.
-- Reliability failures are irreversible: intelligence can be recomputed, but missing audio cannot.
+- Conversations are easy to lose; upload-first tools obscure capture scope, retention, and provider access.
+- Transcripts alone do not establish decisions; summaries need source links.
+- Intelligence can be recomputed, but missing audio cannot.
 
 ## Observable success
 
-1. A user deliberately starts recording in at most two interactions, can always tell that recording is active and which sources are captured, and can recover playable media after forced termination.
+1. Recording starts deliberately in at most two interactions. Active capture and its sources remain visible; forced termination leaves recoverable playable media.
 2. Local playback, timestamped transcript, speaker review, search, and export work without an account or enabled LLM.
 3. Every material derived claim navigates to supporting or contradicting evidence and preserves human adjudication.
-4. Local-only mode continues offline and passes a network-denial test; remote providers receive only explicitly authorized data categories.
-5. Optional visual context remains visibly scoped, sparse, revocable, and pixel-discarding by default across multi-display setups.
-6. The exact public macOS artifact—not merely source—passes signing, notarization, recovery, offline, and canonical-download verification.
+4. Local-only mode continues offline and passes network-denial testing; remote providers receive only explicitly authorized data categories.
+5. Optional visual context remains visibly scoped, sparse, revocable, and pixel-discarding by default across multiple displays.
+6. Retention, export, deletion scope, and backup/provider limits are explicit; cancelling deletion preserves data. Logs and diagnostics report operational state without conversation content.
+7. The exact public macOS artifact passes signing, notarization, recovery, offline, and canonical-download verification. Source qualification alone does not establish release.
 
 ## Non-goals
 
