@@ -125,8 +125,8 @@ final class ConversationSidebarRowTests: XCTestCase {
         window.makeKeyAndOrderFront(nil)
         defer { window.close() }
         try await Task.sleep(for: .milliseconds(150))
+        let table = try await tableWhenReady(in: host)
         try await makeKeyWhenActive(window)
-        let table = try XCTUnwrap(findTable(in: host))
         XCTAssertTrue(window.makeFirstResponder(table))
         XCTAssertTrue(NSApp.isActive)
         XCTAssertTrue(window.isKeyWindow)
@@ -163,6 +163,19 @@ final class ConversationSidebarRowTests: XCTestCase {
   private func findTable(in view: NSView) -> NSTableView? {
     if let table = view as? NSTableView { return table }
     return view.subviews.lazy.compactMap { self.findTable(in: $0) }.first
+  }
+
+  private func tableWhenReady(in host: NSView) async throws -> NSTableView {
+    // SwiftUI creates the List's AppKit table asynchronously. Layout and wait
+    // for the actual view instead of assuming a fixed delay established it.
+    let deadline = ContinuousClock.now + .seconds(3)
+    repeat {
+      host.layoutSubtreeIfNeeded()
+      if let table = findTable(in: host) { return table }
+      try await Task.sleep(for: .milliseconds(25))
+    } while ContinuousClock.now < deadline
+    return try XCTUnwrap(
+      findTable(in: host), "The native sidebar List did not create its table within three seconds.")
   }
 
   private func makeKeyWhenActive(_ window: NSWindow) async throws {
