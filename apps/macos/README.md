@@ -5,7 +5,8 @@ Current Xcode app source routes the microphone plus all authorized system
 audio (or one selected application, not yet qualified) into Rust-journaled
 30-second CAF segments, with pause/resume and recovered playback. Swift shows
 `Recording` only after Rust confirms durable first samples from every required
-source. This dirty candidate has no native or live receipt. Dated real-device
+source. Candidate evidence is bound to the exact source and artifact named in
+its receipt; it does not qualify other builds. Dated real-device
 runs proved short dual-source capture with multi-source `Recording`,
 external-kill recovery with unchanged media, and native playback; they predate
 pause/resume and the review repairs (see
@@ -15,6 +16,21 @@ revocation, long sessions, and signed entitlement enforcement remain unproved.
 This root will contain the native SwiftUI application, MenuBarExtra, Settings, accessibility, permission UX, and bounded Apple-framework adapters for AVFoundation/CoreAudio, ScreenCaptureKit, Vision, display/window overlays, Calendar, Contacts, Keychain, and optional Apple-only model integration.
 
 Durable session policy, evidence, persistence, recovery, provider scope, and exports belong in Rust. Frame-rate media and pointer samples must not cross ordinary UniFFI callbacks.
+
+## Offline policy documents
+
+Settings → **Read Policies and Licenses…** presents the canonical privacy, terms,
+security, MIT license and development notices without network access. Draft and
+incomplete-review status stays visible. Missing bundled text is an error rather
+than an empty document. Reading a document does not adopt it or qualify a release.
+
+`ruby script/sync_policy_documents.rb` copies those five sources byte-for-byte
+into `Sources/OpenScribeApp/Resources/Policies/` for Xcode and SwiftPM. These
+copies are generated projections; edit the root/docs source, then synchronize.
+The scaffold gate rejects drift, and native tests compare built resources with
+canonical source text. Generated digests are compiled into the app; the reader
+rejects substituted resources, so candidate executable identity also binds these
+documents. See [support and recovery limits](../../SUPPORT.md).
 
 ## Local audio import
 

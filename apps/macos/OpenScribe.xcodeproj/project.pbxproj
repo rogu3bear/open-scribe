@@ -7,6 +7,11 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		A14183000000000000000029 /* PolicyDocumentDigests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A14183000000000000000028 /* PolicyDocumentDigests.swift */; };
+		A14183000000000000000021 /* PolicyDocument.swift in Sources */ = {isa = PBXBuildFile; fileRef = A14183000000000000000020 /* PolicyDocument.swift */; };
+		A14183000000000000000023 /* PolicyDocumentsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A14183000000000000000022 /* PolicyDocumentsView.swift */; };
+		A14183000000000000000025 /* PolicyDocumentTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A14183000000000000000024 /* PolicyDocumentTests.swift */; };
+		A14183000000000000000027 /* Policies in Resources */ = {isa = PBXBuildFile; fileRef = A14183000000000000000026 /* Policies */; };
 		D47EC35DBAE0730DC717CC14 /* TranscriptionSchedulerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1003D5D4F9A95E6C4078E7C5 /* TranscriptionSchedulerTests.swift */; };
 		A837CE35B761C57E24477E29 /* ConversationDetailsEditing.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6A4A3171F63A64A60D0ADBF6 /* ConversationDetailsEditing.swift */; };
 		A217F149D989A3D3C0761F4A /* SystemPressureMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = FC2145CDC57782E82F62145E /* SystemPressureMonitor.swift */; };
@@ -102,6 +107,11 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		A14183000000000000000028 /* PolicyDocumentDigests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PolicyDocumentDigests.swift; sourceTree = "<group>"; };
+		A14183000000000000000020 /* PolicyDocument.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PolicyDocument.swift; sourceTree = "<group>"; };
+		A14183000000000000000022 /* PolicyDocumentsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PolicyDocumentsView.swift; sourceTree = "<group>"; };
+		A14183000000000000000024 /* PolicyDocumentTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PolicyDocumentTests.swift; sourceTree = "<group>"; };
+		A14183000000000000000026 /* Policies */ = {isa = PBXFileReference; lastKnownFileType = folder; path = Policies; sourceTree = "<group>"; };
 		1003D5D4F9A95E6C4078E7C5 /* TranscriptionSchedulerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptionSchedulerTests.swift; sourceTree = "<group>"; };
 		6A4A3171F63A64A60D0ADBF6 /* ConversationDetailsEditing.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationDetailsEditing.swift; sourceTree = "<group>"; };
 		FC2145CDC57782E82F62145E /* SystemPressureMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SystemPressureMonitor.swift; sourceTree = "<group>"; };
@@ -249,6 +259,7 @@
 		4F036DA076828A4DAC45FCC5 /* Support */ = {
 			isa = PBXGroup;
 			children = (
+				A14183000000000000000020 /* PolicyDocument.swift */,
 				A14183000000000000000007 /* StructuredNativeIO.swift */,
 				6712658CEAD0838E764A5BBF /* AccessibilityAnnouncer.swift */,
 				BC2B884506AEDD909F7A06DD /* AppTelemetry.swift */,
@@ -307,6 +318,7 @@
 		709304684170899F88B322E6 /* OpenScribeAppTests */ = {
 			isa = PBXGroup;
 			children = (
+				A14183000000000000000024 /* PolicyDocumentTests.swift */,
 				A14183000000000000000009 /* LaunchConfigurationTests.swift */,
 				5E7C1A2B3D4F5061C0020002 /* ContextTests.swift */,
 				AA0000050000000000000013 /* RecorderPauseResumeTests.swift */,
@@ -336,6 +348,7 @@
 		71D5EF4D1A0BA7E04FA1A6D8 /* Views */ = {
 			isa = PBXGroup;
 			children = (
+				A14183000000000000000022 /* PolicyDocumentsView.swift */,
 				AA0000050000000000000012 /* RecorderControls.swift */,
 				FA0F0D94D6B878C1D7BCA3F7 /* CompactLiveView.swift */,
 				5E7C1A2B3D4F5061728394A8 /* SpeechModelSheet.swift */,
@@ -361,6 +374,7 @@
 		A1C0DE000000000000000004 /* Resources */ = {
 			isa = PBXGroup;
 			children = (
+				A14183000000000000000026 /* Policies */,
 				A1C0DE000000000000000001 /* Assets.xcassets */,
 			);
 			path = Resources;
@@ -369,6 +383,7 @@
 		ABE6BAAD9816151D47F181AD /* Generated */ = {
 			isa = PBXGroup;
 			children = (
+				A14183000000000000000028 /* PolicyDocumentDigests.swift */,
 				A609D9E7F66672E1E60113B7 /* OpenScribeCore.swift */,
 			);
 			path = Generated;
@@ -472,6 +487,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A14183000000000000000027 /* Policies in Resources */,
 				A1C0DE000000000000000002 /* Assets.xcassets in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -483,6 +499,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A14183000000000000000025 /* PolicyDocumentTests.swift in Sources */,
 				A14183000000000000000010 /* LaunchConfigurationTests.swift in Sources */,
 				AA0000050000000000000003 /* RecorderPauseResumeTests.swift in Sources */,
 				A21A3F920D148E6A9BCE201 /* ImportedMediaAuthorityAdapterTests.swift in Sources */,
@@ -512,6 +529,9 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A14183000000000000000029 /* PolicyDocumentDigests.swift in Sources */,
+				A14183000000000000000021 /* PolicyDocument.swift in Sources */,
+				A14183000000000000000023 /* PolicyDocumentsView.swift in Sources */,
 				A14183000000000000000008 /* StructuredNativeIO.swift in Sources */,
 				A14183000000000000000006 /* RuntimeLibraryStore.swift in Sources */,
 				A14183000000000000000004 /* ProofLaunchRunner.swift in Sources */,

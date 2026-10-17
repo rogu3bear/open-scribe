@@ -22,6 +22,7 @@ let package = Package(
             name: "OpenScribeApp",
             dependencies: ["OpenScribeFFI"],
             path: "Sources/OpenScribeApp",
+            resources: [.copy("Resources/Policies")],
             linkerSettings: [
                 .unsafeFlags(["-L", rustLibraryDirectory]),
                 .linkedLibrary("open_scribe_uniffi"),

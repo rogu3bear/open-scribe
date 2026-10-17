@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security or privacy vulnerability privately
+    url: https://github.com/rogu3bear/open-scribe/security/advisories/new
+    about: Keep sensitive details out of public issues. Use private reporting.

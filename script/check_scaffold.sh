@@ -70,6 +70,8 @@ if [[ -d .github/workflows ]] && find .github/workflows -type f -print -quit | g
 fi
 
 cmp -s AGENTS.md CLAUDE.md || fail "AGENTS.md and CLAUDE.md are not byte-identical"
+ruby script/sync_policy_documents.rb --check
+ruby script/sync_policy_documents_test.rb
 
 check_budget() {
 	local document="$1"

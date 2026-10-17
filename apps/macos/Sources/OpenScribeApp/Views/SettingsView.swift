@@ -28,6 +28,7 @@ struct SettingsView: View {
   @State private var exportDocument = DiagnosticsDocument(text: "")
   @State private var exportPresented = false
   @State private var showingModels = false
+  @State private var showingPolicies = false
   @ObservedObject private var diagnosticLog = DiagnosticLog.shared
   @State private var signature = "checking"
 
@@ -108,11 +109,21 @@ struct SettingsView: View {
           AppTelemetry.commandInvoked("export-diagnostics")
         }
       }
+      Section("Policies and licenses") {
+        Button("Read Policies and Licenses…") { showingPolicies = true }
+        Text("Available offline. Privacy and terms remain drafts; release review is incomplete.")
+          .font(.caption)
+          .foregroundStyle(.secondary)
+          .fixedSize(horizontal: false, vertical: true)
+      }
     }
     .formStyle(.grouped)
     .frame(minWidth: 460, minHeight: 320)
     .sheet(isPresented: $showingModels) {
       SpeechModelSheet(speech: speech) { showingModels = false }
+    }
+    .sheet(isPresented: $showingPolicies) {
+      PolicyDocumentsView()
     }
     .onAppear {
       AppTelemetry.sceneAppeared("settings", status: status)

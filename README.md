@@ -102,6 +102,10 @@ All default product/release scripts intentionally fail until their corresponding
 
 ## License
 
+For development problems, start with [support and recovery limits](SUPPORT.md).
+Keep private conversation content out of public issues; suspected vulnerabilities
+use the [private reporting route](SECURITY.md#reporting-a-vulnerability).
+
 Repository-authored source code uses the MIT License. Dependencies, models, and
 other third-party materials retain their own licenses and release-review
 requirements. See [LICENSE](LICENSE), [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md),
