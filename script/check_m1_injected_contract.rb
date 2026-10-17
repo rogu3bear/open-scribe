@@ -78,7 +78,23 @@ Dir.mktmpdir('open-scribe-m1-verifier.') do |root|
   _, error, status = Open3.capture3('ruby', File.join(__dir__, 'm1_fill_volume.rb'), volume, root)
   demand(!status.success? && error.include?('not isolated from the host'), 'fill helper admitted host volume')
   demand(!File.exist?(File.join(volume, 'owned-pressure-fill')), 'fill helper wrote before volume admission')
-  puts "M1_HARNESS_CONTRACT_GREEN cases=#{cases.length + 3}"
-  puts 'proof=verifier_control_and_rejection_fixtures,host_volume_refused_before_write'
+  # Execute only the production harness's setup prefix, before its first app
+  # launch. The fixed case cannot mount a volume or use a device. Launch
+  # configuration requires an explicit, already existing owned media root.
+  harness = File.read(File.join(__dir__, 'check_m1_injected.sh'))
+  body = harness.split("run_case() {\n", 2)
+  demand(body.length == 2, 'missing production case setup')
+  launch = "\n\tcandidate_assert\n\tOPEN_SCRIBE_M1_PROOF_DIAGNOSTICS=1 \"$app_binary\" --m1-injected-proof-root"
+  setup = body.last.split(launch, 2)
+  demand(setup.length == 2, 'missing production capture launch boundary')
+  launch_root = File.join(root, 'launch-root')
+  Dir.mkdir(launch_root)
+  probe = "set -euo pipefail\nrun_case() {\n#{setup.first}\n" \
+    "[[ -d \"$media_root\" && ! -L \"$media_root\" && -O \"$media_root\" ]] || fail_case 'media root missing before launch'\n" \
+    "cleanup_case\ntrap - EXIT\n}\nrun_case storage-warning \"$1\"\n"
+  _, error, status = Open3.capture3('bash', '-c', probe, 'launch-setup-probe', launch_root)
+  demand(status.success?, "proof launch root setup failed: #{error}")
+  puts "M1_HARNESS_CONTRACT_GREEN cases=#{cases.length + 4}"
+  puts 'proof=verifier_control_and_rejection_fixtures,owned_launch_media_root,host_volume_refused_before_write'
   puts 'excludes=app_build,app_runtime,injected_failure_acceptance,m1_completion'
 end

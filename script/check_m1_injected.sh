@@ -88,6 +88,9 @@ run_case() {
 		mounted=1
 		media_root="$proof_root/volume/media"
 	fi
+	# Launch validation admits only an existing owned root. Create this fresh
+	# case's media directory before any application handle can open it.
+	mkdir -m 700 -- "$media_root"
 	candidate_assert
 	OPEN_SCRIBE_M1_PROOF_DIAGNOSTICS=1 "$app_binary" --m1-injected-proof-root "$proof_root" --m1-proof-media-root "$media_root" \
 		--m1-injected-case "$scenario" >"$proof_root/app.log" 2>&1 &
