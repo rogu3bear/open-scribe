@@ -177,6 +177,7 @@ struct ContentView: View {
           if current.lifecycle == "interrupted" {
             ConversationSidebarRow(
               session: current, reference: references[current.sessionId],
+              isSelected: selectedSessionId == current.sessionId,
               transcription: scheduler.state(for: current.sessionId)
             )
             .tag(current.sessionId)
@@ -193,6 +194,7 @@ struct ContentView: View {
           } else {
             ConversationSidebarRow(
               session: current, reference: references[current.sessionId],
+              isSelected: selectedSessionId == current.sessionId,
               transcription: scheduler.state(for: current.sessionId)
             )
             .tag(current.sessionId)
@@ -205,6 +207,7 @@ struct ContentView: View {
           ForEach(LibraryConversationLists.interrupted(store.savedSessions)) { session in
             ConversationSidebarRow(
               session: session, reference: references[session.sessionId],
+              isSelected: selectedSessionId == session.sessionId,
               transcription: scheduler.state(for: session.sessionId)
             )
             .tag(session.sessionId)
@@ -231,6 +234,7 @@ struct ContentView: View {
           ForEach(saved) { session in
             ConversationSidebarRow(
               session: session, reference: references[session.sessionId],
+              isSelected: selectedSessionId == session.sessionId,
               transcription: scheduler.state(for: session.sessionId)
             )
             .tag(session.sessionId)
@@ -650,10 +654,15 @@ enum LibraryConversationLists {
   }
 }
 
-private struct ConversationSidebarRow: View {
+struct ConversationSidebarRow: View {
   let session: RuntimeSessionPresentation
   let reference: String?
+  let isSelected: Bool
   var transcription: TranscriptionJobState?
+
+  private var selectedText: Color { Color(nsColor: .alternateSelectedControlTextColor) }
+
+  private var secondaryText: Color { isSelected ? selectedText : .secondary }
 
   private var symbolName: String? {
     if session.isRecording { return "record.circle.fill" }
@@ -674,10 +683,14 @@ private struct ConversationSidebarRow: View {
     let title = ConversationIdentityPresentation.title(session.title)
     HStack(alignment: .firstTextBaseline, spacing: 8) {
       if let symbolName {
-        Image(systemName: symbolName)
-          .foregroundStyle(session.isRecording ? Color.red : Color.orange)
+        if isSelected {
+          Image(systemName: symbolName)
+        } else {
+          Image(systemName: symbolName)
+            .foregroundStyle(session.isRecording ? Color.red : Color.orange)
+        }
       }
-      VStack(alignment: .leading, spacing: 4) {
+      VStack(alignment: .leading, spacing: 5) {
         HStack(spacing: 8) {
           Text(title)
             .lineLimit(1)
@@ -685,22 +698,26 @@ private struct ConversationSidebarRow: View {
           if let reference {
             Text(reference)
               .font(.caption.monospaced())
-              .foregroundStyle(.secondary)
+              .foregroundStyle(secondaryText)
               .fixedSize()
           }
         }
-        Text("\(session.timerText) · \(session.statusText)")
-          .font(.caption)
-          .foregroundStyle(.secondary)
-          .lineLimit(1)
-        if let transcriptLine {
-          Label(transcriptLine.text, systemImage: transcriptLine.symbol)
-            .font(.caption)
-            .foregroundStyle(.secondary)
-            .lineLimit(1)
+        HStack(spacing: 6) {
+          Text(session.timerText).monospacedDigit()
+          Text("·")
+          if let transcriptLine, !session.needsAttention {
+            Text(transcriptLine.text)
+          } else {
+            Text(session.statusText)
+          }
         }
+        .font(.caption)
+        .foregroundStyle(secondaryText)
+        .lineLimit(1)
       }
     }
+    .padding(.vertical, 6)
+    .foregroundStyle(isSelected ? selectedText : .primary)
     .accessibilityElement(children: .combine)
     .help(session.title)
     .accessibilityLabel(
