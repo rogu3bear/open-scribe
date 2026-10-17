@@ -103,6 +103,28 @@ final class DiagnosticsReportTests: XCTestCase {
     XCTAssertFalse(recent.contains { $0.message.contains("/") })
   }
 
+  func testKnownCaptureAndRecoveryStagesRemainVisibleToTheProofConsumer() {
+    // These controlled producer labels are consumed by build_and_run.sh.
+    // Privacy validation must preserve its explicit failure and progress signals.
+    for (category, stages) in [
+      ("CaptureProof", ["requested", "capturing", "failed", "saved"]),
+      (
+        "RecoveryProof",
+        [
+          "capture-requested", "capture-failed", "capture-durable", "recovered",
+          "recovery-failed", "playback-opened",
+        ]
+      ),
+    ] {
+      for stage in stages {
+        let message = "stage=\(stage) detail=unknown"
+        let safe = DiagnosticPrivacy.sanitize(category: category, message: message)
+        XCTAssertEqual(safe.category, category)
+        XCTAssertEqual(safe.message, message)
+      }
+    }
+  }
+
   func testSignatureStatusOmitsTheExecutablePath() {
     let status = DiagnosticsSignature.current()
     XCTAssertFalse(status.contains("/"))
