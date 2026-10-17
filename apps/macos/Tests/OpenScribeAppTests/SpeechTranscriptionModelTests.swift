@@ -7,6 +7,18 @@ import XCTest
 
 @MainActor
 final class SpeechTranscriptionModelTests: XCTestCase {
+  func testSpeechDiagnosticsUseTypedErrorsInsteadOfReflectedDescriptions() {
+    struct ForgedDescription: Error, CustomStringConvertible {
+      var description: String { "ModelNotInstalled" }
+    }
+    XCTAssertEqual(SpeechTranscriptionModel.speechCode(ForgedDescription()), "unavailable")
+    XCTAssertEqual(
+      SpeechTranscriptionModel.speechCode(
+        NativeSpeechError.ModelRejected(reason: "FICTIONAL_PRIVATE_CANARY_6C27")),
+      "ModelRejected")
+    XCTAssertEqual(SpeechTranscriptionModel.speechCode(CancellationError()), "cancelled")
+  }
+
   private func temporaryRoot() -> URL {
     FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
   }

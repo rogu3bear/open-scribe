@@ -15,9 +15,19 @@ final class TranscriptLibraryModel: ObservableObject {
   @Published private(set) var speakers: [NativeSessionSpeaker] = []
   @Published private(set) var searchResults: [NativeTranscriptSearchHit] = []
   @Published private(set) var pendingDeletion: NativeSessionDeletionInventory?
-  @Published private(set) var message: String?
-  /// Whether `message` reports a failure rather than a completed action.
-  @Published private(set) var messageIsFailure = false
+  @Published private var documentMessage: String?
+  @Published private var documentMessageIsFailure = false
+  /// A library-operation warning cannot be acknowledged by loading a different
+  /// document. It remains visible until this app instance is restarted.
+  @Published private var deletionWarning: String?
+
+  var message: String? {
+    let parts = [deletionWarning, documentMessage].compactMap { $0 }
+    return parts.isEmpty ? nil : parts.joined(separator: "\n")
+  }
+
+  var messageIsFailure: Bool { deletionWarning != nil || documentMessageIsFailure }
+  var editingFailureMessage: String? { documentMessageIsFailure ? documentMessage : nil }
   /// Which audio exports the loaded session can offer.
   @Published private(set) var audioOptions: NativeAudioExportOptions?
   @Published private(set) var isExporting = false
@@ -115,7 +125,7 @@ final class TranscriptLibraryModel: ObservableObject {
     #endif
     guard let library else {
       clear(message: "The conversation library is unavailable.")
-      messageIsFailure = true
+      documentMessageIsFailure = true
       return
     }
     if let transcriptionUnavailableReason {
@@ -140,7 +150,7 @@ final class TranscriptLibraryModel: ObservableObject {
       report(nil)
     } catch {
       clear(message: Self.describe(error, action: "load the transcript"))
-      messageIsFailure = true
+      documentMessageIsFailure = true
     }
   }
 
@@ -291,19 +301,37 @@ final class TranscriptLibraryModel: ObservableObject {
   /// Records the intent and exposes exactly what deletion would remove.
   func requestDeletion(sessionId: String) {
     guard let library else { return }
+    if let pendingDeletion {
+      if pendingDeletion.sessionId != sessionId {
+        report(
+          "Finish or cancel the current deletion before choosing another conversation.",
+          failure: true)
+      }
+      return
+    }
     do {
       pendingDeletion = try library.beginDeletion(sessionId: sessionId)
       report(nil)
     } catch {
       pendingDeletion = nil
-      report(Self.describe(error, action: "prepare the deletion"), failure: true)
+      if (error as? NativeStorageError) == .InvalidState {
+        report(
+          "Finish capture or cancel processing before moving this conversation to Trash.",
+          failure: true)
+      } else {
+        report(Self.describe(error, action: "prepare the deletion"), failure: true)
+      }
     }
   }
 
   func cancelDeletion() {
     guard let library, let inventory = pendingDeletion else { return }
-    pendingDeletion = nil
-    try? library.abandonDeletion(sessionId: inventory.sessionId)
+    do {
+      try library.abandonDeletion(sessionId: inventory.sessionId)
+      pendingDeletion = nil
+    } catch {
+      report(Self.describe(error, action: "cancel the deletion"), failure: true)
+    }
   }
 
   /// Moves the session to Trash first; Rust removes its rows only after the
@@ -316,20 +344,46 @@ final class TranscriptLibraryModel: ObservableObject {
     do {
       trashed = try moveToTrash(URL(fileURLWithPath: inventory.directoryPath, isDirectory: true))
     } catch {
-      try? library.abandonDeletion(sessionId: inventory.sessionId)
-      report("The conversation could not be moved to Trash, so nothing was deleted.", failure: true)
+      guard FileManager.default.fileExists(atPath: inventory.directoryPath) else {
+        // The adapter may have moved files before returning an error. Preserve
+        // the durable intent for launch reconciliation; never replay that move.
+        reportDeletionWarning(
+          "The move to Trash could not be confirmed. The library location is unavailable. When capture and other work have finished, restart Open Scribe to reconcile the deletion; verify Trash before assuming the audio is recoverable."
+        )
+        return false
+      }
+      do {
+        try library.abandonDeletion(sessionId: inventory.sessionId)
+        report(
+          "The move to Trash did not finish. The conversation is still listed in Open Scribe; check its audio before trying again.",
+          failure: true)
+      } catch {
+        pendingDeletion = inventory
+        report(Self.describe(error, action: "cancel the incomplete deletion"), failure: true)
+      }
       return false
     }
     do {
-      _ = try library.completeDeletion(
+      let receipt = try library.completeDeletion(
         sessionId: inventory.sessionId, trashReference: trashed?.absoluteString)
       if sessionId == inventory.sessionId { clear(message: nil) }
-      report("“\(inventory.title)” was moved to Trash.")
+      let result = Self.deletionResult(
+        title: inventory.title, walCheckpointed: receipt.walCheckpointed)
+      if receipt.walCheckpointed { report(result) } else { reportDeletionWarning(result) }
       return true
     } catch {
-      report(Self.describe(error, action: "finish the deletion"), failure: true)
+      reportDeletionWarning(
+        "The conversation files were moved to Trash, but database removal or cleanup could not be confirmed. When capture and other work have finished, restart Open Scribe to reconcile the deletion before copying or sharing the library."
+      )
       return false
     }
+  }
+
+  nonisolated static func deletionResult(title: String, walCheckpointed: Bool) -> String {
+    let moved = "“\(title)” was moved to Trash."
+    guard !walCheckpointed else { return moved }
+    return moved + " Database cleanup is incomplete because the database is busy. "
+      + "Earlier data may remain in the database journal. When capture and other work have finished, restart Open Scribe before copying or sharing the library."
   }
 
   private func perform(_ action: String, _ body: () throws -> Void) -> Bool {
@@ -349,8 +403,13 @@ final class TranscriptLibraryModel: ObservableObject {
   }
 
   private func report(_ text: String?, failure: Bool = false) {
-    message = text
-    messageIsFailure = text != nil && failure
+    documentMessage = text
+    documentMessageIsFailure = text != nil && failure
+  }
+
+  private func reportDeletionWarning(_ text: String) {
+    deletionWarning = text
+    report(nil)
   }
 
   private func clear(message: String?) {
@@ -368,7 +427,8 @@ final class TranscriptLibraryModel: ObservableObject {
     switch error as? NativeStorageError {
     case .InvalidRequest: "Open Scribe could not \(action): the request was not valid."
     case .InvalidState: "Open Scribe could not \(action) in the conversation's current state."
-    case .IntegrityMismatch: "Open Scribe could not \(action) because stored evidence did not verify."
+    case .IntegrityMismatch:
+      "Open Scribe could not \(action) because stored evidence did not verify."
     default: "Open Scribe could not \(action)."
     }
   }
@@ -401,7 +461,8 @@ enum SessionDeletionSummary {
     return "“\(inventory.title)” will be moved to Trash and removed from Open Scribe: "
       + removed.joined(separator: ", ")
       + ", and its recording history. The audio stays in Trash until you empty it. "
-      + "Files you exported elsewhere are not affected."
+      + "Moving files back from Trash does not restore the deleted review database. "
+      + "Files you exported elsewhere and copies in Time Machine or other backups are not affected."
   }
 
   private static func count(_ value: UInt32, _ noun: String) -> String {

@@ -293,11 +293,21 @@ final class SpeechTranscriptionModel: ObservableObject {
     messageIsFailure = text != nil && failure
   }
 
-  nonisolated private static func speechCode(_ error: Error) -> String {
-    let described = String(describing: error)
-    let leaf = described.split(separator: ".").last.map(String.init) ?? "unavailable"
-    let name = leaf.split(separator: "(").first.map(String.init) ?? "unavailable"
-    return DiagnosticPrivacy.token(name)
+  nonisolated static func speechCode(_ error: Error) -> String {
+    if error is CancellationError { return "cancelled" }
+    switch error as? NativeSpeechError {
+    case .ModelNotInstalled: return "ModelNotInstalled"
+    case .ModelRejected: return "ModelRejected"
+    case .ModelReadiness: return "ModelReadiness"
+    case .NoTranscribableAudio: return "NoTranscribableAudio"
+    case .DecodedAudioRejected: return "DecodedAudioRejected"
+    case .Cancelled: return "Cancelled"
+    case .CapturePreempted: return "CapturePreempted"
+    case .Deferred: return "Deferred"
+    case .TranscriptionFailed: return "TranscriptionFailed"
+    case .StorageFailure: return "StorageFailure"
+    case .none: return "unavailable"
+    }
   }
 
   nonisolated static func describe(_ error: Error) -> String {

@@ -23,7 +23,7 @@ final class DiagnosticsReportTests: XCTestCase {
       recoveredCount: 0,
       sessions: [
         DiagnosticsReport.SessionLine(
-          sessionId: "session-1",
+          sessionId: "00000000-0000-0000-0000-000000000001",
           lifecycle: "ready_for_review",
           health: "healthy",
           recovered: false,
@@ -49,7 +49,7 @@ final class DiagnosticsReportTests: XCTestCase {
     XCTAssertTrue(text.contains("recovery_phase=none"))
     XCTAssertTrue(
       text.contains(
-        "session id=session-1 lifecycle=ready_for_review health=healthy recovered=false journal_durable=true media_files_open=false"
+        "session id=00000000-0000-0000-0000-000000000001 lifecycle=ready_for_review health=healthy recovered=false journal_durable=true media_files_open=false"
       ))
     XCTAssertTrue(text.contains("model id=whisper-tiny installed=false file=ggml-tiny.bin"))
     XCTAssertTrue(text.contains("session titles, transcript text, and file paths are omitted"))
@@ -160,7 +160,63 @@ final class DiagnosticsReportTests: XCTestCase {
 
   func testTokenRedactsOneField() {
     XCTAssertEqual(DiagnosticPrivacy.token("/tmp/secret"), "redacted")
-    XCTAssertEqual(DiagnosticPrivacy.token("session-1"), "session-1")
+    XCTAssertEqual(DiagnosticPrivacy.token("session-1"), "redacted")
+    XCTAssertEqual(
+      DiagnosticPrivacy.token("00000000-0000-0000-0000-000000000001"),
+      "00000000-0000-0000-0000-000000000001")
+  }
+
+  func testShortPathFreeContentAndUnknownFieldsHaveNoLogStanding() {
+    for canary in ["FICTIONAL_PRIVATE_CANARY_6C27", "Jane Doe", "sk-test-secret-value"] {
+      let safe = DiagnosticPrivacy.sanitize(
+        category: canary, message: "stage=transcription detail=\(canary)")
+      XCTAssertEqual(safe.category, "redacted")
+      XCTAssertFalse(safe.message.contains(canary))
+      XCTAssertTrue(DiagnosticPrivacy.isPrivate(canary))
+    }
+    let id = "00000000-0000-0000-0000-000000000001"
+    let safe = DiagnosticPrivacy.sanitize(
+      category: "Library", message: "stage=\(id) session=\(id) count=Jane result=failed")
+    XCTAssertEqual(safe.message, "stage=redacted session=\(id) count=redacted result=failed")
+    XCTAssertEqual(
+      DiagnosticPrivacy.sanitize(category: "Library", message: safe.message).message, safe.message)
+  }
+
+  func testEveryTelemetryEntryUsesTheValidatedJournalRecord() {
+    let canary = "FICTIONAL_PRIVATE_CANARY_6C27"
+    AppTelemetry.commandInvoked(canary)
+    AppTelemetry.captureProof(stage: "phase", detail: canary)
+    AppTelemetry.recoveryProof(stage: "scan-failed", detail: canary)
+    AppTelemetry.launchFailed(canary)
+    AppTelemetry.libraryNote(stage: "snapshot", detail: canary)
+    AppTelemetry.performanceStall(operation: canary, milliseconds: 100)
+    let events = DiagnosticJournal.shared.recent()
+    XCTAssertEqual(events.count, 6)
+    XCTAssertTrue(events.allSatisfy { !$0.message.contains(canary) })
+    XCTAssertTrue(events.contains { $0.message.contains("milliseconds=100") })
+  }
+
+  func testExportRevalidatesRawEventsAndUntrustedMetadataAndBoundsTheDenominator() {
+    let canary = "FICTIONAL_PRIVATE_CANARY_6C27"
+    let events = (0..<(DiagnosticsReport.maximumListedEvents + 3)).map { _ in
+      DiagnosticEvent(category: canary, message: canary)
+    }
+    let text = DiagnosticsReport.text(
+      product: canary, version: canary, build: canary, operatingSystem: canary,
+      architecture: canary, bundleIdentifier: canary, microphone: canary, screenCapture: canary,
+      signature: canary, recoveryPhase: canary, recoveredCount: 0,
+      sessions: [
+        DiagnosticsReport.SessionLine(
+          sessionId: canary, lifecycle: canary, health: canary, recovered: false,
+          journalDurable: true, mediaFilesOpen: false)
+      ],
+      models: [DiagnosticsReport.ModelLine(modelId: canary, fileName: canary, installed: false)],
+      events: events)
+    XCTAssertFalse(text.contains(canary))
+    XCTAssertTrue(text.contains("events=80"))
+    XCTAssertTrue(text.contains("events_omitted=3"))
+    XCTAssertTrue(text.contains("session id=redacted lifecycle=redacted health=redacted"))
+    XCTAssertTrue(text.contains("model id=redacted installed=false file=redacted"))
   }
 
   func testJournalKeepsOnlyTheLatestBoundedNotes() {

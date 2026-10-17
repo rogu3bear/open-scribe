@@ -317,7 +317,7 @@ struct TranscriptSection: View {
   /// A failed save keeps the sheet and its text open and says why.
   @ViewBuilder
   private var sheetFailure: some View {
-    if transcripts.messageIsFailure, let message = transcripts.message {
+    if let message = transcripts.editingFailureMessage {
       CaptureIssueLabel(message: message, isFailure: true).font(.callout)
     }
   }

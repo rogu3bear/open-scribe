@@ -283,13 +283,21 @@ final class TranscriptLibraryModelTests: XCTestCase {
     }
     failing.requestDeletion(sessionId: sessionId)
     let inventory = try XCTUnwrap(failing.pendingDeletion)
+    failing.requestDeletion(sessionId: "another-conversation")
+    XCTAssertEqual(failing.pendingDeletion?.sessionId, sessionId)
     XCTAssertEqual(inventory.mediaFiles, 4)
     XCTAssertGreaterThan(inventory.mediaBytes, 0)
     XCTAssertTrue(SessionDeletionSummary.text(inventory).contains("4 audio files"))
     XCTAssertTrue(SessionDeletionSummary.text(inventory).contains("Files you exported elsewhere"))
+    XCTAssertTrue(SessionDeletionSummary.text(inventory).contains("Time Machine or other backups"))
+    XCTAssertTrue(
+      SessionDeletionSummary.text(inventory).contains(
+        "does not restore the deleted review database"))
     XCTAssertFalse(failing.confirmDeletion())
     XCTAssertEqual(
-      failing.message, "The conversation could not be moved to Trash, so nothing was deleted.")
+      failing.message,
+      "The move to Trash did not finish. The conversation is still listed in Open Scribe; check its audio before trying again."
+    )
     XCTAssertTrue(failing.messageIsFailure)
     let preparation = try NativeRecordingPreparation.open(managedRoot: root.path)
     XCTAssertTrue(
@@ -311,6 +319,58 @@ final class TranscriptLibraryModelTests: XCTestCase {
     XCTAssertTrue(
       FileManager.default.fileExists(atPath: trash.appendingPathComponent(sessionId).path),
       "the audio remains recoverable from Trash")
+    withExtendedLifetime(capture) {}
+  }
+
+  func testDeletionKeepsTheCompletedEffectVisibleWhenDatabaseCleanupIsPending() {
+    let message = TranscriptLibraryModel.deletionResult(title: "Example", walCheckpointed: false)
+    XCTAssertTrue(message.contains("was moved to Trash"))
+    XCTAssertTrue(message.contains("database is busy"))
+    XCTAssertTrue(message.contains("Earlier data may remain"))
+    XCTAssertEqual(
+      TranscriptLibraryModel.deletionResult(title: "Example", walCheckpointed: true),
+      "“Example” was moved to Trash.")
+  }
+
+  func testUncertainTrashMovePreservesIntentForRecoveryWithoutReplayingTheMove() throws {
+    let (root, sessionId, capture) = try capturedSession()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let trash = root.deletingLastPathComponent().appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: trash) }
+    let library = try NativeTranscriptLibrary.open(managedRoot: root.path)
+    let moves = TrashMoveCounter()
+    let model = TranscriptLibraryModel(library: library) { directory in
+      moves.record()
+      try FileManager.default.createDirectory(at: trash, withIntermediateDirectories: true)
+      try FileManager.default.moveItem(
+        at: directory, to: trash.appendingPathComponent(directory.lastPathComponent))
+      throw CocoaError(.fileWriteUnknown)
+    }
+    model.requestDeletion(sessionId: sessionId)
+    XCTAssertFalse(model.confirmDeletion())
+    XCTAssertEqual(moves.count, 1)
+    XCTAssertNil(model.pendingDeletion)
+    XCTAssertTrue(model.messageIsFailure)
+    XCTAssertTrue(model.message?.contains("could not be confirmed") == true)
+    XCTAssertTrue(model.message?.contains("verify Trash") == true)
+    model.load(sessionId: sessionId)
+    XCTAssertTrue(
+      model.message?.contains("could not be confirmed") == true,
+      "document refresh must not acknowledge a library-operation warning")
+    model.dismissMessage()
+    XCTAssertTrue(
+      model.message?.contains("verify Trash") == true,
+      "starting another edit does not resolve an uncertain move")
+    XCTAssertNil(
+      model.editingFailureMessage,
+      "a library-operation warning is not a failed transcript edit")
+    let preparation = try NativeRecordingPreparation.open(managedRoot: root.path)
+    _ = try preparation.recoverPlayableSessions()
+    XCTAssertFalse(
+      try preparation.runtimeLibrarySnapshot().savedSessions.contains { $0.sessionId == sessionId })
+    XCTAssertEqual(moves.count, 1)
+    XCTAssertTrue(
+      FileManager.default.fileExists(atPath: trash.appendingPathComponent(sessionId).path))
     withExtendedLifetime(capture) {}
   }
 
@@ -398,6 +458,13 @@ final class TranscriptLibraryModelTests: XCTestCase {
       TranscriptSection.fileName("Team: sync/notes", type: .json), "Team- sync-notes.json")
     XCTAssertEqual(TranscriptSection.fileName(" .hidden", type: .plainText), "Transcript.txt")
   }
+}
+
+private final class TrashMoveCounter: @unchecked Sendable {
+  private let lock = NSLock()
+  private var value = 0
+  var count: Int { lock.withLock { value } }
+  func record() { lock.withLock { value += 1 } }
 }
 
 /// No Rust handle or media access: exercises the model's selection and

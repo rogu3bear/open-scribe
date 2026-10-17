@@ -44,6 +44,15 @@ Use the app's confirmed **Move to Trash** action for a saved conversation. It
 does not securely erase media, empty Trash, delete original imports, or remove
 backup/export copies. Keep needed copies before deletion. Do not manually move
 internal folders back into the library as a restore.
+The confirmation freezes changes to that conversation; finish or cancel active
+processing before deletion. Cancelling the confirmation restores its eligibility.
+Trash preserves the session files, but moving them back does not restore the
+deleted review database. If database cleanup is waiting for a reader, or a move
+or database result could not be confirmed, keep the warning and restart Open
+Scribe to reconcile the durable state before copying or sharing the library.
+Verify Trash independently before assuming an uncertain move is recoverable.
+Deletion/cleanup warnings survive document changes; finish capture and other
+work before restarting the app to reconcile them.
 
 Low disk, failed media integrity, missing access or an incomplete recovery
 barrier can prevent work. Keep the state/error; do not bypass the hold or
