@@ -6,7 +6,8 @@ pub(super) fn apply_schema(tx: &Transaction<'_>) -> Result<(), StoreError> {
         "CREATE TABLE IF NOT EXISTS session_metadata_times (
         session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
         modified_at_ms INTEGER NOT NULL);
-        INSERT OR IGNORE INTO session_metadata_times SELECT id, updated_at_ms FROM sessions;
+        INSERT OR IGNORE INTO session_metadata_times
+            SELECT id, updated_at_ms FROM sessions WHERE lifecycle <> 'deleted';
         CREATE TRIGGER IF NOT EXISTS session_metadata_initial AFTER INSERT ON sessions BEGIN
             INSERT INTO session_metadata_times VALUES(NEW.id, NEW.created_at_ms);
         END;",

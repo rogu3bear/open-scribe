@@ -13,10 +13,11 @@
 use super::library_recovery::isolated_disposition;
 use super::{SCHEMA_VERSION, SessionStore, StoreError, wall_time_milliseconds};
 use open_scribe_types::SessionId;
-use rusqlite::{OptionalExtension, Transaction, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use std::fs;
 use std::io::ErrorKind;
 use std::path::PathBuf;
+use std::time::Duration;
 use uuid::Uuid;
 
 pub(super) const DELETION_MIGRATION_VERSION: i64 = 7;
@@ -31,6 +32,27 @@ pub(super) fn apply_deletion_schema(transaction: &Transaction<'_>) -> Result<(),
         );",
     )?;
     Ok(())
+}
+
+/// Called under the library writer guard before changing session-owned work.
+/// The confirmation inventory remains stable until completion or abandonment.
+pub(super) fn require_available(connection: &Connection, session: &str) -> Result<(), StoreError> {
+    let state: Option<(String, bool)> = connection
+        .query_row(
+            "SELECT lifecycle,
+                    EXISTS(SELECT 1 FROM session_deletion_intents WHERE session_id = sessions.id)
+             FROM sessions WHERE id = ?1",
+            [session],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    match state {
+        Some((lifecycle, false)) if lifecycle != "deleted" => Ok(()),
+        Some(_) => Err(StoreError::InvalidState(
+            "session is being deleted or was deleted",
+        )),
+        None => Err(StoreError::InvalidRequest("session does not exist")),
+    }
 }
 
 /// Exactly what a confirmed deletion removes, for the confirmation surface.
@@ -87,26 +109,29 @@ impl SessionStore {
             }
             None => return Err(StoreError::InvalidRequest("session does not exist")),
         };
-        transaction.execute(
-            "INSERT OR IGNORE INTO session_deletion_intents(session_id, created_at_ms)
-             VALUES(?1, ?2)",
-            params![session.0, wall_time_milliseconds()],
+        let admitted: bool = transaction.query_row(
+            "SELECT EXISTS(SELECT 1 FROM transcription_intent
+                           WHERE session_id = ?1 AND admission IS NOT NULL)",
+            [&session.0],
+            |row| row.get(0),
         )?;
-        transaction.commit()?;
+        if admitted {
+            return Err(StoreError::InvalidState(
+                "processing must finish or acknowledge cancellation before deletion",
+            ));
+        }
 
         let count = |sql: &str| -> Result<u32, StoreError> {
-            Ok(self
-                .connection
-                .query_row(sql, [&session.0], |row| row.get(0))?)
+            Ok(transaction.query_row(sql, [&session.0], |row| row.get(0))?)
         };
-        let (media_files, media_bytes): (u32, i64) = self.connection.query_row(
+        let (media_files, media_bytes): (u32, i64) = transaction.query_row(
             "SELECT COUNT(*), COALESCE(SUM(byte_length), 0) FROM segments WHERE session_id = ?1",
             [&session.0],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )?;
         let directory = self.sessions_root.join(&session.0);
         let (export_files, export_bytes) = export_inventory(&directory)?;
-        Ok(SessionDeletionInventory {
+        let inventory = SessionDeletionInventory {
             session_id: session.clone(),
             title,
             media_files,
@@ -126,7 +151,15 @@ impl SessionStore {
             export_files,
             export_bytes,
             directory,
-        })
+        };
+        // Inventory failure must not leave an invisible pending deletion.
+        transaction.execute(
+            "INSERT OR IGNORE INTO session_deletion_intents(session_id, created_at_ms)
+             VALUES(?1, ?2)",
+            params![session.0, wall_time_milliseconds()],
+        )?;
+        transaction.commit()?;
+        Ok(inventory)
     }
 
     /// Clears an intent after Trash failed or the user cancelled. Nothing
@@ -182,7 +215,9 @@ impl SessionStore {
             "DELETE FROM speaker_adjudications WHERE session_id = ?1",
             "DELETE FROM transcript_corrections WHERE session_id = ?1",
             "DELETE FROM transcript_selections WHERE session_id = ?1",
+            "DELETE FROM transcript_selection_epochs WHERE session_id = ?1",
             "DELETE FROM transcription_runs WHERE session_id = ?1",
+            "DELETE FROM transcription_intent WHERE session_id = ?1",
             "DELETE FROM segments WHERE session_id = ?1",
             "DELETE FROM tracks WHERE session_id = ?1",
             "DELETE FROM sources WHERE session_id = ?1",
@@ -195,6 +230,7 @@ impl SessionStore {
             "DELETE FROM session_events WHERE session_id = ?1",
             "DELETE FROM recovery_runs WHERE session_id = ?1",
             "DELETE FROM session_restorations WHERE session_id = ?1",
+            "DELETE FROM session_metadata_times WHERE session_id = ?1",
             "DELETE FROM session_deletion_intents WHERE session_id = ?1",
         ] {
             transaction.execute(statement, [&session.0])?;
@@ -217,17 +253,45 @@ impl SessionStore {
             [],
         )?;
         transaction.commit()?;
+        drop(_writer);
         // Pages were zeroed by secure_delete; truncating the WAL removes the
-        // pre-deletion copies it still held.
-        let busy: i64 =
-            self.connection
-                .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| row.get(0))?;
+        // pre-deletion copies it still held. This optional cleanup never waits
+        // on another reader/writer or keeps capture's durable-write admission.
+        let wal_checkpointed = self.checkpoint_deletion_wal()?;
         Ok(SessionDeletionReceipt {
             receipt_id,
             session_id: session.clone(),
             trash_reference: trash_reference.map(str::to_owned),
-            wal_checkpointed: busy == 0,
+            wal_checkpointed,
         })
+    }
+
+    fn checkpoint_deletion_wal(&self) -> Result<bool, StoreError> {
+        let previous_timeout_ms: i64 =
+            self.connection
+                .pragma_query_value(None, "busy_timeout", |row| row.get(0))?;
+        let previous_timeout_ms = u64::try_from(previous_timeout_ms)
+            .map_err(|_| StoreError::InvalidState("SQLite busy timeout is invalid"))?;
+        self.connection.busy_timeout(Duration::ZERO)?;
+        let checkpoint =
+            self.connection
+                .query_row::<i64, _, _>("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| row.get(0));
+        // This connection is exclusively borrowed. Restore its actual policy
+        // before returning either the checkpoint result or an error.
+        self.connection
+            .busy_timeout(Duration::from_millis(previous_timeout_ms))?;
+        match checkpoint {
+            Ok(busy) => Ok(busy == 0),
+            Err(error)
+                if matches!(
+                    error.sqlite_error_code(),
+                    Some(rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked)
+                ) =>
+            {
+                Ok(false)
+            }
+            Err(error) => Err(error.into()),
+        }
     }
 
     /// Launch recovery for deletions a crash interrupted: an intent whose

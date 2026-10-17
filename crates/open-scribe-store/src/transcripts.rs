@@ -365,6 +365,7 @@ impl SessionStore {
         let run_identity = identity.digest();
         let now = wall_time_milliseconds();
         let _writer = self.write_guard()?;
+        super::session_deletion::require_available(&self.connection, &identity.session_id.0)?;
         if self.session_lifecycle(&identity.session_id.0)? != "ready_for_review" {
             return Err(StoreError::InvalidState(
                 "session changed during transcript validation",
@@ -723,6 +724,7 @@ impl SessionStore {
         revision_id: &str,
     ) -> Result<(), StoreError> {
         let _writer = self.write_guard()?;
+        super::session_deletion::require_available(&self.connection, &session.0)?;
         let transaction = self.connection.transaction()?;
         let owned: bool = transaction.query_row(
             "SELECT EXISTS(SELECT 1 FROM transcript_revisions
@@ -876,6 +878,7 @@ impl SessionStore {
              FROM transcription_runs AS runs
              JOIN sessions ON sessions.id = runs.session_id
              WHERE sessions.lifecycle = 'ready_for_review'
+               AND NOT EXISTS(SELECT 1 FROM session_deletion_intents WHERE session_id = runs.session_id)
                AND runs.reconciliation_version <> ?1
                AND NOT EXISTS(SELECT 1 FROM transcription_intent WHERE session_id = runs.session_id AND declined_auto = 1)
                AND (runs.state = 'running'
@@ -1083,7 +1086,9 @@ fn require_running(
     transaction
         .query_row(
             "SELECT session_id, track_id, reconciliation_version FROM transcription_runs
-             WHERE id = ?1 AND state = 'running'",
+             WHERE id = ?1 AND state = 'running'
+               AND NOT EXISTS(SELECT 1 FROM session_deletion_intents
+                              WHERE session_id = transcription_runs.session_id)",
             [run_id],
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )

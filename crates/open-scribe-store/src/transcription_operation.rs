@@ -165,6 +165,7 @@ impl SessionStore {
     /// guards and operation key. A generic Retry never creates ReprocessAll.
     pub fn resume_replacement(&mut self, session: &SessionId) -> Result<(), StoreError> {
         let _writer = self.write_guard()?;
+        super::session_deletion::require_available(&self.connection, &session.0)?;
         if self.connection.execute(
             "UPDATE transcription_intent SET requested_action = 'reprocess',
             requested_at_ms = ?2, declined_auto = 0, last_outcome = NULL

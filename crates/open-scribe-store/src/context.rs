@@ -511,6 +511,7 @@ impl SessionStore {
         declaration: SessionDeclaration,
     ) -> Result<SessionDeclaration, StoreError> {
         let _writer = self.write_guard()?;
+        super::session_deletion::require_available(&self.connection, &session.0)?;
         let lifecycle = self.session_lifecycle(&session.0)?;
         if !OPEN_LIFECYCLES.contains(&lifecycle.as_str()) && lifecycle != "ready_for_review" {
             return Err(StoreError::InvalidState("the session cannot be declared"));

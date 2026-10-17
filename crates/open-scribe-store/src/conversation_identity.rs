@@ -101,7 +101,8 @@ impl SessionStore {
         }
         let transaction = self.connection.transaction()?;
         let changed = transaction.execute(
-            "UPDATE sessions SET title = ?2 WHERE id = ?1 AND lifecycle <> 'deleted'",
+            "UPDATE sessions SET title = ?2 WHERE id = ?1 AND lifecycle <> 'deleted'
+             AND NOT EXISTS(SELECT 1 FROM session_deletion_intents WHERE session_id = ?1)",
             params![session.0, title],
         )?;
         if changed != 1 {

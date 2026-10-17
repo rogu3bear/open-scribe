@@ -68,7 +68,12 @@ impl SessionStore {
         intent: TranscriptionIntent,
     ) -> Result<(), StoreError> {
         let _writer = self.write_guard()?;
-        self.transcription_tracks(session)?;
+        super::session_deletion::require_available(&self.connection, &session.0)?;
+        if self.transcription_tracks(session)?.is_empty() {
+            return Err(StoreError::InvalidState(
+                "session has no transcribable saved tracks",
+            ));
+        }
         let selections = self.selection_json(session)?;
         self.connection.execute("INSERT INTO transcription_intent(session_id, requested_action, requested_at_ms, request_generation, selection_json)
             VALUES(?1, ?2, ?3, 1, ?4) ON CONFLICT(session_id) DO UPDATE SET
@@ -85,6 +90,10 @@ impl SessionStore {
     /// Active admission is retained until its runner acknowledges the stop.
     pub fn cancel_transcription(&mut self, session: &SessionId) -> Result<(), StoreError> {
         let _writer = self.write_guard()?;
+        if self.session_lifecycle(&session.0)? == "deleted" {
+            return Ok(());
+        }
+        super::session_deletion::require_available(&self.connection, &session.0)?;
         self.connection.execute("INSERT INTO transcription_intent(session_id, declined_auto, last_outcome, request_generation)
             VALUES(?1, 1, 'cancelled', 1) ON CONFLICT(session_id) DO UPDATE SET
             requested_action = NULL, requested_at_ms = NULL, declined_auto = 1,
@@ -107,7 +116,9 @@ impl SessionStore {
         let sessions: Vec<(String, bool)> = self.connection.prepare("SELECT sessions.id,
             (sessions.origin = 'import' OR EXISTS(SELECT 1 FROM session_events WHERE session_id = sessions.id AND event_kind = 'capture_clock_anchored')
              OR EXISTS(SELECT 1 FROM session_restorations WHERE session_id = sessions.id AND state = 'restored'))
-            FROM sessions WHERE lifecycle = 'ready_for_review' ORDER BY created_at_ms DESC, id DESC")?
+            FROM sessions WHERE lifecycle = 'ready_for_review'
+            AND NOT EXISTS(SELECT 1 FROM session_deletion_intents WHERE session_id = sessions.id)
+            ORDER BY created_at_ms DESC, id DESC")?
             .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<Result<_,_>>()?;
         let mut entries = Vec::new();
         for (session_id, calibrated) in sessions {
@@ -221,7 +232,8 @@ impl SessionStore {
     ) -> Result<Option<TranscriptionWork>, StoreError> {
         let _writer = self.write_guard()?;
         observations.capture_active |= self.capture_active()?;
-        if self.work_admission_active()?
+        if self.deletion_pending(session)?
+            || self.work_admission_active()?
             || self.transcription_is_declined(session)?
             || self.session_lifecycle(&session.0)? != "ready_for_review"
             || open_scribe_domain::transcription_hold(
@@ -253,6 +265,7 @@ impl SessionStore {
     }
 
     fn record_work_admission(&mut self, next: &mut TranscriptionWork) -> Result<(), StoreError> {
+        super::session_deletion::require_available(&self.connection, &next.session_id.0)?;
         let token = Uuid::now_v7().to_string();
         let automatic_selections = if next.manual {
             None
@@ -310,7 +323,10 @@ impl SessionStore {
         intent: TranscriptionIntent,
     ) -> Result<bool, StoreError> {
         let _writer = self.write_guard()?;
-        if self.capture_active()? {
+        if self.capture_active()?
+            || self.deletion_pending(session)?
+            || self.session_lifecycle(&session.0)? != "ready_for_review"
+        {
             return Ok(false);
         }
         Ok(self.connection.execute(
@@ -330,5 +346,13 @@ impl SessionStore {
             .into_iter()
             .filter_map(|(id, code)| Some((id, WorkOutcome::from_code(&code)?)))
             .collect())
+    }
+
+    fn deletion_pending(&self, session: &SessionId) -> Result<bool, StoreError> {
+        Ok(self.connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM session_deletion_intents WHERE session_id = ?1)",
+            [&session.0],
+            |row| row.get(0),
+        )?)
     }
 }

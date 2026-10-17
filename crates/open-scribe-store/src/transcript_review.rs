@@ -426,6 +426,7 @@ fn require_reviewable_session(
     transaction: &Transaction<'_>,
     session_id: &str,
 ) -> Result<(), StoreError> {
+    super::session_deletion::require_available(transaction, session_id)?;
     let lifecycle: Option<String> = transaction
         .query_row(
             "SELECT lifecycle FROM sessions WHERE id = ?1",
