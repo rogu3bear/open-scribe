@@ -31,6 +31,34 @@ for (const retired of ["leptos-cf", "todo", "D1", "starter"]) {
   if (html.includes(retired)) throw new Error(`SSR HTML retained: ${retired}`);
 }
 
+// These are outputs from the production App/Router, not separate fixture pages.
+for (const route of [
+  "index", "product", "record", "meeting", "privacy", "how-it-works", "download",
+  "documentation", "terms", "security",
+]) {
+  const routeHtml = await readFile(join(root, `target/web-ssr/${route}.html`), "utf8");
+  if (!routeHtml.includes("<main") || !routeHtml.includes("<h1")) {
+    throw new Error(`/${route} omitted useful SSR content`);
+  }
+  if (Buffer.byteLength(routeHtml) > 64 * 1024) {
+    throw new Error(`/${route} exceeds ADR 0015's 64 KiB useful SSR budget`);
+  }
+}
+const escapeText = (text) => text.replaceAll("&", "&amp;")
+  .replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+for (const [route, source] of [
+  ["privacy", "docs/legal/privacy.md"],
+  ["terms", "docs/legal/terms.md"],
+  ["security", "SECURITY.md"],
+]) {
+  const routeHtml = await readFile(join(root, `target/web-ssr/${route}.html`), "utf8");
+  const canonicalText = await readFile(join(root, source), "utf8");
+  const legalBody = routeHtml.match(/<pre class="canonical-document">([\s\S]*?)<\/pre>/)?.[1];
+  if (legalBody !== escapeText(canonicalText)) {
+    throw new Error(`/${route} does not preserve the full canonical ${source} text`);
+  }
+}
+
 const manifest = JSON.parse(
   await readFile(join(root, "target/site/asset-manifest.json"), "utf8"),
 );
@@ -103,5 +131,5 @@ if (/d1_databases|database_id|migrations_dir/i.test(wrangler)) {
 }
 
 console.log("WEB_BUILD_GREEN");
-console.log("proof=leptos_hydrate,hashed_assets,external_boot_module,adr_0015_csp_and_headers,worker_bundle,deep_route_ssr,useful_ssr_html");
-console.log("excludes=deploy,native_capture,persistence,release");
+console.log("proof=leptos_hydrate,hashed_assets,external_boot_module,adr_0015_csp_and_headers,worker_bundle,production_router_ssr,canonical_legal_text,useful_ssr_html");
+console.log("excludes=edge_http_delivery,rendered_accessibility,deploy,native_capture,persistence,release");

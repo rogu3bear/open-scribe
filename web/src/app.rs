@@ -344,7 +344,20 @@ fn asset_href(options: &LeptosOptions, extension: &str, hash: &str) -> String {
 
 #[cfg(feature = "ssr")]
 pub fn render_ssr_snapshot() -> String {
-    let body = view! { <HomePage/> }.to_html();
+    render_ssr_snapshot_at("/")
+}
+
+/// Render through the same App/Router used by the Worker, without opening a
+/// server or making a request. This proves route composition, not edge delivery.
+#[cfg(feature = "ssr")]
+pub fn render_ssr_snapshot_at(path: &str) -> String {
+    let owner = Owner::new();
+    let body = owner.with(|| {
+        provide_context(leptos_router::location::RequestUrl::new(path));
+        let (server_meta, _server_meta_output) = leptos_meta::ServerMetaContext::new();
+        provide_context(server_meta);
+        view! { <App/> }.to_html()
+    });
     format!(
         "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>Open Scribe — local evidence for important conversations</title><link rel=\"canonical\" href=\"{CANONICAL_ORIGIN}\"></head><body>{body}</body></html>"
     )
@@ -408,6 +421,26 @@ mod tests {
         let download = view! { <super::DownloadPage/> }.to_html();
         assert!(download.contains("No public release is available."));
         assert!(!download.contains("<button"));
+    }
+
+    #[test]
+    fn router_snapshots_preserve_canonical_legal_text_and_unknown_routes() {
+        for (path, heading, source) in [
+            ("/privacy", "Privacy", super::PRIVACY_NOTICE),
+            ("/terms", "Terms", super::TERMS),
+            ("/security", "Security", super::SECURITY_POLICY),
+        ] {
+            let html = super::render_ssr_snapshot_at(path);
+            assert!(html.contains(&format!("<h1>{heading}</h1>")));
+            let escaped = source
+                .replace('&', "&amp;")
+                .replace('<', "&lt;")
+                .replace('>', "&gt;");
+            assert!(html.contains(&escaped), "{path} changed canonical text");
+        }
+        let unknown = super::render_ssr_snapshot_at("/qualification-nonexistent");
+        assert!(unknown.contains("<h1>Page not found</h1>"));
+        assert!(!unknown.contains("Local evidence for important conversations."));
     }
 
     #[test]

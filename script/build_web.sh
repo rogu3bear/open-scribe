@@ -45,7 +45,11 @@ export OPEN_SCRIBE_WEB_JS_HASH OPEN_SCRIBE_WEB_WASM_HASH OPEN_SCRIBE_WEB_CSS_HAS
 worker-build web --release --locked --features ssr
 bun web/scripts/write_worker_shim.mjs
 
-cargo run --locked --release -p open-scribe-web --features ssr \
-	--bin render-web-ssr -- "$repo_root/target/web-ssr/index.html"
+for route in index product record meeting privacy how-it-works download documentation terms security; do
+	route_path="/$route"
+	[[ "$route" != index ]] || route_path=/
+	cargo run --locked --release -p open-scribe-web --features ssr \
+		--bin render-web-ssr -- "$repo_root/target/web-ssr/$route.html" "$route_path"
+done
 cargo test --locked -p open-scribe-web --features ssr --lib
 bun web/scripts/verify_build.mjs

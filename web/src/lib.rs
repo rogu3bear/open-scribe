@@ -4,7 +4,7 @@ mod app;
 mod asset_hashes;
 
 #[cfg(feature = "ssr")]
-pub use app::render_ssr_snapshot;
+pub use app::{render_ssr_snapshot, render_ssr_snapshot_at};
 
 #[cfg(feature = "hydrate")]
 #[wasm_bindgen::prelude::wasm_bindgen]
