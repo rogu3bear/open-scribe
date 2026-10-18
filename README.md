@@ -55,8 +55,12 @@ disk-guard run --budget-gb <measured> --volume "$PWD" -- ./script/check.sh --can
 ```
 
 The first command builds one unsigned app and test bundle, runs source and web
-checks, all native tests, and synthetic recovery. The second reruns recorder
-components with `test-without-building` against the recorded artifact. All
+checks, all native tests, synthetic recovery, and the thirteen permission-free
+M1 failure cases. The matrix includes an owned 1.5 GiB sparse APFS image for
+ENOSPC; account for that growth in the allowance. It uses synthetic capture
+adapters and never starts the separate real-device controls case.
+The second command reruns recorder components with `test-without-building`
+against the recorded artifact. All
 consumers reject source or artifact drift. The foundational workflow
 has [dated proof](docs/TESTING.md#foundational-recording-workflow): a device-free
 synthetic process proof (two sources, a Rust-owned shared timeline, 30-second

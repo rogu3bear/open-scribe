@@ -37,12 +37,20 @@ disk-guard run --budget-gb <measured> --volume "$PWD" -- ./script/check.sh --can
 
 The gate runs scaffold, clippy, boundary/entitlement checks, the complete web
 build, fresh UniFFI bindings, one unsigned native `build-for-testing`, the full
-Swift suite and scene launch, recorder components, and synthetic process recovery.
+Swift suite and scene launch, recorder components, synthetic process recovery,
+and the default thirteen-case permission-free M1 failure matrix. The matrix
+checks source loss, sleep/wake, storage pressure and forced termination through
+production controller/storage entry points with synthetic capture adapters.
+Its ENOSPC case fills a dedicated 1.5 GiB sparse APFS image; include that growth
+in the measured allowance. Only the owned mount and child app are cleaned up;
+the image, source media and receipts remain as evidence. It never selects the
+separate real-device `live-pause-resume` case. This is not the attended M1
+permission, hardware, perceptual playback or two-hour synchronization matrix.
 Its candidate record binds SHA, tree, executable, debug dylib, Info.plist, Rust
 library, test executable, test-run description, and build log. A new candidate
 directory is required for a build; existing evidence is never overwritten.
 
-The four consumers accept `--candidate "$candidate"` and never build:
+Runtime consumers accept `--candidate "$candidate"` and never build:
 `--verify-recording`, `--foundational-workflow`, `--m1-dual-source-runtime`, and
 `--m1-forced-termination-recovery`, all through `script/check.sh`. Source or
 artifact drift fails before execution. The last two require explicit live
@@ -50,6 +58,11 @@ microphone/system-audio authority; recovery also starts native playback. Keep
 those permission-dependent runs separate from contributor checks. The
 foundational workflow defaults to synthetic; its optional `--live` mode also
 requires capture and playback authority. See [Testing](docs/TESTING.md).
+
+The standalone `--m1-injected-failures --candidate "$candidate" [--case CASE]`
+consumer can run missing cases. Successful contributor qualification already
+provides every default receipt. To repeat the matrix, qualify a new candidate
+in a new directory; never remove existing receipts to rerun the consumer.
 
 `script/build_candidate.sh <absolute-record>` is the build-only step. Pass that
 record to `check.sh --candidate` to qualify it without rebuilding the app.

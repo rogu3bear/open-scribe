@@ -55,8 +55,11 @@ jq -n --arg candidate "$candidate_record_digest" \
 	>"$candidate_root/checks.json"
 "$script_dir/build_and_run.sh" --verify-recording --candidate "$candidate_record"
 "$script_dir/check_foundational_workflow.sh" --candidate "$candidate_record"
+# The default matrix uses synthetic adapters, including actual ENOSPC only on
+# its owned sparse image. The separate live-pause-resume case is never selected.
+"$script_dir/check_m1_injected.sh" --candidate "$candidate_record"
 candidate_require_checks
 candidate_receipt
 printf '%s\n' 'CONTRIBUTOR_CANDIDATE_GREEN' \
-	'proof=scaffold,clippy,current_locked_dependency_inventory,coarse_boundaries,entitlements,web,fresh_bindings,single_native_build,macos13_floor,no_project_swift_warnings,all_swift_tests,scene_launch,recording_components,synthetic_recovery,candidate_range_and_worktree_diff_hygiene' \
+	'proof=scaffold,clippy,current_locked_dependency_inventory,coarse_boundaries,entitlements,web,fresh_bindings,single_native_build,macos13_floor,no_project_swift_warnings,all_swift_tests,scene_launch,recording_components,synthetic_recovery,permission_free_failure_matrix,candidate_range_and_worktree_diff_hygiene' \
 	'excludes=live_capture,permission_matrix,audible_output,long_sessions,m1_completion,signing,release'
