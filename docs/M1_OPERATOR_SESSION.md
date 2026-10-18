@@ -161,6 +161,16 @@ generator, detector, and scheduled stop; no hardware run has been measured
 yet. The agent must not leave an unbounded recording running or stamp a short
 proof as two-hour evidence.
 
+`--seconds` accepts 60–10,770 stimulus seconds. Its separate 30-second stop
+margin must fit inside the app's existing three-hour recording cap; 10,800
+stimulus seconds is refused before creating a run. Invalid durations and a
+missing `--attended` flag never start playback or capture. The instrument
+also rejects pulse templates above 32,768 frames before generation or
+analysis, keeping templates within half its 65,536-frame FFT window. The
+default 12,000-frame pulse, stimulus schema, detector version and existing
+measurement reports are unchanged. None of these bounds substitutes for the
+attended two-hour measurement.
+
 For sizing, the current segmented writer uses 48 kHz Int16. At 7,200 seconds,
 mono microphone plus stereo computer audio requires 2,073,600,000 source bytes
 before headers. Verify the candidate's actual file format first. Add measured
@@ -190,9 +200,10 @@ and the guest microphone path must be checked before the run.
 Keep all injected-failure and live-controls receipts on the same candidate.
 Only after all automated, long-run, current-OS, macOS 13, consumer and human
 receipts exist may the completion owner admit them. The current
-`script/check_m1_complete.sh` has no human/long-run receipt consumer and remains
-fail-closed; implement/verify that consumer against the actual evidence without
-dropping any existing requirement before rerunning:
+`script/check_m1_complete.sh` checks candidate-bound long-run reports but has
+no completed supported-platform human-matrix admission path and remains
+fail-closed. Implement/verify that remaining consumer against actual evidence
+without dropping any existing requirement before rerunning:
 
 ```bash
 ./script/check.sh --m1-complete --candidate "$RECORD"

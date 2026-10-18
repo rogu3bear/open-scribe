@@ -15,6 +15,11 @@ use std::path::Path;
 
 pub const DRIFT_STIMULUS_SCHEMA: &str = "open-scribe.drift-stimulus/v1";
 pub const STIMULUS_SAMPLE_RATE: u32 = 48_000;
+/// A pulse occupies at most half the detector's FFT block. Besides fitting
+/// its buffer, this keeps every overlap-save block advancing by at least
+/// half a block; near-block-size templates cannot turn a run into one FFT
+/// per candidate sample. The production 250 ms pulse uses 12,000 frames.
+pub(crate) const MAX_PULSE_FRAMES: u32 = 1 << 15;
 const GENERATOR: &str = "open-scribe-core coded broadband chirp";
 const GENERATOR_VERSION: u64 = 1;
 /// The operator procedure requires a unique pulse at least every 30 seconds.
@@ -100,6 +105,7 @@ impl StimulusSpec {
         let valid = self.pulse_count > 0
             && self.chip_frames > 0
             && self.pulse_frames >= 2 * EDGE_FRAMES
+            && self.pulse_frames <= MAX_PULSE_FRAMES
             && self.pulse_frames.is_multiple_of(self.chip_frames)
             && self.period_frames > self.pulse_frames
             && self.period_frames <= MAX_PERIOD_FRAMES

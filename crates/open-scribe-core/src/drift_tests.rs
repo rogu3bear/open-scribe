@@ -260,6 +260,41 @@ fn measure(fixture: &Fixture, options: DriftOptions) -> DriftReport {
 }
 
 #[test]
+fn oversized_pulses_are_refused_before_creating_stimulus_evidence() {
+    let oversized = StimulusSpec {
+        pulse_frames: 96_000,
+        period_frames: 144_000,
+        ..spec()
+    };
+    assert!(oversized.validate().is_err());
+    assert!(StimulusSpec::from_json(&oversized.to_json(&"0".repeat(64))).is_err());
+    let temp = TempDir::new().unwrap();
+    let output = temp.path().join("unsupported.wav");
+    assert!(write_stimulus_wav(&oversized, &output).is_err());
+    assert!(!output.exists());
+}
+
+#[test]
+fn the_largest_supported_pulse_is_valid_and_detectable() {
+    let largest = StimulusSpec {
+        pulse_frames: MAX_PULSE_FRAMES,
+        chip_frames: 32,
+        ..spec()
+    };
+    largest.validate().unwrap();
+    let samples = largest.template(0);
+    let peak = Template::new(samples.clone()).peak(&samples).unwrap();
+    assert!((peak.correlation - 1.0).abs() < 1e-9);
+    assert_eq!(peak.offset, 0.0);
+
+    let too_large = StimulusSpec {
+        pulse_frames: MAX_PULSE_FRAMES + 32,
+        ..largest
+    };
+    assert!(too_large.validate().is_err());
+}
+
+#[test]
 fn the_stimulus_is_deterministic_versioned_and_uniquely_coded() {
     let spec = spec();
     assert_eq!(spec.template(3), spec.template(3));

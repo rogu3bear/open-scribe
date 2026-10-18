@@ -20,6 +20,8 @@ candidate_require_checks
 shift 2
 attended=0
 seconds=7260
+recording_margin_seconds=30
+maximum_stimulus_seconds=$((10800 - recording_margin_seconds))
 while [[ "$#" != 0 ]]; do
 	case "$1" in
 	--attended) attended=1 && shift ;;
@@ -27,10 +29,15 @@ while [[ "$#" != 0 ]]; do
 	*) candidate_fail "$usage" ;;
 	esac
 done
+[[ "$seconds" =~ ^[0-9]{1,5}$ ]] ||
+	candidate_fail "--seconds must be between 60 and $maximum_stimulus_seconds; the recording also reserves a 30-second stop margin within its three-hour limit"
+# Parse bounded decimal input explicitly; leading zeroes are not octal and
+# arbitrarily long integers cannot wrap into an apparently allowed duration.
+seconds=$((10#$seconds))
+[[ "$seconds" -ge 60 && "$seconds" -le "$maximum_stimulus_seconds" ]] ||
+	candidate_fail "--seconds must be between 60 and $maximum_stimulus_seconds; the recording also reserves a 30-second stop margin within its three-hour limit"
 [[ "$attended" == 1 ]] ||
 	candidate_fail 'this run plays audible chirps and records the microphone; an operator present at the Mac starts it with --attended'
-[[ "$seconds" =~ ^[0-9]+$ && "$seconds" -ge 60 && "$seconds" -le 10800 ]] ||
-	candidate_fail '--seconds must be between 60 and 10800'
 if pgrep -x OpenScribeApp >/dev/null; then
 	candidate_fail 'close the development app before the synchronization run'
 fi
@@ -63,7 +70,7 @@ stimulus="$proof_root/stimulus/stimulus.wav"
 	fail_run 'the stimulus file differs from its record'
 
 candidate_assert
-"$app_binary" --m1-drift-run-root "$proof_root" --m1-drift-run-seconds "$((seconds + 30))" \
+"$app_binary" --m1-drift-run-root "$proof_root" --m1-drift-run-seconds "$((seconds + recording_margin_seconds))" \
 	>"$proof_root/app.log" 2>&1 &
 app_pid=$!
 for _ in $(seq 1 900); do

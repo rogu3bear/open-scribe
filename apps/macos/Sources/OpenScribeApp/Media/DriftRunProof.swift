@@ -49,8 +49,13 @@ enum DriftRunProof {
     write(
       ["phase": "capturing", "requested_seconds": String(seconds)], named: startedName, in: root)
     let deadline = started + TimeInterval(seconds)
-    while uptime() < deadline, controller.phase == .capturing {
-      await sleep(UInt64(min(1, deadline - uptime()) * 1_000_000_000))
+    while controller.phase == .capturing {
+      // One clock read owns this wait. A second read can cross the deadline
+      // and turn an already-expired interval into a trapping UInt64 cast.
+      let remaining = deadline - uptime()
+      guard remaining > 0 else { break }
+      let nanoseconds = (min(1, remaining) * 1_000_000_000).rounded(.up)
+      await sleep(UInt64(nanoseconds))
     }
     let interrupted = controller.phase != .capturing
     outcome.recordedSeconds = uptime() - started

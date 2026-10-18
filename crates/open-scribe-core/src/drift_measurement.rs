@@ -9,7 +9,9 @@
 //! computer`; `drift = offset - first offset` removes the fixed acoustic
 //! latency. Every detection, rejected or not, stays in the report.
 
-use crate::drift_stimulus::{DriftError, STIMULUS_SAMPLE_RATE, StimulusSpec, stimulus_sha256};
+use crate::drift_stimulus::{
+    DriftError, MAX_PULSE_FRAMES, STIMULUS_SAMPLE_RATE, StimulusSpec, stimulus_sha256,
+};
 use open_scribe_store::{SealedTrackReader, SessionStore, TimelineSegment};
 use open_scribe_types::SessionId;
 use serde_json::{Value, json};
@@ -27,7 +29,7 @@ const MIN_PEAK_RATIO: f64 = 1.5;
 /// Peaks closer than two chips are the same arrival.
 const PEAK_EXCLUSION_FRAMES: usize = 96;
 const LIMIT_NANOSECONDS: i64 = 100_000_000;
-const BLOCK: usize = 1 << 16;
+const BLOCK: usize = 2 * MAX_PULSE_FRAMES as usize;
 
 #[derive(Clone, Copy, Debug)]
 pub struct DriftOptions {

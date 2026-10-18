@@ -752,6 +752,63 @@ final class RecorderPauseResumeTests: XCTestCase {
     XCTAssertTrue(adapter.statusMessage?.contains("did not verify") == true)
   }
 
+  func testTheDriftRunNeverSleepsOnAnExpiredDeadline() async throws {
+    try await assertDriftDeadline(terminalUptime: 1)
+  }
+
+  func testTheDriftRunStopsNormallyWhenTheClockCrossesItsDeadline() async throws {
+    try await assertDriftDeadline(terminalUptime: 1.1)
+  }
+
+  func testTheDriftRunRoundsAPositiveSubnanosecondWaitUp() async throws {
+    try await assertDriftDeadline(terminalUptime: 1, lastWaitUptime: Double(1).nextDown)
+  }
+
+  private func assertDriftDeadline(
+    terminalUptime: TimeInterval, lastWaitUptime: TimeInterval = 0.9
+  ) async throws {
+    let harness = try PauseHarness()
+    defer { harness.removeFiles() }
+    let root = harness.root.appendingPathComponent("drift-outcome", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    // The clock reaches the deadline between successive reads. A second
+    // read for the same wait used to produce zero (or a trapping negative).
+    let clockReads: [TimeInterval] = [0, lastWaitUptime, terminalUptime]
+    var readIndex = 0
+    var recordingWaits: [UInt64] = []
+    let outcome = await DriftRunProof.run(
+      controller: harness.controller, root: root, seconds: 1,
+      uptime: {
+        defer { readIndex += 1 }
+        return clockReads[min(readIndex, clockReads.count - 1)]
+      },
+      sleep: { nanoseconds in
+        if harness.controller.phase == .capturing {
+          recordingWaits.append(nanoseconds)
+        } else if harness.controller.phase == .starting {
+          try? await harness.capture()
+        }
+        for _ in 0..<30 { await Task.yield() }
+      })
+    XCTAssertEqual(recordingWaits.count, 1)
+    XCTAssertTrue(recordingWaits.allSatisfy { $0 > 0 && $0 <= 1_000_000_000 })
+    XCTAssertEqual(outcome.result, "saved", outcome.detail)
+    XCTAssertEqual(outcome.recordedSeconds, terminalUptime)
+    let sessionId = try XCTUnwrap(outcome.sessionId)
+    let detail = try harness.preparation.recorderDetail(sessionId: sessionId)
+    XCTAssertEqual(detail.lifecycle, "ready_for_review")
+    XCTAssertEqual(harness.captures.microphones.last?.stopCount, 1)
+    XCTAssertEqual(harness.captures.systems.last?.stopCount, 1)
+    let timeline = try harness.preparation.playbackTimeline(sessionId: sessionId)
+    XCTAssertEqual(Set(timeline.map(\.trackId)).count, 2)
+    let written = try XCTUnwrap(
+      JSONSerialization.jsonObject(
+        with: Data(contentsOf: root.appendingPathComponent(DriftRunProof.outcomeName)))
+        as? [String: Any])
+    XCTAssertEqual(written["result"] as? String, "saved")
+    XCTAssertEqual(written["session_id"] as? String, sessionId)
+  }
+
   func testTheDriftRunRecordsBothSourcesUntilItsDeadlineAndRefusesUnboundedRuns() async throws {
     let harness = try PauseHarness()
     defer { harness.removeFiles() }
