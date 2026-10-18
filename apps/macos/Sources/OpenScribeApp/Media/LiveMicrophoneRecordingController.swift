@@ -100,6 +100,7 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
   private let proofCheckpoint: @Sendable (RecorderProofPhase, String) -> Void
   private var selectedSystemCaptureFactory: (@Sendable (ManagedSegmentWriting, RecorderCaptureSelection) async throws -> SystemAudioCapturing)?
   private var storageWatchTask: Task<Void, Never>?
+  private var permissionWatchTask: Task<Void, Never>?
   private var applicationExitObserver: NSObjectProtocol?
   private var systemPowerObservers: [NSObjectProtocol] = []
 
@@ -439,6 +440,8 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
         else { try SegmentedCAFWriter.anchor(preparation: preparation, sessionId: sessionId, hostAnchor: hostTime()) }
       }
       phase = .starting
+      guard await checkMicrophonePermission() else { return }
+      beginPermissionWatch()
       if let systemCapture, let audioSource {
         try await systemCapture.start(
           onFirstSample: { [weak self] receipt in
@@ -470,6 +473,7 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
           _ = try? await systemCapture.stop()
           return
         }
+        guard await checkMicrophonePermission() else { return }
       }
       try microphoneCapture?.start(
         onFirstSample: { [weak self] receipt in
@@ -490,14 +494,12 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
           Task { @MainActor [weak self] in
             guard self?.activeSessionId == sessionId else { return }
             guard self?.activeAttempt == attempt else { return }
-            // The microphone adapter cannot see TCC; a failure while access
-            // is no longer granted is reported as a withdrawn permission.
-            let revoked = self?.permission.currentState != .authorized
-            await self?.handleCaptureFailure(
+            guard let self, await self.checkMicrophonePermission() else { return }
+            await self.handleCaptureFailure(
               String(describing: error),
               code: "capture-\(String(describing: error))",
               source: .microphone,
-              interruptionReason: revoked ? .permissionRevoked : .captureFailed
+              interruptionReason: .captureFailed
             )
           }
         }
@@ -619,6 +621,7 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
     from source: NativeMediaSourceKind
   ) async {
     guard phase == .starting else { return }
+    guard await checkMicrophonePermission() else { return }
     guard requiredSources.contains(source), let preparation else { return }
     let evidence: NativeFirstSampleEvidence
     if let accepted = writers[source]?.acceptedFirstSampleEvidence(segmentId: receipt.segmentId) {
@@ -708,6 +711,7 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
         visibleState: phase.rawValue
       )
     )
+    guard await checkMicrophonePermission() else { return }
     if observation.event == .routeInterrupted {
       await handleCaptureFailure(
         "The microphone audio route stopped.",
@@ -725,10 +729,12 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
     interruptionReason: NativeSessionInterruptionReason
   ) async {
     let failedSessionId = activeSessionId
+    let failedAttempt = activeAttempt
     while let sourceFailureTask {
       await sourceFailureTask.value
     }
-    guard activeSessionId == failedSessionId, phase == .starting || phase == .capturing else {
+    guard activeSessionId == failedSessionId, activeAttempt == failedAttempt,
+      phase == .starting || phase == .capturing else {
       return
     }
     if segmentedCapture, let preparation, let activeSessionId,
@@ -918,6 +924,10 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
 
   private func notePhaseChange(from previous: LiveMicrophoneRecordingPhase) {
     guard phase != previous else { return }
+    if phase != .starting && phase != .capturing {
+      permissionWatchTask?.cancel()
+      permissionWatchTask = nil
+    }
     let session = DiagnosticPrivacy.token(activeSessionId ?? diagnosticSessionId ?? "none")
     var detail = "from=\(previous.rawValue) to=\(phase.rawValue) session=\(session)"
     if phase == .failed {
@@ -928,6 +938,8 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
   }
 
   private func resetActiveSession() {
+    permissionWatchTask?.cancel()
+    permissionWatchTask = nil
     storageWatchTask?.cancel()
     storageWatchTask = nil
     if let applicationExitObserver { NSWorkspace.shared.notificationCenter.removeObserver(applicationExitObserver) }
@@ -1071,6 +1083,39 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
         }
       }
     }
+  }
+
+  /// TCC can change without a route or engine callback. Observe it off the
+  /// audio hot path while this attempt is starting or recording. Cancellation
+  /// and identity checks prevent an old observer from reaching a later span.
+  private func beginPermissionWatch() {
+    permissionWatchTask?.cancel()
+    guard let sessionId = activeSessionId, let attempt = activeAttempt,
+      !failedSources.contains(.microphone) else { return }
+    permissionWatchTask = Task { [weak self] in
+      while !Task.isCancelled {
+        do { try await Task.sleep(for: .seconds(2)) } catch { return }
+        guard !Task.isCancelled, let self, self.activeSessionId == sessionId,
+          self.activeAttempt == attempt, !self.failedSources.contains(.microphone),
+          await self.checkMicrophonePermission() else { return }
+      }
+    }
+  }
+
+  /// Native permission is an observation, never capture authority. Existing
+  /// Rust admission decides interruption or degraded continuation; restoring
+  /// access cannot resurrect a retired source or start a new attempt.
+  private func checkMicrophonePermission() async -> Bool {
+    guard phase == .starting || phase == .capturing else { return false }
+    guard !failedSources.contains(.microphone) else { return true }
+    guard permission.currentState == .authorized else {
+      await handleCaptureFailure(
+        "Microphone permission was withdrawn. Audio recorded so far is preserved.",
+        code: "permission-revoked", source: .microphone,
+        interruptionReason: .permissionRevoked)
+      return false
+    }
+    return true
   }
 
   /// Both the timer and the injected process proof use the same storage probe

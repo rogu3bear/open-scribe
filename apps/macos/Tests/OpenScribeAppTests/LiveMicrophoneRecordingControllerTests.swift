@@ -6,13 +6,15 @@ import XCTest
 @MainActor
 private final class AuthorizedMicrophonePermission: MicrophonePermissionProviding {
   var currentState: MicrophonePermissionState
+  private(set) var requestCount = 0
 
   init(currentState: MicrophonePermissionState = .authorized) {
     self.currentState = currentState
   }
 
   func request() async -> MicrophonePermissionState {
-    currentState
+    requestCount += 1
+    return currentState
   }
 }
 
@@ -437,6 +439,167 @@ private final class SegmentWriterMap: @unchecked Sendable {
 
 @MainActor
 final class LiveMicrophoneRecordingControllerTests: XCTestCase {
+  func testRevokedMicrophoneWithoutAdapterCallbackRetiresOnlyItsTrack() async throws {
+    let fixture = try await permissionFixture()
+    fixture.permission.currentState = .denied
+    // No route/error/progress callback follows the TCC observation.
+    await waitForPermissionResult { fixture.controller.isMicrophoneRetired }
+    XCTAssertEqual(fixture.controller.phase, .capturing)
+    XCTAssertEqual(fixture.preparation.failedSources, [.microphone])
+    XCTAssertEqual(fixture.preparation.sourceFailureReasons, [.permissionRevoked])
+    XCTAssertTrue(fixture.preparation.interruptionReasons.isEmpty)
+    XCTAssertEqual(fixture.preparation.sealedSegmentCount, 1)
+    XCTAssertEqual(fixture.microphone.stopCount, 1)
+    XCTAssertEqual(fixture.systemAudio.stopCount, 0)
+    XCTAssertEqual(fixture.controller.failureCode, "permission-revoked")
+    XCTAssertTrue(fixture.controller.errorMessage?.contains("permission was withdrawn") == true)
+    XCTAssertEqual(fixture.permission.requestCount, 1, "observation never requests permission")
+    fixture.permission.currentState = .authorized
+    try await Task.sleep(for: .milliseconds(2_100))
+    XCTAssertEqual(fixture.microphone.startCount, 1, "restoration never restarts a retired source")
+    XCTAssertEqual(fixture.preparation.failedSources, [.microphone])
+    await fixture.controller.stop()
+  }
+
+  func testRevokedPermissionOwnsTheRouteInterruptionReason() async throws {
+    let fixture = try await permissionFixture()
+    fixture.permission.currentState = .denied
+    let writer = try XCTUnwrap(fixture.writers.writer(for: .microphone))
+    fixture.microphone.emitObservation(
+      MicrophoneSourceHealthObservation(
+        identity: MicrophoneCaptureIdentity(authorization: writer.authorization),
+        sequence: 1, event: .routeInterrupted, callbackCount: 2,
+        successfullyWrittenFrameCount: 480, lastProgressMonotonicNanoseconds: 1_000))
+    await waitForPermissionResult { fixture.controller.isMicrophoneRetired }
+    XCTAssertEqual(fixture.preparation.sourceFailureReasons, [.permissionRevoked])
+    XCTAssertEqual(fixture.controller.phase, .capturing)
+    XCTAssertEqual(fixture.systemAudio.stopCount, 0)
+    await fixture.controller.stop()
+  }
+
+  func testRevokingTheLastSourceInterruptsWithoutCallbacksOrAutomaticRestoration() async throws {
+    let fixture = try await permissionFixture(dualSource: false)
+    fixture.permission.currentState = .denied
+    await waitForPermissionResult { fixture.controller.phase == .failed }
+    XCTAssertEqual(fixture.preparation.interruptionReasons, [.permissionRevoked])
+    XCTAssertTrue(fixture.preparation.failedSources.isEmpty)
+    XCTAssertFalse(fixture.controller.isCapturing)
+    XCTAssertEqual(fixture.microphone.stopCount, 1)
+    XCTAssertEqual(fixture.controller.failureCode, "permission-revoked")
+    fixture.permission.currentState = .authorized
+    try await Task.sleep(for: .milliseconds(2_100))
+    XCTAssertEqual(fixture.microphone.startCount, 1)
+    XCTAssertEqual(fixture.controller.phase, .failed)
+    XCTAssertEqual(fixture.permission.requestCount, 1)
+  }
+
+  func testPermissionLossDuringStartingCannotBecomeAllSourceRecording() async throws {
+    let fixture = try await permissionFixture(recording: false)
+    fixture.permission.currentState = .denied
+    await waitForPermissionResult { fixture.controller.phase == .failed }
+    XCTAssertEqual(fixture.preparation.recordingConfirmCount, 0)
+    XCTAssertEqual(fixture.preparation.interruptionReasons, [.permissionRevoked])
+    XCTAssertEqual(fixture.microphone.stopCount, 1)
+    XCTAssertEqual(fixture.systemAudio.stopCount, 1)
+  }
+
+  func testLostPermissionRejectsFirstSampleBeforeRecordingConfirmation() async throws {
+    for state in [MicrophonePermissionState.denied, .restricted, .notDetermined] {
+      let fixture = try await permissionFixture(recording: false)
+      fixture.permission.currentState = state
+      let writer = try XCTUnwrap(fixture.writers.writer(for: .microphone))
+      fixture.microphone.emitFirstSample(
+        try writer.firstSampleReceipt(hostTime: 42_000, frameCount: 480))
+      await waitForPermissionResult { fixture.controller.phase == .failed }
+      XCTAssertFalse(fixture.preparation.acceptedFirstSample)
+      XCTAssertEqual(fixture.preparation.recordingConfirmCount, 0)
+      XCTAssertEqual(fixture.preparation.interruptionReasons, [.permissionRevoked])
+    }
+  }
+
+  func testPermissionLossDuringSuspendedSystemStartupNeverStartsMicrophone() async throws {
+    let permission = AuthorizedMicrophonePermission()
+    let preparation = RecordingPreparationFake(requiredSources: [.microphone, .systemAudio])
+    let microphone = MicrophoneCaptureFake()
+    let system = SystemAudioCaptureFake()
+    let gate = SystemAudioStopGate()
+    system.startGate = gate
+    let controller = LiveMicrophoneRecordingController(
+      permission: permission, preparationFactory: { preparation },
+      writerFactory: { SegmentWriterFake(authorization: $0) },
+      captureFactory: { _ in microphone }, requiredSources: [.microphone, .systemAudio],
+      systemCaptureFactory: { _ in system })
+    let start = Task { await controller.start() }
+    await fulfillment(of: [gate.entered], timeout: 2)
+    permission.currentState = .denied
+    await gate.release()
+    await start.value
+    XCTAssertEqual(controller.phase, .failed)
+    XCTAssertEqual(microphone.startCount, 0)
+    XCTAssertEqual(preparation.recordingConfirmCount, 0)
+    XCTAssertEqual(preparation.interruptionReasons, [.permissionRevoked])
+  }
+
+  func testRefusedDurablePermissionDegradationCannotClaimContinuedRecording() async throws {
+    let fixture = try await permissionFixture()
+    fixture.preparation.sourceFailureEvidenceIsDurable = false
+    fixture.permission.currentState = .denied
+    let writer = try XCTUnwrap(fixture.writers.writer(for: .microphone))
+    fixture.microphone.emitObservation(
+      MicrophoneSourceHealthObservation(
+        identity: MicrophoneCaptureIdentity(authorization: writer.authorization),
+        sequence: 1, event: .routeInterrupted, callbackCount: 2,
+        successfullyWrittenFrameCount: 480, lastProgressMonotonicNanoseconds: 1_000))
+    await waitForPermissionResult { fixture.controller.phase == .failed }
+    XCTAssertFalse(fixture.controller.isCapturing)
+    XCTAssertEqual(fixture.preparation.interruptionReasons, [.permissionRevoked])
+    XCTAssertGreaterThan(fixture.systemAudio.stopCount, 0)
+  }
+
+  private func permissionFixture(recording: Bool = true, dualSource: Bool = true) async throws -> (
+    controller: LiveMicrophoneRecordingController, preparation: RecordingPreparationFake,
+    permission: AuthorizedMicrophonePermission, writers: SegmentWriterMap,
+    microphone: MicrophoneCaptureFake, systemAudio: SystemAudioCaptureFake
+  ) {
+    let sources: [NativeMediaSourceKind] = dualSource ? [.microphone, .systemAudio] : [.microphone]
+    let preparation = RecordingPreparationFake(requiredSources: sources)
+    let permission = AuthorizedMicrophonePermission()
+    let writers = SegmentWriterMap()
+    let microphone = MicrophoneCaptureFake()
+    let systemAudio = SystemAudioCaptureFake()
+    let controller = LiveMicrophoneRecordingController(
+      permission: permission, preparationFactory: { preparation },
+      writerFactory: { authorization in
+        let writer = SegmentWriterFake(authorization: authorization)
+        writers.store(writer)
+        return writer
+      }, captureFactory: { _ in microphone }, requiredSources: sources,
+      systemCaptureFactory: { _ in systemAudio })
+    await controller.start()
+    if recording {
+      let writer = try XCTUnwrap(writers.writer(for: .microphone))
+      microphone.emitFirstSample(try writer.firstSampleReceipt(hostTime: 42_000, frameCount: 480))
+      if dualSource {
+        let writer = try XCTUnwrap(writers.writer(for: .systemAudio))
+        systemAudio.emitFirstSample(
+          try writer.firstSampleReceipt(hostTime: 43_000, frameCount: 480))
+      }
+      await waitForPermissionResult { controller.phase == .capturing }
+    }
+    return (controller, preparation, permission, writers, microphone, systemAudio)
+  }
+
+  private func waitForPermissionResult(
+    file: StaticString = #filePath, line: UInt = #line,
+    _ predicate: @MainActor () -> Bool
+  ) async {
+    let deadline = ContinuousClock.now.advanced(by: .seconds(4))
+    while !predicate(), ContinuousClock.now < deadline {
+      try? await Task.sleep(for: .milliseconds(10))
+    }
+    XCTAssertTrue(predicate(), "Expected capture permission transition", file: file, line: line)
+  }
+
   func testInertPreparationDetailStaysOffTheRustHandle() throws {
     let preparation = RecordingPreparationFake()
     let detail = try preparation.recorderDetail(sessionId: "session-live")

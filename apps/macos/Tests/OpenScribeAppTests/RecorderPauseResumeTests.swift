@@ -8,6 +8,78 @@ import XCTest
 /// sources supply PCM instead of requesting TCC or opening audio devices.
 @MainActor
 final class RecorderPauseResumeTests: XCTestCase {
+  func testObservedPermissionRevocationPersistsAndNeverRestartsTheRetiredMicrophone() async throws {
+    let harness = try PauseHarness()
+    defer { harness.removeFiles() }
+    await harness.controller.start()
+    try await harness.capture()
+    let microphone = try XCTUnwrap(harness.captures.microphones.last)
+    let system = try XCTUnwrap(harness.captures.systems.last)
+    let sessionId = microphone.writer.authorization.sessionId
+    harness.permission.currentState = .denied
+    // No capture callback: the production permission watch must discover loss.
+    let deadline = ContinuousClock.now.advanced(by: .seconds(4))
+    while !harness.controller.isMicrophoneRetired, ContinuousClock.now < deadline {
+      try await Task.sleep(for: .milliseconds(10))
+    }
+    XCTAssertTrue(harness.controller.isMicrophoneRetired, harness.controller.errorMessage ?? "")
+    XCTAssertEqual(harness.controller.phase, .capturing)
+    XCTAssertEqual(microphone.stopCount, 1)
+    XCTAssertEqual(system.stopCount, 0)
+    let detail = try harness.preparation.recorderDetail(sessionId: sessionId)
+    XCTAssertEqual(detail.lifecycle, "recording")
+    let failure = try XCTUnwrap(detail.events.first { $0.kind == "source_failed" })
+    let microphoneURL = URL(fileURLWithPath: microphone.writer.authorization.absolutePath)
+    let sealedMicrophone = try Data(contentsOf: microphoneURL)
+
+    await harness.controller.stop(pausing: true)
+    XCTAssertEqual(harness.controller.phase, .paused)
+    // An obsolete watch cannot interrupt a paused session. Permission restoration
+    // still requires an explicit start and cannot revive this retired source.
+    try await Task.sleep(for: .milliseconds(2_100))
+    XCTAssertEqual(harness.controller.phase, .paused)
+    harness.permission.currentState = .authorized
+    harness.clock.advance(seconds: 600)
+    await harness.controller.start(resuming: true)
+    XCTAssertEqual(harness.captures.microphones.count, 1)
+    XCTAssertEqual(harness.captures.systems.count, 2)
+    let resumed = try XCTUnwrap(harness.captures.systems.last)
+    try resumed.emit(frames: 48_000, hostTime: harness.clock.now, value: 16384)
+    await settle()
+    XCTAssertEqual(harness.controller.phase, .capturing)
+    harness.clock.advance(seconds: 1)
+    await harness.controller.stop()
+    let mixDeadline = ContinuousClock.now.advanced(by: .seconds(4))
+    while harness.controller.statusText.hasSuffix("…"), ContinuousClock.now < mixDeadline {
+      try await Task.sleep(for: .milliseconds(10))
+    }
+    XCTAssertEqual(harness.controller.phase, .saved)
+    XCTAssertFalse(harness.controller.statusText.hasSuffix("…"))
+    XCTAssertEqual(try Data(contentsOf: microphoneURL), sealedMicrophone)
+
+    let reopened = try NativeRecordingPreparation.open(managedRoot: harness.root.path)
+    _ = try reopened.recoverPlayableSessions()
+    let restored = try reopened.recorderDetail(sessionId: sessionId)
+    XCTAssertEqual(restored.lifecycle, "ready_for_review")
+    XCTAssertEqual(restored.events.filter { $0.kind == "source_failed" }, [failure])
+    let journalURL = harness.root.appendingPathComponent("Sessions/\(sessionId)/recovery.jsonl")
+    let records = try String(contentsOf: journalURL, encoding: .utf8).split(separator: "\n").map {
+      try XCTUnwrap(JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any])
+    }
+    let failures = records.filter { $0["event_kind"] as? String == "source_failed" }
+    XCTAssertEqual(failures.count, 1)
+    let payload = try XCTUnwrap(failures.first?["payload"] as? [String: Any])
+    XCTAssertEqual(payload["reason"] as? String, "permission_revoked")
+    let plan = try reopened.playbackTimeline(sessionId: sessionId)
+    XCTAssertEqual(plan.count, 3, "one sealed microphone segment and two continuing system spans")
+    let reader = try TimelinePCMReader(segments: plan)
+    defer { reader.close() }
+    var frames: UInt64 = 0
+    while let buffer = try reader.read(maximumFrames: 4096) { frames += UInt64(buffer.frameLength) }
+    XCTAssertEqual(frames, 96_000)
+    XCTAssertEqual(try Data(contentsOf: microphoneURL), sealedMicrophone)
+  }
+
   func testRepeatedPauseResumeDrainsSourcesAndPreservesContiguousPlayback() async throws {
     let harness = try PauseHarness()
     defer { harness.removeFiles() }

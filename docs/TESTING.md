@@ -100,6 +100,21 @@ bundle with `build-for-testing`. It retains source/native logs and their digests
 It then runs the complete Swift suite, scene launch, recorder components, and
 synthetic foundational recovery. Device-dependent proofs remain separate.
 
+The recorder controller observes microphone permission without prompting every
+two seconds while an attempt is starting or capturing, and rechecks it at
+asynchronous startup and first-sample boundaries. The interval bounds observation
+under a responsive main actor; draining adapters and durable Rust admission must
+still settle. Isolated `LiveMicrophoneRecordingControllerTests` cover revocation
+without an adapter callback, startup races, last-source interruption, revoked
+route reasons, and refusal of undurable continuation. `RecorderPauseResumeTests`
+also exercises the production controller, UniFFI, SQLite/journal and segmented
+CAF writers with injected PCM: the revoked microphone seals, the selected audio
+continues, pause/resume preserves retirement, and reopen/playback preserves media
+and the failure reason. These checks never request TCC or open real devices.
+The macOS 13/current-OS grant, deny, revoke and restore matrix still requires an
+attended exact-artifact run under ADR 0007. Source qualification cannot close the
+release permission P0 or establish actual TCC notification/cache behavior.
+
 `DiagnosticsUnifiedLogTests` observes the production logger in that isolated
 test host through an owned, read-only `log stream` subprocess with a six-second
 timeout. Unique start/end controls and all eight expected redacted records must
