@@ -51,6 +51,45 @@ fn read(package: &Path, name: &str) -> Value {
     serde_json::from_slice(&fs::read(package.join(name)).unwrap()).unwrap()
 }
 
+#[test]
+fn portable_v1_refuses_a_verified_package_whose_passage_names_would_be_lost() {
+    let mut fixture = imported(30);
+    transcribe(&mut fixture.store, &fixture.session, &fixture.track);
+    let parent = fixture.root.parent().unwrap();
+    let package = parent.join("Named.openscribe");
+    write_portable_package(&fixture.store, &fixture.session, &package).unwrap();
+    let mut transcript = read(&package, "transcript.json");
+    transcript["segments"][0]["speaker"]["label"] = "Dana".into();
+    transcript["segments"][0]["speaker"]["origin"] = "human".into();
+    let bytes = serde_json::to_vec(&transcript).unwrap();
+    fs::write(package.join("transcript.json"), &bytes).unwrap();
+    let mut manifest = read(&package, "manifest.json");
+    for file in manifest["files"].as_array_mut().unwrap() {
+        if file["path"] == "transcript.json" {
+            file["byte_length"] = bytes.len().into();
+            file["sha256"] = format!("{:x}", Sha256::digest(&bytes)).into();
+        }
+    }
+    fs::write(
+        package.join("manifest.json"),
+        serde_json::to_vec(&manifest).unwrap(),
+    )
+    .unwrap();
+    let mut other = SessionStore::open(parent.join("Other Mac")).unwrap();
+    assert!(matches!(
+        import_portable_package(&mut other, &package),
+        Err(SessionExportError::InvalidPackage(
+            "portable v1 cannot restore turn-level speaker names"
+        ))
+    ));
+    assert!(
+        fs::read_dir(parent.join("Other Mac/Sessions"))
+            .unwrap()
+            .next()
+            .is_none()
+    );
+}
+
 /// Everything ADR 0010 requires a round trip to preserve, without local
 /// identities, paths, or export times.
 fn semantics(package: &Path) -> Value {

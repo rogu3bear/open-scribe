@@ -370,21 +370,29 @@ struct ContentView: View {
     }
   }
 
+  @ViewBuilder
   private var importButton: some View {
-    Button(
-      importedMediaAuthority.isBusy ? "Importing…" : "Import Audio…",
-      systemImage: "square.and.arrow.down"
-    ) {
-      importedMediaAuthority.chooseAndImport()
+    if importedMediaAuthority.hasPendingAudioImports
+      || !importedMediaAuthority.failedImports.isEmpty
+    {
+      ImportBatchStatus(imports: importedMediaAuthority, canResume: liveRecording.canStart)
     }
-    .disabled(!canImport)
-    .help(
-      canImport
-        ? ImportedMediaAuthorityAdapter.importLimitHelp
-        : liveRecording.isLaunchRecoveryPending()
-          ? "Wait for the check of recordings from the last session to finish before importing audio"
-          : "Wait for the current recording action to finish before importing audio"
-    )
+    if !importedMediaAuthority.hasPendingAudioImports {
+      Button(
+        importedMediaAuthority.isBusy ? "Importing…" : "Import Audio…",
+        systemImage: "square.and.arrow.down"
+      ) {
+        importedMediaAuthority.chooseAndImport()
+      }
+      .disabled(!canImport)
+      .help(
+        canImport
+          ? ImportedMediaAuthorityAdapter.importLimitHelp
+          : liveRecording.isLaunchRecoveryPending()
+            ? "Wait for the check of recordings from the last session to finish before importing audio"
+            : "Wait for the current recording action to finish before importing audio"
+      )
+    }
   }
 
   private var openPackageAction: (() -> Void)? {
@@ -408,6 +416,7 @@ struct ContentView: View {
 
   private var canImport: Bool {
     liveRecording.canStart && !importedMediaAuthority.isBusy
+      && !importedMediaAuthority.hasPendingAudioImports
   }
 
   private var workspaceNotices: [WorkspaceNotice] {
@@ -459,11 +468,10 @@ struct ContentView: View {
 
   private func openSearchHit(_ hit: NativeTranscriptSearchHit) {
     navigation.select(hit.sessionId)
-    if store.savedSessions.contains(where: {
-      $0.sessionId == hit.sessionId && $0.hasCaptureTimeline
+    if let session = store.savedSessions.first(where: {
+      $0.sessionId == hit.sessionId
     }) {
-      recoveredSessions.playSynchronized(
-        sessionId: hit.sessionId, startNanoseconds: hit.startNanoseconds)
+      recoveredSessions.playTranscriptSearchHit(hit, in: session)
     }
   }
 

@@ -20,6 +20,49 @@ pub enum SessionOrigin {
     Import,
 }
 
+/// Stored library metadata for the reader. These are inexpensive SQLite
+/// facts, not a media-integrity receipt or an inferred recording date.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ConversationReviewMetadata {
+    pub added_at_ms: i64,
+    pub origin: String,
+    pub stored_media_bytes: u64,
+    pub source_names: Vec<String>,
+}
+
+impl SessionStore {
+    pub fn conversation_review_metadata(
+        &self,
+        session: &SessionId,
+    ) -> Result<ConversationReviewMetadata, StoreError> {
+        super::session_deletion::require_available(&self.connection, &session.0)?;
+        let (added_at_ms, origin, stored_media_bytes): (i64, String, i64) =
+            self.connection.query_row(
+                "SELECT created_at_ms, origin,
+                (SELECT COALESCE(SUM(byte_length), 0) FROM segments
+                 WHERE session_id = sessions.id AND lifecycle = 'sealed')
+             FROM sessions WHERE id = ?1 AND lifecycle <> 'deleted'",
+                [&session.0],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )?;
+        let source_names = self
+            .connection
+            .prepare(
+                "SELECT DISTINCT display_name FROM sources WHERE session_id = ?1
+             ORDER BY display_name COLLATE NOCASE",
+            )?
+            .query_map([&session.0], |row| row.get(0))?
+            .collect::<Result<_, _>>()?;
+        Ok(ConversationReviewMetadata {
+            added_at_ms,
+            origin,
+            stored_media_bytes: u64::try_from(stored_media_bytes)
+                .map_err(|_| StoreError::IntegrityMismatch("stored media length is negative"))?,
+            source_names,
+        })
+    }
+}
+
 impl SessionOrigin {
     const fn as_str(self) -> &'static str {
         match self {

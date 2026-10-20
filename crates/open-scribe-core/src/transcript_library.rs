@@ -16,9 +16,10 @@ use crate::session_export::{
 };
 use open_scribe_evidence::EvidenceRef;
 use open_scribe_store::{
-    ContextDetail, ContextEventRecord, ResolvedEvidence, SessionDeletionInventory,
-    SessionDeletionReceipt, SessionSpeaker, SessionStore, StoreError, TranscriptDocumentSegment,
-    TranscriptSearchHit,
+    ContextDetail, ContextEventRecord, ConversationReviewMetadata, NamedTranscriptSpeaker,
+    ResolvedEvidence, SessionDeletionInventory, SessionDeletionReceipt, SessionSpeaker,
+    SessionStore, StoreError, TranscriptDocumentSegment, TranscriptSearchHit,
+    TranscriptSpeakerAssignment,
 };
 use open_scribe_types::SessionId;
 use std::path::Path;
@@ -50,6 +51,41 @@ impl TranscriptLibrary {
 
     pub fn speakers(&self, session: &SessionId) -> Result<Vec<SessionSpeaker>, StoreError> {
         self.store.session_speakers(session)
+    }
+
+    pub fn named_speakers(
+        &self,
+        session: &SessionId,
+    ) -> Result<Vec<NamedTranscriptSpeaker>, StoreError> {
+        self.store.named_transcript_speakers(session)
+    }
+
+    pub fn review_metadata(
+        &self,
+        session: &SessionId,
+    ) -> Result<ConversationReviewMetadata, StoreError> {
+        self.store.conversation_review_metadata(session)
+    }
+
+    pub fn assign_speaker(
+        &mut self,
+        session: &SessionId,
+        revision_id: &str,
+        sequence: u32,
+        assignment: &TranscriptSpeakerAssignment,
+    ) -> Result<Option<String>, StoreError> {
+        self.store
+            .assign_transcript_speaker(session, revision_id, sequence, assignment)
+    }
+
+    pub fn rename_named_speaker(
+        &mut self,
+        session: &SessionId,
+        speaker_id: &str,
+        label: &str,
+    ) -> Result<(), StoreError> {
+        self.store
+            .rename_transcript_speaker(session, speaker_id, label)
     }
 
     /// The scope receipts, declared metadata, and accepted-event count, read-only.
@@ -128,6 +164,11 @@ impl TranscriptLibrary {
         session: Option<&SessionId>,
         limit: u32,
     ) -> Result<Vec<TranscriptSearchHit>, StoreError> {
+        if let Some(name) = query.trim().strip_prefix("speaker:") {
+            return self
+                .store
+                .search_transcripts_by_speaker(name, session, limit);
+        }
         self.store.search_transcripts(query, session, limit)
     }
 

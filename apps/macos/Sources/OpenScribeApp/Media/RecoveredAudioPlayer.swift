@@ -26,6 +26,7 @@ extension NativeImportedPlaybackLease: ImportedPlaybackLeaseHolding {}
 
 @MainActor
 protocol RecoveredAudioPlaying: AnyObject {
+  var transcriptPositionNanoseconds: Int64? { get }
   func playRecovered(receipt: String, retaining lease: AnyObject, generation: UUID) async throws
   /// `startNanoseconds` is a position in the imported media, from its start.
   func playImported(
@@ -35,6 +36,11 @@ protocol RecoveredAudioPlaying: AnyObject {
     _ handler: @escaping @Sendable (PlaybackTermination) -> Void
   )
   func stop()
+}
+
+extension RecoveredAudioPlaying {
+  /// An adapter without an actual renderer clock must report unavailable.
+  var transcriptPositionNanoseconds: Int64? { nil }
 }
 
 enum PlaybackTerminationOutcome: Equatable, Sendable {
@@ -158,6 +164,7 @@ private final class BoundedCallbackPlaybackSession: @unchecked Sendable {
   private static let scheduledBufferLimit = 2
 
   let processingFormat: AVAudioFormat
+  private(set) var playbackStartNanoseconds: Int64 = 0
 
   private let decoder: CallbackCAFDecoder
   private let kind: CallbackPlaybackKind
@@ -196,8 +203,20 @@ private final class BoundedCallbackPlaybackSession: @unchecked Sendable {
     processingFormat = decoder.processingFormat
     if startNanoseconds > 0 {
       // Frames at the decoded rate, which is the imported file's own rate.
-      let frame = Double(startNanoseconds) / 1_000_000_000 * processingFormat.sampleRate
-      try decoder.seek(toFrame: Int64(frame.rounded(.down)))
+      guard
+        let frame = TranscriptPlaybackProjection.frame(
+          nanoseconds: startNanoseconds, sampleRate: processingFormat.sampleRate)
+      else {
+        throw ImportedPlaybackError.audioFile(operation: .seekFrames, status: OSStatus(paramErr))
+      }
+      try decoder.seek(toFrame: frame)
+      guard
+        let position = TranscriptPlaybackProjection.position(
+          start: 0, end: Int64.max, renderedFrames: frame, sampleRate: processingFormat.sampleRate)
+      else {
+        throw ImportedPlaybackError.audioFile(operation: .seekFrames, status: OSStatus(paramErr))
+      }
+      playbackStartNanoseconds = position
     }
   }
 
@@ -344,6 +363,16 @@ final class RecoveredAudioPlayer: RecoveredAudioPlaying {
   private let outputMode: PlaybackOutputMode
   private let generationCell = PlaybackGenerationCell()
   private var configurationObserver: PlaybackEngineConfigurationObserver?
+
+  var transcriptPositionNanoseconds: Int64? {
+    guard let player, player.isPlaying, let playback = callbackPlayback,
+      let renderTime = player.lastRenderTime,
+      let time = player.playerTime(forNodeTime: renderTime)
+    else { return nil }
+    return TranscriptPlaybackProjection.position(
+      start: playback.playbackStartNanoseconds, end: Int64.max,
+      renderedFrames: time.sampleTime, sampleRate: time.sampleRate)
+  }
 
   init(
     lifecycle: NativePlaybackLifecycleHooks = .production,

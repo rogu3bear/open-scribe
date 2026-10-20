@@ -261,6 +261,45 @@ fn a_portable_package_verifies_replaces_atomically_and_refuses_tampering() {
     verify_portable_package(&package).unwrap();
 }
 
+#[test]
+fn portable_v1_refuses_active_turn_names_without_replacing_an_existing_package() {
+    let mut fixture = transcribed(30);
+    let package = fixture.root.parent().unwrap().join("Keep.openscribe");
+    write_portable_package(&fixture.store, &fixture.session, &package).unwrap();
+    let manifest = fs::read(package.join("manifest.json")).unwrap();
+    let turn = fixture
+        .store
+        .transcript_document(&fixture.session)
+        .unwrap()
+        .remove(0);
+    fixture
+        .store
+        .assign_transcript_speaker(
+            &fixture.session,
+            &turn.revision_id,
+            turn.sequence,
+            &open_scribe_store::TranscriptSpeakerAssignment::New("Dana".into()),
+        )
+        .unwrap();
+    assert!(matches!(
+        write_portable_package(&fixture.store, &fixture.session, &package),
+        Err(SessionExportError::Unavailable(_))
+    ));
+    assert_eq!(fs::read(package.join("manifest.json")).unwrap(), manifest);
+    verify_portable_package(&package).unwrap();
+    fixture
+        .store
+        .assign_transcript_speaker(
+            &fixture.session,
+            &turn.revision_id,
+            turn.sequence,
+            &open_scribe_store::TranscriptSpeakerAssignment::Source,
+        )
+        .unwrap();
+    write_portable_package(&fixture.store, &fixture.session, &package).unwrap();
+    verify_portable_package(&package).unwrap();
+}
+
 fn copy_tree(from: &std::path::Path, to: &std::path::Path) {
     fs::create_dir_all(to).unwrap();
     for entry in fs::read_dir(from).unwrap() {

@@ -95,8 +95,9 @@ pub use open_scribe_store::{
     SourceFailureRequest, StoreError, TimelineSegment, ValidatedMixdown, import_policy,
 };
 pub use open_scribe_store::{
-    SelectedRevisionProvenance, SessionDeletionInventory, SessionDeletionReceipt, SessionSpeaker,
-    SpeakerLabelOrigin, TranscriptDocumentSegment, TranscriptExportContext, TranscriptSearchHit,
+    NamedTranscriptSpeaker, SelectedRevisionProvenance, SessionDeletionInventory,
+    SessionDeletionReceipt, SessionSpeaker, SpeakerLabelOrigin, TranscriptDocumentSegment,
+    TranscriptExportContext, TranscriptSearchHit, TranscriptSpeakerAssignment,
 };
 
 pub struct CoarseMediaOpenReceipt {

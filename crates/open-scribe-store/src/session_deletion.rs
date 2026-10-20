@@ -147,8 +147,9 @@ impl SessionStore {
                 "SELECT COUNT(*) FROM transcript_corrections WHERE session_id = ?1",
             )?,
             speaker_names: count(
-                "SELECT COUNT(DISTINCT track_id) FROM speaker_adjudications
-                 WHERE session_id = ?1 AND label IS NOT NULL",
+                "SELECT (SELECT COUNT(DISTINCT track_id) FROM speaker_adjudications
+                         WHERE session_id = ?1 AND label IS NOT NULL)
+                      + (SELECT COUNT(*) FROM transcript_named_speakers WHERE session_id = ?1)",
             )?,
             markers: count("SELECT COUNT(*) FROM markers WHERE session_id = ?1")?,
             context_events: count("SELECT COUNT(*) FROM context_events WHERE session_id = ?1")?,
@@ -217,6 +218,9 @@ impl SessionStore {
         for statement in [
             "DELETE FROM transcript_search WHERE session_id = ?1",
             "DELETE FROM speaker_adjudications WHERE session_id = ?1",
+            // Sessions remain tombstones; remove people explicitly so their
+            // append-only names and turn assignments cascade in this transaction.
+            "DELETE FROM transcript_named_speakers WHERE session_id = ?1",
             "DELETE FROM transcript_corrections WHERE session_id = ?1",
             "DELETE FROM transcript_selections WHERE session_id = ?1",
             "DELETE FROM transcript_selection_epochs WHERE session_id = ?1",

@@ -13,6 +13,8 @@ final class TranscriptLibraryModel: ObservableObject {
   @Published private(set) var transcriptionUnavailableReason: String?
   @Published private(set) var segments: [NativeTranscriptSegment] = []
   @Published private(set) var speakers: [NativeSessionSpeaker] = []
+  @Published private(set) var namedSpeakers: [NativeNamedTranscriptSpeaker] = []
+  @Published private(set) var reviewMetadata: NativeConversationReviewMetadata?
   @Published private(set) var searchResults: [NativeTranscriptSearchHit] = []
   @Published private(set) var pendingDeletion: NativeSessionDeletionInventory?
   @Published private var documentMessage: String?
@@ -37,6 +39,7 @@ final class TranscriptLibraryModel: ObservableObject {
 
   private let library: NativeTranscriptLibrary?
   private let moveToTrash: TrashMover
+  private var activeSearchQuery = ""
   /// The Rust-validated capture timeline, for the WAV mix.
   private let timeline: (@Sendable (String) throws -> [NativeTimelineSegment])?
   #if DEBUG
@@ -135,6 +138,8 @@ final class TranscriptLibraryModel: ObservableObject {
       // Load metadata independently of transcript collection, keeping only
       // export options Rust can provide. Untimed captures may have none.
       speakers = (try? library.speakers(sessionId: sessionId)) ?? []
+      namedSpeakers = (try? library.namedSpeakers(sessionId: sessionId)) ?? []
+      reviewMetadata = try? library.reviewMetadata(sessionId: sessionId)
       audioOptions = try? library.audioExportOptions(sessionId: sessionId)
       contextDetail = try? library.contextDetail(sessionId: sessionId)
       contextEvents = (try? library.contextEvents(sessionId: sessionId)) ?? []
@@ -144,6 +149,8 @@ final class TranscriptLibraryModel: ObservableObject {
       availability = try library.availability(sessionId: sessionId)
       segments = try library.document(sessionId: sessionId)
       speakers = try library.speakers(sessionId: sessionId)
+      namedSpeakers = try library.namedSpeakers(sessionId: sessionId)
+      reviewMetadata = try library.reviewMetadata(sessionId: sessionId)
       audioOptions = try? library.audioExportOptions(sessionId: sessionId)
       contextDetail = try? library.contextDetail(sessionId: sessionId)
       contextEvents = (try? library.contextEvents(sessionId: sessionId)) ?? []
@@ -174,7 +181,47 @@ final class TranscriptLibraryModel: ObservableObject {
     }
   }
 
+  func assignSpeaker(
+    sessionId: String, segment: NativeTranscriptSegment,
+    assignment: NativeTranscriptSpeakerAssignment
+  ) async -> Bool {
+    await performSpeakerReview(sessionId: sessionId, action: "save the speaker assignment") {
+      library in
+      _ = try library.assignSpeaker(
+        sessionId: sessionId, revisionId: segment.revisionId,
+        sequence: segment.sequence, assignment: assignment)
+    }
+  }
+
+  func renameNamedSpeaker(sessionId: String, speakerId: String, label: String) async -> Bool {
+    await performSpeakerReview(sessionId: sessionId, action: "rename this person") { library in
+      try library.renameNamedSpeaker(sessionId: sessionId, speakerId: speakerId, label: label)
+    }
+  }
+
+  private func performSpeakerReview(
+    sessionId expectedSession: String, action: String,
+    _ operation: @escaping @Sendable (NativeTranscriptLibrary) throws -> Void
+  ) async -> Bool {
+    guard let library, sessionId == expectedSession else { return false }
+    do {
+      // Cancellation after a committed human edit must not discard its result.
+      try await StructuredNativeIO.mutation { try operation(library) }
+      if sessionId == expectedSession { load(sessionId: expectedSession) }
+      // Search spans conversations. A committed edit must refresh the current
+      // query even if another document was selected while the edit finished.
+      search(activeSearchQuery)
+      return true
+    } catch {
+      if sessionId == expectedSession {
+        report(Self.describe(error, action: action), failure: true)
+      }
+      return false
+    }
+  }
+
   func search(_ query: String) {
+    activeSearchQuery = query
     guard let library, !query.trimmingCharacters(in: .whitespaces).isEmpty else {
       searchResults = []
       return
@@ -417,6 +464,8 @@ final class TranscriptLibraryModel: ObservableObject {
     transcriptionUnavailableReason = nil
     segments = []
     speakers = []
+    namedSpeakers = []
+    reviewMetadata = nil
     audioOptions = nil
     contextDetail = nil
     contextEvents = []

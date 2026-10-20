@@ -7,6 +7,49 @@ import XCTest
 
 @MainActor
 final class TranscriptLibraryModelTests: XCTestCase {
+  func testSpeakerRenameAndResetRefreshAnUnchangedSearchQuery() async {
+    let library = TranscriptTimingLibraryFake(reviewedName: "Dana")
+    let model = TranscriptLibraryModel(library: library)
+    model.load(session: session("valid", calibrated: false, sources: []))
+    model.search("speaker:Dana")
+    XCTAssertEqual(model.searchResults.count, 1)
+    let renamed = await model.renameNamedSpeaker(
+      sessionId: "valid", speakerId: "person", label: "Morgan")
+    XCTAssertTrue(renamed)
+    XCTAssertTrue(model.searchResults.isEmpty)
+    model.search("speaker:Morgan")
+    XCTAssertEqual(model.searchResults.count, 1)
+    let reset = await model.assignSpeaker(
+      sessionId: "valid", segment: model.segments[0], assignment: .source)
+    XCTAssertTrue(reset)
+    XCTAssertTrue(model.searchResults.isEmpty)
+  }
+
+  func testSpeakerCompletionRefreshesTheLatestQueryWithoutChangingANewerDocument() async {
+    let checkpoint = MetadataCheckpoint()
+    defer { checkpoint.release.signal() }
+    let library = TranscriptTimingLibraryFake(
+      reviewedName: "Dana",
+      beforeSpeakerMutation: {
+        checkpoint.entered.signal()
+        checkpoint.release.wait()
+      })
+    let model = TranscriptLibraryModel(library: library)
+    model.load(session: session("valid", calibrated: false, sources: []))
+    let editing = Task {
+      await model.renameNamedSpeaker(sessionId: "valid", speakerId: "person", label: "Morgan")
+    }
+    await Task.detached { checkpoint.waitUntilEntered() }.value
+    model.load(session: session("newer", calibrated: false, sources: []))
+    model.search("speaker:Morgan")
+    XCTAssertTrue(model.searchResults.isEmpty)
+    checkpoint.release.signal()
+    let saved = await editing.value
+    XCTAssertTrue(saved)
+    XCTAssertEqual(model.sessionId, "newer")
+    XCTAssertEqual(model.searchResults.count, 1)
+  }
+
   private final class MetadataCheckpoint: @unchecked Sendable {
     let entered = DispatchSemaphore(value: 0)
     let release = DispatchSemaphore(value: 0)
@@ -382,7 +425,7 @@ final class TranscriptLibraryModelTests: XCTestCase {
       revisionId: "revision", trackId: named ? "system" : "microphone", sequence: sequence,
       startNanoseconds: start, endNanoseconds: start + 3_000_000_000,
       verbatimText: machine ?? text, effectiveText: text, corrected: machine != nil,
-      speakerLabel: speaker, speakerNamedByUser: named)
+      speakerLabel: speaker, speakerNamedByUser: named, namedSpeakerId: nil)
   }
 
   /// Renders the real view through AppKit at the full document width and at
@@ -474,15 +517,23 @@ private final class TranscriptTimingLibraryFake: NativeTranscriptLibrary, @unche
   private let rejectsHistoricalAudioOptions: Bool
   private var reads = 0
   private var exportedSessionId: String?
+  private var reviewedName: String?
+  private let beforeSpeakerMutation: (@Sendable () -> Void)?
   var transcriptReads: Int { lock.withLock { reads } }
   var lastExportedSessionId: String? { lock.withLock { exportedSessionId } }
 
-  init(rejectsHistoricalAudioOptions: Bool = false) {
+  init(
+    rejectsHistoricalAudioOptions: Bool = false, reviewedName: String? = nil,
+    beforeSpeakerMutation: (@Sendable () -> Void)? = nil
+  ) {
     self.rejectsHistoricalAudioOptions = rejectsHistoricalAudioOptions
+    self.reviewedName = reviewedName
+    self.beforeSpeakerMutation = beforeSpeakerMutation
     super.init(noHandle: NoHandle())
   }
   required init(unsafeFromHandle handle: UInt64) {
     rejectsHistoricalAudioOptions = false
+    beforeSpeakerMutation = nil
     super.init(unsafeFromHandle: handle)
   }
 
@@ -497,8 +548,16 @@ private final class TranscriptTimingLibraryFake: NativeTranscriptLibrary, @unche
       NativeTranscriptSegment(
         revisionId: "fixture", trackId: sessionId, sequence: 0, startNanoseconds: 0,
         endNanoseconds: 1_000_000_000, verbatimText: "Fixture", effectiveText: "Fixture",
-        corrected: false, speakerLabel: "Fixture", speakerNamedByUser: false)
+        corrected: false, speakerLabel: "Fixture", speakerNamedByUser: false, namedSpeakerId: nil)
     ]
+  }
+
+  override func namedSpeakers(sessionId: String) throws -> [NativeNamedTranscriptSpeaker] { [] }
+
+  override func reviewMetadata(sessionId: String) throws -> NativeConversationReviewMetadata {
+    NativeConversationReviewMetadata(
+      addedAtMs: 1_700_000_000_000, origin: "capture", storedMediaBytes: 2_048,
+      sourceNames: ["Fixture"])
   }
 
   override func speakers(sessionId: String) throws -> [NativeSessionSpeaker] {
@@ -532,10 +591,29 @@ private final class TranscriptTimingLibraryFake: NativeTranscriptLibrary, @unche
   }
   override func renameSpeaker(sessionId: String, trackId: String, label: String?) throws {}
 
+  override func renameNamedSpeaker(sessionId: String, speakerId: String, label: String) throws {
+    beforeSpeakerMutation?()
+    lock.withLock { reviewedName = label }
+  }
+
+  override func assignSpeaker(
+    sessionId: String, revisionId: String, sequence: UInt32,
+    assignment: NativeTranscriptSpeakerAssignment
+  ) throws -> String? {
+    lock.withLock { reviewedName = nil }
+    return nil
+  }
+
   override func search(query: String, sessionId: String?, limit: UInt32) throws
     -> [NativeTranscriptSearchHit]
   {
-    [
+    if query.hasPrefix("speaker:"),
+      lock.withLock({ reviewedName?.lowercased() })
+        != String(query.dropFirst("speaker:".count)).lowercased()
+    {
+      return []
+    }
+    return [
       NativeTranscriptSearchHit(
         sessionId: "valid", sessionTitle: "Fixture", revisionId: "fixture", trackId: "valid",
         sequence: 0, startNanoseconds: 0, endNanoseconds: 1_000_000_000, effectiveText: "Fixture")

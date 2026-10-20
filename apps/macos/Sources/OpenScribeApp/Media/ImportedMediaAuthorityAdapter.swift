@@ -5,13 +5,21 @@ enum ImportedMediaAuthorityPhase: Equatable {
   case idle
   case choosing
   case importing
+  case paused
   case succeeded
   case failed
+}
+
+struct ImportedAudioFailure: Identifiable, Equatable {
+  let id: Int
+  let fileName: String
+  let message: String
 }
 
 @MainActor
 final class ImportedMediaAuthorityAdapter: ObservableObject {
   typealias Picker = @MainActor () -> URL?
+  typealias BatchPicker = @MainActor () -> [URL]
   typealias StartSecurityScope = @MainActor (URL) -> Bool
   typealias StopSecurityScope = @MainActor (URL) -> Void
   typealias CanBeginImport = @MainActor () -> Bool
@@ -21,8 +29,13 @@ final class ImportedMediaAuthorityAdapter: ObservableObject {
   @Published private(set) var phase: ImportedMediaAuthorityPhase = .idle
   @Published private(set) var statusMessage: String?
   @Published private(set) var importedSessionId: String?
+  @Published private(set) var importedSessionIds: [String] = []
+  @Published private(set) var selectedFileCount = 0
+  @Published private(set) var hasPendingAudioImports = false
+  @Published private(set) var pauseRequested = false
+  @Published private(set) var failedImports: [ImportedAudioFailure] = []
 
-  private let picker: Picker
+  private let picker: BatchPicker
   private let startSecurityScope: StartSecurityScope
   private let stopSecurityScope: StopSecurityScope
   private let canBeginImport: CanBeginImport
@@ -32,7 +45,7 @@ final class ImportedMediaAuthorityAdapter: ObservableObject {
   private var operationTask: Task<Void, Never>?
 
   init(
-    picker: @escaping Picker = ImportedMediaAuthorityAdapter.openPanelSelection,
+    picker: Picker? = nil,
     startSecurityScope: @escaping StartSecurityScope = {
       $0.startAccessingSecurityScopedResource()
     },
@@ -42,9 +55,16 @@ final class ImportedMediaAuthorityAdapter: ObservableObject {
     canBeginImport: @escaping CanBeginImport = { true },
     importer: @escaping Importer,
     packagePicker: @escaping Picker = ImportedMediaAuthorityAdapter.packagePanelSelection,
-    packageOpener: PackageOpener? = nil
+    packageOpener: PackageOpener? = nil,
+    batchPicker: BatchPicker? = nil
   ) {
-    self.picker = picker
+    if let batchPicker {
+      self.picker = batchPicker
+    } else if let picker {
+      self.picker = { picker().map { [$0] } ?? [] }
+    } else {
+      self.picker = Self.openPanelSelections
+    }
     self.startSecurityScope = startSecurityScope
     self.stopSecurityScope = stopSecurityScope
     self.canBeginImport = canBeginImport
@@ -72,49 +92,135 @@ final class ImportedMediaAuthorityAdapter: ObservableObject {
     phase = .choosing
     statusMessage = nil
     importedSessionId = nil
-    guard let selectedURL = picker() else {
+    importedSessionIds = []
+    failedImports = []
+    pauseRequested = false
+    let selected = picker()
+    selectedFileCount = selected.count
+    guard !selected.isEmpty else {
       phase = .idle
       return
     }
-    guard selectedURL.isFileURL, startSecurityScope(selectedURL) else {
-      phase = .failed
-      statusMessage =
-        "Open Scribe could not read the selected file. Nothing was added to the conversation library."
-      return
+    // Preserve immediate single-file permission failures. A batch acquires
+    // just one file's scope at a time and reports each refused file separately.
+    var firstAuthorized = false
+    if selected.count == 1 {
+      guard selected[0].isFileURL, startSecurityScope(selected[0]) else {
+        phase = .failed
+        statusMessage =
+          "Open Scribe could not read the selected file. Nothing was added to the conversation library."
+        return
+      }
+      firstAuthorized = true
     }
     phase = .importing
-    let proposedTitle = selectedURL.deletingPathExtension().lastPathComponent
-      .trimmingCharacters(in: .whitespacesAndNewlines)
-    let title = proposedTitle.isEmpty ? "Imported conversation" : proposedTitle
+    hasPendingAudioImports = true
     let importer = importer
+    let stopScope = stopSecurityScope
+    let initiallyAuthorized = firstAuthorized
     operationTask = Task { [weak self] in
-      guard let self else { return }
-      let result: Result<NativeImportedMediaEvidence, Error>
-      do {
-        result = .success(
-          try await StructuredNativeIO.mutation {
-            try importer(title, selectedURL)
-          }
-        )
-      } catch {
-        result = .failure(error)
+      guard let self else {
+        if initiallyAuthorized { stopScope(selected[0]) }
+        return
       }
-      self.stopSecurityScope(selectedURL)
-      defer { self.operationTask = nil }
-      switch result {
-      case .success(let evidence)
-      where evidence.originalUntouched && evidence.readyForReview:
-        self.importedSessionId = evidence.sessionId
-        self.phase = .succeeded
-        self.statusMessage = "Imported \(title) into the local conversation library."
-      case .failure(let error) where error is CancellationError:
+      var firstScopeOpen = initiallyAuthorized
+      defer {
+        if firstScopeOpen { self.stopSecurityScope(selected[0]) }
+        self.hasPendingAudioImports = false
+        self.pauseRequested = false
+        self.operationTask = nil
+      }
+      do {
+        for (index, url) in selected.enumerated() {
+          try Task.checkCancellation()
+          while self.pauseRequested || !self.canBeginImport() {
+            if firstScopeOpen {
+              self.stopSecurityScope(selected[0])
+              firstScopeOpen = false
+            }
+            self.phase = .paused
+            self.statusMessage =
+              self.pauseRequested
+              ? "Imports paused. Your original recordings are kept."
+              : "Imports are waiting for the current recording to finish."
+            try await Task.sleep(nanoseconds: 100_000_000)
+          }
+          try Task.checkCancellation()
+          self.phase = .importing
+          self.statusMessage = "Importing file \(index + 1) of \(selected.count)…"
+          let hasScope = index == 0 && firstScopeOpen
+          if !hasScope && (!url.isFileURL || !self.startSecurityScope(url)) {
+            self.failedImports.append(
+              ImportedAudioFailure(
+                id: index, fileName: url.lastPathComponent,
+                message: "Open Scribe could not read this file. It was not imported."))
+            await Task.yield()
+            continue
+          }
+          if hasScope { firstScopeOpen = false }
+          let title = Self.proposedTitle(url)
+          let result: Result<NativeImportedMediaEvidence, Error>
+          do {
+            result = .success(try await StructuredNativeIO.mutation { try importer(title, url) })
+          } catch {
+            result = .failure(error)
+          }
+          self.stopSecurityScope(url)
+          switch result {
+          case .success(let evidence) where evidence.originalUntouched && evidence.readyForReview:
+            self.importedSessionIds.append(evidence.sessionId)
+            // A batch updates the library without repeatedly stealing the
+            // selected document. Single-file navigation keeps its old contract.
+            if selected.count == 1 { self.importedSessionId = evidence.sessionId }
+          case .failure(let error) where error is CancellationError:
+            throw error
+          default:
+            self.failedImports.append(
+              ImportedAudioFailure(
+                id: index, fileName: url.lastPathComponent,
+                message: Self.failureMessage(result: result)))
+          }
+          await Task.yield()
+        }
+        self.phase = self.failedImports.isEmpty ? .succeeded : .failed
+        if selected.count == 1, self.failedImports.isEmpty {
+          self.statusMessage =
+            "Imported \(Self.proposedTitle(selected[0])) into the local conversation library."
+        } else if selected.count == 1 {
+          self.statusMessage = self.failedImports.first?.message
+        } else {
+          self.statusMessage =
+            "Imported \(self.importedSessionIds.count) of \(selected.count) recordings. "
+            + (self.failedImports.isEmpty
+              ? "" : "\(self.failedImports.count) could not be imported. ")
+            + "Your original files are kept."
+        }
+      } catch {
         self.phase = .idle
-        self.statusMessage = "Import cancelled. No conversation was added."
-      default:
-        self.phase = .failed
-        self.statusMessage = Self.failureMessage(result: result)
+        self.statusMessage =
+          self.importedSessionIds.isEmpty
+          ? "Import cancelled. No conversation was added."
+          : "Stopped after importing \(self.importedSessionIds.count) of \(selected.count) recordings. Your original files are kept."
       }
     }
+  }
+
+  func pauseImports() {
+    guard hasPendingAudioImports, phase == .importing else { return }
+    pauseRequested = true
+    statusMessage = "Pausing after the current file. Your original recordings are kept."
+  }
+
+  func resumeImports() {
+    guard hasPendingAudioImports, canBeginImport() else { return }
+    pauseRequested = false
+    phase = .importing
+  }
+
+  private static func proposedTitle(_ url: URL) -> String {
+    let title = url.deletingPathExtension().lastPathComponent
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+    return title.isEmpty ? "Imported conversation" : title
   }
 
   func cancelImport() {
@@ -135,6 +241,9 @@ final class ImportedMediaAuthorityAdapter: ObservableObject {
     phase = .choosing
     statusMessage = nil
     importedSessionId = nil
+    importedSessionIds = []
+    failedImports = []
+    selectedFileCount = 0
     guard let selectedURL = packagePicker() else {
       phase = .idle
       return
@@ -218,7 +327,7 @@ final class ImportedMediaAuthorityAdapter: ObservableObject {
     return panel.runModal() == .OK ? panel.url : nil
   }
 
-  private static func openPanelSelection() -> URL? {
+  private static func openPanelSelections() -> [URL] {
     let panel = NSOpenPanel()
     panel.title = "Import Conversation Audio"
     panel.message =
@@ -226,9 +335,9 @@ final class ImportedMediaAuthorityAdapter: ObservableObject {
     panel.prompt = "Import"
     panel.canChooseFiles = true
     panel.canChooseDirectories = false
-    panel.allowsMultipleSelection = false
+    panel.allowsMultipleSelection = true
     panel.resolvesAliases = true
-    return panel.runModal() == .OK ? panel.url : nil
+    return panel.runModal() == .OK ? panel.urls : []
   }
 
   private static func failureMessage(
@@ -285,7 +394,7 @@ final class ImportedMediaAuthorityAdapter: ObservableObject {
   }
 
   private static var importLimitPrompt: String {
-    "Choose a local PCM CAF (up to \(pcmLimitMiB) MiB and four hours) or 48 kHz AAC/Apple Lossless M4A (up to \(m4aLimitGiB) GiB and four hours)."
+    "Choose local PCM CAF files (up to \(pcmLimitMiB) MiB each) or 48 kHz AAC/Apple Lossless M4A files (up to \(m4aLimitGiB) GiB each), up to four hours per recording. Files are imported one at a time; originals are kept. Transcription follows your Settings preference."
   }
 
   private static var pcmLimitMiB: UInt64 {

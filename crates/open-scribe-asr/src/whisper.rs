@@ -187,6 +187,9 @@ impl SpeechRecognizer for WhisperRecognizer {
         let mut params = unsafe { sys::whisper_full_default_params(strategy) };
         params.n_threads = self.threads;
         params.language = language.as_ptr();
+        // This workflow writes the original speech language, including when
+        // a multilingual model detects it. Translation is a separate intent.
+        params.translate = false;
         params.detect_language = false;
         params.no_context = options.no_context;
         params.print_special = false;

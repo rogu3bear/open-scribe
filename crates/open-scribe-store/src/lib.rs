@@ -89,6 +89,8 @@ pub use transcript_review::{
     SessionSpeaker, SpeakerLabelOrigin, TranscriptDocumentSegment, TranscriptSearchHit,
 };
 mod transcript_selection;
+mod transcript_speakers;
+pub use transcript_speakers::{NamedTranscriptSpeaker, TranscriptSpeakerAssignment};
 mod transcripts;
 pub use transcript_selection::TranscriptSelectionPolicy;
 pub use transcripts::{
@@ -99,7 +101,9 @@ pub use transcripts::{
 };
 
 use conversation_identity::validate_request;
-pub use conversation_identity::{PrepareSessionRequest, PreparedSessionReceipt, SessionOrigin};
+pub use conversation_identity::{
+    ConversationReviewMetadata, PrepareSessionRequest, PreparedSessionReceipt, SessionOrigin,
+};
 pub use import::{
     CompressedImportMetadata, ImportMediaRequest, ImportPolicy, ImportedMediaEvidence,
     ImportedPlaybackLease, OriginalImportMetadata, import_policy,
@@ -3230,6 +3234,7 @@ fn apply_schema(connection: &mut Connection) -> Result<(), StoreError> {
     session_times::apply_schema(&transaction)?;
     transcription_operation::apply_schema(&transaction)?;
     library_recovery::apply_schema(&transaction)?;
+    transcript_speakers::apply_schema(&transaction)?;
     transaction.commit()?;
     Ok(())
 }
@@ -4203,6 +4208,9 @@ mod tests {
             "transcript_selections",
             "transcript_corrections",
             "speaker_adjudications",
+            "transcript_named_speakers",
+            "transcript_speaker_names",
+            "transcript_turn_speakers",
             "transcript_search",
             "session_deletion_intents",
             "context_scopes",
@@ -4214,7 +4222,7 @@ mod tests {
         }
         assert_eq!(
             database_value(&store, "SELECT MAX(version) FROM schema_migrations"),
-            14
+            15
         );
         let segment_columns: BTreeSet<String> = store
             .connection
@@ -4272,7 +4280,7 @@ mod tests {
         assert_eq!(channels, 1);
         assert_eq!(
             database_value(&store, "SELECT MAX(version) FROM schema_migrations"),
-            14
+            15
         );
     }
 

@@ -200,6 +200,10 @@ impl TranscriptExport {
             .speakers
             .iter()
             .any(|speaker| speaker.origin == SpeakerLabelOrigin::Human)
+            || self
+                .segments
+                .iter()
+                .any(|segment| segment.speaker_origin == SpeakerLabelOrigin::Human)
         {
             "user_adjudicated"
         } else if self
