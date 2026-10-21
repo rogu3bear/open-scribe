@@ -6,6 +6,36 @@ Open Scribe tests the evidence chain in order: source/configuration, determinist
 
 Characterization tests pin observed behavior before correction. Safety-critical invariants—durable media before capture claims, audio survival independent of transcription, required-source truth, and recovery—need tests at the layer that owns the claim plus runtime evidence on an exact artifact.
 
+### Offscreen imported-audio boundary
+
+`bash script/check_imported_audio_round_trip.sh <absolute-new-output-directory>`
+builds a command-line component check under normal Disk Guard admission. It
+generates stereo AAC and Apple Lossless audio, including a partial AAC packet,
+then uses the production importer, an isolated Rust library, the descriptor-based
+decoder, and Rust's exact format/channel/frame validation. No app or test host
+opens, and no device, private recording, speech model or network is used. A
+missing-model result crosses the real UniFFI boundary; the shared presentation
+code checks typed failures, cancellation precedence and content-free diagnostics.
+Source and binary manifests remain in the new output directory.
+The executable itself refuses an existing proof directory before writing a
+marker or opening storage; the script checks that refusal against sentinel data.
+
+The native scheduler tests also check that a typed failure reaches the transcript
+view's outcome projection, survives a status refresh and is retired when another
+execution finishes, including a resumed replacement with the same request
+generation. Work admission and outcome remain Rust-owned; the Swift explanation
+is process-local and bound to the completed admission token. Migration 16 adds
+one nullable receipt column to existing intent, leaving legacy outcomes unbound.
+It changes no recording or journal format. Migration tests retain replacement
+guards and media bytes across reopening; cancellation and stale completion must
+never attach another execution's receipt.
+
+This check does not reproduce every real-world M4A, perform recognition, render
+the interface or admit a contributor candidate. It supplements the full gate
+below. A failure involving the supplied user's installed app still requires
+evidence from that artifact; a passing generated fixture cannot establish that
+the user's file was repaired.
+
 The [reviewed-conversation validation](product/experiments/2026-10-16-reviewed-conversation-validation.md)
 records a paired SIGKILL/restart test against a competent transactional baseline
 (a tie), a real-model import/review/export component check using supplied files

@@ -168,7 +168,7 @@ impl SessionStore {
         super::session_deletion::require_available(&self.connection, &session.0)?;
         if self.connection.execute(
             "UPDATE transcription_intent SET requested_action = 'reprocess',
-            requested_at_ms = ?2, declined_auto = 0, last_outcome = NULL
+            requested_at_ms = ?2, declined_auto = 0, last_outcome = NULL, last_outcome_admission = NULL
             WHERE session_id = ?1 AND admission IS NULL AND last_action = 'reprocess'
               AND last_outcome IN ('failed','preempted')",
             params![session.0, wall_time_milliseconds()],

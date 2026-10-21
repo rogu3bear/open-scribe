@@ -258,9 +258,152 @@ fn cancellation_is_persistent_and_cannot_be_replaced_by_failed_completion() {
     let reopened = SessionStore::open(&f.root).unwrap();
     assert_eq!(
         reopened.transcription_outcomes().unwrap(),
-        [(f.session.0.clone(), WorkOutcome::UserCancelled)]
+        [(f.session.0.clone(), WorkOutcome::UserCancelled, None)]
     );
     assert!(reopened.transcription_queue(ready()).unwrap().is_empty());
+}
+
+#[test]
+fn outcome_admission_distinguishes_retries_and_rejects_old_completion() {
+    let mut f = imported_fixture(48_000);
+    f.store
+        .request_transcription(&f.session, TranscriptionIntent::ResumeIncomplete)
+        .unwrap();
+    let first = f.store.admit_transcription(ready()).unwrap().unwrap();
+    f.store
+        .finish_transcription(first.admission.as_deref().unwrap(), WorkOutcome::Failed)
+        .unwrap();
+    assert_eq!(
+        f.store.transcription_outcomes().unwrap(),
+        [(
+            f.session.0.clone(),
+            WorkOutcome::Failed,
+            first.admission.clone()
+        )]
+    );
+    f.store
+        .request_transcription(&f.session, TranscriptionIntent::ResumeIncomplete)
+        .unwrap();
+    let second = f.store.admit_transcription(ready()).unwrap().unwrap();
+    assert_ne!(second.admission, first.admission);
+    f.store
+        .finish_transcription(first.admission.as_deref().unwrap(), WorkOutcome::Failed)
+        .unwrap();
+    assert!(f.store.transcription_outcomes().unwrap().is_empty());
+    f.store
+        .finish_transcription(second.admission.as_deref().unwrap(), WorkOutcome::Completed)
+        .unwrap();
+    let reopened = SessionStore::open(&f.root).unwrap();
+    assert_eq!(
+        reopened.transcription_outcomes().unwrap(),
+        [(
+            f.session.0.clone(),
+            WorkOutcome::Completed,
+            second.admission
+        )]
+    );
+}
+
+#[test]
+fn resumed_replacement_keeps_its_operation_but_has_a_new_completion_receipt() {
+    let mut f = imported_fixture(48_000);
+    f.store
+        .request_transcription(&f.session, TranscriptionIntent::ReprocessAll)
+        .unwrap();
+    let first = f.store.admit_transcription(ready()).unwrap().unwrap();
+    let first_token = first.admission.as_deref().unwrap();
+    let operation = f
+        .store
+        .transcription_operation(&f.session, first_token)
+        .unwrap();
+    f.store
+        .finish_transcription(first_token, WorkOutcome::Failed)
+        .unwrap();
+    assert_eq!(
+        f.store.transcription_outcomes().unwrap(),
+        [(
+            f.session.0.clone(),
+            WorkOutcome::Failed,
+            first.admission.clone()
+        )]
+    );
+
+    // This entire execution can happen on another handle between UI polls.
+    let mut other = SessionStore::open(&f.root).unwrap();
+    other.resume_replacement(&f.session).unwrap();
+    assert!(other.transcription_outcomes().unwrap().is_empty());
+    let second = other.admit_transcription(ready()).unwrap().unwrap();
+    let second_token = second.admission.as_deref().unwrap();
+    assert_ne!(second.admission, first.admission);
+    let resumed = other
+        .transcription_operation(&f.session, second_token)
+        .unwrap();
+    assert_eq!(
+        resumed.key, operation.key,
+        "resume preserves the replacement generation"
+    );
+    assert_eq!(resumed.selections, operation.selections);
+    other
+        .finish_transcription(first_token, WorkOutcome::Failed)
+        .unwrap();
+    assert!(other.transcription_outcomes().unwrap().is_empty());
+    other
+        .finish_transcription(second_token, WorkOutcome::Failed)
+        .unwrap();
+    let reopened = SessionStore::open(&f.root).unwrap();
+    assert_eq!(
+        reopened.transcription_outcomes().unwrap(),
+        [(f.session.0.clone(), WorkOutcome::Failed, second.admission)]
+    );
+}
+
+#[test]
+fn migration_16_leaves_legacy_failures_unbound_and_preserves_replacement_guards() {
+    let mut f = imported_fixture(48_000);
+    let original_media = fs::read(&f.media).unwrap();
+    f.store
+        .request_transcription(&f.session, TranscriptionIntent::ReprocessAll)
+        .unwrap();
+    let first = f.store.admit_transcription(ready()).unwrap().unwrap();
+    let token = first.admission.as_deref().unwrap();
+    let operation = f.store.transcription_operation(&f.session, token).unwrap();
+    f.store
+        .finish_transcription(token, WorkOutcome::Failed)
+        .unwrap();
+    // Recreate the previous intent-table shape in this owned synthetic store.
+    f.store
+        .connection
+        .execute_batch(
+            "ALTER TABLE transcription_intent DROP COLUMN last_outcome_admission;
+         DELETE FROM schema_migrations WHERE version = 16;",
+        )
+        .unwrap();
+
+    for _ in 0..2 {
+        let reopened = SessionStore::open(&f.root).unwrap();
+        assert_eq!(
+            reopened.transcription_outcomes().unwrap(),
+            [(f.session.0.clone(), WorkOutcome::Failed, None)]
+        );
+        assert_eq!(fs::read(&f.media).unwrap(), original_media);
+        let versions: Vec<i64> = reopened
+            .connection
+            .prepare("SELECT version FROM schema_migrations ORDER BY version")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        assert_eq!(versions, (1..=16).collect::<Vec<_>>());
+    }
+    let mut reopened = SessionStore::open(&f.root).unwrap();
+    reopened.resume_replacement(&f.session).unwrap();
+    let resumed = reopened.admit_transcription(ready()).unwrap().unwrap();
+    let current = reopened
+        .transcription_operation(&f.session, resumed.admission.as_deref().unwrap())
+        .unwrap();
+    assert_eq!(current.key, operation.key);
+    assert_eq!(current.selections, operation.selections);
 }
 
 #[test]

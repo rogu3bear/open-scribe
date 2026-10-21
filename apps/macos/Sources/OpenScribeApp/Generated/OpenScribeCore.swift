@@ -6609,12 +6609,14 @@ public func FfiConverterTypeNativeSessionSpeaker_lower(_ value: NativeSessionSpe
 public struct NativeSessionWorkOutcome: Equatable, Hashable {
   public let sessionId: String
   public let outcome: NativeWorkOutcome
+  public let completedAdmission: String?
 
   // Default memberwise initializers are never public by default, so we
   // declare one manually.
-  public init(sessionId: String, outcome: NativeWorkOutcome) {
+  public init(sessionId: String, outcome: NativeWorkOutcome, completedAdmission: String?) {
     self.sessionId = sessionId
     self.outcome = outcome
+    self.completedAdmission = completedAdmission
   }
 
 }
@@ -6633,13 +6635,15 @@ public struct FfiConverterTypeNativeSessionWorkOutcome: FfiConverterRustBuffer {
     return
       try NativeSessionWorkOutcome(
         sessionId: FfiConverterString.read(from: &buf),
-        outcome: FfiConverterTypeNativeWorkOutcome.read(from: &buf)
+        outcome: FfiConverterTypeNativeWorkOutcome.read(from: &buf),
+        completedAdmission: FfiConverterOptionString.read(from: &buf)
       )
   }
 
   public static func write(_ value: NativeSessionWorkOutcome, into buf: inout [UInt8]) {
     FfiConverterString.write(value.sessionId, into: &buf)
     FfiConverterTypeNativeWorkOutcome.write(value.outcome, into: &buf)
+    FfiConverterOptionString.write(value.completedAdmission, into: &buf)
   }
 }
 
@@ -7391,13 +7395,24 @@ public struct NativeTranscriptionResult: Equatable, Hashable {
   public let outcome: NativeWorkOutcome
   public let summary: NativeTranscriptionSummary?
   public let reason: String?
+  /**
+   * Typed, content-free failure for presentation. Never parse `reason`.
+   */
+  public let failure: NativeSpeechError?
 
   // Default memberwise initializers are never public by default, so we
   // declare one manually.
-  public init(outcome: NativeWorkOutcome, summary: NativeTranscriptionSummary?, reason: String?) {
+  public init(
+    outcome: NativeWorkOutcome, summary: NativeTranscriptionSummary?, reason: String?,
+    /**
+     * Typed, content-free failure for presentation. Never parse `reason`.
+     */
+    failure: NativeSpeechError?
+  ) {
     self.outcome = outcome
     self.summary = summary
     self.reason = reason
+    self.failure = failure
   }
 
 }
@@ -7417,7 +7432,8 @@ public struct FfiConverterTypeNativeTranscriptionResult: FfiConverterRustBuffer 
       try NativeTranscriptionResult(
         outcome: FfiConverterTypeNativeWorkOutcome.read(from: &buf),
         summary: FfiConverterOptionTypeNativeTranscriptionSummary.read(from: &buf),
-        reason: FfiConverterOptionString.read(from: &buf)
+        reason: FfiConverterOptionString.read(from: &buf),
+        failure: FfiConverterOptionTypeNativeSpeechError.read(from: &buf)
       )
   }
 
@@ -7425,6 +7441,7 @@ public struct FfiConverterTypeNativeTranscriptionResult: FfiConverterRustBuffer 
     FfiConverterTypeNativeWorkOutcome.write(value.outcome, into: &buf)
     FfiConverterOptionTypeNativeTranscriptionSummary.write(value.summary, into: &buf)
     FfiConverterOptionString.write(value.reason, into: &buf)
+    FfiConverterOptionTypeNativeSpeechError.write(value.failure, into: &buf)
   }
 }
 
@@ -9910,6 +9927,14 @@ public
   )
   case NoTranscribableAudio
   case DecodedAudioRejected
+  case DecodedAudioFormatRejected
+  case DecodedAudioChannelsMismatch(
+    expected: UInt16, actual: UInt16
+  )
+  case DecodedAudioLengthMismatch(
+    expected: UInt64, actual: UInt64
+  )
+  case EvidenceChanged
   case Cancelled
   case CapturePreempted
   case Deferred
@@ -9952,14 +9977,26 @@ public struct FfiConverterTypeNativeSpeechError: FfiConverterRustBuffer {
       )
     case 4: return .NoTranscribableAudio
     case 5: return .DecodedAudioRejected
-    case 6: return .Cancelled
-    case 7: return .CapturePreempted
-    case 8: return .Deferred
-    case 9:
+    case 6: return .DecodedAudioFormatRejected
+    case 7:
+      return .DecodedAudioChannelsMismatch(
+        expected: try FfiConverterUInt16.read(from: &buf),
+        actual: try FfiConverterUInt16.read(from: &buf)
+      )
+    case 8:
+      return .DecodedAudioLengthMismatch(
+        expected: try FfiConverterUInt64.read(from: &buf),
+        actual: try FfiConverterUInt64.read(from: &buf)
+      )
+    case 9: return .EvidenceChanged
+    case 10: return .Cancelled
+    case 11: return .CapturePreempted
+    case 12: return .Deferred
+    case 13:
       return .TranscriptionFailed(
         reason: try FfiConverterString.read(from: &buf)
       )
-    case 10: return .StorageFailure
+    case 14: return .StorageFailure
 
     default: throw UniffiInternalError.unexpectedEnumCase
     }
@@ -9986,21 +10023,37 @@ public struct FfiConverterTypeNativeSpeechError: FfiConverterRustBuffer {
     case .DecodedAudioRejected:
       writeInt(&buf, Int32(5))
 
-    case .Cancelled:
+    case .DecodedAudioFormatRejected:
       writeInt(&buf, Int32(6))
 
-    case .CapturePreempted:
+    case .DecodedAudioChannelsMismatch(let expected, let actual):
       writeInt(&buf, Int32(7))
+      FfiConverterUInt16.write(expected, into: &buf)
+      FfiConverterUInt16.write(actual, into: &buf)
+
+    case .DecodedAudioLengthMismatch(let expected, let actual):
+      writeInt(&buf, Int32(8))
+      FfiConverterUInt64.write(expected, into: &buf)
+      FfiConverterUInt64.write(actual, into: &buf)
+
+    case .EvidenceChanged:
+      writeInt(&buf, Int32(9))
+
+    case .Cancelled:
+      writeInt(&buf, Int32(10))
+
+    case .CapturePreempted:
+      writeInt(&buf, Int32(11))
 
     case .Deferred:
-      writeInt(&buf, Int32(8))
+      writeInt(&buf, Int32(12))
 
     case .TranscriptionFailed(let reason):
-      writeInt(&buf, Int32(9))
+      writeInt(&buf, Int32(13))
       FfiConverterString.write(reason, into: &buf)
 
     case .StorageFailure:
-      writeInt(&buf, Int32(10))
+      writeInt(&buf, Int32(14))
 
     }
   }
@@ -10979,6 +11032,30 @@ private struct FfiConverterOptionTypeNativeMediaSourceKind: FfiConverterRustBuff
     switch try readInt(&buf) as Int8 {
     case 0: return nil
     case 1: return try FfiConverterTypeNativeMediaSourceKind.read(from: &buf)
+    default: throw UniffiInternalError.unexpectedOptionalTag
+    }
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+private struct FfiConverterOptionTypeNativeSpeechError: FfiConverterRustBuffer {
+  typealias SwiftType = NativeSpeechError?
+
+  public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+    guard let value = value else {
+      writeInt(&buf, Int8(0))
+      return
+    }
+    writeInt(&buf, Int8(1))
+    FfiConverterTypeNativeSpeechError.write(value, into: &buf)
+  }
+
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+    switch try readInt(&buf) as Int8 {
+    case 0: return nil
+    case 1: return try FfiConverterTypeNativeSpeechError.read(from: &buf)
     default: throw UniffiInternalError.unexpectedOptionalTag
     }
   }

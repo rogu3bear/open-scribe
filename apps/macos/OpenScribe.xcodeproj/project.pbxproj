@@ -47,6 +47,7 @@
 		5EF7FA04058A5A444EC69D6C /* MenuBarContent.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8957201D2FE0F213BBA3D310 /* MenuBarContent.swift */; };
 		7B61FB95E7DAEDF66275BDED /* AppTelemetry.swift in Sources */ = {isa = PBXBuildFile; fileRef = BC2B884506AEDD909F7A06DD /* AppTelemetry.swift */; };
 		D1A6N0000000000000000002 /* DiagnosticsReport.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1A6N0000000000000000001 /* DiagnosticsReport.swift */; };
+		C2AE901A1122334455660006 /* DiagnosticPrivacy.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2AE901A1122334455660016 /* DiagnosticPrivacy.swift */; };
 		D1A6T0000000000000000002 /* DiagnosticsReportTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1A6T0000000000000000001 /* DiagnosticsReportTests.swift */; };
 		B7C001F00000000000000002 /* DiagnosticsUnifiedLogTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B7C001F00000000000000001 /* DiagnosticsUnifiedLogTests.swift */; };
 		80867FCED39F6D49A72CD0FB /* SessionPresentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = 68710CE895B2216A5675AE4A /* SessionPresentation.swift */; };
@@ -78,6 +79,7 @@
 		C2AE901A1122334455660005 /* ImportBatchStatus.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2AE901A1122334455660015 /* ImportBatchStatus.swift */; };
 		C2AE901A1122334455660002 /* TranscriptSpeakerReview.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2AE901A1122334455660012 /* TranscriptSpeakerReview.swift */; };
 		C2AE901A1122334455660003 /* TranscriptPlaybackProjection.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2AE901A1122334455660013 /* TranscriptPlaybackProjection.swift */; };
+		C2AE901A1122334455660007 /* SpeechFailurePresentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2AE901A1122334455660017 /* SpeechFailurePresentation.swift */; };
 		C2AE901A1122334455660004 /* TranscriptPlaybackProjectionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2AE901A1122334455660014 /* TranscriptPlaybackProjectionTests.swift */; };
 		5E7C1A2B3D4F5061728394A5 /* SpeechTranscriptionModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E7C1A2B3D4F5061728394A6 /* SpeechTranscriptionModel.swift */; };
 		5E7C1A2B3D4F5061728394A7 /* SpeechModelSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E7C1A2B3D4F5061728394A8 /* SpeechModelSheet.swift */; };
@@ -154,6 +156,7 @@
 		C2AE901A1122334455660015 /* ImportBatchStatus.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImportBatchStatus.swift; sourceTree = "<group>"; };
 		C2AE901A1122334455660012 /* TranscriptSpeakerReview.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptSpeakerReview.swift; sourceTree = "<group>"; };
 		C2AE901A1122334455660013 /* TranscriptPlaybackProjection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptPlaybackProjection.swift; sourceTree = "<group>"; };
+		C2AE901A1122334455660017 /* SpeechFailurePresentation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpeechFailurePresentation.swift; sourceTree = "<group>"; };
 		C2AE901A1122334455660014 /* TranscriptPlaybackProjectionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptPlaybackProjectionTests.swift; sourceTree = "<group>"; };
 		5E7C1A2B3D4F5061728394A6 /* SpeechTranscriptionModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpeechTranscriptionModel.swift; sourceTree = "<group>"; };
 		5E7C1A2B3D4F5061728394A8 /* SpeechModelSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpeechModelSheet.swift; sourceTree = "<group>"; };
@@ -164,6 +167,7 @@
 		A609D9E7F66672E1E60113B7 /* OpenScribeCore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenScribeCore.swift; sourceTree = "<group>"; };
 		BC2B884506AEDD909F7A06DD /* AppTelemetry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppTelemetry.swift; sourceTree = "<group>"; };
 		D1A6N0000000000000000001 /* DiagnosticsReport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiagnosticsReport.swift; sourceTree = "<group>"; };
+		C2AE901A1122334455660016 /* DiagnosticPrivacy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiagnosticPrivacy.swift; sourceTree = "<group>"; };
 		D1A6T0000000000000000001 /* DiagnosticsReportTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiagnosticsReportTests.swift; sourceTree = "<group>"; };
 		B7C001F00000000000000001 /* DiagnosticsUnifiedLogTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiagnosticsUnifiedLogTests.swift; sourceTree = "<group>"; };
 		C62801D03FDD064235316905 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
@@ -254,6 +258,7 @@
 				68710CE895B2216A5675AE4A /* SessionPresentation.swift */,
 				B0198AA144C943FF87190012 /* ConversationIdentityPresentation.swift */,
 				C2AE901A1122334455660013 /* TranscriptPlaybackProjection.swift */,
+				C2AE901A1122334455660017 /* SpeechFailurePresentation.swift */,
 			);
 			path = Models;
 			sourceTree = "<group>";
@@ -277,6 +282,7 @@
 				6712658CEAD0838E764A5BBF /* AccessibilityAnnouncer.swift */,
 				BC2B884506AEDD909F7A06DD /* AppTelemetry.swift */,
 				D1A6N0000000000000000001 /* DiagnosticsReport.swift */,
+				C2AE901A1122334455660016 /* DiagnosticPrivacy.swift */,
 				46B615557F7DEE8F964B69CE /* SymbolResolver.swift */,
 				FC2145CDC57782E82F62145E /* SystemPressureMonitor.swift */,
 			);
@@ -564,6 +570,7 @@
 				5AA4F437F283C41AEB8ABF86 /* AppStatus.swift in Sources */,
 				7B61FB95E7DAEDF66275BDED /* AppTelemetry.swift in Sources */,
 				D1A6N0000000000000000002 /* DiagnosticsReport.swift in Sources */,
+				C2AE901A1122334455660006 /* DiagnosticPrivacy.swift in Sources */,
 				B7FFA456C63F04859D1B2472 /* CompactLiveView.swift in Sources */,
 				262A2A7F0F8421EC6AD0E79E /* ContentView.swift in Sources */,
 				B0198AA144C943FF87190001 /* ConversationWorkspaceView.swift in Sources */,
@@ -602,6 +609,7 @@
 				C2AE901A1122334455660005 /* ImportBatchStatus.swift in Sources */,
 				C2AE901A1122334455660002 /* TranscriptSpeakerReview.swift in Sources */,
 				C2AE901A1122334455660003 /* TranscriptPlaybackProjection.swift in Sources */,
+				C2AE901A1122334455660007 /* SpeechFailurePresentation.swift in Sources */,
 				5E7C1A2B3D4F5061728394A5 /* SpeechTranscriptionModel.swift in Sources */,
 				A837CE35B761C57E24477E29 /* ConversationDetailsEditing.swift in Sources */,
 				A217F149D989A3D3C0761F4A /* SystemPressureMonitor.swift in Sources */,

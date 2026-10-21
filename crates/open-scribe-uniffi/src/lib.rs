@@ -1231,7 +1231,8 @@ fn map_storage_error(error: open_scribe_core::StoreError) -> NativeStorageError 
         open_scribe_core::StoreError::InvalidManagedRoot(_) => {
             NativeStorageError::InvalidManagedRoot
         }
-        open_scribe_core::StoreError::InvalidRequest(_) => NativeStorageError::InvalidRequest,
+        open_scribe_core::StoreError::InvalidRequest(_)
+        | open_scribe_core::StoreError::DecodedAudio(_) => NativeStorageError::InvalidRequest,
         open_scribe_core::StoreError::ImportSizeLimit => NativeStorageError::ImportSizeLimit,
         open_scribe_core::StoreError::ImportDurationLimit => {
             NativeStorageError::ImportDurationLimit

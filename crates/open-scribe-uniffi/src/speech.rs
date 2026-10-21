@@ -52,7 +52,7 @@ pub struct NativeTranscriptionSummary {
     pub reused_chunks: u32,
 }
 
-#[derive(Debug, thiserror::Error, uniffi::Error)]
+#[derive(Clone, Debug, thiserror::Error, uniffi::Error)]
 pub enum NativeSpeechError {
     #[error("No verified speech model is installed.")]
     ModelNotInstalled,
@@ -67,6 +67,22 @@ pub enum NativeSpeechError {
     NoTranscribableAudio,
     #[error("The decoded audio did not match the imported recording.")]
     DecodedAudioRejected,
+    #[error(
+        "The decoded audio is not the required 48 kHz, 16-bit PCM CAF format. The original recording is unchanged."
+    )]
+    DecodedAudioFormatRejected,
+    #[error(
+        "The decoded audio has {actual} channels; the imported recording requires {expected}. The original recording is unchanged."
+    )]
+    DecodedAudioChannelsMismatch { expected: u16, actual: u16 },
+    #[error(
+        "The decoded audio has {actual} frames; the imported recording requires {expected}. The original recording is unchanged."
+    )]
+    DecodedAudioLengthMismatch { expected: u64, actual: u64 },
+    #[error(
+        "Saved conversation data no longer matches its verified state. Transcription stopped; no recording was changed."
+    )]
+    EvidenceChanged,
     #[error("Transcription was cancelled.")]
     Cancelled,
     #[error("Transcription yielded to capture.")]
@@ -300,6 +316,7 @@ impl NativeSpeechModels {
                 summary: Some(completion.summary),
                 reason: (completion.outcome == NativeWorkOutcome::Incomplete)
                     .then(|| "Some tracks still need recognition; no complete saved parts were available for them.".into()),
+                failure: None,
             },
             Err(error) => NativeTranscriptionResult {
                 outcome: match job.stop_reason.load(Ordering::Acquire) {
@@ -324,6 +341,7 @@ impl NativeSpeechModels {
                 },
                 summary: None,
                 reason: Some(error.to_string()),
+                failure: Some(error),
             },
         }
     }
@@ -334,6 +352,8 @@ pub struct NativeTranscriptionResult {
     pub outcome: NativeWorkOutcome,
     pub summary: Option<NativeTranscriptionSummary>,
     pub reason: Option<String>,
+    /// Typed, content-free failure for presentation. Never parse `reason`.
+    pub failure: Option<NativeSpeechError>,
 }
 
 struct IntentCompletion {
@@ -507,8 +527,89 @@ fn map_transcription_error(error: TranscriptionError, cancelled: bool) -> Native
             NativeSpeechError::NoTranscribableAudio
         }
         TranscriptionError::Store(StoreError::InvalidRequest(_)) => {
-            NativeSpeechError::DecodedAudioRejected
+            NativeSpeechError::TranscriptionFailed {
+                reason: "transcript_validation".to_owned(),
+            }
+        }
+        TranscriptionError::Store(StoreError::DecodedAudio(error)) => match error {
+            open_scribe_core::DecodedAudioError::UnsupportedFormat => {
+                NativeSpeechError::DecodedAudioFormatRejected
+            }
+            open_scribe_core::DecodedAudioError::ChannelMismatch { expected, actual } => {
+                NativeSpeechError::DecodedAudioChannelsMismatch { expected, actual }
+            }
+            open_scribe_core::DecodedAudioError::FrameCountMismatch { expected, actual } => {
+                NativeSpeechError::DecodedAudioLengthMismatch { expected, actual }
+            }
+        },
+        TranscriptionError::Store(StoreError::IntegrityMismatch(_)) => {
+            NativeSpeechError::EvidenceChanged
         }
         TranscriptionError::Store(_) => NativeSpeechError::StorageFailure,
+    }
+}
+
+#[cfg(test)]
+mod failure_tests {
+    use super::*;
+
+    #[test]
+    fn invalid_transcript_request_is_not_reported_as_failed_audio_decoding() {
+        let mapped = map_transcription_error(
+            TranscriptionError::Store(StoreError::InvalidRequest(
+                "revision segment is outside its chunk",
+            )),
+            false,
+        );
+        assert!(matches!(
+            mapped,
+            NativeSpeechError::TranscriptionFailed { reason } if reason == "transcript_validation"
+        ));
+    }
+
+    #[test]
+    fn decoded_audio_failures_keep_their_reason_and_safe_counts() {
+        use open_scribe_core::DecodedAudioError;
+        let mapped = |reason| {
+            map_transcription_error(
+                TranscriptionError::Store(StoreError::DecodedAudio(reason)),
+                false,
+            )
+        };
+        assert!(matches!(
+            mapped(DecodedAudioError::UnsupportedFormat),
+            NativeSpeechError::DecodedAudioFormatRejected
+        ));
+        assert!(matches!(
+            mapped(DecodedAudioError::ChannelMismatch {
+                expected: 2,
+                actual: 1
+            }),
+            NativeSpeechError::DecodedAudioChannelsMismatch {
+                expected: 2,
+                actual: 1
+            }
+        ));
+        assert!(matches!(
+            mapped(DecodedAudioError::FrameCountMismatch {
+                expected: 48_000,
+                actual: 47_999
+            }),
+            NativeSpeechError::DecodedAudioLengthMismatch {
+                expected: 48_000,
+                actual: 47_999
+            }
+        ));
+    }
+
+    #[test]
+    fn changed_source_is_distinct_from_library_failure() {
+        assert!(matches!(
+            map_transcription_error(
+                TranscriptionError::Store(StoreError::IntegrityMismatch("private canary")),
+                false
+            ),
+            NativeSpeechError::EvidenceChanged
+        ));
     }
 }

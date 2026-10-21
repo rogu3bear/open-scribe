@@ -370,6 +370,6 @@ private final class DelayedInstalledCatalog: NativeSpeechModels, @unchecked Send
       outcome: .completed,
       summary: NativeTranscriptionSummary(
         tracks: 1, segments: 0, transcribedChunks: 1, reusedChunks: 0),
-      reason: nil)
+      reason: nil, failure: nil)
   }
 }

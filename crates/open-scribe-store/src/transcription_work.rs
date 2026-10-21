@@ -36,10 +36,23 @@ pub(super) fn apply_schema(tx: &Transaction<'_>) -> Result<(), StoreError> {
         admission TEXT UNIQUE, admitted_action TEXT, admitted_manual INTEGER,
         runner_started INTEGER NOT NULL DEFAULT 0,
         request_generation INTEGER NOT NULL DEFAULT 0, admitted_generation INTEGER,
-        last_outcome TEXT);",
+        last_outcome TEXT, last_outcome_admission TEXT);",
     )?;
+    let columns = tx
+        .prepare("PRAGMA table_info(transcription_intent)")?
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<Result<Vec<_>, _>>()?;
+    if !columns.iter().any(|name| name == "last_outcome_admission") {
+        tx.execute_batch(
+            "ALTER TABLE transcription_intent ADD COLUMN last_outcome_admission TEXT",
+        )?;
+    }
     tx.execute(
         "INSERT OR IGNORE INTO schema_migrations VALUES(11, ?1)",
+        [wall_time_milliseconds()],
+    )?;
+    tx.execute(
+        "INSERT OR IGNORE INTO schema_migrations VALUES(16, ?1)",
         [wall_time_milliseconds()],
     )?;
     Ok(())
@@ -81,7 +94,7 @@ impl SessionStore {
             request_generation = request_generation + CASE WHEN requested_action IS NOT excluded.requested_action OR last_outcome = 'cancelled' THEN 1 ELSE 0 END,
             requested_action = excluded.requested_action,
             requested_at_ms = CASE WHEN requested_action IS NOT excluded.requested_action THEN excluded.requested_at_ms ELSE COALESCE(requested_at_ms, excluded.requested_at_ms) END,
-            declined_auto = 0, last_outcome = NULL",
+            declined_auto = 0, last_outcome = NULL, last_outcome_admission = NULL",
             params![session.0, intent.code(), wall_time_milliseconds(), selections])?;
         Ok(())
     }
@@ -97,7 +110,7 @@ impl SessionStore {
         self.connection.execute("INSERT INTO transcription_intent(session_id, declined_auto, last_outcome, request_generation)
             VALUES(?1, 1, 'cancelled', 1) ON CONFLICT(session_id) DO UPDATE SET
             requested_action = NULL, requested_at_ms = NULL, declined_auto = 1,
-            request_generation = request_generation + 1, last_outcome = 'cancelled'", [&session.0])?;
+            request_generation = request_generation + 1, last_outcome = 'cancelled', last_outcome_admission = NULL", [&session.0])?;
         Ok(())
     }
 
@@ -277,7 +290,7 @@ impl SessionStore {
             admission = excluded.admission, runner_started = 0, admitted_generation = request_generation,
             admitted_selection_json = CASE WHEN excluded.admitted_manual THEN selection_json ELSE excluded.admitted_selection_json END,
             admitted_action = excluded.admitted_action,
-            admitted_manual = excluded.admitted_manual, last_outcome = NULL",
+            admitted_manual = excluded.admitted_manual, last_outcome = NULL, last_outcome_admission = NULL",
             params![next.session_id.0, token, next.intent.code(), next.manual, automatic_selections])?;
         next.admission = Some(token);
         Ok(())
@@ -295,6 +308,7 @@ impl SessionStore {
             last_action = admitted_action, admitted_action = NULL, admitted_selection_json = NULL,
             admitted_manual = NULL, admitted_generation = NULL,
             last_outcome = CASE WHEN last_outcome = 'cancelled' OR request_generation <> COALESCE(admitted_generation, 0) THEN last_outcome ELSE ?2 END,
+            last_outcome_admission = CASE WHEN last_outcome = 'cancelled' OR request_generation <> COALESCE(admitted_generation, 0) THEN last_outcome_admission ELSE admission END,
             requested_action = CASE WHEN request_generation <> COALESCE(admitted_generation, 0) OR (?2 IN ('preempted','deferred') AND last_outcome IS NOT 'cancelled') THEN requested_action ELSE NULL END,
             requested_at_ms = CASE WHEN request_generation <> COALESCE(admitted_generation, 0) OR (?2 IN ('preempted','deferred') AND last_outcome IS NOT 'cancelled') THEN requested_at_ms ELSE NULL END
             WHERE admission = ?1", params![token, outcome.code()])?;
@@ -308,7 +322,8 @@ impl SessionStore {
         self.connection.execute("UPDATE transcription_intent SET admission = NULL, runner_started = 0,
             last_action = admitted_action, admitted_action = NULL, admitted_manual = NULL,
             admitted_generation = NULL, admitted_selection_json = NULL,
-            last_outcome = CASE WHEN last_outcome = 'cancelled' THEN last_outcome ELSE 'preempted' END
+            last_outcome = CASE WHEN last_outcome = 'cancelled' THEN last_outcome ELSE 'preempted' END,
+            last_outcome_admission = CASE WHEN last_outcome = 'cancelled' THEN NULL ELSE admission END
             WHERE admission IS NOT NULL", [])?;
         Ok(())
     }
@@ -337,14 +352,26 @@ impl SessionStore {
         )? == 1)
     }
 
-    pub fn transcription_outcomes(&self) -> Result<Vec<(String, WorkOutcome)>, StoreError> {
-        let mut statement = self.connection.prepare("SELECT session_id, last_outcome FROM transcription_intent WHERE last_outcome IS NOT NULL")?;
-        let rows =
-            statement.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+    /// The admission identifies one execution, including a resumed replacement
+    /// that deliberately keeps its request generation and review guards.
+    /// Legacy outcomes and user cancellation have no completed execution token.
+    pub fn transcription_outcomes(
+        &self,
+    ) -> Result<Vec<(String, WorkOutcome, Option<String>)>, StoreError> {
+        let mut statement = self.connection.prepare("SELECT session_id, last_outcome, last_outcome_admission FROM transcription_intent WHERE last_outcome IS NOT NULL")?;
+        let rows = statement.query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, Option<String>>(2)?,
+            ))
+        })?;
         Ok(rows
             .collect::<Result<Vec<_>, _>>()?
             .into_iter()
-            .filter_map(|(id, code)| Some((id, WorkOutcome::from_code(&code)?)))
+            .filter_map(|(id, code, admission)| {
+                Some((id, WorkOutcome::from_code(&code)?, admission))
+            })
             .collect())
     }
 

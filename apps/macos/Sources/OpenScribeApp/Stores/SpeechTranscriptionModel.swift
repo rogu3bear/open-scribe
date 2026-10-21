@@ -155,7 +155,16 @@ final class SpeechTranscriptionModel: ObservableObject {
   func process(sessionId: String, intent: NativeTranscriptionIntent, admission: String? = nil) async
     -> NativeWorkOutcome
   {
-    guard let speech, transcribingSessionId == nil else { return .deferred }
+    await processResult(sessionId: sessionId, intent: intent, admission: admission).outcome
+  }
+
+  /// Preserve the typed result for the scheduler's session-bound presentation.
+  func processResult(sessionId: String, intent: NativeTranscriptionIntent, admission: String? = nil)
+    async -> NativeTranscriptionResult
+  {
+    guard let speech, transcribingSessionId == nil else {
+      return NativeTranscriptionResult(outcome: .deferred, summary: nil, reason: nil, failure: nil)
+    }
     let job = NativeTranscriptionJob()
     self.job = job
     transcribingSessionId = sessionId
@@ -188,9 +197,15 @@ final class SpeechTranscriptionModel: ObservableObject {
     do {
       let result = try await work.value
       guard result.outcome == .completed, let summary = result.summary else {
-        report(Self.outcomeText(result.outcome), failure: result.outcome == .failed)
+        report(SpeechFailurePresentation.text(for: result), failure: result.outcome == .failed)
+        if let failure = result.failure {
+          AppTelemetry.libraryNote(
+            stage: "transcription",
+            detail:
+              "ended session=\(sessionToken) code=\(SpeechFailurePresentation.diagnostic(failure))")
+        }
         if result.outcome == .failed || result.outcome == .deferred { refresh() }
-        return result.outcome
+        return result
       }
       let tracks = summary.tracks == 1 ? "1 track" : "\(summary.tracks) tracks"
       let segments = summary.segments == 1 ? "1 segment" : "\(summary.segments) segments"
@@ -200,7 +215,7 @@ final class SpeechTranscriptionModel: ObservableObject {
         detail:
           "committed session=\(sessionToken) tracks=\(summary.tracks) segments=\(summary.segments)"
       )
-      return .completed
+      return result
     } catch {
       let cancelled = (error as? NativeSpeechError) == .Cancelled || error is CancellationError
       let outcome = job.stopOutcome() ?? (cancelled ? .userCancelled : .failed)
@@ -210,7 +225,8 @@ final class SpeechTranscriptionModel: ObservableObject {
       let code = error is CancellationError ? "cancelled" : Self.speechCode(error)
       AppTelemetry.libraryNote(
         stage: "transcription", detail: "failed session=\(sessionToken) code=\(code)")
-      return outcome
+      return NativeTranscriptionResult(
+        outcome: outcome, summary: nil, reason: nil, failure: error as? NativeSpeechError)
     }
   }
 
@@ -220,14 +236,7 @@ final class SpeechTranscriptionModel: ObservableObject {
   func preemptForCapture() { job?.preemptForCapture() }
 
   private static func outcomeText(_ outcome: NativeWorkOutcome) -> String {
-    switch outcome {
-    case .completed: "Transcript ready."
-    case .userCancelled: "Transcription was cancelled. The recorded audio is unchanged."
-    case .capturePreempted: "Transcription yielded to capture. Finished parts are kept."
-    case .failed: "Transcription did not finish. The recorded audio is unchanged."
-    case .deferred: "Transcription is waiting to start."
-    case .incomplete: "Saved parts were checked. Some tracks still need transcription."
-    }
+    SpeechFailurePresentation.outcomeText(outcome)
   }
 
   /// A compressed import is first decoded, from its leased bytes, into a
@@ -294,56 +303,14 @@ final class SpeechTranscriptionModel: ObservableObject {
   }
 
   nonisolated static func speechCode(_ error: Error) -> String {
-    if error is CancellationError { return "cancelled" }
-    switch error as? NativeSpeechError {
-    case .ModelNotInstalled: return "ModelNotInstalled"
-    case .ModelRejected: return "ModelRejected"
-    case .ModelReadiness: return "ModelReadiness"
-    case .NoTranscribableAudio: return "NoTranscribableAudio"
-    case .DecodedAudioRejected: return "DecodedAudioRejected"
-    case .Cancelled: return "Cancelled"
-    case .CapturePreempted: return "CapturePreempted"
-    case .Deferred: return "Deferred"
-    case .TranscriptionFailed: return "TranscriptionFailed"
-    case .StorageFailure: return "StorageFailure"
-    case .none: return "unavailable"
-    }
+    SpeechFailurePresentation.code(error)
   }
 
   nonisolated static func describe(_ error: Error) -> String {
-    switch error as? NativeSpeechError {
-    case .ModelNotInstalled:
-      return "No verified speech model is installed."
-    case .ModelRejected(let reason):
-      return "The model file was not installed: \(rejection(reason))."
-    case .ModelReadiness(_, let reason):
-      return "The model file was not installed: \(rejection(reason))."
-    case .NoTranscribableAudio:
-      return "This conversation has no recorded audio to transcribe."
-    case .DecodedAudioRejected:
-      return "The imported audio could not be decoded consistently, so nothing was transcribed."
-    case .Cancelled:
-      return "Transcription was cancelled. The recorded audio is unchanged."
-    case .CapturePreempted:
-      return "Transcription yielded to capture. Finished parts are kept."
-    case .Deferred:
-      return "Transcription is waiting for current work or capture to finish."
-    case .TranscriptionFailed:
-      return "Transcription stopped before it finished. The recorded audio is unchanged."
-    case .StorageFailure, .none:
-      return "Open Scribe could not reach the conversation library."
-    }
+    SpeechFailurePresentation.describe(error)
   }
 
   nonisolated static func rejection(_ reason: String) -> String {
-    switch reason {
-    case "truncated": "it is shorter than the published file"
-    case "oversized": "it is longer than the published file"
-    case "digest_mismatch": "its SHA-256 does not match the published file"
-    case "not_ggml", "wrong_model": "it is not the listed model"
-    case "incompatible_engine", "engine_version": "it does not match this build's speech engine"
-    case "model_rejected", "self_test_failed": "the speech engine could not run it"
-    default: "it could not be read and checked"
-    }
+    SpeechFailurePresentation.rejection(reason)
   }
 }

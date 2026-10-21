@@ -5,7 +5,7 @@ use std::os::unix::fs::{FileExt, MetadataExt, symlink};
 use tempfile::TempDir;
 
 use super::*;
-use crate::RuntimePlayableMediaAvailability;
+use crate::{DecodedAudioError, RuntimePlayableMediaAvailability};
 
 // Store tests synthesize the platform probe. Native component tests exercise
 // AudioToolbox with actual AAC/ALAC containers and independent channel samples.
@@ -1047,7 +1047,31 @@ fn compressed_import_transcribes_only_through_a_matching_decoded_companion() {
     stereo_pcm_caf(&short, 47_999, 1);
     assert!(matches!(
         store.open_decoded_transcription_input(&input, &short),
-        Err(StoreError::InvalidRequest(_))
+        Err(StoreError::DecodedAudio(
+            DecodedAudioError::FrameCountMismatch {
+                expected: 48_000,
+                actual: 47_999,
+            }
+        ))
+    ));
+    let mono = temp.path().join("mono.caf");
+    write_recoverable_caf(&mono, 48_000);
+    assert!(matches!(
+        store.open_decoded_transcription_input(&input, &mono),
+        Err(StoreError::DecodedAudio(
+            DecodedAudioError::ChannelMismatch {
+                expected: 2,
+                actual: 1,
+            }
+        ))
+    ));
+    let invalid_format = temp.path().join("invalid-format.caf");
+    fs::write(&invalid_format, b"not a CAF").unwrap();
+    assert!(matches!(
+        store.open_decoded_transcription_input(&input, &invalid_format),
+        Err(StoreError::DecodedAudio(
+            DecodedAudioError::UnsupportedFormat
+        ))
     ));
     let link = temp.path().join("link.caf");
     symlink(&decoded, &link).unwrap();

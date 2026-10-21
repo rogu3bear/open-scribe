@@ -75,8 +75,8 @@ mod timeline;
 pub use timeline::{CaptureClock, TimelineSegment};
 mod transcript_input;
 pub use transcript_input::{
-    DigestedSegment, InputSegment, InputSpan, SealedTrackReader, TranscriptionInput,
-    transcription_input_digest,
+    DecodedAudioError, DigestedSegment, InputSegment, InputSpan, SealedTrackReader,
+    TranscriptionInput, transcription_input_digest,
 };
 mod evidence_resolution;
 pub use evidence_resolution::ResolvedEvidence;
@@ -445,6 +445,7 @@ enum JournalReplacementFailurePoint {
 pub enum StoreError {
     InvalidManagedRoot(&'static str),
     InvalidRequest(&'static str),
+    DecodedAudio(DecodedAudioError),
     ImportSizeLimit,
     ImportDurationLimit,
     InvalidState(&'static str),
@@ -461,6 +462,7 @@ impl fmt::Display for StoreError {
         match self {
             Self::InvalidManagedRoot(reason) => write!(formatter, "invalid managed root: {reason}"),
             Self::InvalidRequest(reason) => write!(formatter, "invalid request: {reason}"),
+            Self::DecodedAudio(reason) => write!(formatter, "decoded audio rejected: {reason}"),
             Self::ImportSizeLimit => write!(formatter, "import source exceeds the size limit"),
             Self::ImportDurationLimit => {
                 write!(formatter, "import source exceeds the duration limit")
@@ -4222,7 +4224,7 @@ mod tests {
         }
         assert_eq!(
             database_value(&store, "SELECT MAX(version) FROM schema_migrations"),
-            15
+            16
         );
         let segment_columns: BTreeSet<String> = store
             .connection
@@ -4280,7 +4282,7 @@ mod tests {
         assert_eq!(channels, 1);
         assert_eq!(
             database_value(&store, "SELECT MAX(version) FROM schema_migrations"),
-            15
+            16
         );
     }
 
