@@ -29,6 +29,7 @@ final class RecoveryPreparationFake: PlayableSessionRecovering, @unchecked Senda
 
 @MainActor
 final class RecoveredAudioPlayerFake: RecoveredAudioPlaying {
+  var transcriptPositionNanoseconds: Int64?
   private(set) var recoveredReceipt: String?
   private(set) var importedReceipt: String?
   private(set) var importedStartNanoseconds: Int64?

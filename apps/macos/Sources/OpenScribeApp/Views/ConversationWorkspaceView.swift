@@ -68,7 +68,13 @@ struct ConversationWorkspaceView: View {
                 } else {
                   playbackController.play(session, startNanoseconds: position)
                 }
-              }
+              },
+              isPlaybackActive: playbackController.canFollowTranscriptPlayback(
+                sessionId: session.sessionId),
+              playbackPosition: {
+                playbackController.transcriptPlaybackPosition(sessionId: session.sessionId)
+              },
+              onFollowPlayback: { id in proxy.scrollTo("transcript-\(id)", anchor: .center) }
             )
           }
           if session.lifecycle == "ready_for_review" {
@@ -164,7 +170,40 @@ struct ConversationWorkspaceView: View {
       .font(.subheadline)
       .foregroundStyle(.secondary)
       .accessibilityElement(children: .combine)
+      if transcripts.sessionId == session.sessionId, let metadata = transcripts.reviewMetadata {
+        reviewMetadataLine(metadata)
+      }
     }
+  }
+
+  private func reviewMetadataLine(_ metadata: NativeConversationReviewMetadata) -> some View {
+    VStack(alignment: .leading, spacing: 4) {
+      HStack(spacing: 8) {
+        Text(
+          metadata.origin == "import"
+            ? "Imported" : metadata.origin == "capture" ? "Capture" : "Conversation")
+        if metadata.addedAtMs > 0 {
+          Text("·")
+          Text(
+            "Added \(Date(timeIntervalSince1970: Double(metadata.addedAtMs) / 1_000).formatted(date: .abbreviated, time: .shortened))"
+          )
+        }
+        if metadata.storedMediaBytes > 0 {
+          Text("·")
+          Text(
+            ByteCountFormatter.string(
+              fromByteCount: Int64(clamping: metadata.storedMediaBytes), countStyle: .file))
+        }
+      }
+      .accessibilityElement(children: .combine)
+      if !metadata.sourceNames.isEmpty {
+        Text(metadata.sourceNames.joined(separator: " · "))
+          .textSelection(.enabled)
+          .lineLimit(2)
+      }
+    }
+    .font(.caption)
+    .foregroundStyle(.secondary)
   }
 
   /// Who took part and what it was about, with one place to change them.

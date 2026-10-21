@@ -14,6 +14,9 @@ struct TranscriptSection: View {
   /// from any media position; without playable audio nothing can seek.
   let canSeek: Bool
   let onSeek: (Int64) -> Void
+  var isPlaybackActive = false
+  var playbackPosition: () -> TranscriptPlaybackPosition? = { nil }
+  var onFollowPlayback: (String) -> Void = { _ in }
 
   @State private var editing: NativeTranscriptSegment?
   @State private var draftText = ""
@@ -52,13 +55,28 @@ struct TranscriptSection: View {
       if !showingModels, session.transcriptionUnavailableReason == nil {
         outcomeNote
       }
-      if session.transcriptionUnavailableReason == nil, !transcripts.segments.isEmpty {
-        speakerList
-        // Long sessions hold thousands of segments; build only visible rows.
-        LazyVStack(alignment: .leading, spacing: 12) {
-          ForEach(transcripts.segments) { segment in
-            segmentRow(segment)
+      if session.transcriptionUnavailableReason == nil,
+        transcripts.sessionId == session.sessionId, !transcripts.segments.isEmpty
+      {
+        TranscriptReader(
+          sessionId: session.sessionId, transcripts: transcripts, canSeek: canSeek,
+          isPlaybackActive: isPlaybackActive, playbackPosition: playbackPosition,
+          onSeek: onSeek,
+          onCorrect: { segment in
+            draftText = segment.effectiveText
+            transcripts.dismissMessage()
+            editing = segment
+          }, onFollowPlayback: onFollowPlayback
+        )
+        .id(session.sessionId)
+        DisclosureGroup("Audio source labels") {
+          VStack(alignment: .leading, spacing: 8) {
+            Text("Source labels apply to every unassigned passage on that audio track.")
+              .font(.caption)
+              .foregroundStyle(.secondary)
+            speakerList
           }
+          .padding(.top, 8)
         }
       }
     }
@@ -264,56 +282,6 @@ struct TranscriptSection: View {
     .font(.callout)
   }
 
-  private func segmentRow(_ segment: NativeTranscriptSegment) -> some View {
-    let stamp = Self.timestamp(segment.startNanoseconds)
-    return HStack(alignment: .firstTextBaseline, spacing: 12) {
-      Button(stamp) {
-        onSeek(segment.startNanoseconds)
-      }
-      .buttonStyle(.link)
-      .font(.caption.monospacedDigit())
-      // One column for every timestamp width keeps the text column aligned.
-      .frame(minWidth: 48, alignment: .leading)
-      .disabled(!canSeek)
-      .help(canSeek ? "Play from \(stamp)" : "This conversation has no playable audio")
-      .accessibilityLabel(canSeek ? "Play from \(stamp)" : stamp)
-      VStack(alignment: .leading, spacing: 4) {
-        Text(segment.speakerLabel)
-          .font(.subheadline.weight(.semibold))
-        Text(segment.effectiveText)
-          .textSelection(.enabled)
-          .fixedSize(horizontal: false, vertical: true)
-        if segment.corrected {
-          Text("Corrected. Machine reading: \(segment.verbatimText)")
-            .font(.caption)
-            .foregroundStyle(.secondary)
-            .textSelection(.enabled)
-        }
-      }
-      // Keep transcript lines near the 60–85 character measure (DESIGN §10).
-      .frame(maxWidth: 500, alignment: .leading)
-      // Selectable Text can retain its initial AppKit accessibility value after
-      // a correction. Project the current review text explicitly for readers.
-      .accessibilityElement(children: .ignore)
-      .accessibilityAddTraits(.isStaticText)
-      .accessibilityLabel(
-        "\(segment.speakerLabel). \(segment.effectiveText)"
-          + (segment.corrected ? " Corrected. Machine reading: \(segment.verbatimText)" : "")
-      )
-      Spacer(minLength: 8)
-      Button("Correct…") {
-        draftText = segment.effectiveText
-        transcripts.dismissMessage()
-        editing = segment
-      }
-      .buttonStyle(.borderless)
-      .accessibilityLabel("Correct the text at \(stamp)")
-    }
-    // The row action stays beside its text instead of the far edge.
-    .frame(maxWidth: 660, alignment: .leading)
-    .accessibilityElement(children: .contain)
-  }
-
   /// A failed save keeps the sheet and its text open and says why.
   @ViewBuilder
   private var sheetFailure: some View {
@@ -352,7 +320,11 @@ struct TranscriptSection: View {
           }
           .disabled(session.transcriptionUnavailableReason != nil)
           Button("Portable Package…") { exportPackage() }
-            .disabled(session.transcriptionUnavailableReason != nil)
+            .disabled(session.transcriptionUnavailableReason != nil || hasTurnSpeakerNames)
+            .help(
+              hasTurnSpeakerNames
+                ? "Portable v1 cannot restore passage-level names. Export the transcript and audio separately."
+                : "Export a portable conversation package")
         }
       }
       .fixedSize()
@@ -475,6 +447,11 @@ struct TranscriptSection: View {
   }
 
   /// A `.openscribe` package is a directory; the name always keeps its extension.
+  private var hasTurnSpeakerNames: Bool {
+    transcripts.sessionId == session.sessionId
+      && transcripts.segments.contains { $0.namedSpeakerId != nil }
+  }
+
   private func exportPackage() {
     let packageType = UTType(filenameExtension: "openscribe", conformingTo: .package) ?? .package
     let panel = NSSavePanel()

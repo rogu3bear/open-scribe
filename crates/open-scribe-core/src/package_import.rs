@@ -179,6 +179,11 @@ fn restored_transcript(
         if segment["track_id"] != track_id || segment["finality"] != "final" {
             return Err(invalid("a transcript segment names another track"));
         }
+        if segment["speaker"] != track["speaker"] {
+            return Err(invalid(
+                "portable v1 cannot restore turn-level speaker names",
+            ));
+        }
         segments.push((
             unsigned(segment, "sequence")?,
             RestoredTranscriptSegment {

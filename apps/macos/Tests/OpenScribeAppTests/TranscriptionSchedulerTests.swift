@@ -18,11 +18,14 @@ final class TranscriptionSchedulerTests: XCTestCase {
     var recovery = false
     var readiness: NativeModelReadiness = .ready
     var started: [NativeTranscriptionWork] = []
-    var continuation: CheckedContinuation<NativeWorkOutcome, Never>?
+    var continuation: CheckedContinuation<NativeTranscriptionResult, Never>?
     lazy var scheduler = TranscriptionScheduler(
       coordinator: coordinator,
       runner: { [weak self] entry in
-        guard let self else { return .deferred }
+        guard let self else {
+          return NativeTranscriptionResult(
+            outcome: .deferred, summary: nil, reason: nil, failure: nil)
+        }
         started.append(entry)
         return await withCheckedContinuation { continuation = $0 }
       },
@@ -69,10 +72,12 @@ final class TranscriptionSchedulerTests: XCTestCase {
       coordinator = try NativeWorkCoordinator.open(
         managedRoot: root.appendingPathComponent("Library").path)
     }
-    func finish(_ outcome: NativeWorkOutcome) {
+    func finish(_ outcome: NativeWorkOutcome, failure: NativeSpeechError? = nil) {
       let pending = continuation
       continuation = nil
-      pending?.resume(returning: outcome)
+      pending?.resume(
+        returning: NativeTranscriptionResult(
+          outcome: outcome, summary: nil, reason: nil, failure: failure))
     }
     func removeOwnedFixture() { try? FileManager.default.removeItem(at: root) }
   }
@@ -164,6 +169,58 @@ final class TranscriptionSchedulerTests: XCTestCase {
     XCTAssertEqual(queue.map(\.sessionId), [h.session])
     XCTAssertTrue(queue[0].manual)
     XCTAssertEqual(queue[0].hold, .capture)
+  }
+
+  func testTypedFailureSurvivesRefreshAndCannotDescribeAResumedReplacement() async throws {
+    let h = try Harness()
+    defer { h.removeOwnedFixture() }
+    h.scheduler.isAutomatic = false
+    h.scheduler.request(sessionId: h.session, intent: .reprocessAll)
+    await waitUntil { h.started.count == 1 }
+    let failure = NativeSpeechError.DecodedAudioLengthMismatch(expected: 48_000, actual: 47_999)
+    let message = SpeechFailurePresentation.describe(failure)
+    h.finish(.failed, failure: failure)
+    await waitUntil { h.scheduler.state(for: h.session) == .failed(message) }
+    h.scheduler.reconsider()
+    try await Task.sleep(for: .milliseconds(100))
+    XCTAssertEqual(h.scheduler.state(for: h.session), .failed(message))
+    XCTAssertNil(h.scheduler.state(for: "unrelated-session"))
+
+    // Another handle can resume and fail the same replacement between UI polls.
+    // Its generation stays the same; its new execution must retire old wording.
+    h.readiness = .absent
+    let reopened = try NativeWorkCoordinator.open(
+      managedRoot: h.root.appendingPathComponent("Library").path)
+    try reopened.resumeReplacement(sessionId: h.session)
+    let entry = try XCTUnwrap(
+      reopened.admit(
+        observations: NativeWorkObservations(
+          automatic: false, paused: false, captureActive: false, mediaRecoveryPending: false,
+          model: .ready, availableDiskBytes: nil, memoryCritical: false, thermalCritical: false)))
+    XCTAssertNotEqual(entry.admission, h.started[0].admission)
+    try reopened.finish(admission: try XCTUnwrap(entry.admission), outcome: .failed)
+    h.scheduler.reconsider()
+    await waitUntil {
+      h.scheduler.state(for: h.session) == .failed(SpeechFailurePresentation.outcomeText(.failed))
+    }
+  }
+
+  func testDurableCancelDuringFailureCannotPublishAnEngineFailure() async throws {
+    let h = try Harness()
+    defer { h.removeOwnedFixture() }
+    h.scheduler.isAutomatic = false
+    h.scheduler.request(sessionId: h.session)
+    await waitUntil { h.started.count == 1 }
+    var publishedFailure = false
+    let observation = h.scheduler.$outcomes.sink { outcomes in
+      if let outcome = outcomes[h.session], case .failed = outcome { publishedFailure = true }
+    }
+    defer { observation.cancel() }
+    // Simulate another control handle cancelling before a late engine result.
+    try h.coordinator.cancel(sessionId: h.session)
+    h.finish(.failed, failure: .TranscriptionFailed(reason: "transcript_validation"))
+    await waitUntil { h.scheduler.state(for: h.session) == .cancelled }
+    XCTAssertFalse(publishedFailure)
   }
 
   func testIncompleteRebuildEndsManualIntentAndLeavesRecognitionEligible() async throws {
@@ -327,7 +384,8 @@ final class TranscriptionSchedulerTests: XCTestCase {
           revisionId: "reviewed-revision", trackId: "fixture", sequence: 0,
           startNanoseconds: 0, endNanoseconds: 100_000_000,
           verbatimText: "Machine reading", effectiveText: "Human corrected reading",
-          corrected: true, speakerLabel: "Local user", speakerNamedByUser: false)
+          corrected: true, speakerLabel: "Local user", speakerNamedByUser: false,
+          namedSpeakerId: nil)
       ], speakers: [])
     let section = TranscriptSection(
       session: session, transcripts: transcript,

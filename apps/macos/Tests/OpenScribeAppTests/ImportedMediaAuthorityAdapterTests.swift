@@ -7,6 +7,130 @@ import XCTest
 
 @MainActor
 final class ImportedMediaAuthorityAdapterTests: XCTestCase {
+  func testBatchImportsInOrderKeepsAcceptedFilesAndReportsEachFailureWithoutSelecting() async {
+    let events = ImportEventRecorder()
+    let adapter = ImportedMediaAuthorityAdapter(
+      startSecurityScope: { url in
+        events.append("open:\(url.lastPathComponent)")
+        return true
+      },
+      stopSecurityScope: { events.append("close:\($0.lastPathComponent)") },
+      importer: { title, _ in
+        events.append("import:\(title)")
+        if title == "Second" { throw NativeStorageError.InvalidRequest }
+        return acceptedEvidence()
+      },
+      batchPicker: {
+        ["First", "Second", "Third"].map { URL(fileURLWithPath: "/tmp/\($0).caf") }
+      }
+    )
+
+    adapter.chooseAndImport()
+    await assertEventually { adapter.phase == .failed && !adapter.hasPendingAudioImports }
+
+    XCTAssertEqual(adapter.importedSessionIds.count, 2)
+    XCTAssertNil(
+      adapter.importedSessionId, "A batch must not repeatedly change the selected document")
+    XCTAssertEqual(adapter.failedImports.map(\.fileName), ["Second.caf"])
+    XCTAssertEqual(
+      events.snapshot(),
+      [
+        "open:First.caf", "import:First", "close:First.caf",
+        "open:Second.caf", "import:Second", "close:Second.caf",
+        "open:Third.caf", "import:Third", "close:Third.caf",
+      ])
+  }
+
+  func testStoppingABatchDuringImportRetainsCommittedWorkAndDoesNotStartTheNextFile() async {
+    let gate = BlockingImportGate()
+    defer { gate.release() }
+    let events = ImportEventRecorder()
+    let adapter = ImportedMediaAuthorityAdapter(
+      startSecurityScope: {
+        events.append("open:\($0.lastPathComponent)")
+        return true
+      },
+      stopSecurityScope: { events.append("close:\($0.lastPathComponent)") },
+      importer: { title, _ in
+        events.append("import:\(title)")
+        gate.enterAndWait()
+        return acceptedEvidence()
+      },
+      batchPicker: { ["First", "Second"].map { URL(fileURLWithPath: "/tmp/\($0).caf") } }
+    )
+
+    adapter.chooseAndImport()
+    await assertEventually { gate.hasEntered }
+    adapter.cancelImport()
+    gate.release()
+    await assertEventually { !adapter.hasPendingAudioImports }
+
+    XCTAssertEqual(adapter.phase, .idle)
+    XCTAssertEqual(adapter.importedSessionIds, ["imported-session"])
+    XCTAssertTrue(adapter.statusMessage?.contains("Stopped after importing 1 of 2") == true)
+    XCTAssertEqual(events.snapshot(), ["open:First.caf", "import:First", "close:First.caf"])
+  }
+
+  func testBatchPauseClosesTheCurrentScopeAndResumesOnlyOnRequest() async {
+    let gate = BlockingImportGate()
+    defer { gate.release() }
+    let events = ImportEventRecorder()
+    let adapter = ImportedMediaAuthorityAdapter(
+      startSecurityScope: {
+        events.append("open:\($0.lastPathComponent)")
+        return true
+      },
+      stopSecurityScope: { events.append("close:\($0.lastPathComponent)") },
+      importer: { title, _ in
+        events.append("import:\(title)")
+        if title == "First" { gate.enterAndWait() }
+        return acceptedEvidence()
+      },
+      batchPicker: { ["First", "Second"].map { URL(fileURLWithPath: "/tmp/\($0).caf") } }
+    )
+
+    adapter.chooseAndImport()
+    await assertEventually { gate.hasEntered }
+    adapter.pauseImports()
+    gate.release()
+    await assertEventually { adapter.phase == .paused }
+    XCTAssertEqual(events.snapshot(), ["open:First.caf", "import:First", "close:First.caf"])
+    XCTAssertTrue(adapter.hasPendingAudioImports)
+    XCTAssertTrue(adapter.pauseRequested)
+
+    adapter.resumeImports()
+    await assertEventually { adapter.phase == .succeeded && !adapter.hasPendingAudioImports }
+    XCTAssertEqual(adapter.importedSessionIds.count, 2)
+  }
+
+  func testBatchRechecksCaptureAdmissionBetweenFilesAndDoesNotResumeThroughAHold() async {
+    let gate = BlockingImportGate()
+    defer { gate.release() }
+    let admission = BatchImportAdmission()
+    let adapter = ImportedMediaAuthorityAdapter(
+      startSecurityScope: { _ in true }, stopSecurityScope: { _ in },
+      canBeginImport: { admission.allowsImport },
+      importer: { title, _ in
+        if title == "First" { gate.enterAndWait() }
+        return acceptedEvidence()
+      },
+      batchPicker: { ["First", "Second"].map { URL(fileURLWithPath: "/tmp/\($0).caf") } }
+    )
+
+    adapter.chooseAndImport()
+    await assertEventually { gate.hasEntered }
+    admission.allowsImport = false
+    gate.release()
+    await assertEventually { adapter.phase == .paused }
+    adapter.resumeImports()
+    XCTAssertEqual(adapter.phase, .paused)
+    XCTAssertEqual(adapter.importedSessionIds.count, 1)
+
+    admission.allowsImport = true
+    await assertEventually { adapter.phase == .succeeded && !adapter.hasPendingAudioImports }
+    XCTAssertEqual(adapter.importedSessionIds.count, 2)
+  }
+
   func testOversizedM4AIsRejectedBeforeDecodeOrLibraryMutation() throws {
     let root = FileManager.default.temporaryDirectory
       .appendingPathComponent("open-scribe-import-bounds-\(UUID().uuidString)", isDirectory: true)
@@ -613,6 +737,11 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
     let observed = await waitUntil(predicate)
     XCTAssertTrue(observed, file: file, line: line)
   }
+}
+
+@MainActor
+private final class BatchImportAdmission {
+  var allowsImport = true
 }
 
 private func acceptedEvidence() -> NativeImportedMediaEvidence {

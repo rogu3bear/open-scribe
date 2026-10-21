@@ -235,7 +235,8 @@ fn cancellation_wins_selection_even_when_a_completed_revision_crosses_the_stop_b
         fixture.store.transcription_outcomes().unwrap(),
         [(
             fixture.session.0.clone(),
-            open_scribe_types::WorkOutcome::UserCancelled
+            open_scribe_types::WorkOutcome::UserCancelled,
+            None
         )]
     );
 }
@@ -646,7 +647,7 @@ fn schema_v4_fixture_migrates_without_rewriting_sealed_evidence() {
             .unwrap()
             .map(Result::unwrap)
             .collect();
-        assert_eq!(versions, (1..=14).collect::<Vec<_>>());
+        assert_eq!(versions, (1..=16).collect::<Vec<_>>());
         let derived: i64 = store
             .connection
             .query_row(
@@ -655,6 +656,9 @@ fn schema_v4_fixture_migrates_without_rewriting_sealed_evidence() {
                       + (SELECT COUNT(*) FROM transcript_selections)
                       + (SELECT COUNT(*) FROM transcript_corrections)
                       + (SELECT COUNT(*) FROM speaker_adjudications)
+                      + (SELECT COUNT(*) FROM transcript_named_speakers)
+                      + (SELECT COUNT(*) FROM transcript_speaker_names)
+                      + (SELECT COUNT(*) FROM transcript_turn_speakers)
                       + (SELECT COUNT(*) FROM transcript_search)",
                 [],
                 |row| row.get(0),

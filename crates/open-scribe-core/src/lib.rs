@@ -65,8 +65,9 @@ pub use open_scribe_domain::{
 };
 pub use open_scribe_evidence::{EvidenceKind, EvidenceRef, EvidenceRefError, ResolutionState};
 pub use open_scribe_store::{
-    LibraryRecovery, RecoveryDisposition, ResolvedEvidence, RuntimeTranscriptState, SessionStore,
-    TranscriptionFailure, TranscriptionOperation, TranscriptionRunPolicy, TranscriptionWork,
+    DecodedAudioError, LibraryRecovery, RecoveryDisposition, ResolvedEvidence,
+    RuntimeTranscriptState, SessionStore, TranscriptionFailure, TranscriptionOperation,
+    TranscriptionRunPolicy, TranscriptionWork,
 };
 
 /// Canonical `open-scribe.evidence-ref/v1` JSON for a Rust-derived reference.
@@ -95,8 +96,9 @@ pub use open_scribe_store::{
     SourceFailureRequest, StoreError, TimelineSegment, ValidatedMixdown, import_policy,
 };
 pub use open_scribe_store::{
-    SelectedRevisionProvenance, SessionDeletionInventory, SessionDeletionReceipt, SessionSpeaker,
-    SpeakerLabelOrigin, TranscriptDocumentSegment, TranscriptExportContext, TranscriptSearchHit,
+    NamedTranscriptSpeaker, SelectedRevisionProvenance, SessionDeletionInventory,
+    SessionDeletionReceipt, SessionSpeaker, SpeakerLabelOrigin, TranscriptDocumentSegment,
+    TranscriptExportContext, TranscriptSearchHit, TranscriptSpeakerAssignment,
 };
 
 pub struct CoarseMediaOpenReceipt {

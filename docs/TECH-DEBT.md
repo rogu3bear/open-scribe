@@ -22,6 +22,7 @@
 | TD-002 | Post-preparation failures retain typed interruption evidence; strict startup recovery converts valid process-killed microphone CAF media to persistent playable `ready_for_review` output. | `M1_FORCED_TERMINATION_RECOVERY_GATE_GREEN`; projection interruption, invalid-media, external-kill, unchanged-digest, playback, and idempotence proof. |
 | TD-007 | Forced-termination microphone media is strictly validated, durably recovered, persistently rediscovered, and opened through native playback without changing source bytes. | `M1_FORCED_TERMINATION_RECOVERY_GATE_GREEN`; long-session and required-source work remains under TD-006. |
 | TD-004 | Only Rust `confirm_recording` enters `Recording`, once every required source has durable first-sample evidence; the live controller asserts it through that call alone. | Store required-source tests and 170 Swift tests at `c4fae7f`; `M1_DUAL_SOURCE_RUNTIME_GREEN` on `072a3fb`. |
+| TD-014 | Ignored one-off import/clock wiring is now a checked-in offscreen production-component check with stable input manifests and an executable digest. | October 19 `IMPORT_COMPONENT_CHECK_GREEN`, six named cases; [scope and receipt identities](REMOVE-TECHNICAL-DEBT-PLAN.md#phase-1-result). Native test-host/renderer, contributor and release gaps remain open. |
 
 ## Smell Inventory
 
@@ -29,7 +30,8 @@
 |---|---|---|---:|---|---|
 | Broad error collapse | `AppDelegate.applicationWillFinishLaunching` | Distinct lock failures produce the same action. | P1 | Native shell owner | Add characterization and split error handling. |
 | String-only controller errors | `LiveMicrophoneRecordingController` | UI cannot reliably distinguish permission, source, writer, seal, and recovery actions. | P1 | Native runtime owner | Introduce typed operator-facing failure categories after the state contract is approved. |
-| Oversized playback owner | `RecoveredSessionController` (about 1,900 lines) | Imported, recovered, synchronized, and mixdown playback share one file near the 2,000-line limit, so imported-audio seek has no clean home. | P1 | Native runtime owner | Split playback strategies by responsibility before adding imported-audio seek. |
+| Playback lifecycle coverage | `RecoveredSessionController`, `RecoveredAudioPlayer`, `TimelineAudioPlayer` | Current source has separate players and a 659-line controller with imported-search seek routing. The former about-1,900-line description is superseded; runtime lifecycle/renderer qualification remains open. | P1 | Native runtime owner | Run the existing lifecycle tests and exact native gate when the screen constraint can be honored; do not split again merely to lower line counts. |
+| Ad hoc characterization wiring | `script/check_import_components.sh`, `apps/macos/Tests/Offscreen/ImportComponents.swift` | Repeatable proof needs its source and scope beside the production code. | P1 | Conversation-loop owner | Retired by the checked-in runner and stable input verification (TD-014); retain the canonical contributor gate and native gaps. |
 
 ## Sprout/Wrap Register
 
@@ -39,6 +41,7 @@
 | `LiveMicrophoneRecordingController` | Sprout | Coordinate the explicit menu-bar capture path without moving frame-rate media across UniFFI. | Typed interruption and forced-exit playable recovery admitted; required-source authority remains open | Native runtime owner |
 | `SingleInstanceGuard` | Sprout | Isolate exact-process ownership from SwiftUI application setup. | Admitted; error split remains | Native shell owner |
 | Rust evidence objects | Wrap | Admit only coarse durable state transitions across UniFFI. | Active | Durable-state owner |
+| Import adapter constructor injections | Existing parameter seam | Exercise the production file-selection/scope/import/capture-admission order without panels, devices or private files. | Reused by the offscreen characterization runner; no new production wrapper | Conversation-loop owner |
 
 ## Debt Budget & Broken-Windows Policy
 

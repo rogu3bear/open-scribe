@@ -6,6 +6,36 @@ Open Scribe tests the evidence chain in order: source/configuration, determinist
 
 Characterization tests pin observed behavior before correction. Safety-critical invariants—durable media before capture claims, audio survival independent of transcription, required-source truth, and recovery—need tests at the layer that owns the claim plus runtime evidence on an exact artifact.
 
+### Offscreen imported-audio boundary
+
+`bash script/check_imported_audio_round_trip.sh <absolute-new-output-directory>`
+builds a command-line component check under normal Disk Guard admission. It
+generates stereo AAC and Apple Lossless audio, including a partial AAC packet,
+then uses the production importer, an isolated Rust library, the descriptor-based
+decoder, and Rust's exact format/channel/frame validation. No app or test host
+opens, and no device, private recording, speech model or network is used. A
+missing-model result crosses the real UniFFI boundary; the shared presentation
+code checks typed failures, cancellation precedence and content-free diagnostics.
+Source and binary manifests remain in the new output directory.
+The executable itself refuses an existing proof directory before writing a
+marker or opening storage; the script checks that refusal against sentinel data.
+
+The native scheduler tests also check that a typed failure reaches the transcript
+view's outcome projection, survives a status refresh and is retired when another
+execution finishes, including a resumed replacement with the same request
+generation. Work admission and outcome remain Rust-owned; the Swift explanation
+is process-local and bound to the completed admission token. Migration 16 adds
+one nullable receipt column to existing intent, leaving legacy outcomes unbound.
+It changes no recording or journal format. Migration tests retain replacement
+guards and media bytes across reopening; cancellation and stale completion must
+never attach another execution's receipt.
+
+This check does not reproduce every real-world M4A, perform recognition, render
+the interface or admit a contributor candidate. It supplements the full gate
+below. A failure involving the supplied user's installed app still requires
+evidence from that artifact; a passing generated fixture cannot establish that
+the user's file was repaired.
+
 The [reviewed-conversation validation](product/experiments/2026-10-16-reviewed-conversation-validation.md)
 records a paired SIGKILL/restart test against a competent transactional baseline
 (a tie), a real-model import/review/export component check using supplied files
@@ -289,6 +319,56 @@ requires explicit capture and audible-playback authority.
 
 ## Safety Net Map
 
+### Recording workflow change points — October 19, 2026
+
+The current debt pass starts at `ImportedMediaAuthorityAdapter.chooseAndImport`:
+it is the recording-workflow change point, has eight source-history commits,
+and owns access/cancellation ordering around Rust's durable import. The
+transcript-library consumer has twelve commits, but its native document and
+renderer behavior still needs the existing test host. Churn counts select a
+starting point; they do not establish a defect.
+
+The effect sketch is capture admission → injected file selection → one security
+scope → `StructuredNativeIO.mutation` → accepted session identities → the
+existing library/navigation consumer. The pinch points are before scope
+acquisition, after durable completion and before the next file. Constructor
+injections already supply the seams, so no production interface or state machine
+is added. The clock/index checks exercise the pure projection; the actual
+player and reader are outside that proof.
+
+| Module / change point | Pinned behaviors | Test files | Gaps: off-limits to transformation in this pass |
+|---|---|---|---|
+| `ImportedMediaAuthorityAdapter.chooseAndImport` and batch controls | Ordered scopes/imports, accepted files surviving partial failure, no repeated batch navigation, cancellation retaining a committed result, pause closing the current scope, explicit resume, capture holding the next file | `apps/macos/Tests/Offscreen/ImportComponents.swift`; broader `ImportedMediaAuthorityAdapterTests.swift` compiles in the app test target | Real picker/security-scope enforcement, actual media decoding/library publication, package opening and remaining native test-host cases |
+| `StructuredNativeIO.mutation` through import | Cancellation after injected durable completion does not discard the accepted session or start the next file | `apps/macos/Tests/Offscreen/ImportComponents.swift` | Other operation callers and the read-cancellation contract |
+| `TranscriptPlaybackProjection` / `TranscriptPlaybackIndex` | Seek origin, invalid/nonfinite clocks and overflow rejection, overlapping passages and exclusive ends | `apps/macos/Tests/Offscreen/ImportComponents.swift`; broader `TranscriptPlaybackProjectionTests.swift` compiles in the app test target | AVAudioPlayerNode render time, session/generation ownership, actual playback and rendered following/accessibility |
+| Rust passage-speaker storage and consumers | Revision-bound assignments, stale/foreign rejection, append-only rename/reset, current literal-name search, selected-document protection, reopen/ordinal isolation, metadata and deletion history cleanup | `crates/open-scribe-store/src/transcript_speakers_tests.rs`; core export/package tests | Reuses the exact `6f16330` Rust workspace result; no new Rust behavior or wider native proof inferred |
+
+Run the bounded offscreen check, with normal host admission and a new output
+directory whose parent exists:
+
+```sh
+disk-guard run --budget-gb 16 --volume "$PWD" -- \
+  bash script/check_import_components.sh \
+  "$PWD/apps/macos/.build/import-components-<unique-run>"
+```
+
+The script works offline, checks the pinned Apple tools, builds the production
+Rust archive, regenerates/compares bindings, and compiles the actual production
+adapter and projection with warnings denied. Every picker, scope and import is
+injected; the executable creates no App, Scene, NSApplication, panel, store or
+audio device. Before/after input manifests bind the helper, production Swift,
+FFI header/module map, script and archive; existing output directories are
+refused. Failure preserves the run directory. `IMPORT_COMPONENT_CHECK_GREEN`
+does not create a contributor candidate or `checks.json`, replace the complete
+contributor gate, or qualify UI, real audio, ASR, macOS 13 runtime or release.
+
+The earlier ignored component helper and its receipts remain dated evidence.
+In particular, an older receipt binds an older helper hash and cannot qualify
+this checked-in runner. The fresh result for this pass is recorded in the
+[debt journey](REMOVE-TECHNICAL-DEBT-PLAN.md).
+
+### Wider product safety net
+
 | Surface | Existing Safety Net | Important Gap | Priority | Owner |
 |---|---|---|---:|---|
 | Rust domain/types | Unit tests and fixture compatibility checks | Migration/backward-compatibility corpus remains small | P1 | Durable-state owner |
@@ -312,6 +392,7 @@ requires explicit capture and audible-playback authority.
 - [ ] **P0 — Platform capture owner:** characterize required-source loss independently for microphone and the selected system-audio mode.
 - [ ] **P1 — Conversation-loop owner:** characterize transcription retry/replacement while the sealed audio remains unchanged.
 - [x] **P1 — Library owner:** characterize managed local CAF import deduplication and unsupported or malformed media rejection.
+- [x] **P1 — Conversation-loop owner:** run the checked-in offscreen import/clock characterization suite; preserve its source and executable identities and all native-host gaps (October 19 pass recorded in the debt journey).
 - [ ] **P1 — Library owner:** characterize large files and partial metadata with real user-selected sources and broader formats.
 
 ## CI Gates

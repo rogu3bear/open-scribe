@@ -176,6 +176,66 @@ fn every_format_renders_the_selected_final_transcript_with_provenance() {
 }
 
 #[test]
+fn turn_names_render_in_every_format_without_replacing_source_labels_or_evidence() {
+    let (mut imported, revision) = transcribed(90);
+    let before = collect(&imported);
+    for (sequence, name) in [(0, "Dana"), (1, "Morgan")] {
+        imported
+            .store
+            .assign_transcript_speaker(
+                &imported.session,
+                &revision,
+                sequence,
+                &open_scribe_store::TranscriptSpeakerAssignment::New(name.into()),
+            )
+            .unwrap();
+    }
+    let export = collect(&imported);
+    for format in [
+        TranscriptExportFormat::PlainText,
+        TranscriptExportFormat::Markdown,
+        TranscriptExportFormat::WebVtt,
+        TranscriptExportFormat::SubRip,
+        TranscriptExportFormat::TranscriptJson,
+    ] {
+        let rendered = export.render(format).unwrap();
+        assert!(rendered.contains("Dana"), "{format:?}: {rendered}");
+        assert!(rendered.contains("Morgan"), "{format:?}: {rendered}");
+    }
+    let json: Value = serde_json::from_str(
+        &export
+            .render(TranscriptExportFormat::TranscriptJson)
+            .unwrap(),
+    )
+    .unwrap();
+    let original: Value = serde_json::from_str(
+        &before
+            .render(TranscriptExportFormat::TranscriptJson)
+            .unwrap(),
+    )
+    .unwrap();
+    assert_matches_schema(&json);
+    assert_eq!(json["speakers_declaration"], "user_adjudicated");
+    assert_eq!(
+        json["tracks"][0]["speaker"],
+        original["tracks"][0]["speaker"]
+    );
+    for (after, before) in json["segments"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .zip(original["segments"].as_array().unwrap())
+    {
+        assert_eq!(after["evidence_ref"], before["evidence_ref"]);
+        assert_eq!(after["verbatim_text"], before["verbatim_text"]);
+        assert_eq!(after["effective_text"], before["effective_text"]);
+    }
+    assert_eq!(json["segments"][0]["speaker"]["label"], "Dana");
+    assert_eq!(json["segments"][1]["speaker"]["label"], "Morgan");
+    assert_eq!(json["segments"][2]["speaker"]["origin"], "source_default");
+}
+
+#[test]
 fn unavailable_and_failed_transcripts_are_disclosed_without_invented_text() {
     let mut imported = imported(10);
     let export = collect(&imported);

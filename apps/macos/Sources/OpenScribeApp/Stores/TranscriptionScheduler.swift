@@ -62,7 +62,7 @@ enum TranscriptionJobState: Equatable, Sendable {
 /// runner or reconstruct its origin from presentation flags.
 @MainActor
 final class TranscriptionScheduler: ObservableObject {
-  typealias Runner = @MainActor (NativeTranscriptionWork) async -> NativeWorkOutcome
+  typealias Runner = @MainActor (NativeTranscriptionWork) async -> NativeTranscriptionResult
   static let automaticDefaultsKey = "OpenScribeTranscribeNewRecordingsAutomatically"
   static let pausedDefaultsKey = "OpenScribeTranscriptionPaused"
   static let declinedDefaultsKey = "OpenScribeTranscriptionDeclinedSessions"
@@ -98,6 +98,10 @@ final class TranscriptionScheduler: ObservableObject {
   private var recoveredIntent = false
   private var maintenanceComplete = false
   private var refreshAgain = false
+  /// Process-local wording, never work authority. Rust's completed admission
+  /// binds it to one execution, even when a replacement resumes the same intent.
+  private var failureDetails: [String: (admission: String, failure: NativeSpeechError)] = [:]
+  private var outcomePublication: UInt64 = 0
 
   init(
     coordinator: NativeWorkCoordinator?, runner: @escaping Runner,
@@ -123,7 +127,8 @@ final class TranscriptionScheduler: ObservableObject {
     self.init(
       coordinator: try? managedRoot.map { try NativeWorkCoordinator.open(managedRoot: $0.path) },
       runner: {
-        await speech.process(sessionId: $0.sessionId, intent: $0.intent, admission: $0.admission)
+        await speech.processResult(
+          sessionId: $0.sessionId, intent: $0.intent, admission: $0.admission)
       },
       observations: {
         NativeWorkObservations(
@@ -157,7 +162,10 @@ final class TranscriptionScheduler: ObservableObject {
   }
   static func inert() -> TranscriptionScheduler {
     TranscriptionScheduler(
-      coordinator: nil, runner: { _ in .deferred },
+      coordinator: nil,
+      runner: { _ in
+        NativeTranscriptionResult(outcome: .deferred, summary: nil, reason: nil, failure: nil)
+      },
       observations: {
         NativeWorkObservations(
           automatic: false, paused: false, captureActive: false,
@@ -167,6 +175,8 @@ final class TranscriptionScheduler: ObservableObject {
   }
   func observe(saved: [RuntimeSessionPresentation]) { reconsider() }
   func request(sessionId: String, intent: NativeTranscriptionIntent = .resumeIncomplete) {
+    failureDetails[sessionId] = nil
+    outcomePublication &+= 1
     command { try $0.request(sessionId: sessionId, intent: intent) }
   }
   func resumeReplacement(sessionId: String) {
@@ -205,7 +215,10 @@ final class TranscriptionScheduler: ObservableObject {
   func canPrioritize(sessionId: String) -> Bool {
     queue.contains { $0.sessionId == sessionId && !$0.requestedByUser }
   }
-  func dismissOutcome(sessionId: String) { outcomes[sessionId] = nil }
+  func dismissOutcome(sessionId: String) {
+    failureDetails[sessionId] = nil
+    outcomes[sessionId] = nil
+  }
   private var currentObservations: NativeWorkObservations {
     let value = observations()
     return NativeWorkObservations(
@@ -259,9 +272,24 @@ final class TranscriptionScheduler: ObservableObject {
           TranscriptionQueueEntry(sessionId: $0.sessionId, requestedByUser: $0.manual)
         }
         hold = list.first(where: { $0.admission == nil })?.hold.map(TranscriptionHold.init)
+        let publication = outcomePublication
         let saved = try await StructuredNativeIO.read { try coordinator.outcomes() }
+        guard publication == outcomePublication else {
+          refreshAgain = true
+          return
+        }
+        let savedBySession = Dictionary(uniqueKeysWithValues: saved.map { ($0.sessionId, $0) })
+        failureDetails = failureDetails.filter { id, detail in
+          savedBySession[id]?.completedAdmission == detail.admission
+            && savedBySession[id]?.outcome == .failed
+        }
         outcomes = Dictionary(
-          uniqueKeysWithValues: saved.map { ($0.sessionId, Self.presentation($0.outcome)) })
+          uniqueKeysWithValues: saved.map {
+            (
+              $0.sessionId,
+              Self.presentation($0.outcome, failure: failureDetails[$0.sessionId]?.failure)
+            )
+          })
         guard workTask == nil, maintenanceTask == nil, !Task.isCancelled else { return }
         let latest = currentObservations
         if let admitted = try await StructuredNativeIO.mutation({
@@ -304,7 +332,8 @@ final class TranscriptionScheduler: ObservableObject {
     runningSessionId = entry.sessionId
     queue.removeAll { $0.sessionId == entry.sessionId }
     workTask = Task {
-      let outcome = await runner(entry)
+      let result = await runner(entry)
+      let outcome = result.outcome
       do {
         try await StructuredNativeIO.mutation {
           try coordinator.finish(admission: token, outcome: outcome)
@@ -313,18 +342,30 @@ final class TranscriptionScheduler: ObservableObject {
         hold = .unavailable(
           "Completion could not be saved. The next library recovery will reconcile durable work.")
       }
-      outcomes[entry.sessionId] = Self.presentation(outcome)
+      if outcome == .failed, let failure = result.failure {
+        failureDetails[entry.sessionId] = (token, failure)
+      } else {
+        failureDetails[entry.sessionId] = nil
+      }
+      outcomePublication &+= 1
+      // A concurrent cancel or newer request can supersede this completion.
+      // Publish only the durable outcome read by the following refresh.
       runningSessionId = nil
       workTask = nil
       reconsider()
     }
   }
-  private static func presentation(_ outcome: NativeWorkOutcome) -> TranscriptionOutcome {
+  private static func presentation(_ outcome: NativeWorkOutcome, failure: NativeSpeechError? = nil)
+    -> TranscriptionOutcome
+  {
     switch outcome {
     case .completed: .finished("Transcript ready.")
     case .userCancelled: .cancelled
     case .capturePreempted: .preempted
-    case .failed: .failed("Transcription did not finish. The recorded audio is unchanged.")
+    case .failed:
+      .failed(
+        failure.map { SpeechFailurePresentation.describe($0) }
+          ?? SpeechFailurePresentation.outcomeText(.failed))
     case .deferred: .deferred
     case .incomplete: .incomplete
     }

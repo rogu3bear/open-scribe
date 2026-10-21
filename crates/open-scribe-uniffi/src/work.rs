@@ -140,6 +140,7 @@ impl From<open_scribe_core::TranscriptionWork> for NativeTranscriptionWork {
 pub struct NativeSessionWorkOutcome {
     pub session_id: String,
     pub outcome: NativeWorkOutcome,
+    pub completed_admission: Option<String>,
 }
 
 #[derive(uniffi::Object)]
@@ -228,10 +229,13 @@ impl NativeWorkCoordinator {
             .transcription_outcomes()
             .map_err(map_storage_error)?
             .into_iter()
-            .map(|(session_id, outcome)| NativeSessionWorkOutcome {
-                session_id,
-                outcome: outcome.into(),
-            })
+            .map(
+                |(session_id, outcome, completed_admission)| NativeSessionWorkOutcome {
+                    session_id,
+                    outcome: outcome.into(),
+                    completed_admission,
+                },
+            )
             .collect())
     }
     /// Once per process after the capture-safety barrier. Uses its own handle;

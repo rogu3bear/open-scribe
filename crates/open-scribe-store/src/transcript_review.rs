@@ -24,7 +24,7 @@ const MAX_SEARCH_RESULTS: u32 = 200;
 /// The only speaker cluster before diarization: the whole source track.
 pub(super) const SOURCE_CLUSTER: &str = "source";
 
-const EFFECTIVE_TEXT: &str = "COALESCE(
+pub(super) const EFFECTIVE_TEXT: &str = "COALESCE(
     (SELECT corrections.text FROM transcript_corrections AS corrections
      WHERE corrections.revision_id = segments.revision_id
        AND corrections.sequence = segments.sequence
@@ -151,6 +151,9 @@ pub struct TranscriptDocumentSegment {
     pub corrected: bool,
     pub speaker_label: String,
     pub speaker_origin: SpeakerLabelOrigin,
+    /// A human-confirmed identity for this exact turn, independent of its
+    /// source track. None preserves the existing source label.
+    pub named_speaker_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -323,6 +326,7 @@ impl SessionStore {
         session: &SessionId,
     ) -> Result<Vec<TranscriptDocumentSegment>, StoreError> {
         let speakers = self.session_speakers(session)?;
+        let turn_speakers = self.transcript_turn_speakers(session)?;
         let mut statement = self.connection.prepare(&format!(
             "SELECT segments.revision_id, revisions.track_id, segments.sequence,
                     segments.start_ns, segments.end_ns, segments.text, {EFFECTIVE_TEXT}
@@ -354,10 +358,17 @@ impl SessionStore {
                         .ok_or(StoreError::IntegrityMismatch(
                             "transcript track has no source identity",
                         ))?;
+                    let named = turn_speakers.get(&(revision_id.clone(), sequence));
                     Ok(TranscriptDocumentSegment {
                         corrected: effective != verbatim,
-                        speaker_label: speaker.label.clone(),
-                        speaker_origin: speaker.origin,
+                        speaker_label: named
+                            .map_or_else(|| speaker.label.clone(), |person| person.label.clone()),
+                        speaker_origin: if named.is_some() {
+                            SpeakerLabelOrigin::Human
+                        } else {
+                            speaker.origin
+                        },
+                        named_speaker_id: named.map(|person| person.id.clone()),
                         revision_id,
                         track_id,
                         sequence,
@@ -422,7 +433,7 @@ impl SessionStore {
     }
 }
 
-fn require_reviewable_session(
+pub(super) fn require_reviewable_session(
     transaction: &Transaction<'_>,
     session_id: &str,
 ) -> Result<(), StoreError> {

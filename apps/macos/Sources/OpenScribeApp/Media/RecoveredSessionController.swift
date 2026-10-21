@@ -544,6 +544,32 @@ final class RecoveredSessionController: ObservableObject {
     }
   }
 
+  func playTranscriptSearchHit(
+    _ hit: NativeTranscriptSearchHit, in session: RuntimeSessionPresentation
+  ) {
+    guard hit.sessionId == session.sessionId else { return }
+    if session.hasCaptureTimeline {
+      playSynchronized(sessionId: session.sessionId, startNanoseconds: hit.startNanoseconds)
+    } else {
+      play(session, startNanoseconds: hit.startNanoseconds)
+    }
+  }
+
+  func canFollowTranscriptPlayback(sessionId: String) -> Bool {
+    playingSessionId == sessionId && activePlaybackGeneration != nil
+      && playingRecoveredMediaIdentity == nil && activeMixdownSessionId == nil
+  }
+
+  func transcriptPlaybackPosition(sessionId: String) -> TranscriptPlaybackPosition? {
+    guard canFollowTranscriptPlayback(sessionId: sessionId),
+      let generation = activePlaybackGeneration,
+      let position = timelinePlayer.isPlaying
+        ? timelinePlayer.transcriptPositionNanoseconds : player.transcriptPositionNanoseconds
+    else { return nil }
+    return TranscriptPlaybackPosition(
+      sessionId: sessionId, generation: generation, nanoseconds: position)
+  }
+
   func stopPlayback(generation: UUID? = nil) {
     if let generation, activePlaybackGeneration != generation { return }
     if let activePlaybackGeneration {

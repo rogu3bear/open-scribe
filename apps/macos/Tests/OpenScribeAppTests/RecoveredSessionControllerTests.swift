@@ -9,6 +9,114 @@ import XCTest
 
 @MainActor
 final class RecoveredSessionControllerTests: RecoveredSessionTestCase {
+  func testImportedSearchHitSeeksTheVerifiedImportAndRejectsAnotherSession() async {
+    let player = RecoveredAudioPlayerFake()
+    let controller = RecoveredSessionController(
+      recoveryFactory: { RecoveryPreparationFake() },
+      importedPlaybackLeaseProvider: { _ in ImportedPlaybackLeaseFake(path: "/owned/fixture") },
+      player: player)
+    let session = savedSession(availability: "available", absolutePath: "/owned/fixture")
+    let hit = NativeTranscriptSearchHit(
+      sessionId: session.sessionId, sessionTitle: "Fixture", revisionId: "selected",
+      trackId: "track",
+      sequence: 1, startNanoseconds: 750_000_000, endNanoseconds: 1_000_000_000,
+      effectiveText: "Passage")
+    controller.playTranscriptSearchHit(
+      hit, in: savedSession(sessionId: "another", availability: "available", absolutePath: "/other")
+    )
+    XCTAssertNil(controller.activePlaybackSessionId)
+    controller.playTranscriptSearchHit(hit, in: session)
+    await assertEventually { controller.playingSessionId == session.sessionId }
+    XCTAssertEqual(player.importedStartNanoseconds, hit.startNanoseconds)
+    XCTAssertEqual(player.importedReceipt, "/owned/fixture")
+    controller.stopPlayback()
+  }
+
+  func testTranscriptClockIsBoundToThePlayingSessionAndClearsOnStopOrReplacement() async {
+    let player = RecoveredAudioPlayerFake()
+    let controller = RecoveredSessionController(
+      recoveryFactory: { RecoveryPreparationFake() },
+      importedPlaybackLeaseProvider: { _ in ImportedPlaybackLeaseFake(path: "/owned/fixture") },
+      player: player)
+    let first = savedSession(availability: "available", absolutePath: "/owned/fixture")
+    XCTAssertNil(controller.transcriptPlaybackPosition(sessionId: first.sessionId))
+    controller.play(first, startNanoseconds: 750_000_000)
+    await assertEventually { controller.playingSessionId == first.sessionId }
+    XCTAssertNil(controller.transcriptPlaybackPosition(sessionId: first.sessionId))
+    player.transcriptPositionNanoseconds = 900_000_000
+    let original = controller.transcriptPlaybackPosition(sessionId: first.sessionId)
+    XCTAssertEqual(original?.nanoseconds, 900_000_000)
+    XCTAssertNil(controller.transcriptPlaybackPosition(sessionId: "wrong-session"))
+
+    let second = savedSession(
+      sessionId: "replacement", availability: "available", absolutePath: "/owned/fixture")
+    controller.play(second)
+    XCTAssertNil(controller.transcriptPlaybackPosition(sessionId: first.sessionId))
+    await assertEventually { controller.playingSessionId == second.sessionId }
+    XCTAssertNotEqual(
+      controller.transcriptPlaybackPosition(sessionId: second.sessionId)?.generation,
+      original?.generation)
+    controller.stopPlayback()
+    XCTAssertNil(controller.transcriptPlaybackPosition(sessionId: second.sessionId))
+  }
+
+  func testCaptureSearchHitUsesTheTimelineAuthorityInsteadOfImportedPlayback() async {
+    let requestedTimeline = SendableFlag()
+    let player = RecoveredAudioPlayerFake()
+    let controller = RecoveredSessionController(
+      recoveryFactory: { RecoveryPreparationFake() }, player: player,
+      timelineProvider: { _ in
+        requestedTimeline.set()
+        throw NativeStorageError.InvalidState
+      })
+    let capture = RuntimeSessionPresentation(
+      native: NativeRuntimeSessionSnapshot(
+        sessionId: "capture", title: "Capture", lifecycle: "ready_for_review", health: "healthy",
+        elapsedSeconds: 1, journalDurable: true, mediaFilesOpen: false, interruptionReason: nil,
+        recovered: false, hasCaptureTimeline: true, sources: [], playableMedia: nil))
+    let hit = NativeTranscriptSearchHit(
+      sessionId: capture.sessionId, sessionTitle: capture.title, revisionId: "revision",
+      trackId: "track",
+      sequence: 0, startNanoseconds: 500_000_000, endNanoseconds: 1_000_000_000,
+      effectiveText: "Captured passage")
+    controller.playTranscriptSearchHit(hit, in: capture)
+    await assertEventually { controller.errorMessage != nil }
+    XCTAssertTrue(requestedTimeline.value)
+    XCTAssertNil(player.importedReceipt)
+    XCTAssertEqual(controller.errorSessionId, capture.sessionId)
+  }
+
+  func testMixdownPlaybackNeverSuppliesAConversationTranscriptClock() async {
+    let player = RecoveredAudioPlayerFake()
+    player.transcriptPositionNanoseconds = 500_000_000
+    let controller = RecoveredSessionController(
+      recoveryFactory: { RecoveryPreparationFake() },
+      mixdownLeaseProvider: { _ in ImportedPlaybackLeaseFake(path: "/owned/mixdown") },
+      player: player)
+    controller.playMixdown(sessionId: "mixdown")
+    await assertEventually { controller.playingSessionId == "mixdown" }
+    XCTAssertFalse(controller.canFollowTranscriptPlayback(sessionId: "mixdown"))
+    XCTAssertNil(controller.transcriptPlaybackPosition(sessionId: "mixdown"))
+    controller.stopPlayback()
+  }
+
+  func testRecoveredPartialPlaybackNeverSuppliesAConversationTranscriptClock() async {
+    let player = RecoveredAudioPlayerFake()
+    player.transcriptPositionNanoseconds = 500_000_000
+    let controller = RecoveredSessionController(
+      recoveryFactory: { RecoveryPreparationFake() },
+      recoveredPlaybackLeaseProvider: { _ in
+        ImportedPlaybackLeaseFake(path: recoveredDescriptorReceipt())
+      },
+      player: player)
+    let partial = recoveredSession()
+    controller.play(partial)
+    await assertEventually { controller.playingSessionId == partial.sessionId }
+    XCTAssertFalse(controller.canFollowTranscriptPlayback(sessionId: partial.sessionId))
+    XCTAssertNil(controller.transcriptPlaybackPosition(sessionId: partial.sessionId))
+    controller.stopPlayback()
+  }
+
   func testRecoveredSessionBecomesAvailableAndOpensNativePlayback() async throws {
     let preparation = RecoveryPreparationFake()
     let recovered = recoveredSession()

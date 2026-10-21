@@ -439,6 +439,15 @@ pub fn write_portable_package(
     let exported_at_ms = now_milliseconds();
     let inventory = store.session_inventory(session)?;
     let transcript = TranscriptExport::collect(store, session, exported_at_ms)?;
+    if transcript
+        .segments
+        .iter()
+        .any(|segment| segment.named_speaker_id.is_some())
+    {
+        return Err(SessionExportError::Unavailable(
+            "portable v1 cannot restore turn-level speaker names; export the transcript and audio separately",
+        ));
+    }
     let staging = parent.join(format!(
         ".{name}.partial-{}-{exported_at_ms}",
         std::process::id()

@@ -25,6 +25,29 @@ const SPAN_GAP_NANOSECONDS: i64 = 1_000_000_000 / MEDIA_SAMPLE_RATE_HZ as i64 + 
 /// start and preceding gap in nanoseconds, frame count, and channel count.
 type PlacedSegment = (String, String, i64, i64, u64, u16);
 
+/// Content-free reasons a derived companion cannot represent its sealed source.
+/// These never authorize trimming, padding, or changing the original timeline.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DecodedAudioError {
+    UnsupportedFormat,
+    ChannelMismatch { expected: u16, actual: u16 },
+    FrameCountMismatch { expected: u64, actual: u64 },
+}
+
+impl std::fmt::Display for DecodedAudioError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::UnsupportedFormat => write!(formatter, "expected 48 kHz 16-bit PCM CAF"),
+            Self::ChannelMismatch { expected, actual } => {
+                write!(formatter, "expected {expected} channels, decoded {actual}")
+            }
+            Self::FrameCountMismatch { expected, actual } => {
+                write!(formatter, "expected {expected} frames, decoded {actual}")
+            }
+        }
+    }
+}
+
 /// One sealed segment as the transcription input digest covers it.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DigestedSegment {
@@ -311,13 +334,24 @@ impl SessionStore {
             .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
             .open(decoded)?;
         let length = file.metadata()?.len();
-        let inspection = inspect_pcm_caf(&mut file, length)?.ok_or(StoreError::InvalidRequest(
-            "decoded companion is not 48 kHz 16-bit PCM CAF",
+        let inspection = inspect_pcm_caf(&mut file, length)?.ok_or(StoreError::DecodedAudio(
+            DecodedAudioError::UnsupportedFormat,
         ))?;
-        if inspection.channels != input.channels || inspection.sample_count != Some(segment.frames)
-        {
-            return Err(StoreError::InvalidRequest(
-                "decoded companion does not match the import's channels and length",
+        if inspection.channels != input.channels {
+            return Err(StoreError::DecodedAudio(
+                DecodedAudioError::ChannelMismatch {
+                    expected: input.channels,
+                    actual: inspection.channels,
+                },
+            ));
+        }
+        let actual = inspection.sample_count.unwrap_or(0);
+        if actual != segment.frames {
+            return Err(StoreError::DecodedAudio(
+                DecodedAudioError::FrameCountMismatch {
+                    expected: segment.frames,
+                    actual,
+                },
             ));
         }
         Ok(SealedTrackReader {

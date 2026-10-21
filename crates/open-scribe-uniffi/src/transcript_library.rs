@@ -39,6 +39,29 @@ pub struct NativeTranscriptSegment {
     pub corrected: bool,
     pub speaker_label: String,
     pub speaker_named_by_user: bool,
+    pub named_speaker_id: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct NativeNamedTranscriptSpeaker {
+    pub id: String,
+    pub label: String,
+    pub selected_turns: u32,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct NativeConversationReviewMetadata {
+    pub added_at_ms: i64,
+    pub origin: String,
+    pub stored_media_bytes: u64,
+    pub source_names: Vec<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Enum)]
+pub enum NativeTranscriptSpeakerAssignment {
+    Existing { speaker_id: String },
+    New { label: String },
+    Source,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
@@ -147,6 +170,7 @@ impl NativeTranscriptLibrary {
                 corrected: segment.corrected,
                 speaker_label: segment.speaker_label,
                 speaker_named_by_user: segment.speaker_origin == SpeakerLabelOrigin::Human,
+                named_speaker_id: segment.named_speaker_id,
             })
             .collect())
     }
@@ -197,6 +221,73 @@ impl NativeTranscriptLibrary {
     ) -> Result<(), NativeStorageError> {
         self.library()?
             .rename_speaker(&SessionId(session_id), &track_id, label.as_deref())
+            .map_err(map_storage_error)
+    }
+
+    pub fn review_metadata(
+        &self,
+        session_id: String,
+    ) -> Result<NativeConversationReviewMetadata, NativeStorageError> {
+        self.library()?
+            .review_metadata(&SessionId(session_id))
+            .map(|metadata| NativeConversationReviewMetadata {
+                added_at_ms: metadata.added_at_ms,
+                origin: metadata.origin,
+                stored_media_bytes: metadata.stored_media_bytes,
+                source_names: metadata.source_names,
+            })
+            .map_err(map_storage_error)
+    }
+
+    pub fn named_speakers(
+        &self,
+        session_id: String,
+    ) -> Result<Vec<NativeNamedTranscriptSpeaker>, NativeStorageError> {
+        self.library()?
+            .named_speakers(&SessionId(session_id))
+            .map(|speakers| {
+                speakers
+                    .into_iter()
+                    .map(|speaker| NativeNamedTranscriptSpeaker {
+                        id: speaker.id,
+                        label: speaker.label,
+                        selected_turns: speaker.selected_turns,
+                    })
+                    .collect()
+            })
+            .map_err(map_storage_error)
+    }
+
+    pub fn assign_speaker(
+        &self,
+        session_id: String,
+        revision_id: String,
+        sequence: u32,
+        assignment: NativeTranscriptSpeakerAssignment,
+    ) -> Result<Option<String>, NativeStorageError> {
+        use open_scribe_core::TranscriptSpeakerAssignment;
+        let assignment = match assignment {
+            NativeTranscriptSpeakerAssignment::Existing { speaker_id } => {
+                TranscriptSpeakerAssignment::Existing(speaker_id)
+            }
+            NativeTranscriptSpeakerAssignment::New { label } => {
+                TranscriptSpeakerAssignment::New(label)
+            }
+            NativeTranscriptSpeakerAssignment::Source => TranscriptSpeakerAssignment::Source,
+        };
+        self.library()?
+            .assign_speaker(&SessionId(session_id), &revision_id, sequence, &assignment)
+            .map_err(map_storage_error)
+    }
+
+    pub fn rename_named_speaker(
+        &self,
+        session_id: String,
+        speaker_id: String,
+        label: String,
+    ) -> Result<(), NativeStorageError> {
+        self.library()?
+            .rename_named_speaker(&SessionId(session_id), &speaker_id, &label)
             .map_err(map_storage_error)
     }
 

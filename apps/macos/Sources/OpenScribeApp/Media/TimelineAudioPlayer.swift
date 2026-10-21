@@ -18,6 +18,8 @@ final class TimelinePCMReader: @unchecked Sendable {
   }
   private var entries: [Entry]
   private var position: Int64 = 0
+  private(set) var playbackStartNanoseconds: Int64 = 0
+  private(set) var playbackEndNanoseconds: Int64 = 0
   private let gain: Float
 
   /// `startNanoseconds` is a session-timeline position; rendering begins
@@ -41,6 +43,14 @@ final class TimelinePCMReader: @unchecked Sendable {
     let startSeconds = (Double(startNanoseconds) - Double(origin)) / 1_000_000_000
     guard startSeconds.isFinite else { throw TimelinePlaybackError.invalidPlan }
     position = min(max(0, Int64((startSeconds * Self.sampleRate).rounded())), totalFrames)
+    guard
+      let start = TranscriptPlaybackProjection.position(
+        start: origin, end: Int64.max, renderedFrames: position, sampleRate: Self.sampleRate),
+      let end = TranscriptPlaybackProjection.position(
+        start: origin, end: Int64.max, renderedFrames: totalFrames, sampleRate: Self.sampleRate)
+    else { throw TimelinePlaybackError.invalidPlan }
+    playbackStartNanoseconds = start
+    playbackEndNanoseconds = end
   }
 
   func read(maximumFrames: AVAudioFrameCount) throws -> AVAudioPCMBuffer? {
@@ -75,7 +85,8 @@ final class TimelinePCMReader: @unchecked Sendable {
       }
       guard let decoder = entries[index].decoder,
         decoder.processingFormat.sampleRate == Self.sampleRate,
-        decoder.processingFormat.channelCount == AVAudioChannelCount(entries[index].segment.channels),
+        decoder.processingFormat.channelCount
+          == AVAudioChannelCount(entries[index].segment.channels),
         let input = try decoder.read(maximumFrames: AVAudioFrameCount(upper - lower)),
         input.frameLength == AVAudioFrameCount(upper - lower),
         let source = input.floatChannelData
@@ -83,7 +94,8 @@ final class TimelinePCMReader: @unchecked Sendable {
       for frame in 0..<Int(input.frameLength) {
         let destination = Int(lower - position) + frame
         samples[0][destination] += source[0][frame] * gain
-        samples[1][destination] += source[entries[index].segment.channels == 1 ? 0 : 1][frame] * gain
+        samples[1][destination] +=
+          source[entries[index].segment.channels == 1 ? 0 : 1][frame] * gain
       }
       if upper == entries[index].end {
         decoder.close()
@@ -172,6 +184,17 @@ final class TimelineAudioPlayer {
   private var scheduler: TimelineBufferScheduler?
   private var observer: NSObjectProtocol?
   private var generation: UUID?
+  private var playbackStartNanoseconds: Int64 = 0
+  private var playbackEndNanoseconds: Int64 = 0
+
+  var transcriptPositionNanoseconds: Int64? {
+    guard isPlaying, let player, let renderTime = player.lastRenderTime,
+      let time = player.playerTime(forNodeTime: renderTime)
+    else { return nil }
+    return TranscriptPlaybackProjection.position(
+      start: playbackStartNanoseconds, end: playbackEndNanoseconds,
+      renderedFrames: time.sampleTime, sampleRate: time.sampleRate)
+  }
 
   var isPlaying: Bool { player?.isPlaying == true && engine?.isRunning == true }
 
@@ -181,6 +204,8 @@ final class TimelineAudioPlayer {
   ) throws {
     stop()
     let reader = try TimelinePCMReader(segments: segments, startNanoseconds: startNanoseconds)
+    playbackStartNanoseconds = reader.playbackStartNanoseconds
+    playbackEndNanoseconds = reader.playbackEndNanoseconds
     let scheduler = TimelineBufferScheduler(reader: reader) { outcome in
       completion(PlaybackTermination(generation: generation, outcome: outcome))
     }

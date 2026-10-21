@@ -43,6 +43,12 @@ audio track at 48 kHz with one or two channels; small mono M4A at other rates
 uses the existing bounded 48 kHz CAF normalization path. Unsupported layouts,
 rates, formats, or policy excesses
 fail with a visible explanation. Capture must finish before import begins.
+The picker accepts several recordings and imports them in order, one copy and
+security scope at a time. Pause takes effect after the current file; Stop keeps
+every already accepted conversation. Errors identify the files that were not
+imported. The batch waits between files while capture holds admission and does
+not change the selected conversation for every successful import. Originals
+are always kept; there is no automatic compression or deletion.
 
 Swift probes the selected file and a private staged copy. Rust verifies the
 staged digest, copies and synchronizes managed media, checks its exact bytes,
@@ -53,6 +59,37 @@ anonymous playback snapshot. Library polling checks identity and length;
 playback revalidates the full digest before opening a decoder. Original metadata
 remains separate from the managed media contract. ADR 0007 owns the boundary;
 this slice does not qualify its complete platform or M1 runtime matrix.
+
+## Conversation review
+
+The conversation reader shows the actual date added to the library, stored
+media size and source names. The added date is not an inferred recording date.
+It offers original-language written transcripts using an explicitly installed
+compatible model; selecting files does not download weights. Automatic
+transcription still follows Settings and Rust's existing admission policy.
+
+Click a passage's speaker label to confirm a person for that passage, reuse a
+person already named in the conversation, or reset to its audio-source label.
+Participant metadata supplies suggestions only. Per-passage assignments and
+name changes are append-only and bound to the exact selected revision; they
+never transfer by passage number to a replacement transcript. Whole-source
+labels remain separately editable. Filter the reader by person or search the
+library with `speaker:Dana`; speaker searches match a literal name prefix,
+without interpreting punctuation as search syntax. Names are human assertions,
+not voice recognition. Automatic diarization remains unavailable until the
+model and calibration prerequisites in ADRs 0008–0009 are satisfied.
+
+During saved-audio playback, Follow playback reads the native renderer clock
+and keeps the current passage in view. It can be turned off for free reading.
+Partial recovered tracks and derived mixdowns do not supply this conversation
+clock. This is a saved-recording review feature; it does not establish live
+transcription, measured synchronization accuracy or rendered UI qualification.
+
+Text, Markdown, subtitle and transcript JSON exports include confirmed passage
+labels. Portable v1 cannot round-trip per-passage identity history: packaging
+refuses active passage assignments and offers transcript/audio exports instead;
+opening a package refuses differing passage and source speaker labels before
+copying media. Existing source-label portable fixtures remain supported.
 
 ADR 0001 owns the M0 module boundary, macOS 13 floor, development bundle
 identifier, no-entitlement posture, and binding lifecycle. ADR 0004 owns the
