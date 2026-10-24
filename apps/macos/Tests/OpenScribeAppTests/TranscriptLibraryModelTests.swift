@@ -468,6 +468,9 @@ final class TranscriptLibraryModelTests: XCTestCase {
     for (name, availability, rows, width) in cases {
       let model = TranscriptLibraryModel(
         preview: availability, segments: rows, speakers: rows.isEmpty ? [] : speakers)
+      // The reader stays hidden until the preview belongs to this session.
+      // fittingSize runs before the view's task, so bind it here.
+      model.load(session: session)
       let view = TranscriptSection(
         session: session, transcripts: model, speech: SpeechTranscriptionModel(speech: nil),
         scheduler: TranscriptionScheduler.inert(), canSeek: true, onSeek: { _ in }
