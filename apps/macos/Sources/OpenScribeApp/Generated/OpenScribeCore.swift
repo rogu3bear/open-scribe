@@ -9183,6 +9183,9 @@ public enum NativeRecorderAction: Equatable, Hashable {
   case observeSystemPower(
     hostTime: UInt64, asleep: Bool
   )
+  case restoreMicrophone
+  case cancelMicrophoneRestore
+  case retireUnstartedMicrophone
 
 }
 
@@ -9242,6 +9245,12 @@ public struct FfiConverterTypeNativeRecorderAction: FfiConverterRustBuffer {
         asleep: try FfiConverterBool.read(from: &buf)
       )
 
+    case 10: return .restoreMicrophone
+
+    case 11: return .cancelMicrophoneRestore
+
+    case 12: return .retireUnstartedMicrophone
+
     default: throw UniffiInternalError.unexpectedEnumCase
     }
   }
@@ -9285,6 +9294,15 @@ public struct FfiConverterTypeNativeRecorderAction: FfiConverterRustBuffer {
       writeInt(&buf, Int32(9))
       FfiConverterUInt64.write(hostTime, into: &buf)
       FfiConverterBool.write(asleep, into: &buf)
+
+    case .restoreMicrophone:
+      writeInt(&buf, Int32(10))
+
+    case .cancelMicrophoneRestore:
+      writeInt(&buf, Int32(11))
+
+    case .retireUnstartedMicrophone:
+      writeInt(&buf, Int32(12))
 
     }
   }

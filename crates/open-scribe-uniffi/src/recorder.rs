@@ -27,6 +27,9 @@ pub enum NativeRecorderAction {
         host_time: u64,
         asleep: bool,
     },
+    RestoreMicrophone,
+    CancelMicrophoneRestore,
+    RetireUnstartedMicrophone,
 }
 
 #[derive(uniffi::Record)]
@@ -79,6 +82,9 @@ impl From<NativeRecorderAction> for open_scribe_core::RecorderAction {
             NativeRecorderAction::ObserveSystemPower { host_time, asleep } => {
                 Self::ObserveSystemPower { host_time, asleep }
             }
+            NativeRecorderAction::RestoreMicrophone => Self::RestoreMicrophone,
+            NativeRecorderAction::CancelMicrophoneRestore => Self::CancelMicrophoneRestore,
+            NativeRecorderAction::RetireUnstartedMicrophone => Self::RetireUnstartedMicrophone,
         }
     }
 }
