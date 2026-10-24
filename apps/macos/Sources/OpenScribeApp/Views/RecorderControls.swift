@@ -15,17 +15,41 @@ struct RecorderControls: View {
   var body: some View {
     if recorder.canPause {
       Button("Pause", systemImage: "pause.fill") {
-        Task { await recorder.stop(pausing: true); store.refresh() }
+        Task {
+          await recorder.stop(pausing: true)
+          store.refresh()
+        }
       }.keyboardShortcut("p", modifiers: [.command, .shift])
     }
     if recorder.canResume {
       Button("Resume", systemImage: "play.fill") {
-        Task { await recorder.start(resuming: true); store.refresh() }
+        Task {
+          await recorder.start(resuming: true)
+          store.refresh()
+        }
       }.keyboardShortcut("p", modifiers: [.command, .shift])
     }
+    if recorder.showsUseThisMicrophone {
+      Button("Use this microphone instead") {
+        recorder.confirmDifferentMicrophone()
+        store.refresh()
+      }
+      Button("Keep the selected microphone.") {
+        recorder.dismissDifferentMicrophone()
+        store.refresh()
+      }
+    } else if recorder.showsReconnect {
+      Button("Reconnect microphone") {
+        recorder.reconnectMicrophone()
+        store.refresh()
+      }
+    }
     if recorder.canMark {
-      Button("Add Marker", systemImage: "bookmark") { recorder.addMarker(); store.refresh() }
-        .keyboardShortcut("m", modifiers: [.command, .shift])
+      Button("Add Marker", systemImage: "bookmark") {
+        recorder.addMarker()
+        store.refresh()
+      }
+      .keyboardShortcut("m", modifiers: [.command, .shift])
     }
     let sourcesEnabled = recorder.canStart || recorder.canResume
     switch sourcesPresentation {
@@ -39,9 +63,13 @@ struct RecorderControls: View {
               .accessibilityAddTraits(.isHeader)
             sourceSelectionSummary
             sourceButtons
-            if let error = picker.errorMessage { CaptureIssueLabel(message: error, isFailure: true) }
-            Text("Application selection limits computer audio to the chosen app. Changes take effect when you explicitly record or resume.")
-              .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            if let error = picker.errorMessage {
+              CaptureIssueLabel(message: error, isFailure: true)
+            }
+            Text(
+              "Application selection limits computer audio to the chosen app. Changes take effect when you explicitly record or resume."
+            )
+            .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
           }.padding(16).frame(width: 340)
         }
     case .menu:
@@ -114,8 +142,12 @@ struct RecorderEventList: View {
           .accessibilityAddTraits(.isHeader)
         ForEach(events, id: \.id) { event in
           HStack(alignment: .firstTextBaseline) {
-            Text(String(format: "%02d:%02d", max(0, event.sessionNanoseconds / 1_000_000_000) / 60, max(0, event.sessionNanoseconds / 1_000_000_000) % 60))
-              .monospacedDigit().foregroundStyle(.secondary)
+            Text(
+              String(
+                format: "%02d:%02d", max(0, event.sessionNanoseconds / 1_000_000_000) / 60,
+                max(0, event.sessionNanoseconds / 1_000_000_000) % 60)
+            )
+            .monospacedDigit().foregroundStyle(.secondary)
             Text(title(event))
           }
           .accessibilityElement(children: .combine)
@@ -131,6 +163,9 @@ struct RecorderEventList: View {
     case "source_scope_selected": "Selected: \(event.label)"
     case "storage_observed": "Storage: \(event.label)"
     case "source_failed": "\(event.label) stopped"
+    case "microphone_restore_requested": "Reconnect microphone"
+    case "microphone_restore_cancelled": "Microphone reconnect cancelled"
+    case "microphone_retired_unstarted": "Microphone stopped"
     case "system_sleep_observed": "Mac went to sleep"
     case "system_wake_observed": "Mac woke"
     default: event.kind

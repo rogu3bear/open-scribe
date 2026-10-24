@@ -8,6 +8,177 @@ import XCTest
 /// sources supply PCM instead of requesting TCC or opening audio devices.
 @MainActor
 final class RecorderPauseResumeTests: XCTestCase {
+  func testRestoreFailureBeforeFirstSampleLeavesReconnectAvailable() async throws {
+    for failure in [MicrophoneSourceHealthEvent.routeInterrupted, .writerFailed] {
+      let device = MicrophoneDeviceIdentity(uniqueID: "selected-microphone", localizedName: "Mic")
+      let harness = try PauseHarness(microphoneDeviceProbe: { device })
+      defer { harness.removeFiles() }
+      _ = try await captureAndRetireMicrophone(harness)
+      let system = try XCTUnwrap(harness.captures.systems.last)
+      let restored = try await reconnectMicrophone(harness)
+      if failure == .routeInterrupted {
+        restored.observe(
+          failure,
+          identity: MicrophoneCaptureIdentity(authorization: restored.writer.authorization),
+          sequence: 1)
+      } else {
+        restored.failMicrophone(.writerFailed)
+      }
+      await settle()
+      XCTAssertTrue(harness.controller.isMicrophoneRetired)
+      XCTAssertTrue(harness.controller.showsReconnect)
+      XCTAssertEqual(
+        harness.controller.errorMessage,
+        "The microphone could not be restored. System audio is still recording.")
+      XCTAssertEqual(system.stopCount, 0)
+
+      let retry = try await reconnectMicrophone(harness)
+      try retry.emit(frames: 48_000, hostTime: harness.clock.now, value: 8192)
+      try system.emit(frames: 48_000, hostTime: harness.clock.now, value: 16384)
+      await settle()
+      XCTAssertFalse(harness.controller.isMicrophoneRetired)
+      await finishRestoredRecording(harness)
+    }
+  }
+
+  func testReplacementMicrophoneRestartsObservationSequenceAndCanRecoverAgain() async throws {
+    let device = MicrophoneDeviceIdentity(uniqueID: "selected-microphone", localizedName: "Mic")
+    let harness = try PauseHarness(microphoneDeviceProbe: { device })
+    defer { harness.removeFiles() }
+    let original = try await captureAndRetireMicrophone(harness, sequence: 100)
+    let system = try XCTUnwrap(harness.captures.systems.last)
+    let restored = try await reconnectMicrophone(harness)
+    try restored.emit(frames: 48_000, hostTime: harness.clock.now, value: 8192)
+    try system.emit(frames: 48_000, hostTime: harness.clock.now, value: 16384)
+    await settle()
+    XCTAssertFalse(harness.controller.isMicrophoneRetired)
+
+    restored.observe(
+      .routeInterrupted,
+      identity: MicrophoneCaptureIdentity(authorization: restored.writer.authorization),
+      sequence: 1)
+    await settle()
+    XCTAssertTrue(harness.controller.isMicrophoneRetired, "sequence 1 belongs to the new adapter")
+    XCTAssertTrue(harness.controller.showsReconnect)
+    XCTAssertEqual(restored.stopCount, 1)
+    XCTAssertEqual(system.stopCount, 0)
+    XCTAssertEqual(harness.controller.microphoneSourceHealth?.sequence, 1)
+
+    let second = try await reconnectMicrophone(harness)
+    // Late callbacks from the previous adapter cannot cancel this new restore.
+    restored.failMicrophone(.writerFailed)
+    restored.repeatFirstCallback()
+    original.observe(
+      .routeInterrupted,
+      identity: MicrophoneCaptureIdentity(authorization: original.writer.authorization),
+      sequence: 101)
+    await settle()
+    XCTAssertEqual(second.stopCount, 0)
+    harness.clock.advance(seconds: 1)
+    try second.emit(frames: 48_000, hostTime: harness.clock.now, value: 8192)
+    try system.emit(frames: 48_000, hostTime: harness.clock.now, value: 16384)
+    await settle()
+    XCTAssertFalse(harness.controller.isMicrophoneRetired)
+    XCTAssertEqual(harness.captures.microphones.count, 3)
+    await finishRestoredRecording(harness)
+  }
+
+  func testWriterFailureAfterRestoreRetiresTheMicrophoneAndAllowsAnotherAttempt() async throws {
+    let device = MicrophoneDeviceIdentity(uniqueID: "selected-microphone", localizedName: "Mic")
+    let harness = try PauseHarness(microphoneDeviceProbe: { device })
+    defer { harness.removeFiles() }
+    _ = try await captureAndRetireMicrophone(harness)
+    let system = try XCTUnwrap(harness.captures.systems.last)
+    let restored = try await reconnectMicrophone(harness)
+    try restored.emit(frames: 48_000, hostTime: harness.clock.now, value: 8192)
+    try system.emit(frames: 48_000, hostTime: harness.clock.now, value: 16384)
+    await settle()
+    XCTAssertFalse(harness.controller.isMicrophoneRetired)
+    restored.failMicrophone(.writerFailed)
+    await settle()
+    XCTAssertTrue(harness.controller.isMicrophoneRetired)
+    XCTAssertTrue(harness.controller.showsReconnect)
+    XCTAssertEqual(harness.controller.phase, .capturing)
+    XCTAssertEqual(restored.stopCount, 1)
+    XCTAssertEqual(system.stopCount, 0)
+
+    let retry = try await reconnectMicrophone(harness)
+    harness.clock.advance(seconds: 1)
+    try retry.emit(frames: 48_000, hostTime: harness.clock.now, value: 8192)
+    try system.emit(frames: 48_000, hostTime: harness.clock.now, value: 16384)
+    await settle()
+    XCTAssertFalse(harness.controller.isMicrophoneRetired)
+    await finishRestoredRecording(harness)
+  }
+
+  func testConfirmingMicrophoneBRequiresFreshConfirmationWhenInputChangesToC() async throws {
+    let microphoneA = MicrophoneDeviceIdentity(uniqueID: "microphone-a", localizedName: "A")
+    let microphoneB = MicrophoneDeviceIdentity(uniqueID: "microphone-b", localizedName: "B")
+    let microphoneC = MicrophoneDeviceIdentity(uniqueID: "microphone-c", localizedName: "C")
+    var currentDevice = microphoneA
+    let harness = try PauseHarness(microphoneDeviceProbe: { currentDevice })
+    defer { harness.removeFiles() }
+    await harness.controller.start()
+    try await harness.capture()
+    let microphone = try XCTUnwrap(harness.captures.microphones.last)
+    let system = try XCTUnwrap(harness.captures.systems.last)
+    let sessionId = microphone.writer.authorization.sessionId
+    microphone.observe(
+      .routeInterrupted,
+      identity: MicrophoneCaptureIdentity(authorization: microphone.writer.authorization),
+      sequence: 1)
+    await settle()
+    XCTAssertTrue(harness.controller.isMicrophoneRetired)
+    let originalAudioURL = URL(fileURLWithPath: microphone.writer.authorization.absolutePath)
+    let originalAudio = try Data(contentsOf: originalAudioURL)
+
+    currentDevice = microphoneB
+    harness.controller.reconnectMicrophone()
+    await settle()
+    XCTAssertTrue(harness.controller.showsUseThisMicrophone)
+    XCTAssertEqual(harness.captures.microphones.count, 1)
+
+    // The displayed choice concerned B. The later asynchronous probe sees C.
+    harness.controller.confirmDifferentMicrophone()
+    currentDevice = microphoneC
+    await settle()
+    XCTAssertTrue(harness.controller.showsUseThisMicrophone, "C needs its own confirmation")
+    XCTAssertEqual(
+      harness.controller.errorMessage,
+      "This is a different microphone. System audio is still recording.")
+    XCTAssertEqual(harness.captures.microphones.count, 1, "confirming B must not start C")
+    XCTAssertEqual(system.stopCount, 0)
+    XCTAssertEqual(harness.controller.phase, .capturing)
+    XCTAssertFalse(
+      try harness.preparation.recorderDetail(sessionId: sessionId).events.contains {
+        $0.kind == "microphone_restore_requested"
+      }, "no restore may be journaled for unapproved C")
+
+    // Fresh approval for C permits exactly one new microphone in this session.
+    harness.controller.confirmDifferentMicrophone()
+    await settle()
+    XCTAssertEqual(harness.captures.microphones.count, 2)
+    let restored = try XCTUnwrap(harness.captures.microphones.last)
+    XCTAssertEqual(restored.writer.authorization.sessionId, sessionId)
+    try restored.emit(frames: 48_000, hostTime: harness.clock.now, value: 8192)
+    await settle()
+    XCTAssertFalse(harness.controller.isMicrophoneRetired)
+    XCTAssertFalse(harness.controller.showsUseThisMicrophone)
+    XCTAssertEqual(harness.captures.systems.count, 1)
+    XCTAssertEqual(system.stopCount, 0)
+    XCTAssertEqual(
+      try Data(contentsOf: URL(fileURLWithPath: microphone.writer.authorization.absolutePath)),
+      originalAudio)
+    harness.clock.advance(seconds: 1)
+    await harness.controller.stop()
+    let deadline = ContinuousClock.now.advanced(by: .seconds(4))
+    while harness.controller.statusText.hasSuffix("…"), ContinuousClock.now < deadline {
+      try await Task.sleep(for: .milliseconds(10))
+    }
+    XCTAssertEqual(harness.controller.phase, .saved)
+    XCTAssertFalse(harness.controller.statusText.hasSuffix("…"))
+  }
+
   func testObservedPermissionRevocationPersistsAndNeverRestartsTheRetiredMicrophone() async throws {
     let harness = try PauseHarness()
     defer { harness.removeFiles() }
@@ -24,6 +195,11 @@ final class RecorderPauseResumeTests: XCTestCase {
     }
     XCTAssertTrue(harness.controller.isMicrophoneRetired, harness.controller.errorMessage ?? "")
     XCTAssertEqual(harness.controller.phase, .capturing)
+    XCTAssertEqual(
+      harness.controller.errorMessage,
+      "Microphone access was withdrawn. System audio is still recording.")
+    XCTAssertTrue(harness.controller.showsReconnect)
+    XCTAssertFalse(harness.controller.showsUseThisMicrophone)
     XCTAssertEqual(microphone.stopCount, 1)
     XCTAssertEqual(system.stopCount, 0)
     let detail = try harness.preparation.recorderDetail(sessionId: sessionId)
@@ -34,6 +210,10 @@ final class RecorderPauseResumeTests: XCTestCase {
 
     await harness.controller.stop(pausing: true)
     XCTAssertEqual(harness.controller.phase, .paused)
+    XCTAssertTrue(harness.controller.showsReconnect)
+    XCTAssertEqual(
+      harness.controller.errorMessage,
+      "Microphone access was withdrawn. System audio is still recording.")
     // An obsolete watch cannot interrupt a paused session. Permission restoration
     // still requires an explicit start and cannot revive this retired source.
     try await Task.sleep(for: .milliseconds(2_100))
@@ -47,6 +227,11 @@ final class RecorderPauseResumeTests: XCTestCase {
     try resumed.emit(frames: 48_000, hostTime: harness.clock.now, value: 16384)
     await settle()
     XCTAssertEqual(harness.controller.phase, .capturing)
+    XCTAssertTrue(harness.controller.showsReconnect)
+    XCTAssertEqual(harness.captures.microphones.count, 1)
+    XCTAssertEqual(
+      harness.controller.errorMessage,
+      "The microphone stopped. System audio is still recording.")
     harness.clock.advance(seconds: 1)
     await harness.controller.stop()
     let mixDeadline = ContinuousClock.now.advanced(by: .seconds(4))
@@ -857,6 +1042,40 @@ final class RecorderPauseResumeTests: XCTestCase {
     XCTAssertEqual(Set(plan.map(\.trackId)).count, 2, "both sources are on the saved timeline")
   }
 
+  private func captureAndRetireMicrophone(
+    _ harness: PauseHarness, sequence: UInt64 = 1
+  ) async throws -> PauseSource {
+    await harness.controller.start()
+    try await harness.capture()
+    let microphone = try XCTUnwrap(harness.captures.microphones.last)
+    microphone.observe(
+      .routeInterrupted,
+      identity: MicrophoneCaptureIdentity(authorization: microphone.writer.authorization),
+      sequence: sequence)
+    await settle()
+    XCTAssertTrue(harness.controller.isMicrophoneRetired)
+    return microphone
+  }
+
+  private func reconnectMicrophone(_ harness: PauseHarness) async throws -> PauseSource {
+    let count = harness.captures.microphones.count
+    harness.controller.reconnectMicrophone()
+    await settle()
+    XCTAssertEqual(harness.captures.microphones.count, count + 1)
+    return try XCTUnwrap(harness.captures.microphones.last)
+  }
+
+  private func finishRestoredRecording(_ harness: PauseHarness) async {
+    harness.clock.advance(seconds: 1)
+    await harness.controller.stop()
+    let deadline = ContinuousClock.now.advanced(by: .seconds(4))
+    while harness.controller.statusText.hasSuffix("…"), ContinuousClock.now < deadline {
+      try? await Task.sleep(for: .milliseconds(10))
+    }
+    XCTAssertEqual(harness.controller.phase, .saved)
+    XCTAssertFalse(harness.controller.statusText.hasSuffix("…"))
+  }
+
   private func settle() async {
     for _ in 0..<30 { await Task.yield() }
   }
@@ -894,6 +1113,7 @@ private final class PauseSource: MicrophoneCapturing, SystemAudioCapturing, @unc
   private var firstHandler: MicrophoneFirstSampleHandler?
   private var observationHandler: MicrophoneHealthHandler?
   private var systemFailureHandler: SystemAudioFailureHandler?
+  private var microphoneFailureHandler: MicrophoneFailureHandler?
   private var deliverWriteFailure: (@Sendable (Error) -> Void)?
   private var first: NativeFirstSampleReceipt?
   private var lastEnd: UInt64?
@@ -904,6 +1124,7 @@ private final class PauseSource: MicrophoneCapturing, SystemAudioCapturing, @unc
   ) throws {
     firstHandler = onFirstSample
     observationHandler = onObservation
+    microphoneFailureHandler = onFailure
     deliverWriteFailure = { _ in onFailure(.writerFailed) }
   }
   /// Delivers one health observation the way the production adapter does: with
@@ -927,6 +1148,7 @@ private final class PauseSource: MicrophoneCapturing, SystemAudioCapturing, @unc
   }
   /// Reports a system-audio stream failure the way the adapter does.
   func fail(_ error: SystemAudioCaptureAdapterError) { systemFailureHandler?(error) }
+  func failMicrophone(_ error: MicrophoneCaptureAdapterError) { microphoneFailureHandler?(error) }
   func emit(frames: AVAudioFrameCount, hostTime: UInt64, value: Int16) throws {
     do {
       _ = try writer.writeCapturedBuffer(
@@ -1000,7 +1222,10 @@ private final class PauseHarness {
   let storage = StorageOverride()
   let rotationInjector: RotationFailureInjectingPreparation?
   let controller: LiveMicrophoneRecordingController
-  init(rotationInjection: Bool = false) throws {
+  init(
+    rotationInjection: Bool = false,
+    microphoneDeviceProbe: @escaping @MainActor () -> MicrophoneDeviceIdentity? = { nil }
+  ) throws {
     preparation = try NativeRecordingPreparation.open(managedRoot: root.path)
     let real = preparation
     let injector = rotationInjection ? RotationFailureInjectingPreparation(base: real) : nil
@@ -1022,7 +1247,8 @@ private final class PauseHarness {
         if let injector { return try injector.makeSuccessor(authorization) }
         return try ManagedCAFWriter(authorization: authorization)
       },
-      captureHealthTelemetry: { telemetry.append($0) }
+      captureHealthTelemetry: { telemetry.append($0) },
+      microphoneDeviceProbe: microphoneDeviceProbe
     )
   }
   func capture() async throws {

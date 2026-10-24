@@ -133,9 +133,17 @@ final class M1FailureRuntimeProof {
           self.controller.recorderDetail?.events.contains { $0.kind == "source_failed" } == true
         }
         try requireM1(controller.phase == .capturing, "surviving source did not continue")
-        try requireM1(
-          controller.errorMessage?.contains("Remaining audio is still recording") == true,
-          "source loss is not visibly explained")
+        if scenario == "microphone-loss" {
+          try requireM1(
+            controller.errorMessage?.contains("The microphone stopped.") == true
+              && controller.errorMessage?.contains("is still recording.") == true,
+            "microphone loss is not visibly explained")
+          try requireM1(controller.showsReconnect, "reconnect is missing after microphone loss")
+        } else {
+          try requireM1(
+            controller.errorMessage?.contains("Remaining audio is still recording") == true,
+            "source loss is not visibly explained")
+        }
         let lost = scenario == "microphone-loss" ? microphone : audio
         let survivor = scenario == "microphone-loss" ? audio : microphone
         try requireM1(lost.stopped && !survivor.stopped, "failure stopped the wrong source")

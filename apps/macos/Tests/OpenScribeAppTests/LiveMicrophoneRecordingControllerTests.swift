@@ -170,6 +170,13 @@ private final class RecordingPreparationFake: NativeRecordingPreparation, @unche
     )
   }
 
+  override func recorderAction(sessionId: String, action _: NativeRecorderAction) throws
+    -> NativeRecorderDetail
+  {
+    // The double has no Rust handle. Restore actions must not reach UniFFI.
+    try recorderDetail(sessionId: sessionId)
+  }
+
   override func recorderDetail(sessionId _: String) throws -> NativeRecorderDetail {
     // This double has no Rust handle. The generated clone would fault.
     NativeRecorderDetail(
@@ -260,7 +267,7 @@ private actor SystemAudioStopGate {
     released = true
     let pending = waiters
     waiters = []
-    pending.forEach { $0.resume() }
+    for continuation in pending { continuation.resume() }
   }
 }
 
@@ -452,7 +459,11 @@ final class LiveMicrophoneRecordingControllerTests: XCTestCase {
     XCTAssertEqual(fixture.microphone.stopCount, 1)
     XCTAssertEqual(fixture.systemAudio.stopCount, 0)
     XCTAssertEqual(fixture.controller.failureCode, "permission-revoked")
-    XCTAssertTrue(fixture.controller.errorMessage?.contains("permission was withdrawn") == true)
+    XCTAssertEqual(
+      fixture.controller.errorMessage,
+      "Microphone access was withdrawn. System audio is still recording.")
+    XCTAssertTrue(fixture.controller.showsReconnect)
+    XCTAssertFalse(fixture.controller.showsUseThisMicrophone)
     XCTAssertEqual(fixture.permission.requestCount, 1, "observation never requests permission")
     fixture.permission.currentState = .authorized
     try await Task.sleep(for: .milliseconds(2_100))
@@ -486,6 +497,10 @@ final class LiveMicrophoneRecordingControllerTests: XCTestCase {
     XCTAssertFalse(fixture.controller.isCapturing)
     XCTAssertEqual(fixture.microphone.stopCount, 1)
     XCTAssertEqual(fixture.controller.failureCode, "permission-revoked")
+    XCTAssertEqual(
+      fixture.controller.errorMessage,
+      "The microphone stopped and the recording was preserved.")
+    XCTAssertFalse(fixture.controller.showsReconnect)
     fixture.permission.currentState = .authorized
     try await Task.sleep(for: .milliseconds(2_100))
     XCTAssertEqual(fixture.microphone.startCount, 1)
