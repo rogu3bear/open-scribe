@@ -11,14 +11,15 @@ fail() {
 }
 
 # Additional peak growth per phase, covering cold native checks/tests and shared
-# WASM checks. This 10 GB planning allowance includes target, registry and temp
+# WASM checks. This 16 GB planning allowance includes target, registry and temp
 # writes; it is not a measured footprint or a replacement for the host reserve.
+# It preserves the former 16 GB host workspace floor in the caller.
 # Requalify it when the locked dependency graph, profiles or target set changes.
 scaffold_cargo() {
 	if command -v disk-guard >/dev/null 2>&1; then
 		# The supported Cargo route resolves target/cache overrides and admits all
 		# affected volumes. It preserves capacity holds and inherited reservations.
-		disk-guard run --budget-gb 10 --volume "$repo_root" -- cargo "$@"
+		disk-guard run --budget-gb 16 --volume "$repo_root" -- cargo "$@"
 	else
 		cargo "$@"
 	fi
