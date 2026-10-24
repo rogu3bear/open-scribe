@@ -31,6 +31,15 @@ pub enum RecorderAction {
         host_time: u64,
         asleep: bool,
     },
+    /// Explicit request to record the microphone again in this session.
+    /// Resume alone does not send it. The failed microphone stays sealed.
+    RestoreMicrophone,
+    /// Drops an explicit restore that never captured a sample.
+    /// Captured microphone audio stays sealed and failed.
+    CancelMicrophoneRestore,
+    /// The microphone stopped before it saved any audio. Another source keeps
+    /// recording. This does not restore the microphone.
+    RetireUnstartedMicrophone,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -141,6 +150,79 @@ impl SessionStore {
                 (
                     "paused_session_finalized",
                     json!({"session_nanoseconds": state.captured_nanoseconds}),
+                )
+            }
+            RecorderAction::RestoreMicrophone => {
+                if !matches!(phase, "recording" | "paused") {
+                    return Err(StoreError::InvalidState(
+                        "microphone restore requires an open recording",
+                    ));
+                }
+                // A retry replaces an attempt that never captured. Audio that
+                // already landed stays on its source.
+                self.gap_unstarted_microphone_segments(&session.0)?;
+                if !self.microphone_is_retired_for_restore(&session.0)? {
+                    return Err(StoreError::InvalidState(
+                        "microphone restore requires a retired microphone",
+                    ));
+                }
+                if !self.another_source_continues(&session.0)? {
+                    return Err(StoreError::InvalidState(
+                        "microphone restore requires another source in this recording",
+                    ));
+                }
+                (
+                    "microphone_restore_requested",
+                    json!({"label": "Reconnect microphone", "session_nanoseconds": state.captured_nanoseconds}),
+                )
+            }
+            RecorderAction::CancelMicrophoneRestore => {
+                if !matches!(phase, "recording" | "paused" | "preparing") {
+                    return Err(StoreError::InvalidState(
+                        "microphone restore cancellation requires an open recording",
+                    ));
+                }
+                if self.microphone_is_capturing(&session.0)? {
+                    return Err(StoreError::InvalidState(
+                        "microphone restore already captured audio",
+                    ));
+                }
+                let gapped = self.gap_unstarted_microphone_segments(&session.0)?;
+                let lifecycle = self.microphone_required_lifecycle(&session.0)?;
+                if gapped == 0 && !matches!(lifecycle.as_str(), "required" | "opening" | "open") {
+                    return Ok(state);
+                }
+                (
+                    "microphone_restore_cancelled",
+                    json!({"label": "Microphone reconnect cancelled", "session_nanoseconds": state.captured_nanoseconds}),
+                )
+            }
+            RecorderAction::RetireUnstartedMicrophone => {
+                if !matches!(phase, "preparing" | "recording") {
+                    return Err(StoreError::InvalidState(
+                        "an unstarted microphone can be retired only while capture is open",
+                    ));
+                }
+                let other_capturing: bool = self.connection.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM required_sources
+                     WHERE session_id = ?1 AND kind != 'microphone' AND lifecycle = 'capturing')",
+                    [&session.0],
+                    |row| row.get(0),
+                )?;
+                if !other_capturing {
+                    return Err(StoreError::InvalidState(
+                        "retiring an unstarted microphone requires another capturing source",
+                    ));
+                }
+                let gapped = self.gap_unstarted_microphone_segments(&session.0)?;
+                if gapped == 0 {
+                    return Err(StoreError::InvalidState(
+                        "microphone already has captured audio",
+                    ));
+                }
+                (
+                    "microphone_retired_unstarted",
+                    json!({"label": "Microphone stopped", "session_nanoseconds": state.captured_nanoseconds}),
                 )
             }
             RecorderAction::Marker { host_time, label } => {
@@ -329,7 +411,7 @@ impl SessionStore {
         )?;
         let captured_nanoseconds: i64 = self.connection.query_row(
             "SELECT COALESCE(MAX(mapped_start_ns + sample_count * 1000000000 / 48000), 0) FROM segments WHERE session_id = ?1 AND lifecycle = 'sealed'", [&session.0], |r| r.get(0))?;
-        let mut statement = self.connection.prepare("SELECT id, event_kind, session_nanoseconds, payload_json FROM session_events WHERE session_id = ?1 AND event_kind IN ('marker_added', 'capture_paused', 'capture_resumed', 'source_scope_selected', 'storage_observed', 'source_failed', 'system_sleep_observed', 'system_wake_observed') ORDER BY sequence")?;
+        let mut statement = self.connection.prepare("SELECT id, event_kind, session_nanoseconds, payload_json FROM session_events WHERE session_id = ?1 AND event_kind IN ('marker_added', 'capture_paused', 'capture_resumed', 'source_scope_selected', 'storage_observed', 'source_failed', 'system_sleep_observed', 'system_wake_observed', 'microphone_restore_requested', 'microphone_restore_cancelled', 'microphone_retired_unstarted') ORDER BY sequence")?;
         let events = statement
             .query_map([&session.0], |r| {
                 Ok((
@@ -460,6 +542,180 @@ impl SessionStore {
         Ok(())
     }
 
+    /// Live restore may open a new microphone while the session stays Recording.
+    /// The failed microphone row stays failed. Another source must still be capturing.
+    pub(super) fn microphone_restore_is_open(&self, session: &str) -> Result<bool, StoreError> {
+        Ok(self.connection.query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM required_sources
+                WHERE session_id = ?1 AND kind = 'microphone' AND lifecycle = 'required'
+             ) AND EXISTS(
+                SELECT 1 FROM required_sources
+                WHERE session_id = ?1 AND kind != 'microphone' AND lifecycle = 'capturing'
+             )",
+            [session],
+            |row| row.get(0),
+        )?)
+    }
+
+    fn microphone_required_lifecycle(&self, session: &str) -> Result<String, StoreError> {
+        self.connection
+            .query_row(
+                "SELECT lifecycle FROM required_sources
+                 WHERE session_id = ?1 AND kind = 'microphone'",
+                [session],
+                |row| row.get(0),
+            )
+            .map_err(|error| match error {
+                rusqlite::Error::QueryReturnedNoRows => {
+                    StoreError::InvalidState("microphone is not part of this recording")
+                }
+                other => StoreError::Sqlite(other),
+            })
+    }
+
+    fn microphone_is_capturing(&self, session: &str) -> Result<bool, StoreError> {
+        Ok(self.connection.query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM sources
+                WHERE session_id = ?1 AND kind = 'microphone' AND lifecycle = 'capturing')",
+            [session],
+            |row| row.get(0),
+        )?)
+    }
+
+    fn another_source_continues(&self, session: &str) -> Result<bool, StoreError> {
+        Ok(self.connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM required_sources
+             WHERE session_id = ?1 AND kind != 'microphone' AND lifecycle != 'failed')",
+            [session],
+            |row| row.get(0),
+        )?)
+    }
+
+    /// Failed, or a restore that was requested and has not opened a live source.
+    fn microphone_is_retired_for_restore(&self, session: &str) -> Result<bool, StoreError> {
+        Ok(self.connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM required_sources
+             WHERE session_id = ?1 AND kind = 'microphone'
+               AND lifecycle IN ('failed', 'required'))
+             AND NOT EXISTS(SELECT 1 FROM sources
+             WHERE session_id = ?1 AND kind = 'microphone'
+               AND lifecycle IN ('opening', 'open', 'capturing'))",
+            [session],
+            |row| row.get(0),
+        )?)
+    }
+
+    /// Gaps microphone segments that never took a sample and marks that new
+    /// source failed. A capturing microphone is left alone. Returns how many
+    /// segments were gapped.
+    fn gap_unstarted_microphone_segments(&mut self, session: &str) -> Result<usize, StoreError> {
+        if self.microphone_is_capturing(session)? {
+            return Ok(0);
+        }
+        let segments: Vec<(String, String, String, String)> = {
+            let mut query = self.connection.prepare(
+                "SELECT segments.id, segments.track_id, segments.relative_path, sources.id
+                 FROM segments
+                 JOIN tracks ON tracks.id = segments.track_id
+                 JOIN sources ON sources.id = tracks.source_id
+                 WHERE segments.session_id = ?1
+                   AND sources.kind = 'microphone'
+                   AND sources.lifecycle IN ('opening', 'open')
+                   AND segments.lifecycle IN ('opening', 'open')
+                   AND segments.original_start IS NULL",
+            )?;
+            let rows = query.query_map([session], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                ))
+            })?;
+            rows.collect::<Result<Vec<_>, _>>()?
+        };
+        for (segment, track, path, source) in &segments {
+            let payload = json!({
+                "segment_id": segment,
+                "track_id": track,
+                "relative_path": path,
+                "reason": "microphone_restore_unstarted",
+                "media_preserved": true,
+            });
+            let record =
+                self.append_session_journal(session, "segment_capture_gap", Some(path), payload)?;
+            let (sequence, prior) = next_database_event(&self.connection, session)?;
+            let digest = event_digest(
+                session,
+                sequence,
+                "segment_capture_gap",
+                &record.body.payload,
+                prior.as_deref(),
+            )?;
+            let now = wall_time_milliseconds();
+            let tx = self.connection.transaction()?;
+            let changed = tx.execute(
+                "UPDATE segments SET lifecycle = 'gap', recovery_state = 'gap'
+                 WHERE id = ?1 AND session_id = ?2
+                   AND lifecycle IN ('opening', 'open') AND original_start IS NULL",
+                params![segment, session],
+            )?;
+            if changed != 1 {
+                return Err(StoreError::InvalidState(
+                    "unstarted microphone segment changed before it could be retired",
+                ));
+            }
+            tx.execute(
+                "UPDATE tracks SET lifecycle = 'failed'
+                 WHERE id = ?1 AND session_id = ?2 AND lifecycle IN ('opening', 'open')",
+                params![track, session],
+            )?;
+            tx.execute(
+                "UPDATE sources SET lifecycle = 'failed'
+                 WHERE id = ?1 AND session_id = ?2 AND lifecycle IN ('opening', 'open')",
+                params![source, session],
+            )?;
+            tx.execute(
+                "UPDATE sessions SET health = 'degraded',
+                     media_files_open = EXISTS(
+                         SELECT 1 FROM segments
+                         WHERE session_id = ?1
+                           AND lifecycle IN ('opening', 'open', 'capturing')
+                     ),
+                     updated_at_ms = ?2
+                 WHERE id = ?1",
+                params![session, now],
+            )?;
+            insert_event_with_id(
+                &tx,
+                &record.body.event_id,
+                session,
+                sequence,
+                "segment_capture_gap",
+                record.body.wall_time_milliseconds,
+                &record.body.payload,
+                prior.as_deref(),
+                &digest,
+            )?;
+            tx.commit()?;
+        }
+        if !segments.is_empty() {
+            self.connection.execute(
+                "UPDATE required_sources SET lifecycle = 'failed'
+                 WHERE session_id = ?1 AND kind = 'microphone'
+                   AND lifecycle IN ('required', 'opening', 'open')
+                   AND NOT EXISTS(
+                     SELECT 1 FROM sources
+                     WHERE session_id = ?1 AND kind = 'microphone'
+                       AND lifecycle IN ('opening', 'open', 'capturing'))",
+                [session],
+            )?;
+        }
+        Ok(segments.len())
+    }
+
     pub(super) fn require_storage_headroom(&self, session: &str) -> Result<(), StoreError> {
         if self
             .latest_recorder_payload(session, "storage_observed")?
@@ -518,6 +774,9 @@ impl SessionStore {
                     | "storage_observed"
                     | "system_sleep_observed"
                     | "system_wake_observed"
+                    | "microphone_restore_requested"
+                    | "microphone_restore_cancelled"
+                    | "microphone_retired_unstarted"
             )
         }) {
             // Replay projects the event without moving the lifecycle: the row
@@ -566,6 +825,26 @@ impl SessionStore {
         }
         if kind == "marker_added" {
             tx.execute("INSERT OR IGNORE INTO markers(id, schema_version, session_id, session_nanoseconds, label) VALUES(?1, ?2, ?3, ?4, ?5)", params![payload_string(p, "marker_id")?, SCHEMA_VERSION, session, payload_i64(p, "session_nanoseconds")?, payload_string(p, "label")?])?;
+        }
+        if kind == "microphone_restore_requested" {
+            // The sealed failure stays. The next microphone authorization is a
+            // new source, and only an explicit restore makes that kind required.
+            // `required` is accepted so a retry of an attempt that never opened
+            // media does not get stuck.
+            tx.execute(
+                "UPDATE required_sources SET lifecycle = 'required'
+                 WHERE session_id = ?1 AND kind = 'microphone'
+                   AND lifecycle IN ('failed', 'required')",
+                [session],
+            )?;
+        }
+        if kind == "microphone_restore_cancelled" || kind == "microphone_retired_unstarted" {
+            tx.execute(
+                "UPDATE required_sources SET lifecycle = 'failed'
+                 WHERE session_id = ?1 AND kind = 'microphone'
+                   AND lifecycle IN ('required', 'opening', 'open', 'failed')",
+                [session],
+            )?;
         }
         if kind == "source_scope_selected" {
             // A failed source is already retired; its failure evidence stays projected.

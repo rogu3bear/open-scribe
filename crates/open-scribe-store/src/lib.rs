@@ -1250,7 +1250,10 @@ impl SessionStore {
                 }
                 other => StoreError::Sqlite(other),
             })?;
-        if lifecycle != "preparing" || !journal_durable {
+        let restoring_microphone = lifecycle == "recording"
+            && request.source_kind == MediaSourceKind::Microphone
+            && self.microphone_restore_is_open(&request.session_id.0)?;
+        if (!restoring_microphone && lifecycle != "preparing") || !journal_durable {
             return Err(StoreError::InvalidState(
                 "session is not awaiting required media files",
             ));

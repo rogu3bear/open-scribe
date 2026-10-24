@@ -39,6 +39,25 @@ impl SessionStore {
                                   AND captured.original_start IS NOT NULL
                             )
                         )
+                        OR (
+                            segments.sequence = 0
+                            AND EXISTS (
+                                SELECT 1 FROM sources mic
+                                JOIN tracks mic_track ON mic_track.source_id = mic.id
+                                WHERE mic.session_id = segments.session_id
+                                  AND mic.kind = 'microphone'
+                                  AND mic_track.id = segments.track_id
+                                  AND mic.lifecycle IN ('opening', 'open', 'failed')
+                            )
+                            AND EXISTS (
+                                SELECT 1 FROM session_events restore
+                                WHERE restore.session_id = segments.session_id
+                                  AND restore.event_kind IN (
+                                    'microphone_restore_requested',
+                                    'microphone_restore_cancelled',
+                                    'microphone_retired_unstarted')
+                            )
+                        )
                    )",
             )?;
             query
@@ -143,6 +162,55 @@ impl SessionStore {
             tx.execute("UPDATE sources SET lifecycle = 'sealed' WHERE id = (SELECT source_id FROM tracks WHERE id = ?1 AND lifecycle = 'sealed')", [track])?;
             tx.execute("UPDATE required_sources SET lifecycle = 'sealed' WHERE session_id = ?1 AND kind IN(
                 SELECT kind FROM sources WHERE session_id = ?1 AND lifecycle = 'sealed')", [session])?;
+            // A restored microphone that never took a sample is not sealed audio.
+            // Leave ordinary successors on the sealed-predecessor path above.
+            tx.execute(
+                "UPDATE sources SET lifecycle = 'failed'
+                 WHERE id = (SELECT source_id FROM tracks WHERE id = ?1)
+                   AND kind = 'microphone'
+                   AND lifecycle IN ('opening', 'open')
+                   AND NOT EXISTS(
+                       SELECT 1 FROM segments sealed
+                       WHERE sealed.track_id = ?1 AND sealed.lifecycle = 'sealed')
+                   AND EXISTS(
+                       SELECT 1 FROM session_events
+                       WHERE session_id = ?2
+                         AND event_kind IN (
+                           'microphone_restore_requested',
+                           'microphone_restore_cancelled',
+                           'microphone_retired_unstarted'))",
+                params![track, session],
+            )?;
+            tx.execute(
+                "UPDATE tracks SET lifecycle = 'failed'
+                 WHERE id = ?1 AND lifecycle IN ('opening', 'open')
+                   AND NOT EXISTS(
+                       SELECT 1 FROM segments
+                       WHERE track_id = ?1
+                         AND lifecycle IN ('opening', 'open', 'capturing', 'sealed'))
+                   AND EXISTS(
+                       SELECT 1 FROM sources
+                       WHERE sources.id = (SELECT source_id FROM tracks WHERE tracks.id = ?1)
+                         AND sources.kind = 'microphone')",
+                [track],
+            )?;
+            tx.execute(
+                "UPDATE required_sources SET lifecycle = 'failed'
+                 WHERE session_id = ?1 AND kind = 'microphone'
+                   AND lifecycle IN ('required', 'opening', 'open')
+                   AND NOT EXISTS(
+                       SELECT 1 FROM sources
+                       WHERE session_id = ?1 AND kind = 'microphone'
+                         AND lifecycle IN ('opening', 'open', 'capturing'))
+                   AND EXISTS(
+                       SELECT 1 FROM session_events
+                       WHERE session_id = ?1
+                         AND event_kind IN (
+                           'microphone_restore_requested',
+                           'microphone_restore_cancelled',
+                           'microphone_retired_unstarted'))",
+                [session],
+            )?;
             tx.execute(
                 "UPDATE sessions
                  SET health = 'degraded',
