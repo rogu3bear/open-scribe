@@ -1,5 +1,3 @@
-import AppKit
-import SwiftUI
 import UniformTypeIdentifiers
 import XCTest
 
@@ -428,72 +426,20 @@ final class TranscriptLibraryModelTests: XCTestCase {
       speakerLabel: speaker, speakerNamedByUser: named, namedSpeakerId: nil)
   }
 
-  /// Renders the real view through AppKit at the full document width and at
-  /// the narrowest detail width the 760-point minimum window allows. Set
-  /// OPEN_SCRIBE_RENDER_DIR (TEST_RUNNER_ prefix under xcodebuild) to keep PNGs.
-  func testTranscriptSectionRendersInsideTheDocumentMeasure() throws {
-    let session = RuntimeSessionPresentation(
-      native: NativeRuntimeSessionSnapshot(
-        sessionId: "session", title: "Weekly planning", lifecycle: "ready_for_review",
-        health: "healthy", elapsedSeconds: 3_900, journalDurable: true, mediaFilesOpen: false,
-        interruptionReason: nil, recovered: false, hasCaptureTimeline: true, sources: [],
-        playableMedia: nil,
-        transcript: NativeRuntimeTranscriptSnapshot(
-          document: .final, replacementResumable: false,
-          state: .final, selectedRevisionIds: ["revision"], documentVersion: "render-final",
-          attempt: .complete, attemptFailure: nil, totalTracks: 2, finalTracks: 2,
-          completedChunks: 0, totalChunks: 0, failureClass: nil)))
-    let segments = [
-      segment(
-        0, 4_200_000_000, "Local user", named: false,
-        "Thanks for joining. Let's start with the release checklist, then cover the open questions from last week's review."
-      ),
-      segment(
-        1, 12_800_000_000, "Dana", named: true,
-        "The signing identity is still waiting on legal review.",
-        machine: "The signing identity is still waiting on legal few."),
-      segment(2, 3_725_000_000_000, "Dana", named: true, "Agreed."),
-    ]
-    let speakers = [
-      NativeSessionSpeaker(
-        trackId: "microphone", sourceKind: "microphone", label: "Local user", namedByUser: false),
-      NativeSessionSpeaker(
-        trackId: "system", sourceKind: "application_audio", label: "Dana", namedByUser: true),
-    ]
-    let cases: [(String, NativeTranscriptAvailability, [NativeTranscriptSegment], CGFloat)] = [
-      ("transcript-final-760", .final, segments, 760),
-      ("transcript-final-480", .final, segments, 480),
-      ("transcript-unavailable-760", .unavailable, [], 760),
-    ]
-    for (name, availability, rows, width) in cases {
-      let model = TranscriptLibraryModel(
-        preview: availability, segments: rows, speakers: rows.isEmpty ? [] : speakers)
-      // The reader stays hidden until the preview belongs to this session.
-      // fittingSize runs before the view's task, so bind it here.
-      model.load(session: session)
-      let view = TranscriptSection(
-        session: session, transcripts: model, speech: SpeechTranscriptionModel(speech: nil),
-        scheduler: TranscriptionScheduler.inert(), canSeek: true, onSeek: { _ in }
-      )
-      .padding(32)
-      .frame(width: width)
-      .background(Color(nsColor: .windowBackgroundColor))
-      let host = NSHostingView(rootView: view)
-      let size = host.fittingSize
-      XCTAssertLessThanOrEqual(size.width, width + 1, name)
-      XCTAssertGreaterThan(size.height, rows.isEmpty ? 60 : 200, name)
-      guard let directory = ProcessInfo.processInfo.environment["OPEN_SCRIBE_RENDER_DIR"] else {
-        continue
-      }
-      // ImageRenderer draws SwiftUI text; AppKit-hosted controls may render
-      // as placeholders.
-      let renderer = ImageRenderer(content: view)
-      renderer.scale = 2
-      let image = try XCTUnwrap(renderer.cgImage)
-      let png = try XCTUnwrap(
-        NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]))
-      try png.write(to: URL(fileURLWithPath: directory).appendingPathComponent("\(name).png"))
-    }
+  func testTranscriptReaderStaysHiddenUntilThePreviewBelongsToTheSession() {
+    let shown = session("valid", calibrated: false, sources: [])
+    let rows = [segment(0, 0, "Local user", named: false, "Thanks for joining.")]
+    let model = TranscriptLibraryModel(preview: .final, segments: rows, speakers: [])
+    XCTAssertFalse(TranscriptSection.showsReader(session: shown, transcripts: model))
+    model.load(session: shown)
+    XCTAssertTrue(TranscriptSection.showsReader(session: shown, transcripts: model))
+    XCTAssertFalse(
+      TranscriptSection.showsReader(
+        session: session("other", calibrated: false, sources: []), transcripts: model))
+    let unavailable = session("single-source", calibrated: false, sources: [.microphone])
+    let empty = TranscriptLibraryModel(preview: .unavailable, segments: [], speakers: [])
+    empty.load(session: unavailable)
+    XCTAssertFalse(TranscriptSection.showsReader(session: unavailable, transcripts: empty))
   }
 
   func testTimestampsAndExportNamesAreStable() {

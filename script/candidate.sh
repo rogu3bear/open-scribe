@@ -8,6 +8,20 @@ candidate_fail() {
 	exit 1
 }
 
+# The installed app and a verification build share the process name
+# OpenScribeApp. They do not share a library lock or bundle identifier.
+# Identity for a candidate proof is the executable path.
+candidate_executable_running() {
+	local executable="${1:?}" pid command
+	[[ "$executable" == /* ]] || return 1
+	while IFS= read -r pid; do
+		[[ "$pid" =~ ^[0-9]+$ ]] || continue
+		command="$(ps -p "$pid" -o command= 2>/dev/null || true)"
+		[[ "$command" == "$executable" || "$command" == "$executable "* ]] && return 0
+	done < <(pgrep -x OpenScribeApp || true)
+	return 1
+}
+
 candidate_sha256() {
 	shasum -a 256 "$1" | cut -d ' ' -f 1
 }

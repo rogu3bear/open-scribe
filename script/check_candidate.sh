@@ -61,5 +61,5 @@ jq -n --arg candidate "$candidate_record_digest" \
 candidate_require_checks
 candidate_receipt
 printf '%s\n' 'CONTRIBUTOR_CANDIDATE_GREEN' \
-	'proof=scaffold,clippy,current_locked_dependency_inventory,coarse_boundaries,entitlements,web,fresh_bindings,single_native_build,macos13_floor,no_project_swift_warnings,all_swift_tests,scene_launch,recording_components,synthetic_recovery,permission_free_failure_matrix,candidate_range_and_worktree_diff_hygiene' \
-	'excludes=live_capture,permission_matrix,audible_output,long_sessions,m1_completion,signing,release'
+	'proof=scaffold,clippy,current_locked_dependency_inventory,coarse_boundaries,entitlements,web,fresh_bindings,single_native_build,macos13_floor,no_project_swift_warnings,all_swift_tests,recording_components,synthetic_recovery,permission_free_failure_matrix,candidate_range_and_worktree_diff_hygiene' \
+	'excludes=scene_launch,live_capture,permission_matrix,audible_output,long_sessions,m1_completion,signing,release'

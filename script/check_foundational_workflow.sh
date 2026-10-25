@@ -35,8 +35,13 @@ if [[ "$mode" == '--live' ]]; then
 	recovery_flag='--foundation-live-recovery-root'
 fi
 [[ "$app_binary" == /* && -x "$app_binary" ]] || exit 64
-if pgrep -x OpenScribeApp >/dev/null; then
-	printf '%s\n' 'FOUNDATION_HOLD: close the running app before this isolated process proof.' >&2
+if [[ "$mode" == '--live' ]]; then
+	if pgrep -x OpenScribeApp >/dev/null; then
+		printf '%s\n' 'FOUNDATION_HOLD: close Open Scribe before a live device proof.' >&2
+		exit 1
+	fi
+elif candidate_executable_running "$app_binary"; then
+	printf '%s\n' 'FOUNDATION_HOLD: the candidate executable is already running.' >&2
 	exit 1
 fi
 temporary_root="${TMPDIR:-/tmp}"

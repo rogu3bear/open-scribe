@@ -25,6 +25,15 @@ struct TranscriptSection: View {
   @State private var showingModels = false
   @State private var showingReprocessConfirmation = false
 
+  /// The reader is part of the document only after this model is bound to
+  /// this session and has passages. The view task performs that binding.
+  static func showsReader(
+    session: RuntimeSessionPresentation, transcripts: TranscriptLibraryModel
+  ) -> Bool {
+    session.transcriptionUnavailableReason == nil
+      && transcripts.sessionId == session.sessionId && !transcripts.segments.isEmpty
+  }
+
   var body: some View {
     VStack(alignment: .leading, spacing: 12) {
       HStack(alignment: .firstTextBaseline) {
@@ -55,9 +64,7 @@ struct TranscriptSection: View {
       if !showingModels, session.transcriptionUnavailableReason == nil {
         outcomeNote
       }
-      if session.transcriptionUnavailableReason == nil,
-        transcripts.sessionId == session.sessionId, !transcripts.segments.isEmpty
-      {
+      if Self.showsReader(session: session, transcripts: transcripts) {
         TranscriptReader(
           sessionId: session.sessionId, transcripts: transcripts, canSeek: canSeek,
           isPlaybackActive: isPlaybackActive, playbackPosition: playbackPosition,

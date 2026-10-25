@@ -21,8 +21,12 @@ if [[ "$#" != 0 ]]; then
 	[[ "$valid" == 1 ]] || candidate_fail 'unknown injected case'
 	cases=("$selected")
 fi
-if pgrep -x OpenScribeApp >/dev/null; then
-	candidate_fail 'close the development app before an isolated process proof'
+if [[ "${selected:-}" == live-pause-resume ]]; then
+	if pgrep -x OpenScribeApp >/dev/null; then
+		candidate_fail 'close Open Scribe before a live device proof'
+	fi
+elif candidate_executable_running "$app_binary"; then
+	candidate_fail 'the candidate executable is already running'
 fi
 
 run_case() {

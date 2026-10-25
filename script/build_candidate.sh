@@ -15,9 +15,6 @@ source_tree="$candidate_tree"
 mkdir -p "$(dirname "$candidate_record")"
 candidate_paths
 [[ ! -e "$derived_data" && ! -e "$rust_target_dir" ]] || candidate_fail 'candidate build directories must be new'
-if pgrep -x OpenScribeApp >/dev/null; then
-	candidate_fail 'close the development app before building a candidate'
-fi
 
 build_native() {
 	# Fresh candidate targets cannot reuse compiler incremental sessions.

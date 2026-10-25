@@ -39,7 +39,7 @@ seconds=$((10#$seconds))
 [[ "$attended" == 1 ]] ||
 	candidate_fail 'this run plays audible chirps and records the microphone; an operator present at the Mac starts it with --attended'
 if pgrep -x OpenScribeApp >/dev/null; then
-	candidate_fail 'close the development app before the synchronization run'
+	candidate_fail 'close Open Scribe before the synchronization run'
 fi
 receipt="$candidate_root/m1-two-hour.json"
 [[ ! -e "$receipt" ]] || candidate_fail 'this candidate already has a two-hour receipt; evidence is preserved'

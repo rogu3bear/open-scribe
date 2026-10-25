@@ -55,9 +55,18 @@ esac
 if [[ -n "$candidate_record" ]]; then
 	candidate_load "$candidate_record"
 	if [[ "$mode" != --verify ]]; then candidate_require_checks; fi
-	if pgrep -x OpenScribeApp >/dev/null; then
-		candidate_fail 'close the existing development app before consuming a candidate'
-	fi
+	case "$mode" in
+	--m1-live-microphone-proof | --m1-dual-source-runtime-proof | --m1-forced-termination-recovery-proof)
+		if pgrep -x OpenScribeApp >/dev/null; then
+			candidate_fail 'close Open Scribe before a live device proof'
+		fi
+		;;
+	*)
+		if candidate_executable_running "$app_binary"; then
+			candidate_fail 'the candidate executable is already running'
+		fi
+		;;
+	esac
 fi
 mkdir -p "$macos_root/.build"
 bindings_tmp=""
@@ -223,6 +232,14 @@ run)
 			"app_digests=$component_app_digests" \
 			'proof=fresh_rust_bindings,xcode_app_build,synthetic_capture,writer_drain,source_loss_controller,media_receipts,shared_timeline,segment_rotation,gap_preserving_pcm_playback,product_pause_resume,paused_finalization' \
 			'excludes=real_capture,permissions,audible_output,long_sessions,m1_completion,signing,release'
+		exit 0
+	fi
+	if [[ -n "$candidate_record" ]]; then
+		candidate_receipt
+		printf '%s\n' \
+			'NATIVE_TESTS_GREEN' \
+			'proof=xcode_test_host,swift_tests' \
+			'excludes=scene_launch,capture,persistence,recovery,transcription,diarization,ocr,context,providers,llm,signing,notarization,release'
 		exit 0
 	fi
 	scene_root="$(mktemp -d "$macos_root/.build/scene-proof.XXXXXX")"

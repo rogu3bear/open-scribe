@@ -2,11 +2,14 @@
 set -euo pipefail
 
 # Exercise admission failures using inert files in a disposable Git repository.
-# No compiler, application, capture device, or pre-existing candidate is touched.
+# The identity fixture compiles a tiny pause loop so its executable name can
+# be OpenScribeApp. No application, capture device, or pre-existing candidate
+# is touched.
 script_dir="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
 fixture="$(mktemp -d "${TMPDIR:-/tmp}/open-scribe-candidate-test.XXXXXX")"
 fixture="$(CDPATH='' cd -- "$fixture" && pwd -P)"
-trap 'rm -rf "$fixture"' EXIT
+decoy_pid=""
+trap '[[ -z "$decoy_pid" ]] || kill "$decoy_pid" 2>/dev/null || true; rm -rf "$fixture"' EXIT
 repo_root="$fixture"
 cd "$fixture"
 git init -q
@@ -52,6 +55,35 @@ jq -n --arg repo "$repo_root" --arg sha "$candidate_sha" --arg tree "$candidate_
 	--argjson artifacts "$artifacts" \
 	'{schema: 1, repository: $repo, sha: $sha, tree: $tree, artifacts: $artifacts}' >"$candidate_record"
 candidate_load "$candidate_record"
+decoy="$fixture/candidate/OpenScribeApp"
+clang -x c -o "$decoy" - <<'EOF'
+#include <unistd.h>
+int main(void) {
+  for (;;) pause();
+}
+EOF
+"$decoy" &
+decoy_pid=$!
+seen=0
+for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+	if candidate_executable_running "$decoy"; then
+		seen=1
+		break
+	fi
+	sleep 0.05
+done
+[[ "$seen" == 1 ]] || {
+	printf 'CANDIDATE_TEST_RED: exact executable was not observed\n' >&2
+	exit 1
+}
+if candidate_executable_running "$app_binary"; then
+	printf 'CANDIDATE_TEST_RED: a different OpenScribeApp counted as the candidate\n' >&2
+	exit 1
+fi
+kill "$decoy_pid"
+wait "$decoy_pid" 2>/dev/null || true
+decoy_pid=""
+printf '%s\n' 'rejected=installed-app-name-is-not-candidate-identity'
 record_contents="$(cat "$candidate_record")"
 expect_rejection() {
 	local label="$1"

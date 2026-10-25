@@ -57,8 +57,12 @@ model_digest="$(candidate_sha256 "$model_source")"
 speech_digest="$(candidate_sha256 "$speech_source")"
 receipt="$candidate_root/m4-local-only-$mode.json"
 [[ ! -e "$receipt" && ! -L "$receipt" ]] || hold "receipt_already_exists:$receipt"
-if pgrep -x OpenScribeApp >/dev/null; then
-	hold "another_open_scribe_process_is_running"
+if [[ "$mode" == live-context ]]; then
+	if pgrep -x OpenScribeApp >/dev/null; then
+		hold "another_open_scribe_process_is_running"
+	fi
+elif candidate_executable_running "$app"; then
+	hold "candidate_executable_is_already_running"
 fi
 
 # Distinguish policy denial from an unavailable external host. Neither control
