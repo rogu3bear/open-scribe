@@ -212,6 +212,109 @@ final class RecorderPauseResumeTests: XCTestCase {
     }
   }
 
+  /// Fail the paused restore while opening the replacement microphone, before
+  /// that adapter starts and before the resumed system writer is accepted.
+  /// Both orders of the surviving system sample are covered. A sample that
+  /// confirms Recording while system startup is still suspended must leave
+  /// that source running when startup returns. Until Rust confirms, Starting
+  /// says the recording is resuming.
+  func testPausedRestoreMediaOpenFailureBeforeResumedSystemSampleKeepsResumingWording()
+    async throws
+  {
+    for order in [PausedRestoreSampleOrder.beforeStartupReturns, .afterStartupReturns] {
+      try await assertPausedRestoreMediaOpenFailure(sampleArrives: order)
+    }
+  }
+
+  /// Ordinary resume of a retired microphone starts only system audio. That
+  /// start shares the post-await guard. A first sample can confirm the span
+  /// before startup returns, and that return must not stop the survivor.
+  func testRetiredMicrophoneResumeKeepsConfirmedSystemWhenStartupReturnsLater() async throws {
+    let harness = try PauseHarness()
+    defer { harness.removeFiles() }
+    await harness.controller.start()
+    try await harness.capture()
+    let microphone = try XCTUnwrap(harness.captures.microphones.last)
+    let sessionId = microphone.writer.authorization.sessionId
+    let originalURL = URL(fileURLWithPath: microphone.writer.authorization.absolutePath)
+    microphone.observe(
+      .routeInterrupted,
+      identity: MicrophoneCaptureIdentity(authorization: microphone.writer.authorization),
+      sequence: 1)
+    await settle()
+    XCTAssertTrue(harness.controller.isMicrophoneRetired)
+    let originalAudio = try Data(contentsOf: originalURL)
+    await harness.controller.stop(pausing: true)
+    XCTAssertEqual(harness.controller.phase, .paused)
+    harness.clock.advance(seconds: 1)
+
+    let gate = PauseStartGate()
+    harness.captures.nextSystemStartGate = gate
+    let microphonesBeforeResume = harness.captures.microphones.count
+    let startupReturned = XCTestExpectation(description: "Retired microphone resume returned")
+    Task { @MainActor in
+      await harness.controller.start(resuming: true)
+      startupReturned.fulfill()
+    }
+    await fulfillment(of: [gate.entered], timeout: 2)
+    let resumedSystem = try XCTUnwrap(harness.captures.systems.last)
+    XCTAssertEqual(harness.captures.systems.count, 2)
+    XCTAssertEqual(harness.captures.microphones.count, microphonesBeforeResume)
+    XCTAssertEqual(microphone.microphoneStartCount, 1)
+    XCTAssertEqual(harness.controller.phase, .starting)
+    XCTAssertEqual(resumedSystem.stopCount, 0)
+
+    let samplesBeforeResume = try journalCount(
+      harness, sessionId: sessionId, event: "first_sample_captured")
+    try resumedSystem.emit(frames: 48_000, hostTime: harness.clock.now, value: 16384)
+    await waitUntil {
+      harness.controller.phase == .capturing
+        && harness.controller.statusText == "Recording continues with remaining audio"
+        && (try? journalCount(harness, sessionId: sessionId, event: "first_sample_captured"))
+          == samplesBeforeResume + 1
+        && (try? harness.preparation.recorderDetail(sessionId: sessionId).lifecycle) == "recording"
+    }
+    XCTAssertEqual(harness.controller.phase, .capturing)
+    XCTAssertEqual(resumedSystem.stopCount, 0)
+    XCTAssertEqual(harness.captures.microphones.count, microphonesBeforeResume)
+    XCTAssertEqual(try Data(contentsOf: originalURL), originalAudio)
+
+    await gate.release()
+    await fulfillment(of: [startupReturned], timeout: 2)
+    XCTAssertEqual(
+      resumedSystem.stopCount, 0,
+      "ordinary resume must not stop a survivor confirmed before startup returns")
+    guard resumedSystem.stopCount == 0 else { return }
+    XCTAssertEqual(harness.controller.phase, .capturing)
+    XCTAssertEqual(
+      harness.controller.statusText, "Recording continues with remaining audio")
+    XCTAssertEqual(harness.captures.microphones.count, microphonesBeforeResume)
+    XCTAssertEqual(microphone.microphoneStartCount, 1)
+    XCTAssertEqual(harness.controller.contextBinding?.sessionId, sessionId)
+    XCTAssertEqual(try Data(contentsOf: originalURL), originalAudio)
+    let resumed = try harness.preparation.recorderDetail(sessionId: sessionId)
+    XCTAssertEqual(resumed.lifecycle, "recording")
+
+    harness.clock.advance(seconds: 1)
+    try resumedSystem.emit(frames: 48_000, hostTime: harness.clock.now, value: 16384)
+    await settle()
+    XCTAssertEqual(resumedSystem.stopCount, 0)
+    XCTAssertEqual(harness.controller.phase, .capturing)
+    await harness.controller.stop()
+    let deadline = ContinuousClock.now.advanced(by: .seconds(4))
+    while harness.controller.statusText.hasSuffix("…"), ContinuousClock.now < deadline {
+      try await Task.sleep(for: .milliseconds(10))
+    }
+    XCTAssertEqual(harness.controller.phase, .saved)
+    XCTAssertEqual(try Data(contentsOf: originalURL), originalAudio)
+    let reopened = try NativeRecordingPreparation.open(managedRoot: harness.root.path)
+    _ = try reopened.recoverPlayableSessions()
+    let saved = try reopened.recorderDetail(sessionId: sessionId)
+    XCTAssertEqual(saved.lifecycle, "ready_for_review")
+    let plan = try reopened.playbackTimeline(sessionId: sessionId)
+    XCTAssertEqual(plan.reduce(0) { $0 + $1.sampleCount }, 192_000)
+  }
+
   func testObservedPermissionRevocationPersistsAndNeverRestartsTheRetiredMicrophone() async throws {
     let harness = try PauseHarness()
     defer { harness.removeFiles() }
@@ -1107,6 +1210,171 @@ final class RecorderPauseResumeTests: XCTestCase {
     }
     XCTAssertEqual(harness.controller.phase, .saved)
     XCTAssertFalse(harness.controller.statusText.hasSuffix("…"))
+  }
+
+  /// The replacement microphone's media open fails before its adapter starts.
+  /// The resumed system sample either confirms Recording while that startup is
+  /// suspended, or arrives only after startup returns. The early confirmation
+  /// is Rust's. Startup returning later must not stop that survivor.
+  private func assertPausedRestoreMediaOpenFailure(
+    sampleArrives order: PausedRestoreSampleOrder
+  ) async throws {
+    let microphoneA = MicrophoneDeviceIdentity(uniqueID: "microphone-a", localizedName: "A")
+    let harness = try PauseHarness(
+      rotationInjection: true, microphoneDeviceProbe: { microphoneA })
+    defer { harness.removeFiles() }
+    await harness.controller.start()
+    try await harness.capture()
+    let microphone = try XCTUnwrap(harness.captures.microphones.last)
+    let sessionId = microphone.writer.authorization.sessionId
+    let originalURL = URL(fileURLWithPath: microphone.writer.authorization.absolutePath)
+    microphone.observe(
+      .routeInterrupted,
+      identity: MicrophoneCaptureIdentity(authorization: microphone.writer.authorization),
+      sequence: 1)
+    await settle()
+    XCTAssertTrue(harness.controller.isMicrophoneRetired)
+    let originalAudio = try Data(contentsOf: originalURL)
+    await harness.controller.stop(pausing: true)
+    XCTAssertEqual(harness.controller.phase, .paused)
+    harness.clock.advance(seconds: 1)
+
+    let injector = try XCTUnwrap(harness.rotationInjector)
+    injector.arm(.acceptMediaOpen)
+    let gate = PauseStartGate()
+    harness.captures.nextSystemStartGate = gate
+    let microphonesBeforeReconnect = harness.captures.microphones.count
+    harness.controller.reconnectMicrophone()
+    await fulfillment(of: [gate.entered], timeout: 2)
+    let resumedSystem = try XCTUnwrap(harness.captures.systems.last)
+    XCTAssertEqual(harness.captures.systems.count, 2)
+    XCTAssertEqual(harness.captures.microphones.count, microphonesBeforeReconnect)
+    XCTAssertEqual(microphone.microphoneStartCount, 1)
+    XCTAssertEqual(harness.controller.phase, .starting)
+    XCTAssertEqual(
+      harness.controller.errorMessage, microphoneCouldNotBeRestoredResumingSentence)
+    XCTAssertFalse(
+      harness.controller.errorMessage?.contains("still recording") == true,
+      "Starting must not claim the other source is recording")
+    XCTAssertFalse(harness.controller.showsReconnect)
+    XCTAssertFalse(harness.controller.showsUseThisMicrophone)
+    XCTAssertEqual(resumedSystem.stopCount, 0)
+    XCTAssertEqual(try Data(contentsOf: originalURL), originalAudio)
+
+    let samplesBeforeResume = try journalCount(
+      harness, sessionId: sessionId, event: "first_sample_captured")
+    if order == .beforeStartupReturns {
+      try resumedSystem.emit(frames: 48_000, hostTime: harness.clock.now, value: 16384)
+      await waitUntil {
+        harness.controller.phase == .capturing
+          && harness.controller.errorMessage == microphoneCouldNotBeRestoredContinuingSentence
+          && (try? journalCount(harness, sessionId: sessionId, event: "first_sample_captured"))
+            == samplesBeforeResume + 1
+          && (try? harness.preparation.recorderDetail(sessionId: sessionId).lifecycle)
+            == "recording"
+      }
+      XCTAssertEqual(harness.controller.phase, .capturing)
+      XCTAssertEqual(
+        harness.controller.errorMessage, microphoneCouldNotBeRestoredContinuingSentence)
+      XCTAssertEqual(
+        resumedSystem.stopCount, 0, "\(order) confirmation happens before startup returns")
+      XCTAssertTrue(harness.controller.showsReconnect)
+      XCTAssertFalse(harness.controller.showsUseThisMicrophone)
+      XCTAssertEqual(harness.captures.microphones.count, microphonesBeforeReconnect)
+      XCTAssertEqual(try Data(contentsOf: originalURL), originalAudio)
+    }
+
+    await gate.release()
+    if order == .afterStartupReturns {
+      await settle()
+      XCTAssertEqual(harness.controller.phase, .starting)
+      XCTAssertEqual(
+        harness.controller.errorMessage, microphoneCouldNotBeRestoredResumingSentence)
+      XCTAssertFalse(
+        harness.controller.errorMessage?.contains("still recording") == true,
+        "a pending system sample must not make the open failure claim recording")
+      XCTAssertEqual(harness.captures.microphones.count, microphonesBeforeReconnect)
+      try resumedSystem.emit(frames: 48_000, hostTime: harness.clock.now, value: 16384)
+      await waitUntil {
+        harness.controller.phase == .capturing
+          && harness.controller.errorMessage == microphoneCouldNotBeRestoredContinuingSentence
+      }
+    }
+
+    // Cancellation is durable before the explicit retry. Counting it later
+    // would include the retry's own restore request.
+    XCTAssertEqual(harness.controller.phase, .capturing)
+    XCTAssertEqual(
+      harness.controller.errorMessage, microphoneCouldNotBeRestoredContinuingSentence)
+    XCTAssertTrue(harness.controller.isMicrophoneRetired)
+    XCTAssertTrue(harness.controller.showsReconnect)
+    XCTAssertFalse(harness.controller.showsUseThisMicrophone)
+    XCTAssertEqual(harness.controller.contextBinding?.sessionId, sessionId)
+    XCTAssertEqual(try Data(contentsOf: originalURL), originalAudio)
+    XCTAssertEqual(microphone.microphoneStartCount, 1)
+    XCTAssertEqual(harness.captures.microphones.count, microphonesBeforeReconnect)
+    let rejected = try harness.preparation.recorderDetail(sessionId: sessionId)
+    XCTAssertEqual(rejected.lifecycle, "recording")
+    XCTAssertEqual(
+      rejected.events.filter { $0.kind == "microphone_restore_requested" }.count, 1)
+    XCTAssertEqual(
+      rejected.events.filter { $0.kind == "microphone_restore_cancelled" }.count, 1)
+
+    // Explicit retry waits until the suspended start returns and clears its
+    // task. That return is where a confirmed survivor used to be stopped.
+    let microphonesBeforeRetry = harness.captures.microphones.count
+    let deadline = ContinuousClock.now.advanced(by: .seconds(4))
+    var retryStarted = false
+    while ContinuousClock.now < deadline {
+      if harness.captures.microphones.count == microphonesBeforeRetry {
+        harness.controller.reconnectMicrophone()
+      }
+      if harness.captures.microphones.count == microphonesBeforeRetry + 1,
+        harness.captures.microphones.last?.microphoneStartCount == 1
+      {
+        retryStarted = true
+        break
+      }
+      try await Task.sleep(for: .milliseconds(10))
+    }
+    XCTAssertTrue(
+      retryStarted,
+      "\(order) startup did not return; phase \(harness.controller.phase) "
+        + "stop \(resumedSystem.stopCount) \(harness.controller.errorMessage ?? "nil")")
+    guard retryStarted else { return }
+    let retry = try XCTUnwrap(harness.captures.microphones.last)
+    XCTAssertEqual(retry.writer.authorization.sessionId, sessionId)
+    XCTAssertEqual(microphone.microphoneStartCount, 1)
+    XCTAssertEqual(
+      harness.controller.contextBinding?.sessionId, sessionId)
+    XCTAssertEqual(try Data(contentsOf: originalURL), originalAudio)
+    XCTAssertEqual(
+      resumedSystem.stopCount, 0,
+      "\(order) must not stop a survivor confirmed before or after startup returns")
+    guard resumedSystem.stopCount == 0 else { return }
+
+    harness.clock.advance(seconds: 1)
+    try retry.emit(frames: 48_000, hostTime: harness.clock.now, value: 8192)
+    try resumedSystem.emit(frames: 48_000, hostTime: harness.clock.now, value: 16384)
+    await settle()
+    XCTAssertFalse(harness.controller.isMicrophoneRetired)
+    XCTAssertEqual(resumedSystem.stopCount, 0)
+    XCTAssertEqual(try Data(contentsOf: originalURL), originalAudio)
+    await finishRestoredRecording(harness)
+    XCTAssertEqual(try Data(contentsOf: originalURL), originalAudio)
+    let sessions = try FileManager.default.contentsOfDirectory(
+      at: harness.root.appendingPathComponent("Sessions"), includingPropertiesForKeys: nil
+    ).map(\.lastPathComponent).filter { !$0.hasPrefix(".") }
+    XCTAssertEqual(sessions, [sessionId])
+    let reopened = try NativeRecordingPreparation.open(managedRoot: harness.root.path)
+    _ = try reopened.recoverPlayableSessions()
+    let saved = try reopened.recorderDetail(sessionId: sessionId)
+    XCTAssertEqual(saved.lifecycle, "ready_for_review")
+    XCTAssertGreaterThanOrEqual(
+      saved.events.filter { $0.kind == "microphone_restore_cancelled" }.count, 1)
+    let plan = try reopened.playbackTimeline(sessionId: sessionId)
+    XCTAssertGreaterThanOrEqual(Set(plan.map(\.trackId)).count, 2)
+    XCTAssertEqual(plan.reduce(0) { $0 + $1.sampleCount }, 240_000)
   }
 
   /// Suspend resumed system startup after B is approved. A change to C, or a

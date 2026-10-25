@@ -128,11 +128,14 @@ scaffold and web gates, runs clippy with warnings denied, checks the native
 contracts, generates and compares bindings, and builds one unsigned app and test
 bundle with `build-for-testing`. It retains source/native logs and their digests.
 It then runs the complete Swift suite, the synthetic recorder components, and
-synthetic foundational recovery. It does not launch the app. A contributor
-build or synthetic proof refuses only its own candidate executable; the
-installed app may stay open. Scene launch remains `./script/check.sh
---m0-native`. Live device proofs still refuse any Open Scribe process.
-Device-dependent proofs remain separate and are not established by this gate.
+synthetic foundational recovery. Those checks launch the Xcode test host and
+isolated synthetic OpenScribeApp children (`--verify-recording`, the
+foundational workflow, and injected failures). They do not perform a foreground
+or scene launch. A contributor build or synthetic proof refuses only its own
+candidate executable; the installed app may stay open. Scene launch remains
+`./script/check.sh --m0-native`. Live device proofs still refuse any Open
+Scribe process. Device-dependent proofs remain separate and are not established
+by this gate.
 
 The recorder controller observes microphone permission without prompting every
 two seconds while an attempt is starting or capturing, and rechecks it at

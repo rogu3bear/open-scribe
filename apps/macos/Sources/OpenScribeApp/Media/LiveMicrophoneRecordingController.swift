@@ -643,8 +643,10 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
             }
           }
         )
-        guard activeAttempt == attempt, activeSessionId == sessionId, phase == .starting,
-          !restoreCancelled
+        // Rust can confirm the surviving span before this await returns.
+        // Keep that span. A stale or cancelled attempt still stops its source.
+        guard activeAttempt == attempt, activeSessionId == sessionId, !restoreCancelled,
+          phase == .starting || phase == .capturing
         else {
           _ = try? await systemCapture.stop()
           if restoreCancelled { cancelOpenMicrophoneRestore() }
@@ -653,8 +655,8 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
         guard await checkMicrophonePermission() else { return }
       }
       if let approvedPausedRestore {
-        guard activeAttempt == attempt, activeSessionId == sessionId, phase == .starting,
-          !restoreCancelled
+        guard activeAttempt == attempt, activeSessionId == sessionId, !restoreCancelled,
+          phase == .starting || phase == .capturing
         else {
           if restoreCancelled { cancelOpenMicrophoneRestore() }
           return
@@ -664,16 +666,27 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
         let observedDevice = microphoneDeviceProbe()
         if observedDevice?.uniqueID != approvedPausedRestore.uniqueID {
           cancelOpenMicrophoneRestore()
-          // No resumed source is durable yet. Keep the offered device pending
-          // and describe resume, not recording, until Rust confirms capture.
+          // Starting has not confirmed the span, so describe resume. Recording
+          // already confirmed by Rust keeps the continuing-source sentence.
+          let alreadyConfirmed = phase == .capturing
           if let observedDevice {
             pendingDifferentDevice = observedDevice
-            pendingPausedRestoreNotice = differentMicrophoneContinuingSentence
-            errorMessage = differentMicrophoneResumingSentence
+            if alreadyConfirmed {
+              pendingPausedRestoreNotice = nil
+              errorMessage = differentMicrophoneContinuingSentence
+            } else {
+              pendingPausedRestoreNotice = differentMicrophoneContinuingSentence
+              errorMessage = differentMicrophoneResumingSentence
+            }
           } else {
             pendingDifferentDevice = nil
-            pendingPausedRestoreNotice = unavailableMicrophoneContinuingSentence
-            errorMessage = unavailableMicrophoneResumingSentence
+            if alreadyConfirmed {
+              pendingPausedRestoreNotice = nil
+              errorMessage = unavailableMicrophoneContinuingSentence
+            } else {
+              pendingPausedRestoreNotice = unavailableMicrophoneContinuingSentence
+              errorMessage = unavailableMicrophoneResumingSentence
+            }
           }
           await confirmRecordingIfReady(sessionId: sessionId, attempt: attempt)
           return
@@ -1772,7 +1785,14 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
       cancelJournaledMicrophoneRestore(sessionId: sessionId, preparation: preparation)
       if let previous = previousWriters[.microphone] { writers[.microphone] = previous }
       failedSources.insert(.microphone)
-      errorMessage = microphoneCouldNotBeRestoredSentence
+      // Preparing has not confirmed the surviving source. Describe resume until
+      // Rust does. Paused preflight and live capture keep their own sentences.
+      if phase == .preparing || phase == .starting {
+        pendingPausedRestoreNotice = microphoneCouldNotBeRestoredContinuingSentence
+        errorMessage = microphoneCouldNotBeRestoredResumingSentence
+      } else {
+        errorMessage = microphoneCouldNotBeRestoredSentence
+      }
     }
   }
 
