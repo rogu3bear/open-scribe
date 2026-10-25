@@ -37,8 +37,12 @@ disk-guard run --budget-gb <measured> --volume "$PWD" -- ./script/check.sh --can
 
 The gate runs scaffold, clippy, boundary/entitlement checks, the complete web
 build, fresh UniFFI bindings, one unsigned native `build-for-testing`, the full
-Swift suite and scene launch, recorder components, synthetic process recovery,
-and the default thirteen-case permission-free M1 failure matrix. The matrix
+Swift suite, recorder components, synthetic process recovery,
+and the default thirteen-case permission-free M1 failure matrix. It does not
+perform a foreground or scene launch. It still runs the Xcode test host and
+isolated synthetic child processes, including `--verify-recording`, the
+foundational workflow, and injected failures. Scene launch remains
+`./script/check.sh --m0-native`. The matrix
 checks source loss, sleep/wake, storage pressure and forced termination through
 production controller/storage entry points with synthetic capture adapters.
 Its ENOSPC case fills a dedicated 1.5 GiB sparse APFS image; include that growth
