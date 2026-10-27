@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		F37B16402710202600000011 /* ViewPrimitives.swift in Sources */ = {isa = PBXBuildFile; fileRef = F37B16402710202600000012 /* ViewPrimitives.swift */; };
 		A14183000000000000000029 /* PolicyDocumentDigests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A14183000000000000000028 /* PolicyDocumentDigests.swift */; };
 		A14183000000000000000021 /* PolicyDocument.swift in Sources */ = {isa = PBXBuildFile; fileRef = A14183000000000000000020 /* PolicyDocument.swift */; };
 		A14183000000000000000023 /* PolicyDocumentsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A14183000000000000000022 /* PolicyDocumentsView.swift */; };
@@ -116,6 +117,7 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		F37B16402710202600000012 /* ViewPrimitives.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ViewPrimitives.swift; sourceTree = "<group>"; };
 		A14183000000000000000028 /* PolicyDocumentDigests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PolicyDocumentDigests.swift; sourceTree = "<group>"; };
 		A14183000000000000000020 /* PolicyDocument.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PolicyDocument.swift; sourceTree = "<group>"; };
 		A14183000000000000000022 /* PolicyDocumentsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PolicyDocumentsView.swift; sourceTree = "<group>"; };
@@ -372,6 +374,7 @@
 		71D5EF4D1A0BA7E04FA1A6D8 /* Views */ = {
 			isa = PBXGroup;
 			children = (
+				F37B16402710202600000012 /* ViewPrimitives.swift */,
 				A14183000000000000000022 /* PolicyDocumentsView.swift */,
 				AA0000050000000000000012 /* RecorderControls.swift */,
 				FA0F0D94D6B878C1D7BCA3F7 /* CompactLiveView.swift */,
@@ -567,6 +570,7 @@
 				A14183000000000000000002 /* LaunchConfiguration.swift in Sources */,
 				AA0000050000000000000001 /* RecorderCaptureSelection.swift in Sources */,
 				AA0000050000000000000002 /* RecorderControls.swift in Sources */,
+				F37B16402710202600000011 /* ViewPrimitives.swift in Sources */,
 				A11A3F920D148E6A9BCE201 /* ImportedMediaAuthorityAdapter.swift in Sources */,
 				B11A3F920D148E6A9BCE201 /* BoundedAudioImport.swift in Sources */,
 				5DB6CB212CE4D1617F1E34D4 /* AccessibilityAnnouncer.swift in Sources */,

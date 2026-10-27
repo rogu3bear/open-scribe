@@ -15,10 +15,9 @@ struct ImportBatchStatus: View {
     }
     .help("Review import progress, pause between files, or see files that could not be imported")
     .popover(isPresented: $showsDetails) {
-      VStack(alignment: .leading, spacing: 12) {
+      VStack(alignment: .leading, spacing: ScribeSpacing.compact) {
         Text(title)
-          .font(.headline)
-          .accessibilityAddTraits(.isHeader)
+          .scribeSectionHeading()
         if imports.selectedFileCount > 0 {
           ProgressView(
             value: Double(imports.importedSessionIds.count + imports.failedImports.count),
@@ -55,9 +54,9 @@ struct ImportBatchStatus: View {
           Text("Files not imported")
             .font(.subheadline.weight(.semibold))
           ScrollView {
-            LazyVStack(alignment: .leading, spacing: 12) {
+            LazyVStack(alignment: .leading, spacing: ScribeSpacing.compact) {
               ForEach(imports.failedImports) { failure in
-                VStack(alignment: .leading, spacing: 4) {
+                VStack(alignment: .leading, spacing: ScribeSpacing.tight) {
                   Text(failure.fileName).font(.callout.weight(.medium))
                   Text(failure.message).font(.caption).foregroundStyle(.secondary)
                 }

@@ -12,7 +12,7 @@ struct PolicyDocumentsView: View {
   }
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 16) {
+    VStack(alignment: .leading, spacing: ScribeSpacing.standard) {
       HStack {
         Text("Policies and licenses").font(.title2)
         Spacer()
@@ -41,7 +41,7 @@ struct PolicyDocumentsView: View {
           Text(verbatim: text)
             .textSelection(.enabled)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.trailing, 8)
+            .padding(.trailing, ScribeSpacing.related)
         }
         .accessibilityLabel(selection.title)
       case .unavailable:
@@ -51,7 +51,7 @@ struct PolicyDocumentsView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
       }
     }
-    .padding(24)
+    .padding(ScribeSpacing.section)
     .frame(minWidth: 560, idealWidth: 660, minHeight: 420, idealHeight: 600)
     .task(id: selection) {
       content = .loading

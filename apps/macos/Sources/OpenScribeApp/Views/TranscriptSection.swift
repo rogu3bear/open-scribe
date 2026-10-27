@@ -35,7 +35,7 @@ struct TranscriptSection: View {
   }
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 12) {
+    VStack(alignment: .leading, spacing: ScribeSpacing.compact) {
       ViewThatFits(in: .horizontal) {
         HStack(alignment: .firstTextBaseline) {
           heading
@@ -43,7 +43,7 @@ struct TranscriptSection: View {
           transcriptionMenu
           exportMenu
         }
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: ScribeSpacing.related) {
           heading
           transcriptionMenu
           exportMenu
@@ -71,13 +71,13 @@ struct TranscriptSection: View {
         )
         .id(session.sessionId)
         DisclosureGroup("Audio source labels") {
-          VStack(alignment: .leading, spacing: 8) {
+          VStack(alignment: .leading, spacing: ScribeSpacing.related) {
             Text("Source labels apply to every unassigned passage on that audio track.")
               .font(.caption)
               .foregroundStyle(.secondary)
             speakerList
           }
-          .padding(.top, 8)
+          .padding(.top, ScribeSpacing.related)
         }
       }
     }
@@ -118,8 +118,7 @@ struct TranscriptSection: View {
 
   private var heading: some View {
     Text("Transcript")
-      .font(.headline)
-      .accessibilityAddTraits(.isHeader)
+      .scribeSectionHeading()
   }
 
   @ViewBuilder
@@ -203,7 +202,7 @@ struct TranscriptSection: View {
       }
       .frame(maxWidth: 420, alignment: .leading)
     } else if session.transcriptionUnavailableReason == nil || hasQueuedWork {
-      VStack(alignment: .leading, spacing: 8) {
+      VStack(alignment: .leading, spacing: ScribeSpacing.related) {
         if case .queued(let position, let hold) = job {
           Label(
             position == 1
@@ -217,7 +216,7 @@ struct TranscriptSection: View {
               .foregroundStyle(.secondary)
               .fixedSize(horizontal: false, vertical: true)
           }
-          HStack(spacing: 12) {
+          HStack(spacing: ScribeSpacing.compact) {
             if (position > 1 || hold == .pausedByUser)
               && scheduler.canPrioritize(sessionId: session.sessionId)
             {
@@ -229,7 +228,7 @@ struct TranscriptSection: View {
             Button("Remove from Queue") { scheduler.cancel(sessionId: session.sessionId) }
           }
         } else if speech.installedModel != nil {
-          HStack(spacing: 12) {
+          HStack(spacing: ScribeSpacing.compact) {
             Button(
               transcripts.availability == .failed || job == .cancelled
                 || session.transcript.state == .failed || session.transcript.state == .cancelled
@@ -242,7 +241,7 @@ struct TranscriptSection: View {
             )
           }
           if scheduler.isPaused {
-            HStack(spacing: 12) {
+            HStack(spacing: ScribeSpacing.compact) {
               Text("Automatic transcription is paused.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
@@ -262,7 +261,7 @@ struct TranscriptSection: View {
             .font(.callout)
         }
         if session.transcriptionUnavailableReason == nil {
-          HStack(spacing: 12) {
+          HStack(spacing: ScribeSpacing.compact) {
             Button("Speech Model…") {
               speech.dismissMessage()
               showingModels = true
@@ -279,14 +278,14 @@ struct TranscriptSection: View {
   }
 
   private var speakerList: some View {
-    HStack(spacing: 12) {
+    HStack(spacing: ScribeSpacing.compact) {
       ForEach(transcripts.speakers) { speaker in
         Button {
           draftLabel = speaker.namedByUser ? speaker.label : ""
           transcripts.dismissMessage()
           renaming = speaker
         } label: {
-          HStack(spacing: 4) {
+          HStack(spacing: ScribeSpacing.tight) {
             Label(speaker.label, systemImage: "person.wave.2")
             Image(systemName: "pencil")
               .font(.caption)
@@ -314,7 +313,7 @@ struct TranscriptSection: View {
   }
 
   private var exportMenu: some View {
-    HStack(spacing: 8) {
+    HStack(spacing: ScribeSpacing.related) {
       if transcripts.isExporting {
         ProgressView().controlSize(.small)
         Text("Exporting…").font(.caption).foregroundStyle(.secondary)
@@ -392,7 +391,7 @@ struct TranscriptSection: View {
   }
 
   private func correctionSheet(_ segment: NativeTranscriptSegment) -> some View {
-    VStack(alignment: .leading, spacing: 12) {
+    VStack(alignment: .leading, spacing: ScribeSpacing.compact) {
       Text("Correct Transcript Text")
         .font(.headline)
       Text("The machine reading is kept. Your correction is shown and searched instead.")
@@ -412,21 +411,21 @@ struct TranscriptSection: View {
           }
         }
         Spacer()
-        Button("Cancel", role: .cancel) { editing = nil }
-          .keyboardShortcut(.cancelAction)
-        Button("Save") {
-          if transcripts.correct(segment, text: draftText) { editing = nil }
-        }
-        .keyboardShortcut(.defaultAction)
-        .disabled(draftText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        SheetActionButtons(
+          confirmTitle: "Save",
+          isConfirmationDisabled: draftText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+          cancel: { editing = nil },
+          confirm: {
+            if transcripts.correct(segment, text: draftText) { editing = nil }
+          })
       }
     }
-    .padding(16)
+    .padding(ScribeSpacing.standard)
     .frame(width: 460)
   }
 
   private func renameSheet(_ speaker: NativeSessionSpeaker) -> some View {
-    VStack(alignment: .leading, spacing: 12) {
+    VStack(alignment: .leading, spacing: ScribeSpacing.compact) {
       Text("Rename Speaker")
         .font(.headline)
       Text("This names everyone heard on this source. It does not identify individual voices.")
@@ -442,18 +441,18 @@ struct TranscriptSection: View {
           }
         }
         Spacer()
-        Button("Cancel", role: .cancel) { renaming = nil }
-          .keyboardShortcut(.cancelAction)
-        Button("Rename") {
-          if transcripts.renameSpeaker(trackId: speaker.trackId, label: draftLabel) {
-            renaming = nil
-          }
-        }
-        .keyboardShortcut(.defaultAction)
-        .disabled(draftLabel.trimmingCharacters(in: .whitespaces).isEmpty)
+        SheetActionButtons(
+          confirmTitle: "Rename",
+          isConfirmationDisabled: draftLabel.trimmingCharacters(in: .whitespaces).isEmpty,
+          cancel: { renaming = nil },
+          confirm: {
+            if transcripts.renameSpeaker(trackId: speaker.trackId, label: draftLabel) {
+              renaming = nil
+            }
+          })
       }
     }
-    .padding(16)
+    .padding(ScribeSpacing.standard)
     .frame(width: 400)
   }
 

@@ -39,7 +39,7 @@ struct TranscriptReader: View {
       segments.map {
         TranscriptPlaybackRange(id: $0.id, start: $0.startNanoseconds, end: $0.endNanoseconds)
       })
-    VStack(alignment: .leading, spacing: 16) {
+    VStack(alignment: .leading, spacing: ScribeSpacing.standard) {
       searchControls(resultCount: segments.count)
       peopleControls
       if isPlaybackActive {
@@ -69,7 +69,7 @@ struct TranscriptReader: View {
 
   private func searchControls(resultCount: Int) -> some View {
     VStack(alignment: .leading, spacing: 6) {
-      HStack(spacing: 8) {
+      HStack(spacing: ScribeSpacing.related) {
         Button {
           isSearchFocused = true
         } label: {
@@ -111,14 +111,14 @@ struct TranscriptReader: View {
   }
 
   private var peopleControls: some View {
-    VStack(alignment: .leading, spacing: 8) {
+    VStack(alignment: .leading, spacing: ScribeSpacing.related) {
       ViewThatFits(in: .horizontal) {
-        HStack(alignment: .firstTextBaseline, spacing: 12) {
+        HStack(alignment: .firstTextBaseline, spacing: ScribeSpacing.compact) {
           personPicker
-          Spacer(minLength: 12)
+          Spacer(minLength: ScribeSpacing.compact)
           followControl
         }
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: ScribeSpacing.related) {
           personPicker
           followControl
         }
@@ -174,7 +174,7 @@ struct TranscriptReader: View {
     let activeIds =
       position.flatMap { $0.sessionId == sessionId ? $0.nanoseconds : nil }
       .map { index.activeTurnIds(at: $0) } ?? []
-    return LazyVStack(alignment: .leading, spacing: 12) {
+    return LazyVStack(alignment: .leading, spacing: ScribeSpacing.compact) {
       if segments.isEmpty {
         Text(
           query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -202,15 +202,15 @@ struct TranscriptReader: View {
 
   private func passage(_ segment: NativeTranscriptSegment, isPlaying: Bool) -> some View {
     let stamp = TranscriptSection.timestamp(segment.startNanoseconds)
-    return HStack(alignment: .firstTextBaseline, spacing: 12) {
+    return HStack(alignment: .firstTextBaseline, spacing: ScribeSpacing.compact) {
       Button(stamp) { onSeek(segment.startNanoseconds) }
         .buttonStyle(.link)
         .font(.caption.monospacedDigit())
         .frame(minWidth: 48, alignment: .leading)
         .disabled(!canSeek)
         .accessibilityLabel(canSeek ? "Play from \(stamp)" : stamp)
-      VStack(alignment: .leading, spacing: 4) {
-        HStack(spacing: 8) {
+      VStack(alignment: .leading, spacing: ScribeSpacing.tight) {
+        HStack(spacing: ScribeSpacing.related) {
           Button(segment.speakerLabel) { namePassage(segment) }
             .buttonStyle(.borderless)
             .font(.subheadline.weight(.semibold))
@@ -221,7 +221,7 @@ struct TranscriptReader: View {
               .foregroundStyle(.secondary)
           }
         }
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: ScribeSpacing.tight) {
           Text(highlightedText(segment.effectiveText))
             .textSelection(.enabled)
             .fixedSize(horizontal: false, vertical: true)
@@ -245,7 +245,7 @@ struct TranscriptReader: View {
         .accessibilityElement(children: .contain)
       }
       .frame(maxWidth: 500, alignment: .leading)
-      Spacer(minLength: 8)
+      Spacer(minLength: ScribeSpacing.related)
       Button {
         followsPlayback = false
         onCorrect(segment)
@@ -256,7 +256,7 @@ struct TranscriptReader: View {
       .help("Correct text")
       .accessibilityLabel("Correct the text at \(stamp)")
     }
-    .padding(.vertical, 4)
+    .padding(.vertical, ScribeSpacing.tight)
     .frame(maxWidth: 660, alignment: .leading)
     .background(isPlaying ? Color.accentColor.opacity(0.08) : Color.clear)
     .accessibilityElement(children: .contain)

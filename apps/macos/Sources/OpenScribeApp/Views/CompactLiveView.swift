@@ -17,8 +17,8 @@ struct CompactLiveView: View {
   }
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 16) {
-      HStack(alignment: .firstTextBaseline, spacing: 16) {
+    VStack(alignment: .leading, spacing: ScribeSpacing.standard) {
+      HStack(alignment: .firstTextBaseline, spacing: ScribeSpacing.standard) {
         Image(systemName: statusSymbol)
           .foregroundStyle(statusColor)
         Text(statusText)
@@ -37,12 +37,11 @@ struct CompactLiveView: View {
           .font(.headline)
           .textSelection(.enabled)
 
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: ScribeSpacing.related) {
           Text("Sources")
-            .font(.headline)
-            .accessibilityAddTraits(.isHeader)
+            .scribeSectionHeading()
           ForEach(current.sources, id: \.kind) { source in
-            HStack(spacing: 8) {
+            HStack(spacing: ScribeSpacing.related) {
               Image(systemName: source.symbolName)
                 .frame(width: 18)
               Text(source.name)
@@ -76,7 +75,7 @@ struct CompactLiveView: View {
 
     }
     .frame(maxWidth: 760, alignment: .leading)
-    .padding(24)
+    .padding(ScribeSpacing.section)
     .frame(maxWidth: .infinity, minHeight: 430, alignment: .topLeading)
     .onAppear {
       AppTelemetry.runtimeSceneAppeared("live-session", session: store.currentSession)

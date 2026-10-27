@@ -10,7 +10,7 @@ struct SpeechModelSheet: View {
   let onClose: () -> Void
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 16) {
+    VStack(alignment: .leading, spacing: ScribeSpacing.standard) {
       Text("Local Speech Model")
         .font(.headline)
       Text(
@@ -42,12 +42,12 @@ struct SpeechModelSheet: View {
           .keyboardShortcut(.defaultAction)
       }
     }
-    .padding(16)
+    .padding(ScribeSpacing.standard)
     .frame(width: 520)
   }
 
   private func modelDetail(_ model: NativeSpeechModel) -> some View {
-    VStack(alignment: .leading, spacing: 8) {
+    VStack(alignment: .leading, spacing: ScribeSpacing.related) {
       HStack(alignment: .firstTextBaseline) {
         Text(Self.title(model))
           .font(.subheadline.weight(.semibold))
@@ -67,7 +67,7 @@ struct SpeechModelSheet: View {
       .font(.caption)
       .foregroundStyle(.secondary)
       .textSelection(.enabled)
-      HStack(spacing: 12) {
+      HStack(spacing: ScribeSpacing.compact) {
         if let origin = URL(string: model.downloadOrigin) {
           Link("Get the File in Your Browser", destination: origin)
             .help(model.downloadOrigin)
@@ -83,7 +83,7 @@ struct SpeechModelSheet: View {
         }
       }
     }
-    .padding(.vertical, 8)
+    .padding(.vertical, ScribeSpacing.related)
   }
 
   private func choose(_ model: NativeSpeechModel) {

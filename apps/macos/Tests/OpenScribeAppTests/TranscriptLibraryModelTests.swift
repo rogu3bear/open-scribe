@@ -77,6 +77,49 @@ final class TranscriptLibraryModelTests: XCTestCase {
     }
   }
 
+  func testReviewEditorSheetsFitTheirNativeWidths() throws {
+    let store = RuntimeLibraryStore(
+      snapshotProvider: { NativeRuntimeLibrarySnapshot(currentSession: nil, savedSessions: []) },
+      startsPolling: false, refreshesImmediately: false)
+    let conversation = session("review-fixture", calibrated: false, sources: [])
+    for scheme in [ColorScheme.light, .dark] {
+      try captureEditorSheet(
+        ConversationRenameSheet(session: conversation, store: store, onClose: {}),
+        width: 420, name: "rename", scheme: scheme)
+      try captureEditorSheet(
+        ConversationDetailsSheet(
+          session: conversation, declaration: nil, store: store, onSaved: {}, onClose: {}),
+        width: 460, name: "details", scheme: scheme)
+    }
+  }
+
+  private func captureEditorSheet<Content: View>(
+    _ content: Content, width: CGFloat, name: String, scheme: ColorScheme
+  ) throws {
+    let host = NSHostingView(rootView: content.environment(\.colorScheme, scheme))
+    let size = host.fittingSize
+    XCTAssertEqual(size.width, width, accuracy: 1)
+    XCTAssertGreaterThan(size.height, 100)
+    guard let directory = ProcessInfo.processInfo.environment["OPEN_SCRIBE_RENDER_DIR"] else {
+      return
+    }
+    let window = NSWindow(
+      contentRect: NSRect(origin: NSPoint(x: -10_000, y: -10_000), size: size),
+      styleMask: .borderless, backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    window.appearance = NSAppearance(named: scheme == .dark ? .darkAqua : .aqua)
+    window.contentView = host
+    host.setFrameSize(size)
+    host.layoutSubtreeIfNeeded()
+    let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+    host.cacheDisplay(in: host.bounds, to: bitmap)
+    let png = try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
+    window.close()
+    try png.write(
+      to: URL(fileURLWithPath: directory)
+        .appendingPathComponent("review-\(name)-\(scheme == .dark ? "dark" : "light").png"))
+  }
+
   func testSpeakerRenameAndResetRefreshAnUnchangedSearchQuery() async {
     let library = TranscriptTimingLibraryFake(reviewedName: "Dana")
     let model = TranscriptLibraryModel(library: library)

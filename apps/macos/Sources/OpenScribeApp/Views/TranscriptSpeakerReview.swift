@@ -50,10 +50,9 @@ struct TranscriptSpeakerReview: View {
   }
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 16) {
+    VStack(alignment: .leading, spacing: ScribeSpacing.standard) {
       Text(isPassage ? "Who is speaking?" : "Rename Person")
-        .font(.headline)
-        .accessibilityAddTraits(.isHeader)
+        .scribeSectionHeading()
       if case .passage(let segment) = presentation.subject {
         Text(segment.effectiveText)
           .font(.callout)
@@ -104,13 +103,11 @@ struct TranscriptSpeakerReview: View {
       }
       HStack {
         Spacer()
-        Button("Cancel", role: .cancel, action: onClose)
-          .keyboardShortcut(.cancelAction)
-        Button("Save", action: save)
-          .keyboardShortcut(.defaultAction)
-          .disabled(
-            isSaving || transcripts.sessionId != presentation.sessionId
-              || (needsName && !validName))
+        SheetActionButtons(
+          confirmTitle: "Save",
+          isConfirmationDisabled: isSaving || transcripts.sessionId != presentation.sessionId
+            || (needsName && !validName),
+          cancel: onClose, confirm: save)
       }
     }
     .padding(20)

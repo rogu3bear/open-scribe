@@ -31,7 +31,7 @@ struct ConversationWorkspaceView: View {
     let title = ConversationIdentityPresentation.title(session.title)
     ScrollViewReader { proxy in
       ScrollView {
-        VStack(alignment: .leading, spacing: 24) {
+        VStack(alignment: .leading, spacing: ScribeSpacing.section) {
           header(title: title)
           if session.needsAttention {
             attentionNotice {
@@ -44,11 +44,11 @@ struct ConversationWorkspaceView: View {
           if session.hasCaptureTimeline || session.playableMedia != nil || !recoveredTracks.isEmpty
           {
             DisclosureGroup("Audio Details", isExpanded: $showsAudioDetails) {
-              VStack(alignment: .leading, spacing: 16) {
+              VStack(alignment: .leading, spacing: ScribeSpacing.standard) {
                 if !session.needsAttention, !session.sources.isEmpty { sourceSection }
                 audioAlternatives
               }
-              .padding(.top, 12)
+              .padding(.top, ScribeSpacing.compact)
               .frame(maxWidth: .infinity, alignment: .leading)
             }
             .id("audio-details")
@@ -98,13 +98,13 @@ struct ConversationWorkspaceView: View {
           if !diagnostics.isEmpty {
             DisclosureGroup("Recording Details", isExpanded: $showsRecordingDetails) {
               RecorderEventList(events: diagnostics, heading: "Recording events")
-                .padding(.top, 12)
+                .padding(.top, ScribeSpacing.compact)
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
           }
         }
         .frame(maxWidth: 760, alignment: .leading)
-        .padding(24)
+        .padding(ScribeSpacing.section)
         .frame(maxWidth: .infinity, alignment: .topLeading)
       }
       .task(id: audioReviewRequest) {
@@ -134,8 +134,8 @@ struct ConversationWorkspaceView: View {
   }
 
   private func header(title: String) -> some View {
-    VStack(alignment: .leading, spacing: 8) {
-      HStack(alignment: .firstTextBaseline, spacing: 8) {
+    VStack(alignment: .leading, spacing: ScribeSpacing.related) {
+      HStack(alignment: .firstTextBaseline, spacing: ScribeSpacing.related) {
         Text(title)
           .font(.title2.weight(.semibold))
           .fixedSize(horizontal: false, vertical: true)
@@ -151,7 +151,7 @@ struct ConversationWorkspaceView: View {
         .help("Rename this conversation")
         .accessibilityLabel("Rename conversation")
       }
-      HStack(spacing: 8) {
+      HStack(spacing: ScribeSpacing.related) {
         Label {
           Text(session.statusText)
             .foregroundStyle(session.needsAttention ? Color.primary : Color.secondary)
@@ -177,8 +177,8 @@ struct ConversationWorkspaceView: View {
   }
 
   private func reviewMetadataLine(_ metadata: NativeConversationReviewMetadata) -> some View {
-    VStack(alignment: .leading, spacing: 4) {
-      HStack(spacing: 8) {
+    VStack(alignment: .leading, spacing: ScribeSpacing.tight) {
+      HStack(spacing: ScribeSpacing.related) {
         Text(
           metadata.origin == "import"
             ? "Imported" : metadata.origin == "capture" ? "Capture" : "Conversation")
@@ -212,11 +212,10 @@ struct ConversationWorkspaceView: View {
       transcripts.sessionId == session.sessionId ? transcripts.contextDetail?.declaration : nil
     let participants = declaration?.participants ?? []
     let topic = declaration?.topic
-    return VStack(alignment: .leading, spacing: 8) {
+    return VStack(alignment: .leading, spacing: ScribeSpacing.related) {
       HStack(alignment: .firstTextBaseline) {
         Text("Details")
-          .font(.headline)
-          .accessibilityAddTraits(.isHeader)
+          .scribeSectionHeading()
         Spacer()
         Button(participants.isEmpty && topic == nil ? "Add Details…" : "Edit Details…") {
           store.dismissEditMessage()
@@ -243,7 +242,7 @@ struct ConversationWorkspaceView: View {
   }
 
   private func attentionNotice(onReview: @escaping () -> Void) -> some View {
-    VStack(alignment: .leading, spacing: 12) {
+    VStack(alignment: .leading, spacing: ScribeSpacing.compact) {
       CaptureIssueLabel(
         message: session.interruptionText
           ?? "Open Scribe preserved the audio it could verify. Review each source below.")
@@ -283,7 +282,7 @@ struct ConversationWorkspaceView: View {
         isPending: active && playbackController.playingSessionId != session.sessionId,
         isPlaying: active && playbackController.playingSessionId == session.sessionId
       )
-      VStack(alignment: .leading, spacing: 8) {
+      VStack(alignment: .leading, spacing: ScribeSpacing.related) {
         primaryAudioButton(
           action, isEnabled: active || playbackController.activePlaybackSessionId == nil
         ) {
@@ -310,7 +309,7 @@ struct ConversationWorkspaceView: View {
   }
 
   private var audioAlternatives: some View {
-    VStack(alignment: .leading, spacing: 12) {
+    VStack(alignment: .leading, spacing: ScribeSpacing.compact) {
       if session.lifecycle == "ready_for_review", session.hasCaptureTimeline {
         let active =
           playbackController.activePlaybackSessionId == session.sessionId
@@ -393,7 +392,7 @@ struct ConversationWorkspaceView: View {
         playbackController.errorSessionId == session.sessionId
           && playbackController.errorRecoveredMediaIdentity == nil
         ? playbackController.errorMessage : nil
-      VStack(alignment: .leading, spacing: 8) {
+      VStack(alignment: .leading, spacing: ScribeSpacing.related) {
         primaryAudioButton(
           playbackAction,
           isEnabled: playbackAction != .play
@@ -425,12 +424,11 @@ struct ConversationWorkspaceView: View {
   }
 
   private var sourceSection: some View {
-    VStack(alignment: .leading, spacing: 12) {
+    VStack(alignment: .leading, spacing: ScribeSpacing.compact) {
       Text("Sources")
-        .font(.headline)
-        .accessibilityAddTraits(.isHeader)
+        .scribeSectionHeading()
       ForEach(session.sources, id: \.kind) { source in
-        HStack(spacing: 8) {
+        HStack(spacing: ScribeSpacing.related) {
           Image(systemName: source.symbolName)
             .frame(width: 20)
           Text(source.name)
@@ -475,8 +473,8 @@ private struct PlayableAudioRow: View {
   let onTogglePlayback: () -> Void
 
   var body: some View {
-    HStack(spacing: 12) {
-      VStack(alignment: .leading, spacing: 4) {
+    HStack(spacing: ScribeSpacing.compact) {
+      VStack(alignment: .leading, spacing: ScribeSpacing.tight) {
         Text(name)
           .font(.headline)
         Text("Segment \(segmentReference)")
@@ -498,7 +496,7 @@ private struct PlayableAudioRow: View {
       .disabled(!actionEnabled)
       .accessibilityLabel("\(playbackAction.title) \(name), segment \(segmentReference)")
     }
-    .padding(.vertical, 8)
+    .padding(.vertical, ScribeSpacing.related)
     .accessibilityElement(children: .contain)
   }
 }

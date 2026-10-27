@@ -37,10 +37,9 @@ struct ConversationRenameSheet: View {
   }
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 12) {
+    VStack(alignment: .leading, spacing: ScribeSpacing.compact) {
       Text("Rename Conversation")
-        .font(.headline)
-        .accessibilityAddTraits(.isHeader)
+        .scribeSectionHeading()
       Text(
         "The new name is used in the library, exports, and portable packages. The recording and its transcript are unchanged."
       )
@@ -57,14 +56,12 @@ struct ConversationRenameSheet: View {
       }
       HStack {
         Spacer()
-        Button("Cancel", role: .cancel, action: onClose)
-          .keyboardShortcut(.cancelAction)
-        Button("Rename", action: save)
-          .keyboardShortcut(.defaultAction)
-          .disabled(trimmedTitle.isEmpty || isSaving)
+        SheetActionButtons(
+          confirmTitle: "Rename", isConfirmationDisabled: trimmedTitle.isEmpty || isSaving,
+          cancel: onClose, confirm: save)
       }
     }
-    .padding(16)
+    .padding(ScribeSpacing.standard)
     .frame(width: 420)
     .onAppear {
       store.dismissEditMessage()
@@ -116,10 +113,9 @@ struct ConversationDetailsSheet: View {
   }
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 12) {
+    VStack(alignment: .leading, spacing: ScribeSpacing.compact) {
       Text("Conversation Details")
-        .font(.headline)
-        .accessibilityAddTraits(.isHeader)
+        .scribeSectionHeading()
       Text(
         "Participants and the topic are saved with the conversation's record. They do not identify individual voices in the transcript."
       )
@@ -138,14 +134,12 @@ struct ConversationDetailsSheet: View {
       }
       HStack {
         Spacer()
-        Button("Cancel", role: .cancel, action: onClose)
-          .keyboardShortcut(.cancelAction)
-        Button("Save", action: save)
-          .keyboardShortcut(.defaultAction)
-          .disabled(isSaving)
+        SheetActionButtons(
+          confirmTitle: "Save", isConfirmationDisabled: isSaving,
+          cancel: onClose, confirm: save)
       }
     }
-    .padding(16)
+    .padding(ScribeSpacing.standard)
     .frame(width: 460)
     .onAppear { store.dismissEditMessage() }
   }

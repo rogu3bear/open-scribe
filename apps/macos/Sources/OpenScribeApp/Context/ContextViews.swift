@@ -9,8 +9,8 @@ struct ContextInspector: View {
   @State private var showsPreflight = false
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 8) {
-      Text("Screen context").font(.headline).accessibilityAddTraits(.isHeader)
+    VStack(alignment: .leading, spacing: ScribeSpacing.related) {
+      Text("Screen context").scribeSectionHeading()
       if let scope = model.current, model.isLive {
         Text("\(ContextScopeSummary.modeName(scope.request.mode)): \(ContextScopeSummary.target(scope.request))")
           .fixedSize(horizontal: false, vertical: true)
@@ -60,7 +60,7 @@ struct ContextScopeSheet: View {
   @State private var hovered: String?
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 16) {
+    VStack(alignment: .leading, spacing: ScribeSpacing.standard) {
       Text("Add Screen Context").font(.headline)
       Form {
         Section("Meeting (optional)") {
@@ -88,8 +88,8 @@ struct ContextScopeSheet: View {
       .formStyle(.grouped)
       // Always visible beside the action: what is read, what is excluded,
       // what is kept, and the permission posture.
-      VStack(alignment: .leading, spacing: 4) {
-        Text("Before you authorize").font(.headline).accessibilityAddTraits(.isHeader)
+      VStack(alignment: .leading, spacing: ScribeSpacing.tight) {
+        Text("Before you authorize").scribeSectionHeading()
         Text(scopeStatement)
         Text(ContextScopeSummary.exclusions(ContextScopeModel.exclusions(for: model.selection.mode)))
         Text(ContextScopeSummary.retention)
@@ -114,7 +114,7 @@ struct ContextScopeSheet: View {
         .disabled(!canAuthorize)
       }
     }
-    .padding(16)
+    .padding(ScribeSpacing.standard)
     .frame(width: 580, height: 720)
     .task { await model.refreshChoices() }
     .onChange(of: model.selection) { _ in model.previewOverlay(hovered: hovered) }
@@ -168,7 +168,7 @@ struct RegionEditor: View {
   @State private var dragOrigin: CGPoint?
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 8) {
+    VStack(alignment: .leading, spacing: ScribeSpacing.related) {
       GeometryReader { proxy in
         let size = proxy.size
         let region = model.selection.region
@@ -293,7 +293,7 @@ struct ContextEventsSection: View {
         }
         Text(ContextScopeSummary.retention).font(.caption).foregroundStyle(.secondary)
         ForEach(events, id: \.eventId) { event in
-          VStack(alignment: .leading, spacing: 4) {
+          VStack(alignment: .leading, spacing: ScribeSpacing.tight) {
             HStack(alignment: .firstTextBaseline) {
               Text(TranscriptSection.timestamp(event.startNs)).monospacedDigit().foregroundStyle(.secondary)
               Text(event.application.map { "\($0) — \(event.sourceName)" } ?? event.sourceName)

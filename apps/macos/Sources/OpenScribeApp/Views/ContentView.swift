@@ -151,7 +151,7 @@ struct ContentView: View {
               openSearchHit(hit)
             } label: {
               VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 8) {
+                HStack(spacing: ScribeSpacing.related) {
                   Text(title)
                   if let reference {
                     Text(reference).monospaced().fixedSize()
@@ -324,7 +324,7 @@ struct ContentView: View {
     if !workspaceNotices.isEmpty {
       VStack(spacing: 0) {
         ForEach(workspaceNotices) { notice in
-          HStack(alignment: .firstTextBaseline, spacing: 8) {
+          HStack(alignment: .firstTextBaseline, spacing: ScribeSpacing.related) {
             Image(systemName: notice.isFailure ? "exclamationmark.triangle" : "checkmark.circle")
               .foregroundStyle(notice.isFailure ? Color.red : Color.secondary)
             Text(notice.message)
@@ -332,8 +332,8 @@ struct ContentView: View {
           }
           .font(.callout)
           .foregroundStyle(notice.isFailure ? Color.primary : Color.secondary)
-          .padding(.horizontal, 16)
-          .padding(.vertical, 8)
+          .padding(.horizontal, ScribeSpacing.standard)
+          .padding(.vertical, ScribeSpacing.related)
           .accessibilityElement(children: .combine)
           .accessibilityLabel(
             "\(notice.isFailure ? "Problem" : "Status"): \(notice.message)"
@@ -697,7 +697,7 @@ struct ConversationSidebarRow: View {
 
   var body: some View {
     let title = ConversationIdentityPresentation.title(session.title)
-    HStack(alignment: .firstTextBaseline, spacing: 8) {
+    HStack(alignment: .firstTextBaseline, spacing: ScribeSpacing.related) {
       if let symbolName = statusSymbolName {
         if isSelected {
           Image(systemName: symbolName)
@@ -707,7 +707,7 @@ struct ConversationSidebarRow: View {
         }
       }
       VStack(alignment: .leading, spacing: 5) {
-        HStack(spacing: 8) {
+        HStack(spacing: ScribeSpacing.related) {
           Text(title)
             .lineLimit(1)
             .truncationMode(.middle)
@@ -765,9 +765,9 @@ struct LibraryActivityFooter: View {
   }
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 4) {
+    VStack(alignment: .leading, spacing: ScribeSpacing.tight) {
       Divider()
-      VStack(alignment: .leading, spacing: 4) {
+      VStack(alignment: .leading, spacing: ScribeSpacing.tight) {
         if let activityText {
           HStack(alignment: .firstTextBaseline, spacing: 6) {
             Image(systemName: scheduler.runningSessionId != nil ? "ellipsis.circle" : "clock")
@@ -788,8 +788,8 @@ struct LibraryActivityFooter: View {
       }
       .font(.caption)
       .foregroundStyle(pressure.reading.diskIsLow ? .primary : .secondary)
-      .padding(.horizontal, 16)
-      .padding(.vertical, 8)
+      .padding(.horizontal, ScribeSpacing.standard)
+      .padding(.vertical, ScribeSpacing.related)
     }
     .accessibilityElement(children: .combine)
     .accessibilityLabel(
@@ -806,7 +806,7 @@ private struct EmptyConversationWorkspace: View {
   let onOpenPackage: (() -> Void)?
 
   var body: some View {
-    VStack(spacing: 16) {
+    VStack(spacing: ScribeSpacing.standard) {
       Text("No conversation is open")
         .font(.title.weight(.semibold))
         .accessibilityAddTraits(.isHeader)

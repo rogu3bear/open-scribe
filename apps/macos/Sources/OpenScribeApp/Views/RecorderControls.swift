@@ -58,9 +58,8 @@ struct RecorderControls: View {
         .disabled(!sourcesEnabled)
         .help(recorder.sourceSelectionPresentation.help)
         .popover(isPresented: $showsSources) {
-          VStack(alignment: .leading, spacing: 12) {
-            Text("Recording sources").font(.headline)
-              .accessibilityAddTraits(.isHeader)
+          VStack(alignment: .leading, spacing: ScribeSpacing.compact) {
+            Text("Recording sources").scribeSectionHeading()
             sourceSelectionSummary
             sourceButtons
             if let error = picker.errorMessage {
@@ -70,7 +69,7 @@ struct RecorderControls: View {
               "Application selection limits computer audio to the chosen app. Changes take effect when you explicitly record or resume."
             )
             .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-          }.padding(16).frame(width: 340)
+          }.padding(ScribeSpacing.standard).frame(width: 340)
         }
     case .menu:
       Menu("Sources", systemImage: "slider.horizontal.3") {
@@ -114,32 +113,13 @@ struct RecorderControls: View {
   }
 }
 
-/// Status color stays on the glyph; body text uses the native readable foreground.
-struct CaptureIssueLabel: View {
-  let message: String
-  var isFailure = false
-
-  var body: some View {
-    Label {
-      Text(message)
-        .foregroundStyle(.primary)
-        .fixedSize(horizontal: false, vertical: true)
-    } icon: {
-      Image(systemName: isFailure ? "exclamationmark.circle" : "exclamationmark.triangle")
-        .foregroundStyle(isFailure ? Color.red : Color.orange)
-    }
-    .accessibilityElement(children: .combine)
-  }
-}
-
 struct RecorderEventList: View {
   let events: [NativeRecorderEvent]
   var heading = "Markers and recording events"
   var body: some View {
     if !events.isEmpty {
-      VStack(alignment: .leading, spacing: 8) {
-        Text(heading).font(.headline)
-          .accessibilityAddTraits(.isHeader)
+      VStack(alignment: .leading, spacing: ScribeSpacing.related) {
+        Text(heading).scribeSectionHeading()
         ForEach(events, id: \.id) { event in
           HStack(alignment: .firstTextBaseline) {
             Text(
