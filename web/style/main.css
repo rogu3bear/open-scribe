@@ -1,4 +1,6 @@
 :root {
+  /* Existing 16px grouping step; design contract space-4, expressed in rem. */
+  --space-4: 1rem;
   color-scheme: light;
   font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   line-height: 1.55;
@@ -27,7 +29,7 @@ a:focus-visible {
 .site-header,
 footer,
 main {
-  width: min(100% - 2rem, 48rem);
+  width: min(100% - 2 * var(--space-4), 48rem);
   margin-inline: auto;
 }
 
@@ -52,7 +54,7 @@ footer {
 nav {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.5rem 1rem;
+  gap: 0.5rem var(--space-4);
 }
 
 main {
@@ -99,13 +101,13 @@ li {
 
 .notice {
   margin-top: 2rem;
-  padding-block: 1rem;
+  padding-block: var(--space-4);
   border-block: 1px solid #b8b8b8;
 }
 
 .canonical-document {
   overflow-x: auto;
-  padding: 1rem 0;
+  padding: var(--space-4) 0;
   white-space: pre-wrap;
   font: inherit;
 }

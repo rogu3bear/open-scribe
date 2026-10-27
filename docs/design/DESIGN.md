@@ -388,6 +388,41 @@ Use a 4-point base with one shared semantic scale:
 
 Use native control padding and form spacing before applying custom values. Do not create a second dense/comfortable scale until measured product content requires it.
 
+### Shared implementation
+
+The native shared primitives live in
+[`ViewPrimitives.swift`](../../apps/macos/Sources/OpenScribeApp/Views/ViewPrimitives.swift),
+alongside the existing view components. Feature views retain their state,
+validation, asynchronous work, presentation identity, and window geometry.
+
+| Primitive | Use and preserved variants |
+|---|---|
+| `ScribeSpacing.tight` / `.related` / `.compact` / `.standard` / `.section` | The existing 4 / 8 / 12 / 16 / 24-point steps above. Use for authored gaps and insets; keep native control defaults. |
+| `Text.scribeSectionHeading()` | Existing headline text with the VoiceOver heading trait. Document titles, subheadings, and ordinary emphasized text retain their own roles. |
+| `SheetActionButtons` | Cancel and a labeled confirmation action inside an editor's existing action row. The sheet supplies disabled state and callbacks; reset/restore actions remain beside the pair. |
+| `CaptureIssueLabel` | Shared warning/failure explanation. Text stays primary; the glyph carries orange/red and the combined accessibility element retains the full message. |
+
+For example, an editing sheet's action row uses
+`SheetActionButtons(confirmTitle: "Save", isConfirmationDisabled: isSaving,
+cancel: onClose, confirm: save)` after its existing `Spacer()`. The sheet keeps
+ownership of the save operation and dismissal. Scope-authorization and
+destructive confirmations retain their separate context and controls.
+
+The extraction covers all current native view files and `ContextViews.swift`.
+Repeated gaps consume the five implemented spacing steps; the singly used
+32-point inset, 20-point sheet insets, document widths, icon frames, and control
+radii remain local. Additional entries in the declared scale do not require
+unused code constants. Existing `RecorderControls` and `RecorderEventList`
+remain shared feature components.
+
+The website's [`SiteLayout`](../../web/src/app.rs) owns the header, single main
+landmark, and footer for all pages. `CanonicalDocument` retains the shared
+verbatim policy rendering and `IntentPage` retains the paired mode pages.
+[`main.css`](../../web/style/main.css) supplies the repeated `--space-4` step.
+Website colors, type, and local responsive geometry remain unchanged by this
+extraction; differences from the intended palette above require their own
+rendered design decision. No native/web component code is shared.
+
 ### Shape and separation
 
 - Native component shapes and radii are authoritative for controls, menus, fields, sheets, sidebars, and settings.

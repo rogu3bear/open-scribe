@@ -86,7 +86,7 @@ fn SiteLayout(children: Children) -> impl IntoView {
                 <a href="/download">"Download"</a>
             </nav>
         </header>
-        {children()}
+        <main id="main-content">{children()}</main>
         <footer>
             <p>"Open Scribe is an unreleased open-source project."</p>
             <nav aria-label="Project">
@@ -102,27 +102,25 @@ fn SiteLayout(children: Children) -> impl IntoView {
 pub fn HomePage() -> impl IntoView {
     view! {
         <SiteLayout>
-            <main id="main-content">
-                <section class="intro" aria-labelledby="home-title">
-                    <p class="status">"Development build — no public release"</p>
-                    <h1 id="home-title">"Local evidence for important conversations."</h1>
-                    <p class="lede">
-                        "Open Scribe is being built for Mac operators who need recoverable conversation records and a clear line between source evidence and derived interpretation."
-                    </p>
-                    <p class="notice">
-                        "There is no public download or service. Capability status below is generated from the checked capability manifest; development fixtures are not available to users."
-                    </p>
-                </section>
-                <section aria-labelledby="principles-title">
-                    <h2 id="principles-title">"What the project intends to protect"</h2>
-                    <ul>
-                        <li>"Deliberate, visible recording authority."</li>
-                        <li>"Recoverable local media before derived intelligence."</li>
-                        <li>"Source-linked review that does not present model output as fact."</li>
-                    </ul>
-                </section>
-                <CapabilityStatus/>
-            </main>
+            <section class="intro" aria-labelledby="home-title">
+                <p class="status">"Development build — no public release"</p>
+                <h1 id="home-title">"Local evidence for important conversations."</h1>
+                <p class="lede">
+                    "Open Scribe is being built for Mac operators who need recoverable conversation records and a clear line between source evidence and derived interpretation."
+                </p>
+                <p class="notice">
+                    "There is no public download or service. Capability status below is generated from the checked capability manifest; development fixtures are not available to users."
+                </p>
+            </section>
+            <section aria-labelledby="principles-title">
+                <h2 id="principles-title">"What the project intends to protect"</h2>
+                <ul>
+                    <li>"Deliberate, visible recording authority."</li>
+                    <li>"Recoverable local media before derived intelligence."</li>
+                    <li>"Source-linked review that does not present model output as fact."</li>
+                </ul>
+            </section>
+            <CapabilityStatus/>
         </SiteLayout>
     }
 }
@@ -172,17 +170,15 @@ fn CapabilityStatus() -> impl IntoView {
 fn ProductPage() -> impl IntoView {
     view! {
         <SiteLayout>
-            <main id="main-content">
-                <p class="status">"Intended capability"</p>
-                <h1>"Product"</h1>
-                <p class="lede">"The intended macOS product preserves conversations locally, then supports evidence-linked review. These capabilities are not implemented in the current milestone."</p>
-                <nav aria-label="Product modes">
-                    <ul>
-                        <li><a href="/record">"Record mode"</a></li>
-                        <li><a href="/meeting">"Meeting mode"</a></li>
-                    </ul>
-                </nav>
-            </main>
+            <p class="status">"Intended capability"</p>
+            <h1>"Product"</h1>
+            <p class="lede">"The intended macOS product preserves conversations locally, then supports evidence-linked review. These capabilities are not implemented in the current milestone."</p>
+            <nav aria-label="Product modes">
+                <ul>
+                    <li><a href="/record">"Record mode"</a></li>
+                    <li><a href="/meeting">"Meeting mode"</a></li>
+                </ul>
+            </nav>
         </SiteLayout>
     }
 }
@@ -201,16 +197,14 @@ fn MeetingPage() -> impl IntoView {
 fn HowItWorksPage() -> impl IntoView {
     view! {
         <SiteLayout>
-            <main id="main-content">
-                <p class="status">"Intended system, not implemented behavior"</p>
-                <h1>"How it works"</h1>
-                <ol>
-                    <li>"The operator deliberately chooses what to record."</li>
-                    <li>"Durable local media and recovery state come first."</li>
-                    <li>"Transcript and context remain linked to source evidence."</li>
-                    <li>"Derived interpretation stays distinguishable from observed material."</li>
-                </ol>
-            </main>
+            <p class="status">"Intended system, not implemented behavior"</p>
+            <h1>"How it works"</h1>
+            <ol>
+                <li>"The operator deliberately chooses what to record."</li>
+                <li>"Durable local media and recovery state come first."</li>
+                <li>"Transcript and context remain linked to source evidence."</li>
+                <li>"Derived interpretation stays distinguishable from observed material."</li>
+            </ol>
         </SiteLayout>
     }
 }
@@ -219,11 +213,9 @@ fn HowItWorksPage() -> impl IntoView {
 fn DownloadPage() -> impl IntoView {
     view! {
         <SiteLayout>
-            <main id="main-content">
-                <h1>"Download"</h1>
-                <p class="lede">"No public release is available."</p>
-                <p>"Source compilation and development receipts are not signing, notarization, distribution, or release proof."</p>
-            </main>
+            <h1>"Download"</h1>
+            <p class="lede">"No public release is available."</p>
+            <p>"Source compilation and development receipts are not signing, notarization, distribution, or release proof."</p>
         </SiteLayout>
     }
 }
@@ -232,11 +224,9 @@ fn DownloadPage() -> impl IntoView {
 fn DocumentationPage() -> impl IntoView {
     view! {
         <SiteLayout>
-            <main id="main-content">
-                <h1>"Documentation"</h1>
-                <p>"Founding product, architecture, privacy, and security documents live with the source so their status can be reviewed with the code."</p>
-                <p><a href=format!("{REPOSITORY}/tree/main/docs")>"Read repository documentation"</a></p>
-            </main>
+            <h1>"Documentation"</h1>
+            <p>"Founding product, architecture, privacy, and security documents live with the source so their status can be reviewed with the code."</p>
+            <p><a href=format!("{REPOSITORY}/tree/main/docs")>"Read repository documentation"</a></p>
         </SiteLayout>
     }
 }
@@ -260,11 +250,9 @@ fn SecurityPage() -> impl IntoView {
 fn CanonicalDocument(title: &'static str, source: &'static str) -> impl IntoView {
     view! {
         <SiteLayout>
-            <main id="main-content">
-                <h1>{title}</h1>
-                <p class="status">"Canonical repository text; draft status is preserved verbatim."</p>
-                <pre class="canonical-document">{source}</pre>
-            </main>
+            <h1>{title}</h1>
+            <p class="status">"Canonical repository text; draft status is preserved verbatim."</p>
+            <pre class="canonical-document">{source}</pre>
         </SiteLayout>
     }
 }
@@ -273,11 +261,9 @@ fn CanonicalDocument(title: &'static str, source: &'static str) -> impl IntoView
 fn IntentPage(title: &'static str, summary: &'static str) -> impl IntoView {
     view! {
         <SiteLayout>
-            <main id="main-content">
-                <p class="status">"Intended capability"</p>
-                <h1>{title}</h1>
-                <p class="lede">{summary}</p>
-            </main>
+            <p class="status">"Intended capability"</p>
+            <h1>{title}</h1>
+            <p class="lede">{summary}</p>
         </SiteLayout>
     }
 }
@@ -286,10 +272,8 @@ fn IntentPage(title: &'static str, summary: &'static str) -> impl IntoView {
 fn NotFoundPage() -> impl IntoView {
     view! {
         <SiteLayout>
-            <main id="main-content">
-                <h1>"Page not found"</h1>
-                <p><a href="/">"Return to Open Scribe"</a></p>
-            </main>
+            <h1>"Page not found"</h1>
+            <p><a href="/">"Return to Open Scribe"</a></p>
         </SiteLayout>
     }
 }
@@ -425,6 +409,29 @@ mod tests {
 
     #[test]
     fn router_snapshots_preserve_canonical_legal_text_and_unknown_routes() {
+        for path in [
+            "/",
+            "/product",
+            "/record",
+            "/meeting",
+            "/how-it-works",
+            "/download",
+            "/documentation",
+            "/privacy",
+            "/terms",
+            "/security",
+            "/qualification-nonexistent",
+        ] {
+            let html = super::render_ssr_snapshot_at(path);
+            assert_eq!(
+                html.matches("<main id=\"main-content\">").count(),
+                1,
+                "{path}"
+            );
+            assert_eq!(html.matches("</main>").count(), 1, "{path}");
+            assert!(html.find("</header>").unwrap() < html.find("<main").unwrap());
+            assert!(html.find("</main>").unwrap() < html.find("<footer").unwrap());
+        }
         for (path, heading, source) in [
             ("/privacy", "Privacy", super::PRIVACY_NOTICE),
             ("/terms", "Terms", super::TERMS),
