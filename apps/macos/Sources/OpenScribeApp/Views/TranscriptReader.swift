@@ -20,8 +20,10 @@ struct TranscriptReader: View {
   @State private var filter: TranscriptPersonFilter = .all
   @State private var followsPlayback = true
   @State private var speakerReview: TranscriptSpeakerPresentation?
+  @State private var query = ""
+  @FocusState private var isSearchFocused: Bool
 
-  private var filteredSegments: [NativeTranscriptSegment] {
+  private var speakerSegments: [NativeTranscriptSegment] {
     transcripts.segments.filter { segment in
       switch filter {
       case .all: true
@@ -32,12 +34,13 @@ struct TranscriptReader: View {
   }
 
   var body: some View {
-    let segments = filteredSegments
+    let segments = TranscriptSearch.matching(speakerSegments, query: query)
     let index = TranscriptPlaybackIndex(
       segments.map {
         TranscriptPlaybackRange(id: $0.id, start: $0.startNanoseconds, end: $0.endNanoseconds)
       })
     VStack(alignment: .leading, spacing: 16) {
+      searchControls(resultCount: segments.count)
       peopleControls
       if isPlaybackActive {
         // Only the active reader ticks. No library-wide publisher, frame
@@ -56,6 +59,54 @@ struct TranscriptReader: View {
     }
     .onChange(of: transcripts.namedSpeakers) { people in
       if case .person(let id) = filter, !people.contains(where: { $0.id == id }) { filter = .all }
+    }
+    .onChange(of: query) { value in
+      if !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        followsPlayback = false
+      }
+    }
+  }
+
+  private func searchControls(resultCount: Int) -> some View {
+    VStack(alignment: .leading, spacing: 6) {
+      HStack(spacing: 8) {
+        Button {
+          isSearchFocused = true
+        } label: {
+          Image(systemName: "magnifyingglass")
+        }
+        .buttonStyle(.borderless)
+        .keyboardShortcut("f", modifiers: .command)
+        .accessibilityLabel("Find in this transcript")
+        TextField("Find in this transcript", text: $query)
+          .textFieldStyle(.plain)
+          .focused($isSearchFocused)
+          .accessibilityLabel("Find in this transcript")
+        if !query.isEmpty {
+          Button {
+            query = ""
+            isSearchFocused = true
+          } label: {
+            Image(systemName: "xmark.circle.fill")
+          }
+          .buttonStyle(.borderless)
+          .foregroundStyle(.secondary)
+          .accessibilityLabel("Clear transcript search")
+        }
+      }
+      .padding(10)
+      .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 6))
+      .overlay {
+        RoundedRectangle(cornerRadius: 6)
+          .strokeBorder(Color.secondary.opacity(0.25), lineWidth: 1)
+      }
+      if !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        Text(
+          "\(resultCount) matching \(resultCount == 1 ? "passage" : "passages"). Play a timestamp to check the audio."
+        )
+        .font(.caption)
+        .foregroundStyle(.secondary)
+      }
     }
   }
 
@@ -125,9 +176,13 @@ struct TranscriptReader: View {
       .map { index.activeTurnIds(at: $0) } ?? []
     return LazyVStack(alignment: .leading, spacing: 12) {
       if segments.isEmpty {
-        Text("No passages are assigned to this person in the selected transcript.")
-          .font(.callout)
-          .foregroundStyle(.secondary)
+        Text(
+          query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? "No passages are assigned to this person in the selected transcript."
+            : "No passages match. Try different words, clear the search, or choose all speakers."
+        )
+        .font(.callout)
+        .foregroundStyle(.secondary)
       }
       ForEach(segments) { segment in
         passage(segment, isPlaying: activeIds.contains(segment.id))
@@ -167,25 +222,27 @@ struct TranscriptReader: View {
           }
         }
         VStack(alignment: .leading, spacing: 4) {
-          Text(segment.effectiveText)
+          Text(highlightedText(segment.effectiveText))
             .textSelection(.enabled)
             .fixedSize(horizontal: false, vertical: true)
+            // Selectable AppKit text otherwise retains its pre-correction value.
+            .accessibilityElement(children: .ignore)
+            .accessibilityAddTraits(.isStaticText)
+            .accessibilityLabel(
+              "\(segment.speakerLabel). \(segment.effectiveText)"
+                + (isPlaying ? " Playing." : "")
+                + (segment.corrected ? " Corrected." : ""))
           if segment.corrected {
-            Text("Corrected. Machine reading: \(segment.verbatimText)")
-              .font(.caption)
-              .foregroundStyle(.secondary)
-              .textSelection(.enabled)
+            DisclosureGroup("Corrected · Show machine reading") {
+              Text(segment.verbatimText)
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
           }
         }
-        // Preserve the existing explicit accessibility projection: selectable
-        // AppKit text can otherwise retain its pre-correction value. Keep the
-        // speaker button outside this static-text element so it stays usable.
-        .accessibilityElement(children: .ignore)
-        .accessibilityAddTraits(.isStaticText)
-        .accessibilityLabel(
-          "\(segment.speakerLabel). \(segment.effectiveText)"
-            + (isPlaying ? " Playing." : "")
-            + (segment.corrected ? " Corrected. Machine reading: \(segment.verbatimText)" : ""))
+        .accessibilityElement(children: .contain)
       }
       .frame(maxWidth: 500, alignment: .leading)
       Spacer(minLength: 8)
@@ -209,5 +266,16 @@ struct TranscriptReader: View {
     followsPlayback = false
     transcripts.dismissMessage()
     speakerReview = TranscriptSpeakerPresentation(sessionId: sessionId, subject: .passage(segment))
+  }
+
+  private func highlightedText(_ value: String) -> AttributedString {
+    var text = AttributedString(value)
+    for match in TranscriptSearch.ranges(in: value, query: query) {
+      if let range = Range(match, in: text) {
+        text[range].backgroundColor = Color.yellow.opacity(0.25)
+        text[range].font = .body.weight(.semibold)
+      }
+    }
+    return text
   }
 }

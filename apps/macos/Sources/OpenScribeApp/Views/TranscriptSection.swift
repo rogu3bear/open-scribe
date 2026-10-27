@@ -36,24 +36,18 @@ struct TranscriptSection: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 12) {
-      HStack(alignment: .firstTextBaseline) {
-        Text("Transcript")
-          .font(.headline)
-          .accessibilityAddTraits(.isHeader)
-        Spacer()
-        if session.transcript.documentAvailability == .final
-          || session.transcript.replacementResumable
-        {
-          Menu("Transcription") {
-            if session.transcript.replacementResumable {
-              Button("Resume Replacement") {
-                scheduler.resumeReplacement(sessionId: session.sessionId)
-              }
-            }
-            Button("Reprocess All Tracks…") { showingReprocessConfirmation = true }
-          }
+      ViewThatFits(in: .horizontal) {
+        HStack(alignment: .firstTextBaseline) {
+          heading
+          Spacer()
+          transcriptionMenu
+          exportMenu
         }
-        exportMenu
+        VStack(alignment: .leading, spacing: 8) {
+          heading
+          transcriptionMenu
+          exportMenu
+        }
       }
       Text(session.transcriptionUnavailableReason ?? availabilityText)
         .font(.callout)
@@ -120,6 +114,28 @@ struct TranscriptSection: View {
     session.transcript.documentAvailability != .final
       || scheduler.runningSessionId == session.sessionId
       || hasQueuedWork
+  }
+
+  private var heading: some View {
+    Text("Transcript")
+      .font(.headline)
+      .accessibilityAddTraits(.isHeader)
+  }
+
+  @ViewBuilder
+  private var transcriptionMenu: some View {
+    if session.transcript.documentAvailability == .final
+      || session.transcript.replacementResumable
+    {
+      Menu("Transcription") {
+        if session.transcript.replacementResumable {
+          Button("Resume Replacement") {
+            scheduler.resumeReplacement(sessionId: session.sessionId)
+          }
+        }
+        Button("Reprocess All Tracks…") { showingReprocessConfirmation = true }
+      }
+    }
   }
 
   private var hasQueuedWork: Bool {
@@ -303,7 +319,16 @@ struct TranscriptSection: View {
         ProgressView().controlSize(.small)
         Text("Exporting…").font(.caption).foregroundStyle(.secondary)
       }
-      Menu("Export") {
+      Button("Export Transcript…") {
+        export(.markdown, type: UTType(filenameExtension: "md") ?? .plainText)
+      }
+      .disabled(
+        transcripts.isExporting || transcripts.sessionId != session.sessionId
+          || session.transcriptionUnavailableReason != nil
+          || transcripts.segments.isEmpty
+      )
+      .help("Save readable Markdown with timestamps and the current text and speaker names")
+      Menu("Other Exports") {
         Section("Transcript") {
           Group {
             Button("Plain Text…") { export(.plainText, type: .plainText) }
@@ -327,15 +352,14 @@ struct TranscriptSection: View {
           }
           .disabled(session.transcriptionUnavailableReason != nil)
           Button("Portable Package…") { exportPackage() }
-            .disabled(session.transcriptionUnavailableReason != nil || hasTurnSpeakerNames)
-            .help(
-              hasTurnSpeakerNames
-                ? "Portable v1 cannot restore passage-level names. Export the transcript and audio separately."
-                : "Export a portable conversation package")
+            .disabled(
+              session.transcriptionUnavailableReason != nil || packageUnavailableReason != nil
+            )
+            .help(packageUnavailableReason ?? "Export a portable conversation package")
         }
       }
       .fixedSize()
-      .disabled(transcripts.isExporting)
+      .disabled(transcripts.isExporting || transcripts.sessionId != session.sessionId)
       .help("Export the transcript, audio, or a portable package of this conversation")
     }
   }
@@ -457,6 +481,18 @@ struct TranscriptSection: View {
   private var hasTurnSpeakerNames: Bool {
     transcripts.sessionId == session.sessionId
       && transcripts.segments.contains { $0.namedSpeakerId != nil }
+  }
+
+  private var packageUnavailableReason: String? {
+    if hasTurnSpeakerNames {
+      return
+        "This package format cannot retain passage-level names. Export the transcript and audio separately."
+    }
+    if loadedAudioOptions?.originalExtension == "m4a" {
+      return
+        "This package format cannot retain M4A originals. Export the transcript and original audio separately."
+    }
+    return nil
   }
 
   private func exportPackage() {

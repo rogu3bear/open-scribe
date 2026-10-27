@@ -1,3 +1,5 @@
+import AppKit
+import SwiftUI
 import UniformTypeIdentifiers
 import XCTest
 
@@ -5,6 +7,76 @@ import XCTest
 
 @MainActor
 final class TranscriptLibraryModelTests: XCTestCase {
+  func testTranscriptSearchUsesReviewedTextAndPreservesPassageIdentityAndOrder() {
+    let rows = [
+      segment(
+        0, 0, "Dana", named: true, "Approve the café budget.", machine: "Reject the old budget."),
+      segment(1, 3_000_000_000, "Morgan", named: true, "The next review is Friday."),
+      segment(2, 6_000_000_000, "Dana", named: true, "Café opens Monday."),
+    ]
+    let matches = TranscriptSearch.matching(rows, query: "  CAFE \n")
+    XCTAssertEqual(matches.map(\.id), [rows[0].id, rows[2].id])
+    XCTAssertEqual(matches.map(\.startNanoseconds), [0, 6_000_000_000])
+    XCTAssertTrue(TranscriptSearch.matching(rows, query: "Reject").isEmpty)
+    XCTAssertEqual(TranscriptSearch.matching(rows, query: " \n"), rows)
+    XCTAssertEqual(TranscriptSearch.matching(Array(rows.suffix(1)), query: "café"), [rows[2]])
+    let value = "Café — café ☕"
+    XCTAssertEqual(
+      TranscriptSearch.ranges(in: value, query: "CAFE").map { String(value[$0]) },
+      ["Café", "café"])
+    XCTAssertTrue(TranscriptSearch.ranges(in: value, query: " \n").isEmpty)
+  }
+
+  func testReviewReaderRendersAtNarrowAndWideWidths() throws {
+    let rows = [
+      segment(
+        0, 0, "Dana", named: true, "We agreed to send the revised proposal on Friday.",
+        machine: "We agreed to send the revised proposal on Monday."),
+      segment(
+        1, 7_000_000_000, "Morgan", named: true,
+        "Yes. Keep the original recording with the reviewed transcript."),
+    ]
+    let model = TranscriptLibraryModel(preview: .final, segments: rows, speakers: [])
+    for width in [360.0, 720.0] {
+      for scheme in [ColorScheme.light, .dark] {
+        let view = TranscriptReader(
+          sessionId: "review-fixture", transcripts: model, canSeek: true,
+          isPlaybackActive: false, playbackPosition: { nil }, onSeek: { _ in },
+          onCorrect: { _ in }, onFollowPlayback: { _ in }
+        )
+        .padding(20)
+        .frame(width: width)
+        .background(Color(nsColor: .windowBackgroundColor))
+        .environment(\.colorScheme, scheme)
+        let host = NSHostingView(rootView: view)
+        let size = host.fittingSize
+        XCTAssertLessThanOrEqual(size.width, width + 1)
+        XCTAssertGreaterThan(size.height, 180)
+        guard let directory = ProcessInfo.processInfo.environment["OPEN_SCRIBE_RENDER_DIR"] else {
+          continue
+        }
+        // ImageRenderer substitutes placeholders for AppKit text fields and
+        // buttons. Capture an offscreen native view without opening a scene.
+        let window = NSWindow(
+          contentRect: NSRect(origin: NSPoint(x: -10_000, y: -10_000), size: size),
+          styleMask: .borderless, backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.appearance = NSAppearance(named: scheme == .dark ? .darkAqua : .aqua)
+        window.contentView = host
+        host.setFrameSize(size)
+        host.layoutSubtreeIfNeeded()
+        let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+        host.cacheDisplay(in: host.bounds, to: bitmap)
+        let png = try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
+        window.close()
+        try png.write(
+          to: URL(fileURLWithPath: directory)
+            .appendingPathComponent(
+              "review-reader-\(Int(width))-\(scheme == .dark ? "dark" : "light").png"))
+      }
+    }
+  }
+
   func testSpeakerRenameAndResetRefreshAnUnchangedSearchQuery() async {
     let library = TranscriptTimingLibraryFake(reviewedName: "Dana")
     let model = TranscriptLibraryModel(library: library)
