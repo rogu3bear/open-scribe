@@ -17,6 +17,10 @@ These criteria are subordinate to the founding PRD and to [FIRST_CLASS_ACCEPTANC
 
 Quoted sentences are the system-audio wording. When the other source is application audio, the same sentence names that source instead.
 
+The replacement action is labeled `Use [microphone name] instead`, with the
+pending device's name substituted. A later different input requires fresh
+confirmation of that input; the displayed name does not relax the identity check.
+
 ## Happy Path
 
 ### AC-1: A stopped microphone stays visible while the other audio continues
@@ -75,11 +79,11 @@ Quoted sentences are the system-audio wording. When the other source is applicat
 
 **When** the user activates Reconnect microphone
 
-**Then** the user sees "This is a different microphone. System audio is still recording." and Use this microphone instead, and no new microphone audio is added
+**Then** the user sees "This is a different microphone. System audio is still recording." and Use [microphone name] instead, and no new microphone audio is added
 
 ### AC-8: Dismissing the other microphone records nothing
 
-**Given** the user sees Use this microphone instead
+**Given** the user sees Use [microphone name] instead
 
 **When** the user dismisses that choice
 
@@ -87,7 +91,7 @@ Quoted sentences are the system-audio wording. When the other source is applicat
 
 ### AC-9: Confirming the other microphone records that choice
 
-**Given** the user sees Use this microphone instead and microphone access is authorized
+**Given** the user sees Use [microphone name] instead and microphone access is authorized
 
 **When** the user confirms that choice
 

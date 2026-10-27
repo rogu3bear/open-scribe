@@ -114,7 +114,7 @@ final class RecorderPauseResumeTests: XCTestCase {
   func testConfirmingMicrophoneBRequiresFreshConfirmationWhenInputChangesToC() async throws {
     let microphoneA = MicrophoneDeviceIdentity(uniqueID: "microphone-a", localizedName: "A")
     let microphoneB = MicrophoneDeviceIdentity(uniqueID: "microphone-b", localizedName: "B")
-    let microphoneC = MicrophoneDeviceIdentity(uniqueID: "microphone-c", localizedName: "C")
+    let microphoneC = MicrophoneDeviceIdentity(uniqueID: "microphone-c", localizedName: " ")
     var currentDevice = microphoneA
     let harness = try PauseHarness(microphoneDeviceProbe: { currentDevice })
     defer { harness.removeFiles() }
@@ -144,7 +144,7 @@ final class RecorderPauseResumeTests: XCTestCase {
     currentDevice = microphoneC
     await settle()
     XCTAssertTrue(harness.controller.showsUseThisMicrophone, "C needs its own confirmation")
-    XCTAssertEqual(harness.controller.replacementMicrophoneName, "C")
+    XCTAssertEqual(harness.controller.replacementMicrophoneName, "Microphone")
     XCTAssertEqual(
       harness.controller.errorMessage,
       "This is a different microphone. System audio is still recording.")

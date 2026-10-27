@@ -87,7 +87,8 @@ keeping the conversation open; **Resume** continues that conversation.
 
 If the microphone stops while another source continues, read the status and
 use **Reconnect microphone** when ready. Ordinary Resume leaves a retired
-microphone out. A different input requires **Use this microphone instead**.
+microphone out. A different input requires **Use [microphone name] instead**;
+the button names the device being offered for your approval.
 The earlier audio and interruption remain part of the same conversation.
 
 If capture cannot continue, review the preserved recording before starting

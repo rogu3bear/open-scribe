@@ -261,7 +261,8 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
 
   var replacementMicrophoneName: String? {
     guard showsUseThisMicrophone else { return nil }
-    return pendingDifferentDevice?.localizedName
+    let name = pendingDifferentDevice?.localizedName ?? ""
+    return name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Microphone" : name
   }
 
   private var continuingSourceName: String {

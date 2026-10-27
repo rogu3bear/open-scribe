@@ -33,9 +33,9 @@ The October 22, 2026 session is the production case: microphone and system audio
 | Reconnect with microphone permission not yet decided | Ask for permission. Open a segment only after it is authorized. Until then the other audio continues and the gap stays open. | P1 | Same gate as a new recording. |
 | Reconnect with permission denied or restricted | Do not open a segment. Other audio continues. | P1 | Current fresh start fails the whole session. Current resume stays paused and does not restore the microphone. |
 | Selected device is absent | Do not open a segment. Do not substitute another input. Other audio continues. Reconnect stays available. | P1 | Headphones still disconnected is the reported case. |
-| Current input identity differs from the identity selected for this session | Do not restore silently. Keep the other audio running. Offer the separate action "Use this microphone instead." | P1 | A Bluetooth return often has a new CoreAudio identity. Current code clears `microphoneCaptureIdentity` when the source fails, so the slice must retain the pre-failure identity for this check. |
-| "Use this microphone instead" confirmed | Open a new microphone segment on that explicitly chosen device, in the same session, after the permission check. The gap and the earlier audio stay sealed. | P1 | This is the only path that may change devices. |
-| "Use this microphone instead" dismissed | No new segment. The selected device remains the restore target. Other audio continues. | P1 | Dismissal is not a device change. |
+| Current input identity differs from the identity selected for this session | Do not restore silently. Keep the other audio running. Offer the separate action "Use [microphone name] instead", naming the pending device. | P1 | A Bluetooth return often has a new CoreAudio identity. Current code clears `microphoneCaptureIdentity` when the source fails, so the slice must retain the pre-failure identity for this check. |
+| "Use [microphone name] instead" confirmed | Open a new microphone segment on that explicitly chosen device, in the same session, after the permission check. The gap and the earlier audio stay sealed. | P1 | This is the only path that may change devices. |
+| "Use [microphone name] instead" dismissed | No new segment. The selected device remains the restore target. Other audio continues. | P1 | Dismissal is not a device change. |
 | Device display name is empty | Still match on identity. Show "Microphone" in the status. Do not refuse restore because the name is blank. | P2 | The name is a label, not the key. |
 | Device display name contains punctuation, spaces, or non-Latin characters | Show the name as the system reports it. Do not use it as a file path or journal key. | P3 | Paths stay on the existing segment authorizations. |
 
@@ -97,7 +97,7 @@ The October 22, 2026 session is the production case: microphone and system audio
 | Selected device absent | "The selected microphone is not available. System audio is still recording." | Reconnect microphone |
 | Permission denied or restricted | "Microphone access is off. Enable it in System Settings. System audio is still recording." | Open System Settings |
 | Permission not yet decided | "Microphone access is needed before the microphone can rejoin." | Continue the system prompt |
-| Identity differs | "This is a different microphone. System audio is still recording." | Use this microphone instead |
+| Identity differs | "This is a different microphone. System audio is still recording." | Use [microphone name] instead |
 | Restore capture failed | "The microphone could not be restored. System audio is still recording." | Reconnect microphone |
 | Not enough free space | "Not enough free space to restore the microphone. Existing audio is still recording." | Reconnect microphone |
 | Seal or journal unconfirmed | "The microphone could not be sealed safely. Existing audio was preserved." | Stop stays available; Reconnect stays hidden until the session is recording or paused again |
@@ -139,7 +139,7 @@ When the other source is application audio rather than system audio, the same me
 **Recovery options:**
 
 1. Restore the headphones or enable microphone access, then activate Reconnect again.
-2. Choose "Use this microphone instead" only when a different device is actually present and the person confirms it.
+2. Choose "Use [microphone name] instead" only when a different device is actually present and the person confirms it.
 3. Continue or stop without the microphone.
 
 **Data preservation:** No new microphone segment is written. Existing audio stays where it was.
@@ -150,7 +150,7 @@ When the other source is application audio rather than system audio, the same me
 
 **Recovery options:**
 
-1. Activate "Use this microphone instead" to record that device in this session.
+1. Activate "Use [microphone name] instead" to record that device in this session.
 2. Dismiss it and reconnect only when the selected device identity is back.
 3. Continue with the other source.
 
