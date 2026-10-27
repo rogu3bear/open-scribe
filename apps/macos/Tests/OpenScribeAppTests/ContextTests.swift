@@ -336,7 +336,7 @@ final class ContextTests: XCTestCase {
     print("CONTEXT_LIVE_CAPTURE width=\(image.width) height=\(image.height) region=\(region.width)x\(region.height) blocks=\(blocks.count) luma=\(fingerprint.luma.count)")
   }
 
-  func testSavedContextNavigatesOnlyThroughResolvedEvidence() throws {
+  func testSavedContextNavigatesOnlyThroughResolvedEvidence() async throws {
     let fixture = try RecordingFixture()
     defer { try? FileManager.default.removeItem(at: fixture.root) }
     let scope = try XCTUnwrap(
@@ -360,11 +360,12 @@ final class ContextTests: XCTestCase {
     let recovered = try fixture.preparation.recoverPlayableSessions()
     XCTAssertTrue(recovered.contains { $0.sessionId == fixture.sessionId })
     let model = TranscriptLibraryModel(managedRoot: fixture.root)
-    model.load(sessionId: fixture.sessionId)
+    await model.load(sessionId: fixture.sessionId)
     let event = try XCTUnwrap(model.contextEvents.first, model.message ?? "")
     XCTAssertEqual(model.contextDetail?.scopes.last?.condition, .ended)
     XCTAssertEqual(event.eventId, eventId)
-    XCTAssertEqual(model.contextEvidenceStart(event), startNs)
+    let evidenceStart = await model.contextEvidenceStart(event)
+    XCTAssertEqual(evidenceStart, startNs)
 
     let library = try NativeTranscriptLibrary.open(managedRoot: fixture.root.path)
     let reference = try library.citeContextEvent(
@@ -487,7 +488,34 @@ final class ContextTests: XCTestCase {
         observedAtMs: 0, reason: .userMarked, sourceName: "Studio Display", application: nil,
         text: "", blockCount: 0, semanticHash: "h2", retention: "no_pixels"),
     ]
-    let review = ContextEventsSection(detail: model.detail, events: events)
+    let review = ScrollView {
+      ContextEventsSection(detail: model.detail, events: events)
+    }.frame(height: 360)
+    let longText = Array(
+      repeating: "Résumé — 契約の確認 — مراجعة المحادثة. Preserve the complete recorded context 📝.",
+      count: 24).joined(separator: "\n")
+    let longEvent = NativeContextEvent(
+      eventId: "long-text", scopeId: "s", epoch: 1, startNs: 0, endNs: 1,
+      observedAtMs: 0, reason: .fixedScopeChange, sourceName: "Fixture document", application: nil,
+      text: longText, blockCount: 24, semanticHash: "fixture-long", retention: "no_pixels")
+    // Measure the production row, not a lazy container's estimated first pass.
+    let measured = NSHostingView(
+      rootView: ContextEventRow(event: longEvent, canSeek: false, onSeek: { _ in })
+        .frame(width: 312))
+    XCTAssertGreaterThan(measured.fittingSize.height, 500, "long context remains fully readable")
+    let longReview = ScrollView {
+      ContextEventsSection(detail: model.detail, events: [longEvent])
+    }.frame(height: measured.fittingSize.height + 240)
+    let manyEvents = (0..<1_000).map { index in
+      NativeContextEvent(
+        eventId: "event-\(index)", scopeId: "s", epoch: 1,
+        startNs: Int64(index) * 1_000_000_000, endNs: Int64(index + 1) * 1_000_000_000,
+        observedAtMs: 0, reason: .fixedScopeChange, sourceName: "Fixture document", application: nil,
+        text: "Event \(index)", blockCount: 1, semanticHash: "fixture-\(index)", retention: "no_pixels")
+    }
+    let manyReview = ScrollView {
+      ContextEventsSection(detail: model.detail, events: manyEvents)
+    }.frame(height: 400)
     guard let directory = ProcessInfo.processInfo.environment["OPEN_SCRIBE_RENDER_DIR"] else { return }
     func render<V: View>(_ name: String, _ view: V, width: CGFloat) throws {
       let host = NSHostingView(rootView: view.padding(24).frame(width: width).background(Color(nsColor: .windowBackgroundColor)))
@@ -506,6 +534,8 @@ final class ContextTests: XCTestCase {
     try render("context-inspector-off", off, width: 560)
     try render("context-preflight-region", sheet, width: 600)
     try render("context-saved-review", review, width: 760)
+    try render("context-long-review", longReview, width: 360)
+    try render("context-large-history", manyReview, width: 760)
     withExtendedLifetime(fixture.writer) {}
   }
 

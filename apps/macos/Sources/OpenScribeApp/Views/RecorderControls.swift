@@ -123,7 +123,7 @@ struct RecorderEventList: View {
   var heading = "Markers and recording events"
   var body: some View {
     if !events.isEmpty {
-      VStack(alignment: .leading, spacing: ScribeSpacing.related) {
+      LazyVStack(alignment: .leading, spacing: ScribeSpacing.related) {
         Text(heading).scribeSectionHeading()
         ForEach(events, id: \.id) { event in
           HStack(alignment: .firstTextBaseline) {

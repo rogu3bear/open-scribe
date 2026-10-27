@@ -81,6 +81,7 @@ struct SpeechModelSheet: View {
         if let origin = URL(string: model.downloadOrigin) {
           Link("Download File", destination: origin)
             .help(model.downloadOrigin)
+            .accessibilityLabel("Download \(Self.title(model)) speech model")
         }
         Spacer()
         if speech.isInstalling {
@@ -91,6 +92,9 @@ struct SpeechModelSheet: View {
             choose(model)
           }
           .buttonStyle(.borderedProminent)
+          .accessibilityLabel(
+            "\(model.readiness == .invalid ? "Repair" : "Install") \(Self.title(model)) speech model from file"
+          )
         }
       }
     }

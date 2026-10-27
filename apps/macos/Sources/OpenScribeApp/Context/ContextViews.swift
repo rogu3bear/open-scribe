@@ -165,7 +165,7 @@ struct ContextScopeSheet: View {
 struct RegionEditor: View {
   @ObservedObject var model: ContextScopeModel
   @FocusState private var focused: Bool
-  @State private var dragOrigin: CGPoint?
+  @GestureState private var dragOrigin: CGPoint?
 
   var body: some View {
     VStack(alignment: .leading, spacing: ScribeSpacing.related) {
@@ -181,14 +181,17 @@ struct RegionEditor: View {
         }
         .contentShape(Rectangle())
         .gesture(
-          DragGesture(minimumDistance: 1).onChanged { value in
+          DragGesture(minimumDistance: 1)
+          .updating($dragOrigin) { _, origin, _ in
+            if origin == nil { origin = model.selection.region.origin }
+          }
+          .onChanged { value in
             let origin = dragOrigin ?? model.selection.region.origin
-            dragOrigin = origin
             move(
               to: CGPoint(
                 x: origin.x + value.translation.width / size.width,
                 y: origin.y + value.translation.height / size.height))
-          }.onEnded { _ in dragOrigin = nil })
+          })
       }
       .aspectRatio(16 / 10, contentMode: .fit)
       .frame(maxHeight: 160)
@@ -289,7 +292,7 @@ struct ContextEventsSection: View {
 
   var body: some View {
     if let detail, Self.hasHistory(detail) {
-      VStack(alignment: .leading, spacing: 10) {
+      LazyVStack(alignment: .leading, spacing: 10) {
         Text("Screen context").font(.title3.weight(.semibold)).accessibilityAddTraits(.isHeader)
         ForEach(Array(detail.scopes.enumerated()), id: \.offset) { _, scope in
           Text("\(ContextScopeSummary.modeName(scope.request.mode)) — \(ContextScopeSummary.target(scope.request)): \(ContextScopeSummary.condition(scope))")
@@ -297,26 +300,38 @@ struct ContextEventsSection: View {
         }
         Text(ContextScopeSummary.retention).font(.caption).foregroundStyle(.secondary)
         ForEach(events, id: \.eventId) { event in
-          VStack(alignment: .leading, spacing: ScribeSpacing.tight) {
-            HStack(alignment: .firstTextBaseline) {
-              Text(TranscriptSection.timestamp(event.startNs)).monospacedDigit().foregroundStyle(.secondary)
-              Text(event.application.map { "\($0) — \(event.sourceName)" } ?? event.sourceName)
-                .font(.headline)
-              if event.reason == .userMarked { Text("Marked").font(.caption).foregroundStyle(.secondary) }
-              if canSeek {
-                Spacer()
-                Button("Play from \(TranscriptSection.timestamp(event.startNs))") { onSeek(event) }
-                  .buttonStyle(.link)
-              }
-            }
-            Text(event.text.isEmpty ? "No text was recognized." : event.text)
-              .textSelection(.enabled)
-              .lineLimit(8)
-          }
-          .accessibilityElement(children: .combine)
+          ContextEventRow(event: event, canSeek: canSeek, onSeek: onSeek)
         }
       }
     }
+  }
+}
+
+/// The complete accepted text remains readable inside a lazy history list.
+struct ContextEventRow: View {
+  let event: NativeContextEvent
+  let canSeek: Bool
+  let onSeek: (NativeContextEvent) -> Void
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: ScribeSpacing.tight) {
+      HStack(alignment: .firstTextBaseline) {
+        Text(TranscriptSection.timestamp(event.startNs))
+          .monospacedDigit().foregroundStyle(.secondary)
+        Text(event.application.map { "\($0) — \(event.sourceName)" } ?? event.sourceName)
+          .font(.headline)
+        if event.reason == .userMarked { Text("Marked").font(.caption).foregroundStyle(.secondary) }
+        if canSeek {
+          Spacer()
+          Button("Play from \(TranscriptSection.timestamp(event.startNs))") { onSeek(event) }
+            .buttonStyle(.link)
+        }
+      }
+      Text(event.text.isEmpty ? "No text was recognized." : event.text)
+        .textSelection(.enabled)
+        .fixedSize(horizontal: false, vertical: true)
+    }
+    .accessibilityElement(children: .combine)
   }
 }
 
