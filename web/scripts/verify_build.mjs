@@ -20,7 +20,7 @@ for (const path of required) {
 const html = await readFile(join(root, "target/web-ssr/index.html"), "utf8");
 for (const snippet of [
   "<main",
-  "Local evidence for important conversations.",
+  "Return to what was said.",
   "There is no public download or service.",
   "https://open-scribe.app",
 ]) {

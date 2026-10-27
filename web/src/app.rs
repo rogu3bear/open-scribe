@@ -103,24 +103,30 @@ pub fn HomePage() -> impl IntoView {
     view! {
         <SiteLayout>
             <section class="intro" aria-labelledby="home-title">
-                <p class="status">"Development build — no public release"</p>
-                <h1 id="home-title">"Local evidence for important conversations."</h1>
+                <h1 id="home-title">"Return to what was said."</h1>
                 <p class="lede">
-                    "Open Scribe is being built for Mac operators who need recoverable conversation records and a clear line between source evidence and derived interpretation."
+                    "Open Scribe is being built for one task: review a conversation against its original audio, and keep the corrections that matter."
                 </p>
                 <p class="notice">
-                    "There is no public download or service. Capability status below is generated from the checked capability manifest; development fixtures are not available to users."
+                    "There is no public download or service. "
+                    <a href=format!("{REPOSITORY}/blob/main/CONTRIBUTING.md")>"Build from source"</a>
+                    " or "
+                    <a href=format!("{REPOSITORY}/blob/main/docs/REVIEW_GUIDE.md")>"read the review guide"</a>"."
                 </p>
             </section>
             <section aria-labelledby="principles-title">
-                <h2 id="principles-title">"What the project intends to protect"</h2>
-                <ul>
-                    <li>"Deliberate, visible recording authority."</li>
-                    <li>"Recoverable local media before derived intelligence."</li>
-                    <li>"Source-linked review that does not present model output as fact."</li>
-                </ul>
+                <h2 id="principles-title">"The intended review workflow"</h2>
+                <ol class="review-steps">
+                    <li><strong>"Keep the source."</strong>" Deliberately record or import a conversation, keeping its audio on the Mac."</li>
+                    <li><strong>"Check the words."</strong>" Find a passage, hear its source, and correct the transcript or speaker name."</li>
+                    <li><strong>"Use the result."</strong>" Export reviewed text and source audio. Return to the saved conversation when you need it."</li>
+                </ol>
             </section>
-            <CapabilityStatus/>
+            <details id="development-status" class="development-status">
+                <summary>"Development status"</summary>
+                <p>"The checked capability manifest records what has been qualified. Development fixtures are not available to users."</p>
+                <CapabilityStatus/>
+            </details>
         </SiteLayout>
     }
 }
@@ -156,12 +162,15 @@ fn CapabilityStatus() -> impl IntoView {
     view! {
         <section aria-labelledby="capabilities-title">
             <h2 id="capabilities-title">"Current capability status"</h2>
-            <ul class="capabilities">
-                {capability_rows()
-                    .into_iter()
-                    .map(|(terminology, maturity)| view! { <li>{terminology}" — "{maturity}</li> })
-                    .collect_view()}
-            </ul>
+            <table class="capabilities">
+                <thead><tr><th scope="col">"Capability"</th><th scope="col">"Status"</th></tr></thead>
+                <tbody>
+                    {capability_rows()
+                        .into_iter()
+                        .map(|(terminology, maturity)| view! { <tr><th scope="row">{terminology}</th><td>{maturity}</td></tr> })
+                        .collect_view()}
+                </tbody>
+            </table>
         </section>
     }
 }
@@ -170,9 +179,9 @@ fn CapabilityStatus() -> impl IntoView {
 fn ProductPage() -> impl IntoView {
     view! {
         <SiteLayout>
-            <p class="status">"Intended capability"</p>
-            <h1>"Product"</h1>
-            <p class="lede">"The intended macOS product preserves conversations locally, then supports evidence-linked review. These capabilities are not implemented in the current milestone."</p>
+            <h1>"One conversation, kept together."</h1>
+            <p class="lede">"The intended Mac workflow brings original audio, reviewed text, and human corrections into one local record."</p>
+            <p>"Open Scribe is a developer preview. The public product is not available; "<a href="/#development-status">"see development status"</a>"."</p>
             <nav aria-label="Product modes">
                 <ul>
                     <li><a href="/record">"Record mode"</a></li>
@@ -185,25 +194,25 @@ fn ProductPage() -> impl IntoView {
 
 #[component]
 fn RecordPage() -> impl IntoView {
-    view! { <IntentPage title="Record mode" summary="Intended behavior: explicit source selection, unmistakable active-state feedback, and recoverable local media. Recording exists only as a development fixture and is not available to users."/> }
+    view! { <IntentPage title="Record mode" summary="Choose what to record. The intended mode keeps microphone and selected computer audio as recoverable local evidence, then supports transcript review. Recording remains a development fixture, not a public capability."/> }
 }
 
 #[component]
 fn MeetingPage() -> impl IntoView {
-    view! { <IntentPage title="Meeting mode" summary="Intended behavior: prepare, preserve, and review a conversation without a meeting bot or required cloud account. Meeting mode is not implemented."/> }
+    view! { <IntentPage title="Meeting mode" summary="Start with the conversation. The intended mode adds optional screen context only after you authorize its scope. Source evidence stays distinct from interpretation. Meeting mode is not available."/> }
 }
 
 #[component]
 fn HowItWorksPage() -> impl IntoView {
     view! {
         <SiteLayout>
-            <p class="status">"Intended system, not implemented behavior"</p>
             <h1>"How it works"</h1>
+            <p>"This is the intended workflow. Open Scribe remains a developer preview."</p>
             <ol>
-                <li>"The operator deliberately chooses what to record."</li>
-                <li>"Durable local media and recovery state come first."</li>
-                <li>"Transcript and context remain linked to source evidence."</li>
-                <li>"Derived interpretation stays distinguishable from observed material."</li>
+                <li>"Choose the microphone and any computer audio to record."</li>
+                <li>"Keep the original audio and its recovery state on the Mac."</li>
+                <li>"Review timed text against the audio. Correct words and speaker names."</li>
+                <li>"Add context or interpretation only when wanted, with a clear link to the source."</li>
             </ol>
         </SiteLayout>
     }
@@ -216,6 +225,7 @@ fn DownloadPage() -> impl IntoView {
             <h1>"Download"</h1>
             <p class="lede">"No public release is available."</p>
             <p>"Source compilation and development receipts are not signing, notarization, distribution, or release proof."</p>
+            <p><a href=format!("{REPOSITORY}/blob/main/CONTRIBUTING.md")>"Contributor build instructions"</a></p>
         </SiteLayout>
     }
 }
@@ -225,8 +235,12 @@ fn DocumentationPage() -> impl IntoView {
     view! {
         <SiteLayout>
             <h1>"Documentation"</h1>
-            <p>"Founding product, architecture, privacy, and security documents live with the source so their status can be reviewed with the code."</p>
-            <p><a href=format!("{REPOSITORY}/tree/main/docs")>"Read repository documentation"</a></p>
+            <ul>
+                <li><a href=format!("{REPOSITORY}/blob/main/docs/REVIEW_GUIDE.md")>"Review a conversation"</a>" — recording, playback, corrections, search, and export."</li>
+                <li><a href=format!("{REPOSITORY}/blob/main/CONTRIBUTING.md")>"Build from source"</a>" — the contributor workflow."</li>
+                <li><a href=format!("{REPOSITORY}/blob/main/docs/TESTING.md")>"Verification limits"</a>" — what the development evidence establishes."</li>
+            </ul>
+            <p><a href=format!("{REPOSITORY}/tree/main/docs")>"All repository documentation"</a></p>
         </SiteLayout>
     }
 }
@@ -261,9 +275,9 @@ fn CanonicalDocument(title: &'static str, source: &'static str) -> impl IntoView
 fn IntentPage(title: &'static str, summary: &'static str) -> impl IntoView {
     view! {
         <SiteLayout>
-            <p class="status">"Intended capability"</p>
             <h1>{title}</h1>
             <p class="lede">{summary}</p>
+            <p><a href="/how-it-works">"Follow the intended workflow"</a>" or "<a href="/#development-status">"check development status"</a>"."</p>
         </SiteLayout>
     }
 }
@@ -358,7 +372,7 @@ mod tests {
         for required in [
             "<!doctype html>",
             "<main",
-            "Local evidence for important conversations.",
+            "Return to what was said.",
             "There is no public download or service.",
             "https://open-scribe.app",
             "/privacy",
@@ -447,7 +461,7 @@ mod tests {
         }
         let unknown = super::render_ssr_snapshot_at("/qualification-nonexistent");
         assert!(unknown.contains("<h1>Page not found</h1>"));
-        assert!(!unknown.contains("Local evidence for important conversations."));
+        assert!(!unknown.contains("Return to what was said."));
     }
 
     #[test]

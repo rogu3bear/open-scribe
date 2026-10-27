@@ -59,7 +59,7 @@ nav {
 
 main {
   min-height: 62vh;
-  padding-block: clamp(3rem, 8vw, 7rem);
+  padding-block: clamp(2rem, 5vw, 4rem);
 }
 
 .intro {
@@ -75,12 +75,12 @@ h2 {
 h1 {
   max-width: 16ch;
   margin-block: 0.35em 0.5em;
-  font-size: clamp(2.4rem, 8vw, 5.5rem);
+  font-size: clamp(2.2rem, 5vw, 3.75rem);
 }
 
 h2 {
   margin-top: 3rem;
-  font-size: clamp(1.5rem, 4vw, 2.25rem);
+  font-size: clamp(1.4rem, 3vw, 1.8rem);
 }
 
 p,
@@ -94,9 +94,45 @@ li {
 
 .status {
   font-size: 0.9rem;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
+  color: #5c5c57;
+}
+
+.review-steps li {
+  margin-block: var(--space-4);
+}
+
+.development-status {
+  margin-top: 2rem;
+  border-top: 1px solid #d9d9d9;
+  padding-top: var(--space-4);
+}
+
+summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+summary:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 4px;
+}
+
+.capabilities {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+
+.capabilities th,
+.capabilities td {
+  padding: 0.75rem 0.5rem;
+  border-bottom: 1px solid #d9d9d9;
+  text-align: left;
+  vertical-align: top;
+}
+
+.capabilities th {
+  font-weight: 600;
 }
 
 .notice {

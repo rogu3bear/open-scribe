@@ -423,6 +423,39 @@ Website colors, type, and local responsive geometry remain unchanged by this
 extraction; differences from the intended palette above require their own
 rendered design decision. No native/web component code is shared.
 
+### Distilled review presentation
+
+The ordinary review surface prioritizes the conversation, audio, and transcript.
+Secondary tools remain available at named entry points:
+
+- **Import** groups audio files and portable packages. Batch progress and
+  failures remain visible through their existing status control.
+- **Conversation details** holds participants, topic, media size, and source
+  names. The document header keeps its title, date, duration, and state.
+- **Transcription** holds model management and rebuilding saved parts.
+  **Set Up Transcription** is the next action when a model is missing.
+- **Verification details** in model setup holds filenames, hashes, and license
+  information. Language, file size, readiness, and the currently used model
+  remain visible. The existing first-installed selection rule has not changed.
+- Settings **Advanced** holds system measurements and diagnostics. The library
+  footer stays quiet when no work is active and no resource warning exists.
+- Recording state, source health, markers, and recovery actions stay visible;
+  the longer event ledger is disclosed separately.
+
+Ordinary participants/topic metadata does not cause a **Screen context** section
+to appear. That section requires scope or accepted-event history. The live
+authorization summary and revoke action are not hidden. Optional metadata and
+numeric region bounds can be expanded when needed.
+
+**Follow playback** is shown only while the active playback path supplies the
+transcript clock. This presentation change does not add synchronized following
+to verified mix playback, a playback pause/resume transport, or model selection.
+Those remain distinct interaction gaps, not claims completed by simplification.
+
+The website leads with a short, explicitly intended review sequence. Its
+manifest-driven capability table remains in **Development status**; all routes,
+canonical policy text, and the no-public-release notice remain available.
+
 ### Shape and separation
 
 - Native component shapes and radii are authoritative for controls, menus, fields, sheets, sidebars, and settings.
