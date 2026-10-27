@@ -1,6 +1,6 @@
 ---
 artifact: acceptance-criteria
-version: "1.0"
+version: "1.1"
 created: 2026-10-23
 status: draft
 ---
@@ -165,7 +165,7 @@ confirmation of that input; the displayed name does not relax the identity check
 
 ### AC-18: Free space is too low to restore
 
-**Given** the microphone has stopped, the other audio is still recording, and free space is at the declared safe-capture threshold
+**Given** the microphone has stopped, the other audio is still recording, and free space is at or below the declared safe-capture threshold
 
 **When** the user activates Reconnect microphone
 
@@ -223,6 +223,22 @@ confirmation of that input; the displayed name does not relax the identity check
 
 ## Notes
 
+- On October 27 the operator requested that the implementation meet or exceed
+  the existing criteria and the story-scoped follow-ups below. AC-1 through
+  AC-24 keep their identities; the MR labels refine this story and are not a
+  replacement PRD. The deadline is ten seconds once permission is authorized
+  and the selected microphone is available. Waiting for a permission answer
+  is outside that deadline. A paused restore also bounds the microphone's
+  first-sample wait when that adapter is started.
+- The restore reserve is currently 512 MiB (536,870,912 bytes). AC-18 refuses
+  at equality as well as below it. Space above the reserve permits the remaining
+  checks; it does not waive paused preparation's five-minute media allowance.
+- Device approval reaches the production input unit: resolve the persistent
+  Core Audio UID, select that device for this engine, and validate readback
+  before callback admission. A controller-only probe cannot establish physical
+  device binding. Stop also preserves a first sample accepted during adapter
+  drain. Injected binding/drain tests and live hardware proof remain distinct.
+
 - The October 22, 2026 recording is the reference case: the microphone stopped while system audio continued, and resume brought back system audio only.
 - Pause without Reconnect is required to leave the microphone out. That is the current resume behavior, and it remains the expected behavior.
 - A virtual audio device, automatic rejoin, a new conversation after a disconnect, and a workspace rebuild are outside this slice.
@@ -237,6 +253,92 @@ confirmation of that input; the displayed name does not relax the identity check
   observation sequencing for each replacement adapter. Injected Swift regressions
   cover B-to-C confirmation, first-sample route/write failure and retry, a second
   disconnect with a restarted sequence, stale health/failure/first-sample
-  callbacks, and post-restore writer failure. Their presence and compile checks
-  are not execution results; native host and live-device acceptance remain
-  outstanding.
+  callbacks, and post-restore writer failure. Those native regressions executed
+  successfully on ff0606a; its native-checks.log binds their exact scope. The
+  October 27 deadline, inclusive reserve, unknown-space and stale-original-
+  callback changes have new injected regressions in
+  RecorderMicrophoneRestoreTests. Their presence is not execution proof, and
+  old ff0606a receipts do not qualify the changed inputs. Live-device acceptance
+  remains outstanding.
+
+## Story follow-ups
+
+### MR-A: Approval of B does not authorize C
+
+**Given** the user has been offered microphone B as a replacement for stopped microphone A
+
+**When** the user confirms B but microphone C becomes the current input before restored microphone audio begins
+
+**Then** C remains unrecorded until the user receives and confirms a fresh choice for C
+
+### MR-B: Identical names do not grant approval
+
+**Given** two distinct microphones have the same displayed name and only one was selected for the conversation
+
+**When** the other microphone becomes the current input and the user activates Reconnect microphone
+
+**Then** that microphone requires a fresh replacement confirmation despite the matching name
+
+### MR-C: Returning hardware does not automatically rejoin
+
+**Given** the microphone has stopped while the other audio continues
+
+**When** the selected microphone becomes available again without the user activating Reconnect microphone
+
+**Then** no new microphone audio is added
+
+### MR-D: A callback-free restore ends with an actionable failure
+
+**Given** microphone access is already authorized, the selected microphone is available, and the other audio is recording
+
+**When** ten seconds have elapsed after the explicit Reconnect attempt without any new microphone audio being saved or the attempt otherwise ending
+
+**Then** the attempt has ended with "The microphone could not be restored. System audio is still recording." and Reconnect microphone is available for another attempt
+
+### MR-E: A late result cannot revive a failed attempt
+
+**Given** a restore attempt has ended unsuccessfully and the user has not started another attempt
+
+**When** the microphone from that earlier attempt later becomes capable of supplying audio
+
+**Then** no new microphone audio is added until another explicit Reconnect
+
+### MR-F: Unknown available space does not authorize restoration
+
+**Given** the microphone has stopped, the other audio is still recording, and available space cannot be determined
+
+**When** the user activates Reconnect microphone
+
+**Then** restoration is refused with a message explaining that available space could not be checked and that the user can try again
+
+### MR-G: A late restore result cannot affect another conversation
+
+**Given** the user stopped a conversation during restoration and subsequently opened a different conversation
+
+**When** the earlier restore attempt finishes
+
+**Then** it does not start microphone capture or change the recording status of the different conversation
+
+### MR-H: Continuing-source wording follows actual recording state
+
+**Given** Reconnect was activated from pause and the resumed source has not yet saved new audio
+
+**When** the user reads the recording status or restore notice
+
+**Then** it describes the conversation as resuming and does not say that the source is already recording
+
+### MR-I: Replacement choice is accessible
+
+**Given** a replacement-microphone choice is displayed
+
+**When** the user reaches it with keyboard navigation or a screen reader
+
+**Then** the user can identify and activate the pending microphone choice and the action to keep the selected microphone without relying on color or a truncated visual name
+
+### MR-J: Preserved audio remains reviewable after reopening
+
+**Given** a conversation was stopped after two successful microphone restorations
+
+**When** the user reopens it after restarting Open Scribe and plays its saved audio
+
+**Then** the same conversation presents playable microphone audio before, between, and after the two distinguishable gaps

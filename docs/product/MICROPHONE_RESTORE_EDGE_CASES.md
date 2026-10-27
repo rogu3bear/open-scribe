@@ -1,6 +1,6 @@
 ---
 artifact: edge-cases
-version: "1.0"
+version: "1.1"
 created: 2026-10-23
 status: draft
 ---
@@ -11,7 +11,7 @@ status: draft
 
 While a recording session is still open, a person can restore the microphone that stopped without starting a new conversation. The failed microphone span stays sealed. Any source that is still recording keeps recording. The interruption remains a visible gap. Restore runs only after an explicit Reconnect and a check of microphone permission plus the selected device. Choosing a different microphone is a separate explicit action. Pause and resume do not restore a retired microphone.
 
-This catalog is the failure surface for that slice. It does not add a virtual audio device, automatic rejoin, a workspace rebuild, or a new conversation. It creates no product authority beyond the founding contract. The recording controller keeps a failed microphone retired for later spans, including resume and a later source selection, until an explicit Reconnect. That Swift path was not host-executed. A live headphone pull was not run.
+This catalog is the failure surface for that slice. It does not add a virtual audio device, automatic rejoin, a workspace rebuild, or a new conversation. It creates no product authority beyond the founding contract. The recording controller keeps a failed microphone retired for later spans, including resume and a later source selection, until an explicit Reconnect. Native regressions executed on ff0606a; those receipts do not qualify subsequent changed source. A live headphone pull was not run.
 
 The October 22, 2026 session is the production case: microphone and system audio started at 1:09 p.m. Central, the microphone sealed at 1:27 p.m. with `source_failed` / `capture_failed` and `recording_continues`, and resume at 1:50 p.m. continued with system audio only.
 
@@ -33,7 +33,10 @@ The October 22, 2026 session is the production case: microphone and system audio
 | Reconnect with microphone permission not yet decided | Ask for permission. Open a segment only after it is authorized. Until then the other audio continues and the gap stays open. | P1 | Same gate as a new recording. |
 | Reconnect with permission denied or restricted | Do not open a segment. Other audio continues. | P1 | Current fresh start fails the whole session. Current resume stays paused and does not restore the microphone. |
 | Selected device is absent | Do not open a segment. Do not substitute another input. Other audio continues. Reconnect stays available. | P1 | Headphones still disconnected is the reported case. |
-| Current input identity differs from the identity selected for this session | Do not restore silently. Keep the other audio running. Offer the separate action "Use [microphone name] instead", naming the pending device. | P1 | A Bluetooth return often has a new CoreAudio identity. Current code clears `microphoneCaptureIdentity` when the source fails, so the slice must retain the pre-failure identity for this check. |
+| Current input identity differs from the identity selected for this session | Do not restore silently. Keep the other audio running. Offer the separate action "Use [microphone name] instead", naming the pending device. | P1 | Compare the persistent device UID, not a transient numeric device ID or display name. Preserve the approved UID after failure. |
+| B is approved but the later input is C, including two inputs with the same displayed name | Require fresh confirmation of C. Names do not confer identity or permission. | P1 | MR-A and MR-B; native B-to-C proof on ff0606a is separate from physical-device acceptance. |
+| Default input changes after controller preflight but before engine startup | Bind this app's input unit to the approved UID and read back its actual identity before admitting samples. Failure leaves the other source unchanged. | P1 | Per-engine selection does not change the system default. Hardware qualification remains separate from injected binding tests. |
+| Headphones disconnect while the built-in microphone is selected | Observe the actual input and adapter event. Apply retirement if native capture reports interruption; headphone removal alone does not prove selected-microphone loss. | P1 | The October 27 preflight found the built-in input selected and AirPods merely available. |
 | "Use [microphone name] instead" confirmed | Open a new microphone segment on that explicitly chosen device, in the same session, after the permission check. The gap and the earlier audio stay sealed. | P1 | This is the only path that may change devices. |
 | "Use [microphone name] instead" dismissed | No new segment. The selected device remains the restore target. Other audio continues. | P1 | Dismissal is not a device change. |
 | Device display name is empty | Still match on identity. Show "Microphone" in the status. Do not refuse restore because the name is blank. | P2 | The name is a label, not the key. |
@@ -53,6 +56,7 @@ The October 22, 2026 session is the production case: microphone and system audio
 | Reconnect while paused | Reconnect is available. It checks permission and device, then resumes this session with the restored microphone and any source that was still active. Pause without Reconnect does not do that. | P1 | October 22 paused about one minute after the failure and resumed about 22 minutes later. |
 | Storage at the reserve during Reconnect | Do not open the new segment. Keep the session recording or paused as it was. Existing audio stays preserved. | P1 | Current critical storage stops the whole recording. A failed restore must not use that stop as its first result. |
 | Storage check cannot be read | Do not open the new segment. Leave the session where it was. | P2 | Unknown free space is not treated as enough space. |
+| Space is one byte below, exactly at, or one byte above the 512 MiB restore reserve | Refuse at or below the reserve; above it, continue other validation. A failed restore does not itself stop the surviving source. | P1 | Paused preparation additionally requires its declared five-minute headroom. |
 
 ### Error States
 
@@ -65,6 +69,7 @@ The October 22, 2026 session is the production case: microphone and system audio
 | Audio route changes, then the same device is still the selected input | Treat the route change as a microphone failure. Do not auto-restore when the route returns. The person uses Reconnect. | P1 | Current route interruption calls the same capture-failure path and then retires the source. |
 | Session already interrupted or saved | Reconnect is absent. Existing recovery and review paths remain the way back to preserved audio. | P2 | Restore is a live-session action. |
 | App leaves the foreground during the permission prompt | The attempt waits for the prompt. No segment opens before authorization. Other audio is unchanged. | P2 | The prompt is the system permission dialog. |
+| No first sample, error, route event or permission withdrawal arrives | End the ready, authorized attempt at its ten-second deadline; preserve the other source and offer retry. | P1 | The deadline is cancelled on success or Stop; saved writer evidence outranks delayed UI notification. |
 
 ### Concurrency
 
@@ -75,6 +80,7 @@ The October 22, 2026 session is the production case: microphone and system audio
 | Pause and Reconnect overlap | Whichever operation started first finishes. The later one then sees the settled state. Pause never clears retirement. Reconnect never drops the other source. | P1 | October 22 paused while the failure was still the active fact. |
 | Stop during a restore attempt | Stop wins. Seal what is durable, including the other source. Do not leave a microphone segment that claims it is recording. | P1 | Stop remains available. |
 | Device disappears after the check and before the first sample | Abandon the new attempt, keep the other source, and return the microphone to retired. | P1 | The check is not a promise that the device stays. |
+| Original adapter failure or deadline completes after a replacement or another conversation starts | Ignore the obsolete capture identity/generation, including after a serialized wait. | P1 | Never retire a new microphone because an old adapter finally reports failure. |
 | Two people edit one recording | Out of scope. A session has one local operator. | P3 | No shared live editor. |
 
 ### Integration Failures
@@ -100,6 +106,7 @@ The October 22, 2026 session is the production case: microphone and system audio
 | Identity differs | "This is a different microphone. System audio is still recording." | Use [microphone name] instead |
 | Restore capture failed | "The microphone could not be restored. System audio is still recording." | Reconnect microphone |
 | Not enough free space | "Not enough free space to restore the microphone. Existing audio is still recording." | Reconnect microphone |
+| Available space cannot be read | "Available space could not be checked. The microphone was not restored. System audio is still recording. Try again." | Reconnect microphone; paused variants say the recording is paused |
 | Seal or journal unconfirmed | "The microphone could not be sealed safely. Existing audio was preserved." | Stop stays available; Reconnect stays hidden until the session is recording or paused again |
 | Sole source failed, session interrupted | "The microphone stopped and the recording was preserved." | Existing recovery for an interrupted session |
 | Permission withdrawn on the new segment | "Microphone access was withdrawn. System audio is still recording." | Reconnect microphone |
