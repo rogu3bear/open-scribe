@@ -251,6 +251,11 @@ pub fn export_source_media(
             "only an imported session has one original file",
         ));
     }
+    if !store.retains_imported_original(session)? {
+        return Err(SessionExportError::Unavailable(
+            "this historical import retained decoded audio, not the original file",
+        ));
+    }
     let [entry] = inventory.media.as_slice() else {
         return Err(SessionExportError::Unavailable(
             "the import has no single original",

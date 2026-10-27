@@ -5,6 +5,44 @@ import XCTest
 
 @MainActor
 final class ConversationExportTests: XCTestCase {
+  func testHistoricalNormalizedImportKeepsPlaybackAndRefusesFalseOriginalExport() throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let source = root.appendingPathComponent("normalized.caf")
+    do {
+      let file = try AVAudioFile(
+        forWriting: source,
+        settings: [
+          AVFormatIDKey: kAudioFormatLinearPCM, AVSampleRateKey: 48_000.0,
+          AVNumberOfChannelsKey: 1, AVLinearPCMBitDepthKey: 16,
+          AVLinearPCMIsFloatKey: false, AVLinearPCMIsBigEndianKey: false,
+        ])
+      let buffer = try XCTUnwrap(
+        AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: 48_000))
+      buffer.frameLength = 48_000
+      try file.write(from: buffer)
+    }
+    let managedRoot = root.appendingPathComponent("Library", isDirectory: true)
+    let preparation = try NativeRecordingPreparation.open(managedRoot: managedRoot.path)
+    let evidence = try preparation.importNormalizedCaf(
+      title: "Historical memo", normalizedPath: source.path,
+      original: NativeOriginalImportMetadata(
+        displayName: "Historical memo.m4a", byteLength: 1_024,
+        durationNanoseconds: 1_000_000_000, sampleRateHz: 44_100,
+        channelCount: 1, mediaFormat: "m4a"))
+    let library = try NativeTranscriptLibrary.open(managedRoot: managedRoot.path)
+    let options = try library.audioExportOptions(sessionId: evidence.sessionId)
+    XCTAssertNil(options.originalExtension)
+    XCTAssertEqual(options.pcmTracks.count, 1)
+    XCTAssertNoThrow(try preparation.leaseImportedPlayback(sessionId: evidence.sessionId))
+    let destination = root.appendingPathComponent("original.m4a")
+    XCTAssertThrowsError(
+      try library.exportOriginalMedia(
+        sessionId: evidence.sessionId, destinationPath: destination.path))
+    XCTAssertFalse(FileManager.default.fileExists(atPath: destination.path))
+  }
+
   /// A saved synthetic two-track capture (microphone mono, system stereo,
   /// 31 seconds each, rotated into 30-second segments) exports every audio
   /// form, a session manifest, and a portable package that verifies.
@@ -52,7 +90,8 @@ final class ConversationExportTests: XCTestCase {
     XCTAssertTrue(exportedManifest, model.message ?? "")
     let manifest = try XCTUnwrap(
       JSONSerialization.jsonObject(with: Data(contentsOf: manifestURL)) as? [String: Any])
-    XCTAssertEqual(manifest["schema"] as? String, "https://open-scribe.app/schema/session-manifest/v1")
+    XCTAssertEqual(
+      manifest["schema"] as? String, "https://open-scribe.app/schema/session-manifest/v1")
     XCTAssertEqual((manifest["tracks"] as? [Any])?.count, 2)
 
     let package = output.appendingPathComponent("Synthetic.openscribe")
@@ -98,8 +137,10 @@ final class ConversationExportTests: XCTestCase {
     XCTAssertTrue(exported, model.message ?? "")
     XCTAssertEqual(
       try Data(contentsOf: original),
-      try Data(contentsOf: managedRoot.appendingPathComponent("Sessions")
-        .appendingPathComponent(evidence.sessionId).appendingPathComponent(evidence.relativePath)))
+      try Data(
+        contentsOf: managedRoot.appendingPathComponent("Sessions")
+          .appendingPathComponent(evidence.sessionId).appendingPathComponent(evidence.relativePath))
+    )
 
     let refused = await model.export(.validatedMix, to: root.appendingPathComponent("Mix.m4a"))
     XCTAssertFalse(refused)

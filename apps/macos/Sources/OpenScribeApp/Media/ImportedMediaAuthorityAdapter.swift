@@ -367,7 +367,7 @@ final class ImportedMediaAuthorityAdapter: ObservableObject {
           "This M4A contains multiple or unreadable audio tracks. Choose a single-track file. Nothing was added."
       case .unsupportedFormat:
         return
-          "This file is not supported. Large or stereo M4A must be 48 kHz AAC or Apple Lossless. Nothing was added."
+          "This file is not supported. Choose a PCM CAF or a single-track AAC or Apple Lossless M4A. Nothing was added."
       case .invalidSource, .decodeFailed:
         return "The selected audio could not be read safely. Nothing was added."
       }
@@ -394,7 +394,7 @@ final class ImportedMediaAuthorityAdapter: ObservableObject {
   }
 
   private static var importLimitPrompt: String {
-    "Choose local PCM CAF files (up to \(pcmLimitMiB) MiB each) or 48 kHz AAC/Apple Lossless M4A files (up to \(m4aLimitGiB) GiB each), up to four hours per recording. Files are imported one at a time; originals are kept. Transcription follows your Settings preference."
+    "Choose local PCM CAF files (up to \(pcmLimitMiB) MiB each) or AAC/Apple Lossless M4A files (up to \(m4aLimitGiB) GiB each), up to four hours per recording. Files are imported one at a time; originals are kept. Transcription follows your Settings preference."
   }
 
   private static var pcmLimitMiB: UInt64 {

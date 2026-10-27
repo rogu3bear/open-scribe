@@ -684,6 +684,7 @@ final class CallbackCAFDecoder: @unchecked Sendable {
   init(
     source: any CallbackAudioByteSource,
     fileTypeHint: AudioFileTypeID = kAudioFileCAFType,
+    outputSampleRate: Double? = nil,
     onClose: @escaping @Sendable () -> Void
   ) throws {
     let context = CallbackAudioFileContext(source: source)
@@ -731,7 +732,7 @@ final class CallbackCAFDecoder: @unchecked Sendable {
     }
     guard
       let processingFormat = AVAudioFormat(
-        standardFormatWithSampleRate: fileFormat.mSampleRate,
+        standardFormatWithSampleRate: outputSampleRate ?? fileFormat.mSampleRate,
         channels: fileFormat.mChannelsPerFrame
       )
     else {

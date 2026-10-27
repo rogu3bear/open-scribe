@@ -214,17 +214,18 @@ impl TranscriptLibrary {
             .map(|entry| entry.track_id.clone())
             .collect();
         pcm_tracks.dedup();
-        let original_extension = (inventory.origin == "import")
-            .then(|| inventory.media.first())
-            .flatten()
-            .map(|entry| {
-                if entry.media_format.starts_with("m4a") {
-                    "m4a"
-                } else {
-                    "caf"
-                }
-                .to_owned()
-            });
+        let original_extension = (inventory.origin == "import"
+            && self.store.retains_imported_original(session)?)
+        .then(|| inventory.media.first())
+        .flatten()
+        .map(|entry| {
+            if entry.media_format.starts_with("m4a") {
+                "m4a"
+            } else {
+                "caf"
+            }
+            .to_owned()
+        });
         Ok(AudioExportOptions {
             has_validated_mix: inventory.mixdown.is_some(),
             original_extension,

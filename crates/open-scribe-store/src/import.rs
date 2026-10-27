@@ -174,6 +174,21 @@ enum ImportFailurePoint {
 }
 
 impl SessionStore {
+    /// Historical normalized imports retained PCM, not the selected M4A.
+    /// Do not describe that derived file as an original-audio export.
+    pub fn retains_imported_original(&self, session: &SessionId) -> Result<bool, StoreError> {
+        let payload: String = self.connection.query_row(
+            "SELECT payload_json FROM session_events
+             WHERE session_id = ?1 AND event_kind = 'media_imported'
+             ORDER BY sequence DESC LIMIT 1",
+            [&session.0],
+            |row| row.get(0),
+        )?;
+        let payload: Value = serde_json::from_str(&payload)?;
+        Ok(payload["media_format"] == COMPRESSED_IMPORT_MEDIA_FORMAT
+            || payload["original_media"].is_null())
+    }
+
     /// Copies one bounded, independently validated CAF into the existing managed library.
     ///
     /// The caller remains responsible for obtaining user-selected file authority. This
@@ -228,7 +243,7 @@ impl SessionStore {
             return Err(StoreError::ImportDurationLimit);
         }
         if metadata.original.media_format != "m4a"
-            || metadata.original.sample_rate_hz != 48_000
+            || metadata.original.sample_rate_hz == 0
             || !matches!(metadata.original.channel_count, 1 | 2)
             || metadata.original.byte_length == 0
             || metadata.original.byte_length > MAX_COMPRESSED_IMPORT_BYTES

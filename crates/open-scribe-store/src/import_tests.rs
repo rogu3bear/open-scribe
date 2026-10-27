@@ -107,7 +107,7 @@ fn compressed_import_policy_rejects_excess_and_unsupported_metadata_without_rows
             0 => candidate.original.byte_length = MAX_COMPRESSED_IMPORT_BYTES + 1,
             1 => candidate.sample_count = MAX_IMPORT_SAMPLES + 1,
             2 => candidate.original.duration_nanoseconds = MAX_IMPORT_DURATION_NANOSECONDS + 1,
-            3 => candidate.original.sample_rate_hz = 44_100,
+            3 => candidate.original.sample_rate_hz = 0,
             4 => candidate.original.channel_count = 3,
             _ => unreachable!(),
         }
@@ -314,6 +314,11 @@ fn normalized_import_retains_original_metadata_and_reopens_as_playable_media() {
         )
         .unwrap();
     assert_eq!(fs::read(&caf_path).unwrap(), original_caf);
+    assert!(
+        !store
+            .retains_imported_original(&evidence.session_id)
+            .unwrap()
+    );
     let snapshot = store.runtime_library_snapshot().unwrap();
     assert_eq!(snapshot.saved_sessions.len(), 1);
     assert_eq!(
@@ -335,6 +340,11 @@ fn normalized_import_retains_original_metadata_and_reopens_as_playable_media() {
     assert!(journal.contains("\"sample_rate_hz\":44100"));
     drop(store);
     let reopened = SessionStore::open(managed_root).unwrap();
+    assert!(
+        !reopened
+            .retains_imported_original(&evidence.session_id)
+            .unwrap()
+    );
     assert!(
         reopened
             .lease_imported_playback(&evidence.session_id)

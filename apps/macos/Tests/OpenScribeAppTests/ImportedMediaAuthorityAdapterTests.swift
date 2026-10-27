@@ -172,7 +172,7 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
     XCTAssertTrue(adapter.statusMessage?.contains("Finish the current recording") == true)
   }
 
-  func testBoundedMonoM4AImportsAsRecoverableManagedCAFWithoutChangingOriginal() async throws {
+  func testMonoM4ARetainsOriginalAcrossReopenExportAndTranscriptionDecode() async throws {
     let root = FileManager.default.temporaryDirectory
       .appendingPathComponent("open-scribe-import-m4a-\(UUID().uuidString)", isDirectory: true)
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
@@ -213,14 +213,34 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
     let saved = try XCTUnwrap(runtime.savedSessions.first)
     XCTAssertEqual(saved.playableMedia?.sourceDisplayName, "Short Voice Memo.m4a")
     XCTAssertTrue(saved.playableMedia?.isPlayable == true)
+    // Losing access to the selected file cannot lose the original evidence.
+    let movedOriginal = root.appendingPathComponent("Moved original.m4a")
+    try FileManager.default.moveItem(at: originalURL, to: movedOriginal)
     let controller = try NativeRecordingPreparation.open(managedRoot: managedRoot.path)
-    XCTAssertNoThrow(try controller.leaseImportedPlayback(sessionId: saved.sessionId))
+    let lease = try controller.leaseImportedPlayback(sessionId: saved.sessionId)
+    let library = try NativeTranscriptLibrary.open(managedRoot: managedRoot.path)
+    XCTAssertEqual(
+      try library.audioExportOptions(sessionId: saved.sessionId).originalExtension, "m4a")
+    let exported = root.appendingPathComponent("Original export.m4a")
+    _ = try library.exportOriginalMedia(sessionId: saved.sessionId, destinationPath: exported.path)
+    XCTAssertEqual(try Data(contentsOf: exported), original)
+    XCTAssertEqual(try Data(contentsOf: movedOriginal), original)
+    let companion = root.appendingPathComponent("transcription.caf")
+    try TranscriptionCompanionDecoder.decode(lease: lease, to: companion, isCancelled: { false })
+    let decoded = try AVAudioFile(forReading: companion)
+    XCTAssertEqual(decoded.fileFormat.sampleRate, 48_000)
+    XCTAssertEqual(decoded.fileFormat.channelCount, 1)
+    let prepared = try BoundedAudioImport.prepare(
+      sourceURL: movedOriginal, policy: nativeImportPolicy())
+    defer { prepared.removeTemporaryCopy() }
+    XCTAssertEqual(UInt64(decoded.length), prepared.compressed?.sampleCount)
+    XCTAssertEqual(prepared.compressed?.original.sampleRateHz, 44_100)
     XCTAssertFalse(runtime.isSnapshotStale)
 
     let policy = nativeImportPolicy()
     XCTAssertThrowsError(
       try BoundedAudioImport.prepare(
-        sourceURL: originalURL,
+        sourceURL: movedOriginal,
         policy: NativeImportPolicy(
           maximumSourceBytes: policy.maximumSourceBytes,
           maximumManagedBytes: policy.maximumManagedBytes,
@@ -234,22 +254,20 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
         .durationTooLong(maximumNanoseconds: 1)
       )
     }
-    XCTAssertThrowsError(
-      try BoundedAudioImport.prepare(
-        sourceURL: originalURL,
-        policy: NativeImportPolicy(
-          maximumSourceBytes: policy.maximumSourceBytes,
-          maximumManagedBytes: 8_192,
-          maximumDurationNanoseconds: policy.maximumDurationNanoseconds,
-          maximumManagedSamples: policy.maximumManagedSamples
-        )
+    // The managed source remains compressed; a small PCM budget cannot force
+    // the import to discard its original in favor of a normalized file.
+    let compressed = try BoundedAudioImport.prepare(
+      sourceURL: movedOriginal,
+      policy: NativeImportPolicy(
+        maximumSourceBytes: policy.maximumSourceBytes,
+        maximumManagedBytes: 8_192,
+        maximumDurationNanoseconds: policy.maximumDurationNanoseconds,
+        maximumManagedSamples: policy.maximumManagedSamples
       )
-    ) { error in
-      XCTAssertEqual(
-        error as? BoundedAudioImportError,
-        .decodedTooLarge(maximum: 8_192)
-      )
-    }
+    )
+    defer { compressed.removeTemporaryCopy() }
+    XCTAssertNotNil(compressed.compressed)
+    XCTAssertEqual(try Data(contentsOf: compressed.cafURL), original)
   }
 
   func testPortablePackagesNeedTheirExtensionIdleCaptureAndVerification() async {
