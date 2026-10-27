@@ -25,7 +25,8 @@ pub fn shell(options: LeptosOptions) -> impl IntoView {
             <head>
                 <meta charset="utf-8"/>
                 <meta name="viewport" content="width=device-width, initial-scale=1"/>
-                <meta name="theme-color" content="#ffffff"/>
+                <meta name="theme-color" content="#f7f7f5" media="(prefers-color-scheme: light)"/>
+                <meta name="theme-color" content="#11110f" media="(prefers-color-scheme: dark)"/>
                 <AutoReload options=options.clone()/>
                 <HashedStylesheet options=options.clone()/>
                 <EdgeHydrationScripts options=options/>
@@ -76,6 +77,7 @@ pub fn App() -> impl IntoView {
 #[component]
 fn SiteLayout(children: Children) -> impl IntoView {
     view! {
+        <a class="skip-link" href="#main-content">"Skip to content"</a>
         <header class="site-header">
             <a class="wordmark" href="/">"Open Scribe"</a>
             <nav aria-label="Primary">
@@ -86,7 +88,7 @@ fn SiteLayout(children: Children) -> impl IntoView {
                 <a href="/download">"Download"</a>
             </nav>
         </header>
-        <main id="main-content">{children()}</main>
+        <main id="main-content" tabindex="-1">{children()}</main>
         <footer>
             <p>"Open Scribe is an unreleased open-source project."</p>
             <nav aria-label="Project">
@@ -162,7 +164,7 @@ fn CapabilityStatus() -> impl IntoView {
     view! {
         <section aria-labelledby="capabilities-title">
             <h2 id="capabilities-title">"Current capability status"</h2>
-            <table class="capabilities">
+            <table class="capabilities" aria-labelledby="capabilities-title">
                 <thead><tr><th scope="col">"Capability"</th><th scope="col">"Status"</th></tr></thead>
                 <tbody>
                     {capability_rows()
@@ -438,11 +440,16 @@ mod tests {
         ] {
             let html = super::render_ssr_snapshot_at(path);
             assert_eq!(
-                html.matches("<main id=\"main-content\">").count(),
+                html.matches("<main id=\"main-content\" tabindex=\"-1\">")
+                    .count(),
                 1,
                 "{path}"
             );
             assert_eq!(html.matches("</main>").count(), 1, "{path}");
+            assert!(
+                html.contains("href=\"#main-content\" class=\"skip-link\""),
+                "{path}"
+            );
             assert!(html.find("</header>").unwrap() < html.find("<main").unwrap());
             assert!(html.find("</main>").unwrap() < html.find("<footer").unwrap());
         }

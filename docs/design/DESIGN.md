@@ -469,6 +469,19 @@ review steps stronger labels and separators. These are the same system font,
 neutral/divider colors, and semantic sequence; copy, routes, and capability
 claims are unchanged. Settings and the menu bar keep their native density.
 
+### Final state and keyboard polish
+
+The website consumes the light/dark palette below through semantic CSS tokens
+and follows the system appearance. Links and focus rings use the interactive
+role; a keyboard-visible skip link moves focus to the shared main landmark.
+The capability table takes its accessible name from its existing heading.
+
+Microphone replacement controls name the device awaiting explicit approval;
+the existing device-identity check still controls what may resume. The region
+preview retains its proportions in a bounded height so the authorization sheet
+can expose more of its controls. Its help text describes the existing drag and
+keyboard operations. Source changes are not rendered or runtime proof.
+
 ### Shape and separation
 
 - Native component shapes and radii are authoritative for controls, menus, fields, sheets, sidebars, and settings.
