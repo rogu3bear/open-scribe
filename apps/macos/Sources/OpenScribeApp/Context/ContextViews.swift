@@ -191,12 +191,15 @@ struct RegionEditor: View {
           }.onEnded { _ in dragOrigin = nil })
       }
       .aspectRatio(16 / 10, contentMode: .fit)
+      .frame(maxHeight: 160)
+      .frame(maxWidth: .infinity, alignment: .leading)
       .focusable()
       .focused($focused)
       .onMoveCommand { direction in nudge(direction) }
       .accessibilityElement()
       .accessibilityLabel("Region on \(displayName)")
       .accessibilityValue(ContextScopeSummary.target(boundsRequest))
+      .help("Drag to move the region. Arrow keys move it; Shift-arrow keys resize it.")
       DisclosureGroup("Position and size") {
         HStack {
           percentField("X", \.origin.x)

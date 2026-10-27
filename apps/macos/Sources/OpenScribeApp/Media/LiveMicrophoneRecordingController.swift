@@ -259,6 +259,11 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
     showsReconnect && pendingDifferentDevice != nil
   }
 
+  var replacementMicrophoneName: String? {
+    guard showsUseThisMicrophone else { return nil }
+    return pendingDifferentDevice?.localizedName
+  }
+
   private var continuingSourceName: String {
     captureSelection.kind == .applicationAudio ? captureSelection.name : "System audio"
   }

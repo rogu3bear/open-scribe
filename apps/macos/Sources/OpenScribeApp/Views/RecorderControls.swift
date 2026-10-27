@@ -29,12 +29,17 @@ struct RecorderControls: View {
         }
       }.keyboardShortcut("p", modifiers: [.command, .shift])
     }
-    if recorder.showsUseThisMicrophone {
-      Button("Use this microphone instead") {
+    if let microphoneName = recorder.replacementMicrophoneName {
+      Button {
         recorder.confirmDifferentMicrophone()
         store.refresh()
+      } label: {
+        Text("Use \(microphoneName) instead")
+          .lineLimit(1)
+          .truncationMode(.middle)
       }
-      Button("Keep the selected microphone.") {
+      .help("Use \(microphoneName) instead of the previously selected microphone")
+      Button("Keep the selected microphone") {
         recorder.dismissDifferentMicrophone()
         store.refresh()
       }

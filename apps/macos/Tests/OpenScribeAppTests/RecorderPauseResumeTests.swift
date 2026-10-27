@@ -136,6 +136,7 @@ final class RecorderPauseResumeTests: XCTestCase {
     harness.controller.reconnectMicrophone()
     await settle()
     XCTAssertTrue(harness.controller.showsUseThisMicrophone)
+    XCTAssertEqual(harness.controller.replacementMicrophoneName, "B")
     XCTAssertEqual(harness.captures.microphones.count, 1)
 
     // The displayed choice concerned B. The later asynchronous probe sees C.
@@ -143,6 +144,7 @@ final class RecorderPauseResumeTests: XCTestCase {
     currentDevice = microphoneC
     await settle()
     XCTAssertTrue(harness.controller.showsUseThisMicrophone, "C needs its own confirmation")
+    XCTAssertEqual(harness.controller.replacementMicrophoneName, "C")
     XCTAssertEqual(
       harness.controller.errorMessage,
       "This is a different microphone. System audio is still recording.")
@@ -164,6 +166,7 @@ final class RecorderPauseResumeTests: XCTestCase {
     await settle()
     XCTAssertFalse(harness.controller.isMicrophoneRetired)
     XCTAssertFalse(harness.controller.showsUseThisMicrophone)
+    XCTAssertNil(harness.controller.replacementMicrophoneName)
     XCTAssertEqual(harness.captures.systems.count, 1)
     XCTAssertEqual(system.stopCount, 0)
     XCTAssertEqual(
