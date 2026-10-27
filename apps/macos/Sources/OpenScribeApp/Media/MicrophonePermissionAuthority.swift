@@ -17,10 +17,7 @@ struct MicrophoneDeviceIdentity: Equatable, Sendable {
 enum MicrophoneDeviceProbe {
   /// Production input. Tests inject their own closure and do not call this.
   @MainActor static func currentInput() -> MicrophoneDeviceIdentity? {
-    guard let device = AVCaptureDevice.default(for: .audio) else { return nil }
-    guard !device.uniqueID.isEmpty else { return nil }
-    return MicrophoneDeviceIdentity(
-      uniqueID: device.uniqueID, localizedName: device.localizedName)
+    try? CoreAudioInputDevice.currentInput()
   }
 }
 

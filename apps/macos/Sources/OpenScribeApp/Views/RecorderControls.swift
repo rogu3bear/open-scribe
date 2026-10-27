@@ -38,6 +38,7 @@ struct RecorderControls: View {
           .lineLimit(1)
           .truncationMode(.middle)
       }
+      .accessibilityLabel("Use \(microphoneName) instead")
       .help("Use \(microphoneName) instead of the previously selected microphone")
       Button("Keep the selected microphone") {
         recorder.dismissDifferentMicrophone()

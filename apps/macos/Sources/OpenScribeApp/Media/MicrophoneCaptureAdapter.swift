@@ -10,6 +10,8 @@ enum MicrophoneCaptureAdapterError: Error, Equatable {
   case bufferByteSizeMismatch
   case missingHostTime
   case writerFailed
+  case inputDeviceUnavailable
+  case inputDeviceChanged
 }
 
 enum MicrophoneRouteEvent: String, Equatable, Sendable {
@@ -73,6 +75,7 @@ typealias MicrophoneObservationHandler = @Sendable (MicrophoneSourceHealthObserv
 
 protocol MicrophoneCaptureBackend: AnyObject, Sendable {
   var inputFormat: AVAudioFormat { get }
+  func bindInput(to device: MicrophoneDeviceIdentity?) throws
   func installTap(
     bufferSize: AVAudioFrameCount,
     handler: @escaping (AVAudioPCMBuffer, AVAudioTime) -> Void
@@ -82,11 +85,18 @@ protocol MicrophoneCaptureBackend: AnyObject, Sendable {
   func setRouteEventHandler(_ handler: MicrophoneRouteEventHandler?)
 }
 
+extension MicrophoneCaptureBackend {
+  func bindInput(to device: MicrophoneDeviceIdentity?) throws {
+    if device != nil { throw MicrophoneCaptureAdapterError.inputDeviceUnavailable }
+  }
+}
+
 final class AVAudioEngineMicrophoneBackend: MicrophoneCaptureBackend, @unchecked Sendable {
   private let engine: AVAudioEngine
   private let routeEventLock = NSLock()
   private var routeEventHandler: MicrophoneRouteEventHandler?
   private var configurationObserver: NSObjectProtocol?
+  private var boundInput: MicrophoneDeviceIdentity?
 
   init(engine: AVAudioEngine = AVAudioEngine()) {
     self.engine = engine
@@ -94,6 +104,20 @@ final class AVAudioEngineMicrophoneBackend: MicrophoneCaptureBackend, @unchecked
 
   var inputFormat: AVAudioFormat {
     engine.inputNode.outputFormat(forBus: 0)
+  }
+
+  private var inputBinding: MicrophoneInputBinding {
+    MicrophoneInputBinding(
+      resolve: CoreAudioInputDevice.resolve,
+      select: { [self] in try engine.inputNode.auAudioUnit.setDeviceID($0) },
+      selectedUID: { [self] in
+        try CoreAudioInputDevice.uniqueID(engine.inputNode.auAudioUnit.deviceID)
+      })
+  }
+
+  func bindInput(to device: MicrophoneDeviceIdentity?) throws {
+    try inputBinding.bind(device)
+    boundInput = device
   }
 
   func installTap(
@@ -109,8 +133,14 @@ final class AVAudioEngineMicrophoneBackend: MicrophoneCaptureBackend, @unchecked
   }
 
   func start() throws {
+    guard let boundInput else { throw MicrophoneCaptureAdapterError.inputDeviceUnavailable }
+    try inputBinding.validate(boundInput)
     engine.prepare()
     try engine.start()
+    do { try inputBinding.validate(boundInput) } catch {
+      engine.stop()
+      throw error
+    }
   }
 
   func stop() {
@@ -258,6 +288,7 @@ final class MicrophoneCaptureAdapter: @unchecked Sendable {
   private let observationLock = NSLock()
   private var started = false
   private var acceptingCallbacks = false
+  private var inputAdmitted = false
   private var hasStarted = false
   private var failureReported = false
   private var firstSampleReported = false
@@ -293,6 +324,13 @@ final class MicrophoneCaptureAdapter: @unchecked Sendable {
       writer: writer,
       identity: MicrophoneCaptureIdentity(authorization: writer.authorization)
     )
+  }
+
+  func bindInput(to device: MicrophoneDeviceIdentity?) throws {
+    try lifecycleQueue.sync {
+      guard !hasStarted else { throw MicrophoneCaptureAdapterError.alreadyStarted }
+      try backend.bindInput(to: device)
+    }
   }
 
   func start(
@@ -336,6 +374,7 @@ final class MicrophoneCaptureAdapter: @unchecked Sendable {
     }
     started = true
     acceptingCallbacks = true
+    inputAdmitted = false
     hasStarted = true
     failureReported = false
     firstSampleReported = false
@@ -357,7 +396,7 @@ final class MicrophoneCaptureAdapter: @unchecked Sendable {
     backend.installTap(bufferSize: Self.bufferSize) { [weak self] buffer, time in
       guard let self else { return }
       let accepted = self.stateLock.withLock {
-        guard self.acceptingCallbacks else { return false }
+        guard self.acceptingCallbacks, self.inputAdmitted else { return false }
         self.acceptedCallbacks.enter()
         return true
       }
@@ -424,6 +463,7 @@ final class MicrophoneCaptureAdapter: @unchecked Sendable {
 
     do {
       try backend.start()
+      stateLock.withLock { inputAdmitted = true }
     } catch {
       _ = stopIsolated()
       throw error
@@ -439,6 +479,7 @@ final class MicrophoneCaptureAdapter: @unchecked Sendable {
   private func stopIsolated() -> UInt64? {
     stateLock.lock()
     acceptingCallbacks = false
+    inputAdmitted = false
     stateLock.unlock()
     if backendActive {
       backend.stop()

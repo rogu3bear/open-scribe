@@ -3,48 +3,6 @@ import AppKit
 import Darwin
 import Foundation
 
-typealias MicrophoneFirstSampleHandler = @Sendable (NativeFirstSampleReceipt) -> Void
-typealias MicrophoneHealthHandler = @Sendable (MicrophoneSourceHealthObservation) -> Void
-typealias MicrophoneFailureHandler = @Sendable (MicrophoneCaptureAdapterError) -> Void
-typealias SystemAudioFirstSampleHandler = @Sendable (NativeFirstSampleReceipt) -> Void
-typealias SystemAudioFailureHandler = @Sendable (SystemAudioCaptureAdapterError) -> Void
-
-protocol ManagedSegmentWriting: CapturedAudioWriting {
-  var authorization: NativeMediaOpenAuthorization { get }
-  func receipt() throws -> NativeMediaOpenReceipt
-  func sealSegmentReceipt(finalSampleHostTime: UInt64) throws -> NativeSealSegmentReceipt
-  /// Rust's durable acceptance of `segmentId`'s first sample when this writer
-  /// already submitted it on its own queue; nil when the caller must submit.
-  func acceptedFirstSampleEvidence(segmentId: String) -> NativeFirstSampleEvidence?
-}
-
-extension ManagedSegmentWriting {
-  func acceptedFirstSampleEvidence(segmentId: String) -> NativeFirstSampleEvidence? { nil }
-}
-
-extension ManagedCAFWriter: ManagedSegmentWriting {}
-
-protocol MicrophoneCapturing: AnyObject, Sendable {
-  func start(
-    onFirstSample: @escaping MicrophoneFirstSampleHandler,
-    onObservation: @escaping MicrophoneHealthHandler,
-    onFailure: @escaping MicrophoneFailureHandler
-  ) throws
-  func stop() -> UInt64?
-}
-
-extension MicrophoneCaptureAdapter: MicrophoneCapturing {}
-
-protocol SystemAudioCapturing: AnyObject, Sendable {
-  func start(
-    onFirstSample: @escaping SystemAudioFirstSampleHandler,
-    onFailure: @escaping SystemAudioFailureHandler
-  ) async throws
-  func stop() async throws -> UInt64?
-}
-
-extension SystemAudioCaptureAdapter: SystemAudioCapturing {}
-
 enum LiveMicrophoneRecordingPhase: String, Equatable, Sendable {
   case idle
   case requestingPermission
@@ -126,7 +84,7 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
   /// against this snapshot, never against the current segment.
   private var microphoneCaptureIdentity: MicrophoneCaptureIdentity?
   private var acceptedMicrophoneObservationSequence: UInt64 = 0
-  /// Matches `RESERVE_BYTES` in the store. A restore below this returns the
+  /// Matches `RESERVE_BYTES` in the store. A restore at or below this returns the
   /// space sentence and does not observe storage or stop the recording.
   private static let microphoneRestoreReserveBytes: UInt64 = 512 * 1024 * 1024
   private let microphoneDeviceProbe: @MainActor () -> MicrophoneDeviceIdentity?
@@ -148,6 +106,7 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
   /// Set while an explicit restore has an opening segment and no new sample.
   private var microphoneRestoreSegmentOpen = false
   private var restorePermissionWithdrawn = false
+  private let restoreMonitor: MicrophoneRestoreMonitor
 
   init(
     permission: MicrophonePermissionProviding,
@@ -169,7 +128,10 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
     captureHealthTelemetry: @escaping CaptureHealthTelemetry = {
       AppTelemetry.captureSourceHealth($0)
     },
-    microphoneDeviceProbe: @escaping @MainActor () -> MicrophoneDeviceIdentity? = { nil }
+    microphoneDeviceProbe: @escaping @MainActor () -> MicrophoneDeviceIdentity? = { nil },
+    restoreTimeoutWait: @escaping MicrophoneRestoreMonitor.Wait = {
+      try await MicrophoneRestoreMonitor.waitForTimeout($0)
+    }
   ) {
     self.permission = permission
     self.preparationFactory = preparationFactory
@@ -184,6 +146,7 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
     self.proofCheckpoint = proofCheckpoint
     self.segmentedSuccessorWriterFactory = segmentedSuccessorWriterFactory
     self.microphoneDeviceProbe = microphoneDeviceProbe
+    restoreMonitor = MicrophoneRestoreMonitor(wait: restoreTimeoutWait)
     super.init()
     observeSystemPower()
   }
@@ -698,35 +661,51 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
           return
         }
       }
-      try microphoneCapture?.start(
-        onFirstSample: { [weak self] receipt in
-          Task { @MainActor [weak self] in
-            guard self?.activeSessionId == sessionId else { return }
-            guard self?.activeAttempt == attempt else { return }
-            await self?.acceptFirstSample(receipt, from: .microphone, attempt: attempt)
+      let microphoneIdentity = microphoneCaptureIdentity
+      do {
+        try microphoneCapture?.bindInput(to: approvedPausedRestore ?? selectedMicrophoneDevice)
+        if microphoneRestoreSegmentOpen { beginRestoreDeadline(sessionId: sessionId) }
+        try microphoneCapture?.start(
+          onFirstSample: { [weak self] receipt in
+            Task { @MainActor [weak self] in
+              guard self?.activeSessionId == sessionId else { return }
+              guard self?.activeAttempt == attempt else { return }
+              guard self?.microphoneCaptureIdentity == microphoneIdentity else { return }
+              await self?.acceptFirstSample(receipt, from: .microphone, attempt: attempt)
+            }
+          },
+          onObservation: { [weak self] observation in
+            Task { @MainActor [weak self] in
+              guard self?.activeSessionId == sessionId else { return }
+              guard self?.activeAttempt == attempt else { return }
+              await self?.acceptMicrophoneObservation(observation)
+            }
+          },
+          onFailure: { [weak self] error in
+            Task { @MainActor [weak self] in
+              guard self?.activeSessionId == sessionId else { return }
+              guard self?.activeAttempt == attempt else { return }
+              guard let self, await self.checkMicrophonePermission() else { return }
+              await self.handleCaptureFailure(
+                String(describing: error),
+                code: "capture-\(String(describing: error))",
+                source: .microphone,
+                interruptionReason: .captureFailed,
+                expectedMicrophoneIdentity: microphoneIdentity
+              )
+            }
           }
-        },
-        onObservation: { [weak self] observation in
-          Task { @MainActor [weak self] in
-            guard self?.activeSessionId == sessionId else { return }
-            guard self?.activeAttempt == attempt else { return }
-            await self?.acceptMicrophoneObservation(observation)
-          }
-        },
-        onFailure: { [weak self] error in
-          Task { @MainActor [weak self] in
-            guard self?.activeSessionId == sessionId else { return }
-            guard self?.activeAttempt == attempt else { return }
-            guard let self, await self.checkMicrophonePermission() else { return }
-            await self.handleCaptureFailure(
-              String(describing: error),
-              code: "capture-\(String(describing: error))",
-              source: .microphone,
-              interruptionReason: .captureFailed
-            )
-          }
+        )
+      } catch {
+        if microphoneRestoreSegmentOpen {
+          await handleCaptureFailure(
+            "The approved microphone could not start.",
+            code: "microphone-restore-start", source: .microphone,
+            interruptionReason: .captureFailed, expectedMicrophoneIdentity: microphoneIdentity)
+          return
         }
-      )
+        throw error
+      }
     } catch {
       guard activeAttempt == attempt, !restoreCancelled else {
         if restoreCancelled { cancelOpenMicrophoneRestore() }
@@ -742,11 +721,19 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
   }
 
   func stop(pausing: Bool = false) async {
+    restoreMonitor.cancel()
     let sessionToStop = activeSessionId
-    if restoreTask != nil {
+    if restoreTask != nil || microphoneRestoreSegmentOpen {
       restoreCancelled = true
       restoreSampleGate?.resume(false)
-      _ = microphoneRestoreCapture?.stop()
+      _ = (microphoneRestoreCapture ?? microphoneCapture)?.stop()
+      if let writer = writers[.microphone],
+        writer.acceptedFirstSampleEvidence(segmentId: writer.authorization.segmentId) != nil,
+        let receipt = try? writer.firstSampleReceipt(hostTime: 0, frameCount: 0)
+      {
+        acceptRestoredMicrophoneSample(
+          receipt, generation: restoreGeneration, preservingForStop: true)
+      }
     }
     while let sourceFailureTask {
       await sourceFailureTask.value
@@ -899,7 +886,10 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
       return
     }
     sourcesWithFirstSample.insert(source)
-    if source == .microphone { microphoneRestoreSegmentOpen = false }
+    if source == .microphone {
+      microphoneRestoreSegmentOpen = false
+      restoreMonitor.cancel()
+    }
     await confirmRecordingIfReady(sessionId: receipt.sessionId, attempt: attempt)
   }
 
@@ -979,7 +969,8 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
         "The microphone audio route stopped.",
         code: "capture-route-interrupted",
         source: .microphone,
-        interruptionReason: .captureFailed
+        interruptionReason: .captureFailed,
+        expectedMicrophoneIdentity: observation.identity
       )
     }
   }
@@ -988,7 +979,10 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
     _ message: String,
     code: String,
     source: NativeMediaSourceKind? = nil,
-    interruptionReason: NativeSessionInterruptionReason
+    interruptionReason: NativeSessionInterruptionReason,
+    expectedMicrophoneIdentity: MicrophoneCaptureIdentity? = nil,
+    expectedRestoreGeneration: UUID? = nil,
+    requiresUnstartedRestore: Bool = false
   ) async {
     let failedSessionId = activeSessionId
     let failedAttempt = activeAttempt
@@ -999,6 +993,37 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
       phase == .starting || phase == .capturing
     else {
       return
+    }
+    guard expectedMicrophoneIdentity.map({ $0 == microphoneCaptureIdentity }) ?? true,
+      expectedRestoreGeneration.map({ $0 == restoreGeneration }) ?? true
+    else { return }
+    if requiresUnstartedRestore {
+      guard microphoneRestoreSegmentOpen else { return }
+      // Recheck after the serialized wait: writer durability precedes the UI
+      // notification, and a first sample may have landed while we waited.
+      if let writer = writers[.microphone],
+        writer.acceptedFirstSampleEvidence(segmentId: writer.authorization.segmentId) != nil
+      {
+        return
+      }
+      _ = (microphoneRestoreCapture ?? microphoneCapture)?.stop()
+      // A final drain can accept the first sample. Publish that real receipt,
+      // then retire/seal the captured span through normal failure handling.
+      if let writer = writers[.microphone],
+        writer.acceptedFirstSampleEvidence(segmentId: writer.authorization.segmentId) != nil,
+        let receipt = try? writer.firstSampleReceipt(hostTime: 0, frameCount: 0)
+      {
+        if phase == .starting, let attempt = activeAttempt {
+          await acceptFirstSample(receipt, from: .microphone, attempt: attempt)
+        } else {
+          acceptRestoredMicrophoneSample(receipt, generation: restoreGeneration)
+        }
+        await handleCaptureFailure(
+          message, code: code, source: source, interruptionReason: interruptionReason,
+          expectedMicrophoneIdentity: expectedMicrophoneIdentity,
+          expectedRestoreGeneration: expectedRestoreGeneration)
+        return
+      }
     }
     if source == .microphone, microphoneRestoreSegmentOpen {
       let withdrawn = interruptionReason == .permissionRevoked
@@ -1251,6 +1276,7 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
   }
 
   private func resetActiveSession() {
+    restoreMonitor.cancel()
     permissionWatchTask?.cancel()
     permissionWatchTask = nil
     storageWatchTask?.cancel()
@@ -1545,6 +1571,7 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
     guard showsReconnect, let preparation, let sessionId = activeSessionId else { return }
     var permissionState = permission.currentState
     if permissionState == .notDetermined {
+      errorMessage = "Microphone access is needed before the microphone can rejoin."
       permissionState = await permission.request()
       guard restoreGeneration == generation, !restoreCancelled, showsReconnect else {
         return
@@ -1562,6 +1589,7 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
       errorMessage = "Microphone access is needed before the microphone can rejoin."
       return
     }
+    let deadline = ContinuousClock.now.advanced(by: .seconds(10))
     let currentDevice = microphoneDeviceProbe()
     guard let currentDevice else {
       errorMessage = unavailableMicrophoneSentence
@@ -1575,15 +1603,24 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
       return
     }
     selectedMicrophoneDevice = currentDevice
-    if !microphoneRestoreHasReserve() {
-      errorMessage = microphoneRestoreReserveSentence
+    do {
+      if try !microphoneRestoreHasReserve() {
+        errorMessage = microphoneRestoreReserveSentence
+        return
+      }
+    } catch {
+      errorMessage =
+        "Available space could not be checked. The microphone was not restored. "
+        + restoreContinuation(continuingSourceContinuation) + " Try again."
       return
     }
     guard restoreGeneration == generation, !restoreCancelled, showsReconnect else { return }
+    if phase == .capturing { beginRestoreDeadline(sessionId: sessionId, deadline: deadline) }
     do {
       recorderDetail = try preparation.recorderAction(
         sessionId: sessionId, action: .restoreMicrophone)
     } catch {
+      restoreMonitor.cancel()
       errorMessage = microphoneCouldNotBeRestoredSentence
       return
     }
@@ -1605,14 +1642,31 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
       generation: generation, preparation: preparation, sessionId: sessionId)
   }
 
-  private func microphoneRestoreHasReserve() -> Bool {
+  private func microphoneRestoreHasReserve() throws -> Bool {
     guard
       let path = (writers.first { $0.key != .microphone }?.value ?? writers.values.first)?
         .authorization.absolutePath
     else { return false }
     let directory = URL(fileURLWithPath: path).deletingLastPathComponent().path
-    guard let bytes = try? availableBytes(directory) else { return false }
-    return bytes >= Self.microphoneRestoreReserveBytes
+    return try availableBytes(directory) > Self.microphoneRestoreReserveBytes
+  }
+
+  private func beginRestoreDeadline(
+    sessionId: String,
+    deadline: ContinuousClock.Instant = ContinuousClock.now.advanced(by: .seconds(10))
+  ) {
+    let generation = restoreGeneration
+    restoreMonitor.start(deadline: deadline) { [weak self] in
+      guard let self, self.restoreGeneration == generation,
+        self.activeSessionId == sessionId, self.microphoneRestoreSegmentOpen,
+        !self.restoreCancelled
+      else { return }
+      await self.handleCaptureFailure(
+        "The microphone did not provide audio before the restore deadline.",
+        code: "microphone-restore-timeout", source: .microphone,
+        interruptionReason: .captureFailed, expectedRestoreGeneration: generation,
+        requiresUnstartedRestore: true)
+    }
   }
 
   private func performLiveMicrophoneRestore(
@@ -1649,6 +1703,7 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
       microphoneSourceHealth = nil
       let capture = captureFactory(writers[.microphone] ?? writer)
       microphoneRestoreCapture = capture
+      try capture.bindInput(to: selectedMicrophoneDevice)
       try capture.start(
         onFirstSample: { [weak self] receipt in
           Task { @MainActor in
@@ -1672,7 +1727,8 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
             await self.handleCaptureFailure(
               String(describing: error), code: "capture-\(String(describing: error))",
               source: .microphone,
-              interruptionReason: withdrawn ? .permissionRevoked : .captureFailed)
+              interruptionReason: withdrawn ? .permissionRevoked : .captureFailed,
+              expectedMicrophoneIdentity: identity, expectedRestoreGeneration: generation)
           }
         }
       )
@@ -1705,11 +1761,11 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
   }
 
   private func acceptRestoredMicrophoneSample(
-    _ receipt: NativeFirstSampleReceipt, generation: UUID
+    _ receipt: NativeFirstSampleReceipt, generation: UUID, preservingForStop: Bool = false
   ) {
     // An older adapter cannot resolve the current attempt's sample gate.
     guard restoreGeneration == generation else { return }
-    guard !restoreCancelled, microphoneRestoreSegmentOpen,
+    guard !restoreCancelled || preservingForStop, microphoneRestoreSegmentOpen,
       let preparation
     else {
       restoreSampleGate?.resume(false)
@@ -1728,6 +1784,7 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
         throw LiveMicrophoneRecordingError.invalidFirstSample
       }
       microphoneRestoreSegmentOpen = false
+      restoreMonitor.cancel()
       failedSources.remove(.microphone)
       sourcesWithFirstSample.insert(.microphone)
       if let capture = microphoneRestoreCapture {
@@ -1739,7 +1796,7 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
       if let activeSessionId {
         _ = try? preparation.confirmRecording(sessionId: activeSessionId)
       }
-      beginPermissionWatch()
+      if !preservingForStop { beginPermissionWatch() }
       restoreSampleGate?.resume(true)
     } catch {
       restoreSampleGate?.resume(false)
@@ -1805,6 +1862,7 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
   private func cancelJournaledMicrophoneRestore(
     sessionId: String, preparation: NativeRecordingPreparationProtocol
   ) {
+    restoreMonitor.cancel()
     microphoneRestoreSegmentOpen = false
     microphoneRestoreCapture = nil
     sealedMicrophoneWriter = nil
@@ -1820,6 +1878,7 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
   /// Drops a restore that never accepted a sample. Captured microphone audio
   /// stays sealed. Stop calls this before it seals the source that kept going.
   private func cancelOpenMicrophoneRestore() {
+    restoreMonitor.cancel()
     guard microphoneRestoreSegmentOpen else { return }
     microphoneRestoreSegmentOpen = false
     approvedPausedMicrophoneRestore = nil
@@ -1874,27 +1933,6 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
       || errorMessage == capturingMicrophoneSentence
     {
       errorMessage = replacement
-    }
-  }
-}
-
-@MainActor
-private final class RestoreSampleGate {
-  private var continuation: CheckedContinuation<Bool, Never>?
-  private var result: Bool?
-
-  func resume(_ value: Bool) {
-    guard result == nil else { return }
-    result = value
-    let pending = continuation
-    continuation = nil
-    pending?.resume(returning: value)
-  }
-
-  func wait() async -> Bool {
-    if let result { return result }
-    return await withCheckedContinuation { continuation in
-      self.continuation = continuation
     }
   }
 }

@@ -23,6 +23,11 @@
 		AA0000050000000000000001 /* RecorderCaptureSelection.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000050000000000000011 /* RecorderCaptureSelection.swift */; };
 		AA0000050000000000000002 /* RecorderControls.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000050000000000000012 /* RecorderControls.swift */; };
 		AA0000050000000000000003 /* RecorderPauseResumeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000050000000000000013 /* RecorderPauseResumeTests.swift */; };
+		A02710000000000000000001 /* MicrophoneRestoreMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = A02710000000000000000011 /* MicrophoneRestoreMonitor.swift */; };
+		A02710000000000000000004 /* MicrophoneInputBinding.swift in Sources */ = {isa = PBXBuildFile; fileRef = A02710000000000000000014 /* MicrophoneInputBinding.swift */; };
+		A02710000000000000000005 /* RecordingCaptureContracts.swift in Sources */ = {isa = PBXBuildFile; fileRef = A02710000000000000000015 /* RecordingCaptureContracts.swift */; };
+		A02710000000000000000002 /* RecorderCaptureTestSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = A02710000000000000000012 /* RecorderCaptureTestSupport.swift */; };
+		A02710000000000000000003 /* RecorderMicrophoneRestoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A02710000000000000000013 /* RecorderMicrophoneRestoreTests.swift */; };
 		CA63A3F920D148E6A9BCE201 /* SystemAudioCaptureAdapterTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DA63A3F920D148E6A9BCE201 /* SystemAudioCaptureAdapterTests.swift */; };
 		AB61A3F920D148E6A9BCE304 /* TimelineWorkflowTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC61A3F920D148E6A9BCE304 /* TimelineWorkflowTests.swift */; };
 		E29A4285E85FCA0A16EDD2F9 /* TranscriptLibraryModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 46189D5DFA1610F1DBACD437 /* TranscriptLibraryModelTests.swift */; };
@@ -133,6 +138,11 @@
 		AA0000050000000000000011 /* RecorderCaptureSelection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecorderCaptureSelection.swift; sourceTree = "<group>"; };
 		AA0000050000000000000012 /* RecorderControls.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecorderControls.swift; sourceTree = "<group>"; };
 		AA0000050000000000000013 /* RecorderPauseResumeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecorderPauseResumeTests.swift; sourceTree = "<group>"; };
+		A02710000000000000000011 /* MicrophoneRestoreMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MicrophoneRestoreMonitor.swift; sourceTree = "<group>"; };
+		A02710000000000000000014 /* MicrophoneInputBinding.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MicrophoneInputBinding.swift; sourceTree = "<group>"; };
+		A02710000000000000000015 /* RecordingCaptureContracts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecordingCaptureContracts.swift; sourceTree = "<group>"; };
+		A02710000000000000000012 /* RecorderCaptureTestSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecorderCaptureTestSupport.swift; sourceTree = "<group>"; };
+		A02710000000000000000013 /* RecorderMicrophoneRestoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecorderMicrophoneRestoreTests.swift; sourceTree = "<group>"; };
 		DA63A3F920D148E6A9BCE201 /* SystemAudioCaptureAdapterTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SystemAudioCaptureAdapterTests.swift; sourceTree = "<group>"; };
 		AC61A3F920D148E6A9BCE304 /* TimelineWorkflowTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TimelineWorkflowTests.swift; sourceTree = "<group>"; };
 		46189D5DFA1610F1DBACD437 /* TranscriptLibraryModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptLibraryModelTests.swift; sourceTree = "<group>"; };
@@ -320,6 +330,9 @@
 				A12A3F920D148E6A9BCE201 /* ImportedMediaAuthorityAdapter.swift */,
 				B01A3F920D148E6A9BCE201 /* BoundedAudioImport.swift */,
 				D263A3F920D148E6A9BCE201 /* LiveMicrophoneRecordingController.swift */,
+				A02710000000000000000011 /* MicrophoneRestoreMonitor.swift */,
+				A02710000000000000000014 /* MicrophoneInputBinding.swift */,
+				A02710000000000000000015 /* RecordingCaptureContracts.swift */,
 				D663A3F920D148E6A9BCE201 /* SystemAudioCaptureAdapter.swift */,
 				5E7C1A2B3D4F5061728394AC /* PlaybackByteSources.swift */,
 				5E7C1A2B3D4F5061728394AE /* RecoveredAudioPlayer.swift */,
@@ -346,6 +359,8 @@
 				A14183000000000000000009 /* LaunchConfigurationTests.swift */,
 				5E7C1A2B3D4F5061C0020002 /* ContextTests.swift */,
 				AA0000050000000000000013 /* RecorderPauseResumeTests.swift */,
+				A02710000000000000000012 /* RecorderCaptureTestSupport.swift */,
+				A02710000000000000000013 /* RecorderMicrophoneRestoreTests.swift */,
 				A22A3F920D148E6A9BCE201 /* ImportedMediaAuthorityAdapterTests.swift */,
 				F5696F23409FC2574DF65AD5 /* FixtureSessionTests.swift */,
 				B0198AA144C943FF87190102 /* ConversationSidebarRowTests.swift */,
@@ -532,6 +547,8 @@
 				A14183000000000000000025 /* PolicyDocumentTests.swift in Sources */,
 				A14183000000000000000010 /* LaunchConfigurationTests.swift in Sources */,
 				AA0000050000000000000003 /* RecorderPauseResumeTests.swift in Sources */,
+				A02710000000000000000002 /* RecorderCaptureTestSupport.swift in Sources */,
+				A02710000000000000000003 /* RecorderMicrophoneRestoreTests.swift in Sources */,
 				A21A3F920D148E6A9BCE201 /* ImportedMediaAuthorityAdapterTests.swift in Sources */,
 				1F1D1AD4B3B9F501CC0AB5DF /* FixtureSessionTests.swift in Sources */,
 				B0198AA144C943FF87190101 /* ConversationSidebarRowTests.swift in Sources */,
@@ -583,6 +600,9 @@
 				B0198AA144C943FF87190001 /* ConversationWorkspaceView.swift in Sources */,
 				B0198AA144C943FF87190002 /* ConversationIdentityPresentation.swift in Sources */,
 				C263A3F920D148E6A9BCE201 /* LiveMicrophoneRecordingController.swift in Sources */,
+				A02710000000000000000001 /* MicrophoneRestoreMonitor.swift in Sources */,
+				A02710000000000000000004 /* MicrophoneInputBinding.swift in Sources */,
+				A02710000000000000000005 /* RecordingCaptureContracts.swift in Sources */,
 				C663A3F920D148E6A9BCE201 /* SystemAudioCaptureAdapter.swift in Sources */,
 				5E7C1A2B3D4F5061728394AB /* PlaybackByteSources.swift in Sources */,
 				5E7C1A2B3D4F5061728394AD /* RecoveredAudioPlayer.swift in Sources */,

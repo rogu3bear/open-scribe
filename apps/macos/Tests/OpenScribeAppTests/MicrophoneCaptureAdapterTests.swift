@@ -17,6 +17,8 @@ private final class FakeMicrophoneBackend: MicrophoneCaptureBackend, @unchecked 
   private var handler: ((AVAudioPCMBuffer, AVAudioTime) -> Void)?
   private var routeEventHandler: MicrophoneRouteEventHandler?
   private(set) var started = false
+  private(set) var boundInputUID: String?
+  var bufferDuringStart: AVAudioPCMBuffer?
   let stopped = DispatchSemaphore(value: 0)
 
   init(
@@ -38,9 +40,12 @@ private final class FakeMicrophoneBackend: MicrophoneCaptureBackend, @unchecked 
     self.handler = handler
   }
 
+  func bindInput(to device: MicrophoneDeviceIdentity?) throws { boundInputUID = device?.uniqueID }
+
   func start() throws {
     startEntered?.signal()
     allowStart?.wait()
+    if let bufferDuringStart { emit(bufferDuringStart, hostTime: 42_000) }
     if shouldFailStart {
       throw FakeBackendError.startFailed
     }
@@ -63,6 +68,31 @@ private final class FakeMicrophoneBackend: MicrophoneCaptureBackend, @unchecked 
 
   func emitRouteEvent(_ event: MicrophoneRouteEvent) {
     routeEventHandler?(event)
+  }
+}
+
+private final class InputBindingHardware: @unchecked Sendable {
+  let systemDefaultID: UInt32 = 3
+  var selectedID: UInt32 = 3
+  var reusedID = false
+  var binding: MicrophoneInputBinding {
+    MicrophoneInputBinding(
+      resolve: { $0 == "b" ? 2 : 0 },
+      select: { [self] in selectedID = $0 },
+      selectedUID: { [self] in selectedID == 2 && !reusedID ? "b" : "c" })
+  }
+}
+
+private final class AdmissionCountingWriter: CapturedAudioWriting, @unchecked Sendable {
+  private let lock = NSLock()
+  private var writes = 0
+  var count: Int { lock.withLock { writes } }
+  func writeCapturedBuffer(_ input: AVAudioPCMBuffer) throws -> AVAudioFrameCount {
+    lock.withLock { writes += 1 }
+    return input.frameLength
+  }
+  func firstSampleReceipt(hostTime: UInt64, frameCount: UInt64) throws -> NativeFirstSampleReceipt {
+    try ProgressCapturedWriter().firstSampleReceipt(hostTime: hostTime, frameCount: frameCount)
   }
 }
 
@@ -166,6 +196,58 @@ private final class PCMBufferBox: @unchecked Sendable {
 }
 
 final class MicrophoneCaptureAdapterTests: XCTestCase {
+  func testApprovedInputIsBoundBeforeCaptureStarts() throws {
+    let backend = FakeMicrophoneBackend(
+      inputFormat: AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 1)!)
+    let adapter = MicrophoneCaptureAdapter(backend: backend, writer: ProgressCapturedWriter())
+    try adapter.bindInput(
+      to: MicrophoneDeviceIdentity(uniqueID: "approved-b", localizedName: "Mic"))
+    XCTAssertEqual(backend.boundInputUID, "approved-b")
+    XCTAssertFalse(backend.started)
+    try adapter.start(
+      onFirstSample: { _ in }, onFailure: { _ in XCTFail("unexpected capture failure") })
+    _ = adapter.stop()
+  }
+
+  func testBuffersBeforeBackendAdmissionAreNotWritten() throws {
+    let backend = FakeMicrophoneBackend(
+      inputFormat: AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 1)!)
+    let buffer = try TimelineRuntimeProof.buffer(frames: 480, value: 8192, channels: 1)
+    backend.bufferDuringStart = buffer
+    let writer = AdmissionCountingWriter()
+    let adapter = MicrophoneCaptureAdapter(backend: backend, writer: writer)
+    let first = expectation(description: "first sample after backend admission")
+    try adapter.start(
+      onFirstSample: { _ in first.fulfill() },
+      onFailure: { _ in XCTFail("unexpected capture failure") })
+    backend.emit(buffer, hostTime: 43_000)
+    wait(for: [first], timeout: 2)
+    _ = adapter.stop()
+    XCTAssertEqual(writer.count, 1, "the startup buffer must not become captured evidence")
+  }
+
+  func testBindingSelectsBWhenTheSystemDefaultHasAlreadyBecomeC() throws {
+    let hardware = InputBindingHardware()
+    let binding = hardware.binding
+    try binding.bind(MicrophoneDeviceIdentity(uniqueID: "b", localizedName: "Same name"))
+    XCTAssertEqual(hardware.selectedID, 2)
+    XCTAssertEqual(
+      hardware.systemDefaultID, 3, "per-engine binding must not mutate the system route")
+  }
+
+  func testBindingRejectsReusedDeviceIDAndUnavailableIdentity() throws {
+    let hardware = InputBindingHardware()
+    hardware.reusedID = true
+    XCTAssertThrowsError(
+      try hardware.binding.bind(MicrophoneDeviceIdentity(uniqueID: "b", localizedName: "Same name"))
+    ) {
+      XCTAssertEqual($0 as? MicrophoneCaptureAdapterError, .inputDeviceChanged)
+    }
+    XCTAssertThrowsError(try hardware.binding.bind(nil)) {
+      XCTAssertEqual($0 as? MicrophoneCaptureAdapterError, .inputDeviceUnavailable)
+    }
+  }
+
   private var managedRoots: [URL] = []
 
   override func tearDownWithError() throws {
