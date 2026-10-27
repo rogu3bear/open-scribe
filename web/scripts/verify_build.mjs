@@ -40,6 +40,9 @@ for (const route of [
   if (!routeHtml.includes("<main") || !routeHtml.includes("<h1")) {
     throw new Error(`/${route} omitted useful SSR content`);
   }
+  if (/<script\b|modulepreload|application\/wasm/.test(routeHtml)) {
+    throw new Error(`/${route} unnecessarily requests a hydration runtime`);
+  }
   if (Buffer.byteLength(routeHtml) > 64 * 1024) {
     throw new Error(`/${route} exceeds ADR 0015's 64 KiB useful SSR budget`);
   }
@@ -104,11 +107,9 @@ for (const kind of ["js", "wasm"]) {
   }
 }
 
-// The Worker must carry the boot hash (so SSR emits the external module) and
-// ADR 0015's exact policy, which admits no inline script.
+// Retain ADR 0015's exact policy. Current static routes request no script.
 const workerWasm = await readFile(join(root, "web/build/index_bg.wasm"));
 for (const needle of [
-  manifest.hashes.boot,
   "script-src 'self' 'wasm-unsafe-eval'; style-src 'self'",
   "cross-origin-opener-policy",
   "permissions-policy",
@@ -131,5 +132,5 @@ if (/d1_databases|database_id|migrations_dir/i.test(wrangler)) {
 }
 
 console.log("WEB_BUILD_GREEN");
-console.log("proof=leptos_hydrate,hashed_assets,external_boot_module,adr_0015_csp_and_headers,worker_bundle,production_router_ssr,canonical_legal_text,useful_ssr_html");
+console.log("proof=static_routes_without_hydration,hashed_assets,adr_0015_csp_and_headers,worker_bundle,production_router_ssr,canonical_legal_text,useful_ssr_html");
 console.log("excludes=edge_http_delivery,rendered_accessibility,deploy,native_capture,persistence,release");

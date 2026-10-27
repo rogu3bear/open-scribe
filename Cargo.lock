@@ -1626,8 +1626,10 @@ dependencies = [
 name = "open-scribe-web"
 version = "0.0.0"
 dependencies = [
+ "any_spawner 0.3.0",
  "axum",
  "console_error_panic_hook",
+ "futures",
  "getrandom 0.3.4",
  "getrandom 0.4.3",
  "leptos",
