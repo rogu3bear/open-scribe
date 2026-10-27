@@ -38,9 +38,10 @@ Import copies user-selected audio into the conversation library without changing
 the original or starting transcription. PCM CAF may be four hours of stereo
 16-bit 48 kHz audio. Files above 256 MiB play as verified chunks and are not
 held in memory. M4A AAC/Apple Lossless imports have a 4 GiB source limit and
-the same four-hour duration limit. Compressed preservation supports a single
-audio track at 48 kHz with one or two channels; small mono M4A at other rates
-uses the existing bounded 48 kHz CAF normalization path. Unsupported layouts,
+the same four-hour duration limit. M4A imports retain a byte-identical managed
+original with one or two channels. Transcription derives a temporary 48 kHz
+PCM companion from the verified original; importing a different sample rate
+does not replace the original with decoded audio. Unsupported layouts,
 rates, formats, or policy excesses
 fail with a visible explanation. Capture must finish before import begins.
 The picker accepts several recordings and imports them in order, one copy and
@@ -50,7 +51,7 @@ imported. The batch waits between files while capture holds admission and does
 not change the selected conversation for every successful import. Originals
 are always kept; there is no automatic compression or deletion.
 
-Swift probes the selected file and a private staged copy. Rust verifies the
+Swift probes a private staged copy. Rust verifies the
 staged digest, copies and synchronizes managed media, checks its exact bytes,
 then journals and atomically publishes a Ready for Review session. Large M4A
 playback retains an identity-bound descriptor and verifies 64 KiB chunks while
@@ -59,6 +60,9 @@ anonymous playback snapshot. Library polling checks identity and length;
 playback revalidates the full digest before opening a decoder. Original metadata
 remains separate from the managed media contract. ADR 0007 owns the boundary;
 this slice does not qualify its complete platform or M1 runtime matrix.
+
+See the [conversation review guide](../../docs/REVIEW_GUIDE.md) for the main
+recording, import, playback, correction, search, and export controls.
 
 ## Conversation review
 
