@@ -5,7 +5,7 @@ use std::os::fd::{AsRawFd, OwnedFd, RawFd};
 use std::path::{Path, PathBuf};
 
 use open_scribe_types::SessionId;
-use rusqlite::params;
+use rusqlite::{OptionalExtension, params};
 use rustix::fs as fd_fs;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -177,16 +177,31 @@ impl SessionStore {
     /// Historical normalized imports retained PCM, not the selected M4A.
     /// Do not describe that derived file as an original-audio export.
     pub fn retains_imported_original(&self, session: &SessionId) -> Result<bool, StoreError> {
-        let payload: String = self.connection.query_row(
-            "SELECT payload_json FROM session_events
+        let payload: Option<String> = self
+            .connection
+            .query_row(
+                "SELECT payload_json FROM session_events
              WHERE session_id = ?1 AND event_kind = 'media_imported'
              ORDER BY sequence DESC LIMIT 1",
+                [&session.0],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if let Some(payload) = payload {
+            let payload: Value = serde_json::from_str(&payload)?;
+            return Ok(payload["media_format"] == COMPRESSED_IMPORT_MEDIA_FORMAT
+                || payload["original_media"].is_null());
+        }
+        // A verified package restore uses segment_restored/package_restored,
+        // not media_imported. Its imported PCM file is still retained media.
+        Ok(self.connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM session_restorations
+             JOIN imports USING (session_id)
+             JOIN sessions ON sessions.id = imports.session_id
+             WHERE session_id = ?1 AND sessions.origin = 'import')",
             [&session.0],
             |row| row.get(0),
-        )?;
-        let payload: Value = serde_json::from_str(&payload)?;
-        Ok(payload["media_format"] == COMPRESSED_IMPORT_MEDIA_FORMAT
-            || payload["original_media"].is_null())
+        )?)
     }
 
     /// Copies one bounded, independently validated CAF into the existing managed library.

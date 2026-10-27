@@ -198,6 +198,18 @@ fn an_imported_conversation_survives_a_round_trip_with_its_review() {
 
     // Every reference the second library exports resolves there.
     let other = SessionStore::open(parent.join("Other Mac")).unwrap();
+    assert!(other.retains_imported_original(&restored).unwrap());
+    let library =
+        crate::transcript_library::TranscriptLibrary::open(parent.join("Other Mac")).unwrap();
+    let options = library.audio_export_options(&restored).unwrap();
+    assert_eq!(options.original_extension.as_deref(), Some("caf"));
+    assert_eq!(options.pcm_tracks.len(), 1);
+    let exported = parent.join("Restored original.caf");
+    library.export_original_media(&restored, &exported).unwrap();
+    assert_eq!(
+        fs::read(&exported).unwrap(),
+        fs::read(&fixture.media).unwrap()
+    );
     let transcript = read(&parent.join("Second.openscribe"), "transcript.json");
     for segment in transcript["segments"].as_array().unwrap() {
         let reference = EvidenceRef::parse(&segment["evidence_ref"].to_string()).unwrap();
