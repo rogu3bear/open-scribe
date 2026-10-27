@@ -22,6 +22,8 @@ struct TranscriptSection: View {
   @State private var draftText = ""
   @State private var renaming: NativeSessionSpeaker?
   @State private var draftLabel = ""
+  @State private var editRequest = UUID()
+  @State private var renameRequest = UUID()
   @State private var showingModels = false
   @State private var showingReprocessConfirmation = false
 
@@ -49,9 +51,13 @@ struct TranscriptSection: View {
           exportMenu
         }
       }
-      Text(session.transcriptionUnavailableReason ?? availabilityText)
-        .font(.callout)
-        .foregroundStyle(.secondary)
+      if transcripts.isLoading {
+        ProgressView("Loading conversation…").controlSize(.small)
+      } else {
+        Text(session.transcriptionUnavailableReason ?? availabilityText)
+          .font(.callout)
+          .foregroundStyle(.secondary)
+      }
       if showsTranscriptionControls {
         transcriptionControls
       }
@@ -64,6 +70,7 @@ struct TranscriptSection: View {
           isPlaybackActive: isPlaybackActive, playbackPosition: playbackPosition,
           onSeek: onSeek,
           onCorrect: { segment in
+            editRequest = UUID()
             draftText = segment.effectiveText
             transcripts.dismissMessage()
             editing = segment
@@ -88,7 +95,7 @@ struct TranscriptSection: View {
         + (session.transcriptionUnavailableReason == nil ? ":timed" : ":untimed")
         + ":\(session.transcript.state.rawValue):\(session.transcript.documentVersion)"
     ) {
-      transcripts.load(session: session)
+      await transcripts.load(session: session)
     }
     .sheet(item: $editing) { segment in
       correctionSheet(segment)
@@ -283,6 +290,7 @@ struct TranscriptSection: View {
       ForEach(transcripts.speakers) { speaker in
         Button {
           draftLabel = speaker.namedByUser ? speaker.label : ""
+          renameRequest = UUID()
           transcripts.dismissMessage()
           renaming = speaker
         } label: {
@@ -405,16 +413,18 @@ struct TranscriptSection: View {
       HStack {
         if segment.corrected {
           Button("Restore Machine Reading") {
-            if transcripts.correct(segment, text: nil) { editing = nil }
+            saveCorrection(segment, text: nil)
           }
+          .disabled(transcripts.isEditing)
         }
         Spacer()
         SheetActionButtons(
           confirmTitle: "Save",
-          isConfirmationDisabled: draftText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+          isConfirmationDisabled: transcripts.isEditing || transcripts.isLoading
+            || draftText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
           cancel: { editing = nil },
           confirm: {
-            if transcripts.correct(segment, text: draftText) { editing = nil }
+            saveCorrection(segment, text: draftText)
           })
       }
     }
@@ -435,23 +445,46 @@ struct TranscriptSection: View {
       HStack {
         if speaker.namedByUser {
           Button("Use Source Name") {
-            if transcripts.renameSpeaker(trackId: speaker.trackId, label: nil) { renaming = nil }
+            saveSourceName(speaker, label: nil)
           }
+          .disabled(transcripts.isEditing)
         }
         Spacer()
         SheetActionButtons(
           confirmTitle: "Rename",
-          isConfirmationDisabled: draftLabel.trimmingCharacters(in: .whitespaces).isEmpty,
+          isConfirmationDisabled: transcripts.isEditing || transcripts.isLoading
+            || draftLabel.trimmingCharacters(in: .whitespaces).isEmpty,
           cancel: { renaming = nil },
           confirm: {
-            if transcripts.renameSpeaker(trackId: speaker.trackId, label: draftLabel) {
-              renaming = nil
-            }
+            saveSourceName(speaker, label: draftLabel)
           })
       }
     }
     .padding(ScribeSpacing.standard)
     .frame(width: 400)
+  }
+
+  private func saveCorrection(_ segment: NativeTranscriptSegment, text: String?) {
+    let request = editRequest
+    Task {
+      if await transcripts.correct(segment, text: text, in: session.sessionId),
+        editRequest == request
+      {
+        editing = nil
+      }
+    }
+  }
+
+  private func saveSourceName(_ speaker: NativeSessionSpeaker, label: String?) {
+    let request = renameRequest
+    Task {
+      if await transcripts.renameSpeaker(
+        trackId: speaker.trackId, label: label, in: session.sessionId),
+        renameRequest == request
+      {
+        renaming = nil
+      }
+    }
   }
 
   private func export(_ format: NativeTranscriptExportFormat, type: UTType) {
@@ -460,7 +493,7 @@ struct TranscriptSection: View {
     panel.canCreateDirectories = true
     panel.nameFieldStringValue = Self.fileName(session.title, type: type)
     guard panel.runModal() == .OK, let url = panel.url else { return }
-    transcripts.export(format: format, to: url)
+    Task { await transcripts.export(format: format, to: url, from: session.sessionId) }
   }
 
   private func exportConversation(
@@ -471,7 +504,7 @@ struct TranscriptSection: View {
     panel.canCreateDirectories = true
     panel.nameFieldStringValue = Self.fileName(session.title + suffix, type: type)
     guard panel.runModal() == .OK, let url = panel.url else { return }
-    Task { await transcripts.export(kind, to: url) }
+    Task { await transcripts.export(kind, to: url, from: session.sessionId) }
   }
 
   /// A `.openscribe` package is a directory; the name always keeps its extension.
@@ -502,7 +535,7 @@ struct TranscriptSection: View {
       "This format carries supported PCM audio, selected transcripts, speaker labels, and markers. Context evidence is omitted; failed transcript status restores as pending. Compressed imports are not a supported portable round-trip."
     guard panel.runModal() == .OK, var url = panel.url else { return }
     if url.pathExtension != "openscribe" { url.appendPathExtension("openscribe") }
-    Task { await transcripts.export(.portablePackage, to: url) }
+    Task { await transcripts.export(.portablePackage, to: url, from: session.sessionId) }
   }
 
   static func fileName(_ title: String, type: UTType) -> String {

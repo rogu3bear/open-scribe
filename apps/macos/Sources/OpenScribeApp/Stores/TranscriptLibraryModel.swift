@@ -37,11 +37,20 @@ final class TranscriptLibraryModel: ObservableObject {
   @Published private(set) var contextDetail: NativeContextDetail?
   @Published private(set) var contextEvents: [NativeContextEvent] = []
 
-  private let library: NativeTranscriptLibrary?
+  @Published private(set) var isLoading = false
+  @Published private(set) var isSearching = false
+  @Published private(set) var isEditing = false
+  @Published private(set) var isDeleting = false
+  private var loadGeneration: UInt64 = 0
+  private var searchGeneration: UInt64 = 0
+  private var library: NativeTranscriptLibrary?
+  private var managedRoot: URL?
+  private var connectionTask: Task<TranscriptLibraryConnection, Error>?
+  private var connectionId: UUID?
   private let moveToTrash: TrashMover
   private var activeSearchQuery = ""
   /// The Rust-validated capture timeline, for the WAV mix.
-  private let timeline: (@Sendable (String) throws -> [NativeTimelineSegment])?
+  private var timeline: (@Sendable (String) throws -> [NativeTimelineSegment])?
   #if DEBUG
     private var isFixedPreview = false
   #endif
@@ -54,18 +63,53 @@ final class TranscriptLibraryModel: ObservableObject {
     self.library = library
     self.moveToTrash = moveToTrash
     self.timeline = timeline
+    self.managedRoot = nil
   }
 
   convenience init(managedRoot: URL?) {
-    let library = try? managedRoot.map { try NativeTranscriptLibrary.open(managedRoot: $0.path) }
-    var timeline: (@Sendable (String) throws -> [NativeTimelineSegment])?
-    if let root = managedRoot,
-      let preparation = try? NativeRecordingPreparation.open(managedRoot: root.path)
-    {
-      timeline = { sessionId in try preparation.playbackTimeline(sessionId: sessionId) }
-    }
-    self.init(library: library, timeline: timeline)
+    self.init(library: nil)
+    self.managedRoot = managedRoot
   }
+
+  /// Opening the store can recover journals and wait for a database lock.
+  /// One shared connection task owns that work outside the UI actor.
+  private func readyLibrary() async throws -> NativeTranscriptLibrary {
+    if let library { return library }
+    guard let managedRoot else { throw NativeStorageError.InvalidState }
+    if connectionTask == nil {
+      connectionId = UUID()
+      connectionTask = Task {
+        try await StructuredNativeIO.read {
+          let library = try NativeTranscriptLibrary.open(managedRoot: managedRoot.path)
+          let preparation = try? NativeRecordingPreparation.open(managedRoot: managedRoot.path)
+          return TranscriptLibraryConnection(
+            library: library,
+            timeline: preparation.map { source in
+              { @Sendable sessionId in try source.playbackTimeline(sessionId: sessionId) }
+            })
+        }
+      }
+    }
+    let requestId = connectionId
+    do {
+      let connection = try await connectionTask!.value
+      if connectionId == requestId {
+        library = connection.library
+        timeline = connection.timeline
+        connectionTask = nil
+        connectionId = nil
+      }
+      return connection.library
+    } catch {
+      if connectionId == requestId {
+        connectionTask = nil
+        connectionId = nil
+      }
+      throw error
+    }
+  }
+
+  deinit { connectionTask?.cancel() }
 
   #if DEBUG
     /// Fixed values for rendered inspection and tests: no library and no
@@ -100,83 +144,95 @@ final class TranscriptLibraryModel: ObservableObject {
     }
   }
 
-  func load(sessionId: String) {
-    load(
+  func load(sessionId: String) async {
+    await load(
       sessionId: sessionId,
       transcriptionUnavailableReason:
         self.sessionId == sessionId ? transcriptionUnavailableReason : nil)
   }
 
-  func load(session: RuntimeSessionPresentation) {
-    load(
+  func load(session: RuntimeSessionPresentation) async {
+    await load(
       sessionId: session.sessionId,
       transcriptionUnavailableReason: session.transcriptionUnavailableReason)
   }
 
-  /// Completion of a metadata save may arrive after its sheet was dismissed.
-  /// Keep the callback bound to the document that currently owns this model.
-  func reloadAfterDetailsSave(session: RuntimeSessionPresentation) {
+  /// A late metadata save can only refresh its own currently selected document.
+  func reloadAfterDetailsSave(session: RuntimeSessionPresentation) async {
     guard sessionId == session.sessionId else { return }
-    load(session: session)
+    await load(session: session)
   }
 
-  private func load(sessionId: String, transcriptionUnavailableReason: String?) {
+  private func load(sessionId: String, transcriptionUnavailableReason: String?) async {
+    loadGeneration &+= 1
+    let generation = loadGeneration
+    #if DEBUG
+      if isFixedPreview {
+        self.sessionId = sessionId
+        self.transcriptionUnavailableReason = transcriptionUnavailableReason
+        return
+      }
+    #endif
+    if self.sessionId != sessionId { clear(message: nil) }
     self.sessionId = sessionId
     self.transcriptionUnavailableReason = transcriptionUnavailableReason
-    #if DEBUG
-      if isFixedPreview { return }
-    #endif
-    guard let library else {
-      clear(message: "The conversation library is unavailable.")
-      documentMessageIsFailure = true
-      return
-    }
-    if let transcriptionUnavailableReason {
-      clear(message: nil)
-      self.transcriptionUnavailableReason = transcriptionUnavailableReason
-      searchResults = []
-      // Load metadata independently of transcript collection, keeping only
-      // export options Rust can provide. Untimed captures may have none.
-      speakers = (try? library.speakers(sessionId: sessionId)) ?? []
-      namedSpeakers = (try? library.namedSpeakers(sessionId: sessionId)) ?? []
-      reviewMetadata = try? library.reviewMetadata(sessionId: sessionId)
-      audioOptions = try? library.audioExportOptions(sessionId: sessionId)
-      contextDetail = try? library.contextDetail(sessionId: sessionId)
-      contextEvents = (try? library.contextEvents(sessionId: sessionId)) ?? []
-      return
-    }
+    if transcriptionUnavailableReason != nil { searchResults = [] }
+    isLoading = true
+    defer { if loadGeneration == generation { isLoading = false } }
     do {
-      availability = try library.availability(sessionId: sessionId)
-      segments = try library.document(sessionId: sessionId)
-      speakers = try library.speakers(sessionId: sessionId)
-      namedSpeakers = try library.namedSpeakers(sessionId: sessionId)
-      reviewMetadata = try library.reviewMetadata(sessionId: sessionId)
-      audioOptions = try? library.audioExportOptions(sessionId: sessionId)
-      contextDetail = try? library.contextDetail(sessionId: sessionId)
-      contextEvents = (try? library.contextEvents(sessionId: sessionId)) ?? []
+      let library = try await readyLibrary()
+      let snapshot = try await StructuredNativeIO.read {
+        try TranscriptDocumentSnapshot(
+          library: library, sessionId: sessionId,
+          isUntimed: transcriptionUnavailableReason != nil)
+      }
+      guard !Task.isCancelled, loadGeneration == generation, self.sessionId == sessionId else {
+        return
+      }
+      availability = snapshot.availability
+      segments = snapshot.segments
+      speakers = snapshot.speakers
+      namedSpeakers = snapshot.namedSpeakers
+      reviewMetadata = snapshot.metadata
+      audioOptions = snapshot.audioOptions
+      contextDetail = snapshot.context
+      contextEvents = snapshot.events
       report(nil)
+    } catch is CancellationError {
+      return
     } catch {
+      guard loadGeneration == generation, self.sessionId == sessionId else { return }
       clear(message: Self.describe(error, action: "load the transcript"))
+      self.transcriptionUnavailableReason = transcriptionUnavailableReason
       documentMessageIsFailure = true
     }
   }
 
-  /// `nil` restores the machine's verbatim reading. Returns whether it saved.
+  /// The caller may bind the edit to a sheet's original conversation.
   @discardableResult
-  func correct(_ segment: NativeTranscriptSegment, text: String?) -> Bool {
-    guard let library, let sessionId else { return false }
-    return perform("save the correction") {
+  func correct(
+    _ segment: NativeTranscriptSegment, text: String?, in expectedSession: String? = nil
+  ) async -> Bool {
+    guard let sessionId, expectedSession == nil || expectedSession == sessionId else {
+      return false
+    }
+    return await performSpeakerReview(sessionId: sessionId, action: "save the correction") {
+      library in
       try library.correctSegment(
-        sessionId: sessionId, revisionId: segment.revisionId, sequence: segment.sequence,
-        text: text)
+        sessionId: sessionId, revisionId: segment.revisionId, sequence: segment.sequence, text: text
+      )
     }
   }
 
-  /// `nil` restores the name derived from the capture source. Returns whether it saved.
   @discardableResult
-  func renameSpeaker(trackId: String, label: String?) -> Bool {
-    guard let library, let sessionId else { return false }
-    return perform("rename the speaker") {
+  func renameSpeaker(
+    trackId: String, label: String?, in expectedSession: String? = nil
+  ) async -> Bool {
+    guard let sessionId, expectedSession == nil || expectedSession == sessionId else {
+      return false
+    }
+    return await performSpeakerReview(sessionId: sessionId, action: "rename the speaker") {
+      library in
       try library.renameSpeaker(sessionId: sessionId, trackId: trackId, label: label)
     }
   }
@@ -203,14 +259,15 @@ final class TranscriptLibraryModel: ObservableObject {
     sessionId expectedSession: String, action: String,
     _ operation: @escaping @Sendable (NativeTranscriptLibrary) throws -> Void
   ) async -> Bool {
-    guard let library, sessionId == expectedSession else { return false }
+    guard sessionId == expectedSession, !isEditing else { return false }
+    isEditing = true
+    defer { isEditing = false }
     do {
-      // Cancellation after a committed human edit must not discard its result.
+      let library = try await readyLibrary()
       try await StructuredNativeIO.mutation { try operation(library) }
-      if sessionId == expectedSession { load(sessionId: expectedSession) }
-      // Search spans conversations. A committed edit must refresh the current
-      // query even if another document was selected while the edit finished.
-      search(activeSearchQuery)
+      if sessionId == expectedSession { await load(sessionId: expectedSession) }
+      // A committed edit also refreshes the latest cross-conversation query.
+      await search(activeSearchQuery, debounce: false)
       return true
     } catch {
       if sessionId == expectedSession {
@@ -220,31 +277,61 @@ final class TranscriptLibraryModel: ObservableObject {
     }
   }
 
-  func search(_ query: String) {
+  func search(_ query: String) async {
+    await search(query, debounce: true)
+  }
+
+  private func search(_ query: String, debounce: Bool) async {
+    searchGeneration &+= 1
+    let generation = searchGeneration
     activeSearchQuery = query
-    guard let library, !query.trimmingCharacters(in: .whitespaces).isEmpty else {
-      searchResults = []
+    searchResults = []
+    guard !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+      isSearching = false
       return
     }
+    isSearching = true
+    defer { if searchGeneration == generation { isSearching = false } }
     do {
-      searchResults = try library.search(query: query, sessionId: nil, limit: 50)
+      if debounce { try await Task.sleep(nanoseconds: 150_000_000) }
+      let library = try await readyLibrary()
+      let matches = try await StructuredNativeIO.read {
+        try library.search(query: query, sessionId: nil, limit: 50)
+      }
+      guard !Task.isCancelled, searchGeneration == generation else { return }
+      searchResults = matches
+    } catch is CancellationError {
+      return
     } catch {
-      searchResults = []
+      guard searchGeneration == generation else { return }
       report(Self.describe(error, action: "search transcripts"), failure: true)
     }
   }
 
   @discardableResult
-  func export(format: NativeTranscriptExportFormat, to destination: URL) -> Bool {
-    guard let library, let sessionId else { return false }
+  func export(
+    format: NativeTranscriptExportFormat, to destination: URL, from requestedSession: String? = nil
+  ) async -> Bool {
+    guard let expectedSession = sessionId, !isExporting,
+      requestedSession == nil || requestedSession == expectedSession
+    else { return false }
+    isExporting = true
+    defer { isExporting = false }
     do {
-      let receipt = try library.export(
-        sessionId: sessionId, format: format, destinationPath: destination.path)
-      let segments = receipt.segmentCount == 1 ? "1 segment" : "\(receipt.segmentCount) segments"
-      report("Exported \(segments).")
+      let library = try await readyLibrary()
+      let receipt = try await StructuredNativeIO.mutation {
+        try library.export(
+          sessionId: expectedSession, format: format, destinationPath: destination.path)
+      }
+      if sessionId == expectedSession {
+        let count = receipt.segmentCount == 1 ? "1 segment" : "\(receipt.segmentCount) segments"
+        report("Exported \(count).")
+      }
       return true
     } catch {
-      report(Self.describe(error, action: "export the transcript"), failure: true)
+      if sessionId == expectedSession {
+        report(Self.describe(error, action: "export the transcript"), failure: true)
+      }
       return false
     }
   }
@@ -262,22 +349,29 @@ final class TranscriptLibraryModel: ObservableObject {
   /// Media and package exports copy whole files, so they run off the main
   /// actor. Rust verifies every byte it writes; export never changes state.
   @discardableResult
-  func export(_ kind: ConversationExport, to destination: URL) async -> Bool {
-    guard let library, let sessionId, !isExporting else { return false }
+  func export(
+    _ kind: ConversationExport, to destination: URL, from requestedSession: String? = nil
+  ) async -> Bool {
+    guard let sessionId, !isExporting,
+      requestedSession == nil || requestedSession == sessionId
+    else { return false }
     isExporting = true
     report(nil)
     defer { isExporting = false }
-    let timeline = timeline
     do {
-      let summary = try await Task.detached(priority: .utility) {
+      let library = try await readyLibrary()
+      let timeline = timeline
+      let summary = try await StructuredNativeIO.mutation {
         try Self.run(
           kind, library: library, timeline: timeline, sessionId: sessionId,
           destination: destination)
-      }.value
-      report(summary)
+      }
+      if self.sessionId == sessionId { report(summary) }
       return true
     } catch {
-      report(Self.describe(error, action: "export the conversation"), failure: true)
+      if self.sessionId == sessionId {
+        report(Self.describe(error, action: "export the conversation"), failure: true)
+      }
       return false
     }
   }
@@ -317,19 +411,31 @@ final class TranscriptLibraryModel: ObservableObject {
 
   /// Where a saved context event begins, once Rust has resolved its citation
   /// as available evidence; otherwise says why it cannot be opened.
-  func contextEvidenceStart(_ event: NativeContextEvent) -> Int64? {
-    guard let library, let sessionId else { return nil }
+  func contextEvidenceStart(
+    _ event: NativeContextEvent, in requestedSession: String? = nil
+  ) async -> Int64? {
+    guard let expectedSession = sessionId,
+      requestedSession == nil || requestedSession == expectedSession
+    else { return nil }
     do {
-      let reference = try library.citeContextEvent(
-        sessionId: sessionId, eventId: event.eventId, block: nil)
-      let resolved = try library.resolveEvidence(referenceJson: reference)
+      let library = try await readyLibrary()
+      let resolved = try await StructuredNativeIO.read {
+        let reference = try library.citeContextEvent(
+          sessionId: expectedSession, eventId: event.eventId, block: nil)
+        return try library.resolveEvidence(referenceJson: reference)
+      }
+      guard !Task.isCancelled, sessionId == expectedSession else { return nil }
       guard resolved.state == .available else {
         report(Self.evidenceProblem(resolved.state), failure: true)
         return nil
       }
       return resolved.startNs
+    } catch is CancellationError {
+      return nil
     } catch {
-      report(Self.describe(error, action: "open this context event"), failure: true)
+      if sessionId == expectedSession {
+        report(Self.describe(error, action: "open this context event"), failure: true)
+      }
       return nil
     }
   }
@@ -345,9 +451,9 @@ final class TranscriptLibraryModel: ObservableObject {
     }
   }
 
-  /// Records the intent and exposes exactly what deletion would remove.
-  func requestDeletion(sessionId: String) {
-    guard let library else { return }
+  /// Deletion remains a separately confirmed, globally visible operation.
+  func requestDeletion(sessionId: String) async {
+    guard !isDeleting else { return }
     if let pendingDeletion {
       if pendingDeletion.sessionId != sessionId {
         report(
@@ -356,11 +462,15 @@ final class TranscriptLibraryModel: ObservableObject {
       }
       return
     }
+    isDeleting = true
+    defer { isDeleting = false }
     do {
-      pendingDeletion = try library.beginDeletion(sessionId: sessionId)
+      let library = try await readyLibrary()
+      pendingDeletion = try await StructuredNativeIO.mutation {
+        try library.beginDeletion(sessionId: sessionId)
+      }
       report(nil)
     } catch {
-      pendingDeletion = nil
       if (error as? NativeStorageError) == .InvalidState {
         report(
           "Wait for capture or audio processing to finish before moving this conversation to Trash.",
@@ -371,58 +481,94 @@ final class TranscriptLibraryModel: ObservableObject {
     }
   }
 
-  func cancelDeletion() {
-    guard let library, let inventory = pendingDeletion else { return }
+  func cancelDeletion() async {
+    guard !isDeleting, let inventory = pendingDeletion else { return }
+    isDeleting = true
+    defer { isDeleting = false }
     do {
-      try library.abandonDeletion(sessionId: inventory.sessionId)
+      let library = try await readyLibrary()
+      try await StructuredNativeIO.mutation {
+        try library.abandonDeletion(sessionId: inventory.sessionId)
+      }
       pendingDeletion = nil
     } catch {
       report(Self.describe(error, action: "cancel the deletion"), failure: true)
     }
   }
 
-  /// Moves the session to Trash first; Rust removes its rows only after the
-  /// directory has left the library. If Trash fails nothing is deleted.
   @discardableResult
-  func confirmDeletion() -> Bool {
-    guard let library, let inventory = pendingDeletion else { return false }
-    pendingDeletion = nil
+  func confirmDeletion() async -> Bool {
+    guard !isDeleting, let inventory = pendingDeletion else { return false }
+    isDeleting = true
+    defer { isDeleting = false }
+    do {
+      let library = try await readyLibrary()
+      let moveToTrash = moveToTrash
+      let outcome = try await StructuredNativeIO.mutation {
+        Self.delete(inventory, library: library, moveToTrash: moveToTrash)
+      }
+      pendingDeletion = outcome.pending
+      if outcome.success {
+        if sessionId == inventory.sessionId {
+          loadGeneration &+= 1
+          isLoading = false
+          clear(message: nil)
+        }
+        await search(activeSearchQuery, debounce: false)
+      }
+      if outcome.warning {
+        reportDeletionWarning(outcome.message)
+      } else {
+        report(outcome.message, failure: !outcome.success)
+      }
+      return outcome.success
+    } catch {
+      report(Self.describe(error, action: "delete the conversation"), failure: true)
+      return false
+    }
+  }
+
+  nonisolated private static func delete(
+    _ inventory: NativeSessionDeletionInventory, library: NativeTranscriptLibrary,
+    moveToTrash: TrashMover
+  ) -> TranscriptDeletionOutcome {
     let trashed: URL?
     do {
       trashed = try moveToTrash(URL(fileURLWithPath: inventory.directoryPath, isDirectory: true))
     } catch {
       guard FileManager.default.fileExists(atPath: inventory.directoryPath) else {
-        // The adapter may have moved files before returning an error. Preserve
-        // the durable intent for launch reconciliation; never replay that move.
-        reportDeletionWarning(
-          "The move to Trash could not be confirmed. The library location is unavailable. When capture and other work have finished, restart Open Scribe to reconcile the deletion; verify Trash before assuming the audio is recoverable."
+        return .init(
+          success: false, warning: true, pending: nil,
+          message:
+            "The move to Trash could not be confirmed. The library location is unavailable. When capture and other work have finished, restart Open Scribe to reconcile the deletion; verify Trash before assuming the audio is recoverable."
         )
-        return false
       }
       do {
         try library.abandonDeletion(sessionId: inventory.sessionId)
-        report(
-          "The move to Trash did not finish. The conversation is still listed in Open Scribe; check its audio before trying again.",
-          failure: true)
+        return .init(
+          success: false, warning: false, pending: nil,
+          message:
+            "The move to Trash did not finish. The conversation is still listed in Open Scribe; check its audio before trying again."
+        )
       } catch {
-        pendingDeletion = inventory
-        report(Self.describe(error, action: "cancel the incomplete deletion"), failure: true)
+        return .init(
+          success: false, warning: false, pending: inventory,
+          message: Self.describe(error, action: "cancel the incomplete deletion"))
       }
-      return false
     }
     do {
       let receipt = try library.completeDeletion(
         sessionId: inventory.sessionId, trashReference: trashed?.absoluteString)
-      if sessionId == inventory.sessionId { clear(message: nil) }
-      let result = Self.deletionResult(
-        title: inventory.title, walCheckpointed: receipt.walCheckpointed)
-      if receipt.walCheckpointed { report(result) } else { reportDeletionWarning(result) }
-      return true
+      return .init(
+        success: true, warning: !receipt.walCheckpointed, pending: nil,
+        message: Self.deletionResult(
+          title: inventory.title, walCheckpointed: receipt.walCheckpointed))
     } catch {
-      reportDeletionWarning(
-        "The conversation files were moved to Trash, but database removal or cleanup could not be confirmed. When capture and other work have finished, restart Open Scribe to reconcile the deletion before copying or sharing the library."
+      return .init(
+        success: false, warning: true, pending: nil,
+        message:
+          "The conversation files were moved to Trash, but database removal or cleanup could not be confirmed. When capture and other work have finished, restart Open Scribe to reconcile the deletion before copying or sharing the library."
       )
-      return false
     }
   }
 
@@ -431,17 +577,6 @@ final class TranscriptLibraryModel: ObservableObject {
     guard !walCheckpointed else { return moved }
     return moved + " Database cleanup is incomplete because the database is busy. "
       + "Earlier data may remain in the database journal. When capture and other work have finished, restart Open Scribe before copying or sharing the library."
-  }
-
-  private func perform(_ action: String, _ body: () throws -> Void) -> Bool {
-    do {
-      try body()
-      if let sessionId { load(sessionId: sessionId) }
-      return true
-    } catch {
-      report(Self.describe(error, action: action), failure: true)
-      return false
-    }
   }
 
   /// Clears a finished status before a new edit starts.
@@ -517,4 +652,47 @@ enum SessionDeletionSummary {
   private static func count(_ value: UInt32, _ noun: String) -> String {
     "\(value) \(noun)\(value == 1 ? "" : "s")"
   }
+}
+
+private struct TranscriptLibraryConnection: Sendable {
+  let library: NativeTranscriptLibrary
+  let timeline: (@Sendable (String) throws -> [NativeTimelineSegment])?
+}
+
+private struct TranscriptDocumentSnapshot: Sendable {
+  let availability: NativeTranscriptAvailability
+  let segments: [NativeTranscriptSegment]
+  let speakers: [NativeSessionSpeaker]
+  let namedSpeakers: [NativeNamedTranscriptSpeaker]
+  let metadata: NativeConversationReviewMetadata?
+  let audioOptions: NativeAudioExportOptions?
+  let context: NativeContextDetail?
+  let events: [NativeContextEvent]
+
+  init(library: NativeTranscriptLibrary, sessionId: String, isUntimed: Bool) throws {
+    availability = isUntimed ? .unavailable : try library.availability(sessionId: sessionId)
+    segments = isUntimed ? [] : try library.document(sessionId: sessionId)
+    speakers =
+      isUntimed
+      ? (try? library.speakers(sessionId: sessionId)) ?? []
+      : try library.speakers(sessionId: sessionId)
+    namedSpeakers =
+      isUntimed
+      ? (try? library.namedSpeakers(sessionId: sessionId)) ?? []
+      : try library.namedSpeakers(sessionId: sessionId)
+    metadata =
+      isUntimed
+      ? try? library.reviewMetadata(sessionId: sessionId)
+      : try library.reviewMetadata(sessionId: sessionId)
+    audioOptions = try? library.audioExportOptions(sessionId: sessionId)
+    context = try? library.contextDetail(sessionId: sessionId)
+    events = (try? library.contextEvents(sessionId: sessionId)) ?? []
+  }
+}
+
+private struct TranscriptDeletionOutcome: Sendable {
+  let success: Bool
+  let warning: Bool
+  let pending: NativeSessionDeletionInventory?
+  let message: String
 }

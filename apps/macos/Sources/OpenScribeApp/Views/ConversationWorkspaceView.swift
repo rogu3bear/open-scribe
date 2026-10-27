@@ -1,5 +1,11 @@
 import SwiftUI
 
+private struct ContextSeekRequest {
+  let id = UUID()
+  let sessionId: String
+  let event: NativeContextEvent
+}
+
 struct ConversationWorkspaceView: View {
   let session: RuntimeSessionPresentation
   @ObservedObject var store: RuntimeLibraryStore
@@ -18,6 +24,7 @@ struct ConversationWorkspaceView: View {
   @State private var showsRecordingDetails = false
   @State private var renaming: ConversationMetadataPresentation?
   @State private var editingDetails: ConversationMetadataPresentation?
+  @State private var contextSeek: ContextSeekRequest?
 
   private var recoveredTracks: [RecoveredTrackPresentation] {
     session.recoveredTracks(from: playbackController.sessions)
@@ -85,11 +92,7 @@ struct ConversationWorkspaceView: View {
             events: transcripts.sessionId == session.sessionId ? transcripts.contextEvents : [],
             canSeek: session.hasCaptureTimeline,
             onSeek: { event in
-              // Navigation follows Rust evidence resolution, never the row alone.
-              if let start = transcripts.contextEvidenceStart(event) {
-                playbackController.playSynchronized(
-                  sessionId: session.sessionId, startNanoseconds: start)
-              }
+              contextSeek = ContextSeekRequest(sessionId: session.sessionId, event: event)
             })
           RecorderEventList(
             events: recorderEvents.filter { $0.kind == "marker_added" }, heading: "Markers"
@@ -114,6 +117,16 @@ struct ConversationWorkspaceView: View {
       }
     }
     .navigationTitle(title)
+    .task(id: "\(session.sessionId)|\(contextSeek?.id.uuidString ?? "")") {
+      guard let request = contextSeek, request.sessionId == session.sessionId else { return }
+      // The view task is cancelled on replacement or disappearance, including
+      // navigation to a live/interrupted view that does not load a transcript.
+      if let start = await transcripts.contextEvidenceStart(request.event, in: request.sessionId),
+        !Task.isCancelled, contextSeek?.id == request.id
+      {
+        playbackController.playSynchronized(sessionId: request.sessionId, startNanoseconds: start)
+      }
+    }
     .task(id: "\(session.sessionId)|\(session.lifecycle)") {
       recorderEvents = loadRecorderEvents(session.sessionId)
     }
@@ -128,7 +141,9 @@ struct ConversationWorkspaceView: View {
         declaration: transcripts.sessionId == presentation.session.sessionId
           ? transcripts.contextDetail?.declaration : nil,
         store: store,
-        onSaved: { transcripts.reloadAfterDetailsSave(session: presentation.session) },
+        onSaved: {
+          Task { await transcripts.reloadAfterDetailsSave(session: presentation.session) }
+        },
         onClose: { presentation.close(&editingDetails) })
     }
   }

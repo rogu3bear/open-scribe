@@ -80,26 +80,26 @@ struct ContentView: View {
         savedSessionIds: store.savedSessions.map(\.sessionId)
       )
     }
-    .onChange(of: searchQuery) { query in
-      transcripts.search(query)
+    .task(id: searchQuery) {
+      await transcripts.search(searchQuery)
     }
     .confirmationDialog(
       "Move this conversation to Trash?",
       isPresented: Binding(
         get: { transcripts.pendingDeletion != nil },
         set: { presented in
-          if !presented { transcripts.cancelDeletion() }
+          if !presented { Task { await transcripts.cancelDeletion() } }
         }
       ),
       presenting: transcripts.pendingDeletion
     ) { _ in
       Button("Move to Trash", role: .destructive) {
-        if transcripts.confirmDeletion() {
-          store.refresh()
+        Task {
+          if await transcripts.confirmDeletion() { store.refresh() }
         }
       }
       Button("Cancel", role: .cancel) {
-        transcripts.cancelDeletion()
+        Task { await transcripts.cancelDeletion() }
       }
     } message: { inventory in
       Text(SessionDeletionSummary.text(inventory))
@@ -137,7 +137,9 @@ struct ContentView: View {
     return List(selection: selectedSessionBinding) {
       if !searchQuery.trimmingCharacters(in: .whitespaces).isEmpty {
         Section("Transcript Matches") {
-          if transcripts.searchResults.isEmpty {
+          if transcripts.isSearching {
+            ProgressView("Searching transcripts…").controlSize(.small)
+          } else if transcripts.searchResults.isEmpty {
             Text("No matching transcript text")
               .foregroundStyle(.secondary)
           }
@@ -480,7 +482,7 @@ struct ContentView: View {
     if recoveredSessions.activePlaybackSessionId == session.sessionId {
       recoveredSessions.stopPlayback()
     }
-    transcripts.requestDeletion(sessionId: session.sessionId)
+    Task { await transcripts.requestDeletion(sessionId: session.sessionId) }
   }
 
   private func synchronizeSelection(preferCurrentSession: Bool) {

@@ -57,7 +57,7 @@ final class ConversationExportTests: XCTestCase {
     try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
 
     let model = TranscriptLibraryModel(managedRoot: root)
-    model.load(sessionId: capture.sessionId)
+    await model.load(sessionId: capture.sessionId)
     let options = try XCTUnwrap(model.audioOptions)
     XCTAssertTrue(options.hasValidatedMix)
     XCTAssertNil(options.originalExtension, "a capture has no single original file")
@@ -126,7 +126,7 @@ final class ConversationExportTests: XCTestCase {
     let evidence = try RuntimeLibraryStore(managedRoot: managedRoot)
       .importManagedAudio(title: "Memo", sourceURL: source)
     let model = TranscriptLibraryModel(managedRoot: managedRoot)
-    model.load(sessionId: evidence.sessionId)
+    await model.load(sessionId: evidence.sessionId)
     let options = try XCTUnwrap(model.audioOptions)
     XCTAssertEqual(options.originalExtension, "m4a")
     XCTAssertFalse(options.hasValidatedMix)

@@ -96,7 +96,9 @@ final class TranscriptLibraryModelTests: XCTestCase {
   private func captureEditorSheet<Content: View>(
     _ content: Content, width: CGFloat, name: String, scheme: ColorScheme
   ) throws {
-    let host = NSHostingView(rootView: content.environment(\.colorScheme, scheme))
+    let host = NSHostingView(
+      rootView: content.background(Color(nsColor: .windowBackgroundColor))
+        .environment(\.colorScheme, scheme))
     let size = host.fittingSize
     XCTAssertEqual(size.width, width, accuracy: 1)
     XCTAssertGreaterThan(size.height, 100)
@@ -123,14 +125,14 @@ final class TranscriptLibraryModelTests: XCTestCase {
   func testSpeakerRenameAndResetRefreshAnUnchangedSearchQuery() async {
     let library = TranscriptTimingLibraryFake(reviewedName: "Dana")
     let model = TranscriptLibraryModel(library: library)
-    model.load(session: session("valid", calibrated: false, sources: []))
-    model.search("speaker:Dana")
+    await model.load(session: session("valid", calibrated: false, sources: []))
+    await model.search("speaker:Dana")
     XCTAssertEqual(model.searchResults.count, 1)
     let renamed = await model.renameNamedSpeaker(
       sessionId: "valid", speakerId: "person", label: "Morgan")
     XCTAssertTrue(renamed)
     XCTAssertTrue(model.searchResults.isEmpty)
-    model.search("speaker:Morgan")
+    await model.search("speaker:Morgan")
     XCTAssertEqual(model.searchResults.count, 1)
     let reset = await model.assignSpeaker(
       sessionId: "valid", segment: model.segments[0], assignment: .source)
@@ -148,13 +150,13 @@ final class TranscriptLibraryModelTests: XCTestCase {
         checkpoint.release.wait()
       })
     let model = TranscriptLibraryModel(library: library)
-    model.load(session: session("valid", calibrated: false, sources: []))
+    await model.load(session: session("valid", calibrated: false, sources: []))
     let editing = Task {
       await model.renameNamedSpeaker(sessionId: "valid", speakerId: "person", label: "Morgan")
     }
     await Task.detached { checkpoint.waitUntilEntered() }.value
-    model.load(session: session("newer", calibrated: false, sources: []))
-    model.search("speaker:Morgan")
+    await model.load(session: session("newer", calibrated: false, sources: []))
+    await model.search("speaker:Morgan")
     XCTAssertTrue(model.searchResults.isEmpty)
     checkpoint.release.signal()
     let saved = await editing.value
@@ -166,7 +168,22 @@ final class TranscriptLibraryModelTests: XCTestCase {
   private final class MetadataCheckpoint: @unchecked Sendable {
     let entered = DispatchSemaphore(value: 0)
     let release = DispatchSemaphore(value: 0)
+    private let lock = NSLock()
+    private var hasHeld = false
     func waitUntilEntered() { entered.wait() }
+    func enteredBeforeTimeout() -> Bool {
+      entered.wait(timeout: .now() + 2) == .success
+    }
+    func holdOnce() {
+      let shouldHold = lock.withLock {
+        guard !hasHeld else { return false }
+        hasHeld = true
+        return true
+      }
+      guard shouldHold else { return }
+      entered.signal()
+      _ = release.wait(timeout: .now() + 3)
+    }
   }
 
   private func session(
@@ -198,20 +215,20 @@ final class TranscriptLibraryModelTests: XCTestCase {
         .transcriptionUnavailableReason)
   }
 
-  func testMissingTimingClearsPriorTranscriptAndRetainsAvailableMetadata() {
+  func testMissingTimingClearsPriorTranscriptAndRetainsAvailableMetadata() async {
     let library = TranscriptTimingLibraryFake()
     let model = TranscriptLibraryModel(library: library)
     let valid = session("valid", calibrated: false, sources: [])
     let historical = session("historical", calibrated: false, sources: [.microphone])
-    model.load(session: valid)
-    model.search("fixture")
+    await model.load(session: valid)
+    await model.search("fixture")
     XCTAssertEqual(model.availability, .final)
     XCTAssertEqual(model.segments.first?.trackId, "valid")
     XCTAssertFalse(model.searchResults.isEmpty)
     XCTAssertEqual(model.audioOptions?.originalExtension, "caf")
     XCTAssertEqual(library.transcriptReads, 2)
 
-    model.load(session: historical)
+    await model.load(session: historical)
     XCTAssertEqual(model.sessionId, "historical")
     XCTAssertEqual(model.availability, .unavailable)
     XCTAssertTrue(model.segments.isEmpty)
@@ -225,19 +242,20 @@ final class TranscriptLibraryModelTests: XCTestCase {
     XCTAssertEqual(
       library.transcriptReads, 2, "missing timing must not invoke transcript collection")
 
-    XCTAssertTrue(model.renameSpeaker(trackId: "historical", label: "Fixture"))
+    let historicalRenamed = await model.renameSpeaker(trackId: "historical", label: "Fixture")
+    XCTAssertTrue(historicalRenamed)
     XCTAssertEqual(model.availabilityText, historical.transcriptionUnavailableReason)
     XCTAssertEqual(library.transcriptReads, 2, "same-session edit reload retains the timing gate")
 
-    model.load(session: valid)
+    await model.load(session: valid)
     XCTAssertNil(model.transcriptionUnavailableReason)
     XCTAssertEqual(model.availabilityText, "Final transcript")
     XCTAssertEqual(model.segments.first?.trackId, "valid")
     XCTAssertEqual(library.transcriptReads, 4)
 
     // Calibration can become available without changing the selected ID.
-    model.load(session: historical)
-    model.load(session: session("historical", calibrated: true, sources: [.microphone]))
+    await model.load(session: historical)
+    await model.load(session: session("historical", calibrated: true, sources: [.microphone]))
     XCTAssertNil(model.transcriptionUnavailableReason)
     XCTAssertEqual(model.availability, .final)
     XCTAssertEqual(library.transcriptReads, 6)
@@ -246,9 +264,9 @@ final class TranscriptLibraryModelTests: XCTestCase {
     // An unsuccessful metadata read must not keep the prior import's options.
     let limited = TranscriptLibraryModel(
       library: TranscriptTimingLibraryFake(rejectsHistoricalAudioOptions: true))
-    limited.load(session: valid)
+    await limited.load(session: valid)
     XCTAssertNotNil(limited.audioOptions)
-    limited.load(session: historical)
+    await limited.load(session: historical)
     XCTAssertNil(limited.audioOptions)
     XCTAssertNil(limited.message)
   }
@@ -285,17 +303,17 @@ final class TranscriptLibraryModelTests: XCTestCase {
     let model = TranscriptLibraryModel(library: library)
     let original = session(sessionId, calibrated: true, sources: [.microphone, .systemAudio])
     let selected = session("other-conversation", calibrated: false, sources: [])
-    model.load(session: original)
+    await model.load(session: original)
     let saving = Task {
       let saved = await store.declare(
         sessionId: sessionId, participants: ["Synthetic participant"], topic: "Saved for A")
-      if saved { model.reloadAfterDetailsSave(session: original) }
+      if saved { await model.reloadAfterDetailsSave(session: original) }
       return saved
     }
     await Task.detached { checkpoint.waitUntilEntered() }.value
     // Dismissing the old sheet does not undo a mutation already admitted to
     // Rust. A different conversation owns the presentation before it finishes.
-    model.load(session: selected)
+    await model.load(session: selected)
     let before = model.segments
     let reads = library.transcriptReads
     checkpoint.release.signal()
@@ -306,13 +324,14 @@ final class TranscriptLibraryModelTests: XCTestCase {
     XCTAssertEqual(model.sessionId, selected.sessionId)
     XCTAssertEqual(model.segments, before)
     XCTAssertEqual(library.transcriptReads, reads)
-    XCTAssertTrue(
-      model.export(format: .plainText, to: root.appendingPathComponent("route-probe.txt")))
+    let exported = await model.export(
+      format: .plainText, to: root.appendingPathComponent("route-probe.txt"))
+    XCTAssertTrue(exported)
     XCTAssertEqual(library.lastExportedSessionId, selected.sessionId)
 
-    model.load(session: original)
+    await model.load(session: original)
     let currentReads = library.transcriptReads
-    model.reloadAfterDetailsSave(session: original)
+    await model.reloadAfterDetailsSave(session: original)
     XCTAssertEqual(
       library.transcriptReads, currentReads + 2, "the selected document still refreshes")
     withExtendedLifetime(capture) {}
@@ -398,11 +417,11 @@ final class TranscriptLibraryModelTests: XCTestCase {
     withExtendedLifetime(capture) {}
   }
 
-  func testSavedRecordingReportsNoInventedTranscriptAndNamesSpeakersFromSources() throws {
+  func testSavedRecordingReportsNoInventedTranscriptAndNamesSpeakersFromSources() async throws {
     let (root, sessionId, capture) = try capturedSession()
     defer { try? FileManager.default.removeItem(at: root) }
     let model = TranscriptLibraryModel(managedRoot: root)
-    model.load(sessionId: sessionId)
+    await model.load(sessionId: sessionId)
     XCTAssertEqual(model.availability, .unavailable)
     XCTAssertTrue(model.segments.isEmpty)
     XCTAssertEqual(
@@ -412,24 +431,25 @@ final class TranscriptLibraryModelTests: XCTestCase {
     XCTAssertTrue(model.speakers.allSatisfy { !$0.namedByUser })
     let track = try XCTUnwrap(model.speakers.first)
 
-    model.renameSpeaker(trackId: track.trackId, label: "  Dana ")
+    await model.renameSpeaker(trackId: track.trackId, label: "  Dana ")
     XCTAssertEqual(model.speakers.first { $0.trackId == track.trackId }?.label, "Dana")
     XCTAssertEqual(model.speakers.first { $0.trackId == track.trackId }?.namedByUser, true)
-    model.renameSpeaker(trackId: track.trackId, label: nil)
+    await model.renameSpeaker(trackId: track.trackId, label: nil)
     XCTAssertEqual(model.speakers.first { $0.trackId == track.trackId }, track)
-    XCTAssertFalse(model.renameSpeaker(trackId: track.trackId, label: ""))
+    let emptyNameAccepted = await model.renameSpeaker(trackId: track.trackId, label: "")
+    XCTAssertFalse(emptyNameAccepted)
     XCTAssertNotNil(model.message)
     XCTAssertTrue(model.messageIsFailure, "a failed rename is reported as a failure")
     model.dismissMessage()
     XCTAssertNil(model.message)
     XCTAssertFalse(model.messageIsFailure)
 
-    model.search("anything")
+    await model.search("anything")
     XCTAssertTrue(model.searchResults.isEmpty)
     withExtendedLifetime(capture) {}
   }
 
-  func testDeletionStatesItsScopeAndOnlyCompletesAfterTrash() throws {
+  func testDeletionStatesItsScopeAndOnlyCompletesAfterTrash() async throws {
     let (root, sessionId, capture) = try capturedSession()
     defer { try? FileManager.default.removeItem(at: root) }
     let library = try NativeTranscriptLibrary.open(managedRoot: root.path)
@@ -437,9 +457,9 @@ final class TranscriptLibraryModelTests: XCTestCase {
     let failing = TranscriptLibraryModel(library: library) { _ in
       throw CocoaError(.fileWriteNoPermission)
     }
-    failing.requestDeletion(sessionId: sessionId)
+    await failing.requestDeletion(sessionId: sessionId)
     let inventory = try XCTUnwrap(failing.pendingDeletion)
-    failing.requestDeletion(sessionId: "another-conversation")
+    await failing.requestDeletion(sessionId: "another-conversation")
     XCTAssertEqual(failing.pendingDeletion?.sessionId, sessionId)
     XCTAssertEqual(inventory.mediaFiles, 4)
     XCTAssertGreaterThan(inventory.mediaBytes, 0)
@@ -449,7 +469,8 @@ final class TranscriptLibraryModelTests: XCTestCase {
     XCTAssertTrue(
       SessionDeletionSummary.text(inventory).contains(
         "does not restore the deleted review database"))
-    XCTAssertFalse(failing.confirmDeletion())
+    let failedDeletion = await failing.confirmDeletion()
+    XCTAssertFalse(failedDeletion)
     XCTAssertEqual(
       failing.message,
       "The move to Trash did not finish. The conversation is still listed in Open Scribe; check its audio before trying again."
@@ -467,8 +488,9 @@ final class TranscriptLibraryModelTests: XCTestCase {
       try FileManager.default.moveItem(at: directory, to: destination)
       return destination
     }
-    model.requestDeletion(sessionId: sessionId)
-    XCTAssertTrue(model.confirmDeletion())
+    await model.requestDeletion(sessionId: sessionId)
+    let deleted = await model.confirmDeletion()
+    XCTAssertTrue(deleted)
     XCTAssertFalse(model.messageIsFailure)
     XCTAssertFalse(
       try preparation.runtimeLibrarySnapshot().savedSessions.contains { $0.sessionId == sessionId })
@@ -488,7 +510,7 @@ final class TranscriptLibraryModelTests: XCTestCase {
       "“Example” was moved to Trash.")
   }
 
-  func testUncertainTrashMovePreservesIntentForRecoveryWithoutReplayingTheMove() throws {
+  func testUncertainTrashMovePreservesIntentForRecoveryWithoutReplayingTheMove() async throws {
     let (root, sessionId, capture) = try capturedSession()
     defer { try? FileManager.default.removeItem(at: root) }
     let trash = root.deletingLastPathComponent().appendingPathComponent(UUID().uuidString)
@@ -502,14 +524,15 @@ final class TranscriptLibraryModelTests: XCTestCase {
         at: directory, to: trash.appendingPathComponent(directory.lastPathComponent))
       throw CocoaError(.fileWriteUnknown)
     }
-    model.requestDeletion(sessionId: sessionId)
-    XCTAssertFalse(model.confirmDeletion())
+    await model.requestDeletion(sessionId: sessionId)
+    let deleted = await model.confirmDeletion()
+    XCTAssertFalse(deleted)
     XCTAssertEqual(moves.count, 1)
     XCTAssertNil(model.pendingDeletion)
     XCTAssertTrue(model.messageIsFailure)
     XCTAssertTrue(model.message?.contains("could not be confirmed") == true)
     XCTAssertTrue(model.message?.contains("verify Trash") == true)
-    model.load(sessionId: sessionId)
+    await model.load(sessionId: sessionId)
     XCTAssertTrue(
       model.message?.contains("could not be confirmed") == true,
       "document refresh must not acknowledge a library-operation warning")
@@ -541,20 +564,185 @@ final class TranscriptLibraryModelTests: XCTestCase {
       speakerLabel: speaker, speakerNamedByUser: named, namedSpeakerId: nil)
   }
 
-  func testTranscriptReaderStaysHiddenUntilThePreviewBelongsToTheSession() {
+  func testTranscriptReaderStaysHiddenUntilThePreviewBelongsToTheSession() async {
     let shown = session("valid", calibrated: false, sources: [])
     let rows = [segment(0, 0, "Local user", named: false, "Thanks for joining.")]
     let model = TranscriptLibraryModel(preview: .final, segments: rows, speakers: [])
     XCTAssertFalse(TranscriptSection.showsReader(session: shown, transcripts: model))
-    model.load(session: shown)
+    await model.load(session: shown)
     XCTAssertTrue(TranscriptSection.showsReader(session: shown, transcripts: model))
     XCTAssertFalse(
       TranscriptSection.showsReader(
         session: session("other", calibrated: false, sources: []), transcripts: model))
     let unavailable = session("single-source", calibrated: false, sources: [.microphone])
     let empty = TranscriptLibraryModel(preview: .unavailable, segments: [], speakers: [])
-    empty.load(session: unavailable)
+    await empty.load(session: unavailable)
     XCTAssertFalse(TranscriptSection.showsReader(session: unavailable, transcripts: empty))
+  }
+
+  func testDelayedLoadKeepsTheUIResponsiveAndCannotReplaceANewerDocument() async {
+    let checkpoint = MetadataCheckpoint()
+    let library = TranscriptTimingLibraryFake(beforeOperation: { kind, id in
+      if kind == "document", id == "old" {
+        checkpoint.entered.signal()
+        _ = checkpoint.release.wait(timeout: .now() + 3)
+      }
+    })
+    let model = TranscriptLibraryModel(library: library)
+    let loading = Task { await model.load(sessionId: "old") }
+    let entered = await Task.detached {
+      checkpoint.enteredBeforeTimeout()
+    }.value
+    XCTAssertTrue(entered)
+    XCTAssertTrue(model.isLoading, "the main actor can observe work while its IO is held")
+    await model.load(sessionId: "new")
+    checkpoint.release.signal()
+    await loading.value
+    XCTAssertEqual(model.sessionId, "new")
+    XCTAssertEqual(model.segments.first?.trackId, "new")
+    XCTAssertFalse(model.isLoading)
+    XCTAssertEqual(library.mainThreadOperations, 0)
+  }
+
+  func testDelayedSearchCannotPublishOverANewerQuery() async {
+    let checkpoint = MetadataCheckpoint()
+    let library = TranscriptTimingLibraryFake(beforeOperation: { kind, query in
+      if kind == "search", query == "old" {
+        checkpoint.entered.signal()
+        _ = checkpoint.release.wait(timeout: .now() + 3)
+      }
+    })
+    let model = TranscriptLibraryModel(library: library)
+    let searching = Task { await model.search("old") }
+    let entered = await Task.detached {
+      checkpoint.enteredBeforeTimeout()
+    }.value
+    XCTAssertTrue(entered)
+    await model.search("new")
+    checkpoint.release.signal()
+    await searching.value
+    XCTAssertEqual(model.searchResults.first?.effectiveText, "new")
+    XCTAssertFalse(model.isSearching)
+    XCTAssertEqual(library.mainThreadOperations, 0)
+  }
+
+  func testDeletionInvalidatesHeldDocumentAndSearchSnapshots() async {
+    let document = MetadataCheckpoint()
+    let search = MetadataCheckpoint()
+    defer {
+      document.release.signal()
+      search.release.signal()
+    }
+    let library = TranscriptTimingLibraryFake(beforeOperation: { kind, _ in
+      if kind == "document" { document.holdOnce() }
+      if kind == "search" { search.holdOnce() }
+    })
+    let model = TranscriptLibraryModel(library: library, moveToTrash: { _ in nil })
+    let loading = Task { await model.load(sessionId: "valid") }
+    let searching = Task { await model.search("Fixture") }
+    let entered = await Task.detached {
+      document.enteredBeforeTimeout() && search.enteredBeforeTimeout()
+    }.value
+    XCTAssertTrue(entered)
+    await model.requestDeletion(sessionId: "valid")
+    let deleted = await model.confirmDeletion()
+    XCTAssertTrue(deleted)
+    XCTAssertFalse(model.isLoading)
+    XCTAssertFalse(model.isSearching)
+    document.release.signal()
+    search.release.signal()
+    await loading.value
+    await searching.value
+    XCTAssertTrue(model.segments.isEmpty, "a deleted document cannot return from an older read")
+    XCTAssertTrue(model.searchResults.isEmpty, "the refreshed query must replace old matches")
+    XCTAssertEqual(model.message, "“Fixture” was moved to Trash.")
+    XCTAssertEqual(library.mainThreadOperations, 0)
+  }
+
+  func testCancelledContextSeekCannotStartPlaybackOrPublishAnError() async {
+    let checkpoint = MetadataCheckpoint()
+    defer { checkpoint.release.signal() }
+    let library = TranscriptTimingLibraryFake(beforeOperation: { kind, _ in
+      if kind == "resolve" { checkpoint.holdOnce() }
+    })
+    let model = TranscriptLibraryModel(library: library)
+    await model.load(sessionId: "valid")
+    let event = NativeContextEvent(
+      eventId: "event", scopeId: "scope", epoch: 0, startNs: 10, endNs: 20,
+      observedAtMs: 0, reason: .userMarked, sourceName: "Fixture", application: nil,
+      text: "Evidence", blockCount: 1, semanticHash: "fixture", retention: "text")
+    let seeking = Task { await model.contextEvidenceStart(event, in: "valid") }
+    let entered = await Task.detached {
+      checkpoint.enteredBeforeTimeout()
+    }.value
+    XCTAssertTrue(entered)
+    // SwiftUI cancels this owner task when its conversation disappears, even
+    // when the next screen is live capture and does not load another transcript.
+    seeking.cancel()
+    checkpoint.release.signal()
+    let playbackStart = await seeking.value
+    XCTAssertNil(playbackStart)
+    XCTAssertNil(model.message)
+    XCTAssertEqual(model.sessionId, "valid")
+    XCTAssertEqual(library.mainThreadOperations, 0)
+  }
+
+  func testHeldCorrectionRejectsDuplicateSubmissionAndRetainsItsOriginalSession() async throws {
+    let checkpoint = MetadataCheckpoint()
+    let library = TranscriptTimingLibraryFake(beforeOperation: { kind, _ in
+      if kind == "correct" {
+        checkpoint.entered.signal()
+        _ = checkpoint.release.wait(timeout: .now() + 3)
+      }
+    })
+    let model = TranscriptLibraryModel(library: library)
+    await model.load(sessionId: "old")
+    let segment = try XCTUnwrap(model.segments.first)
+    let editing = Task { await model.correct(segment, text: "Updated", in: "old") }
+    let entered = await Task.detached {
+      checkpoint.enteredBeforeTimeout()
+    }.value
+    XCTAssertTrue(entered)
+    let duplicate = await model.correct(segment, text: "Duplicate", in: "old")
+    XCTAssertFalse(duplicate)
+    await model.load(sessionId: "new")
+    checkpoint.release.signal()
+    let saved = await editing.value
+    XCTAssertTrue(saved)
+    XCTAssertEqual(library.correctedSessions, ["old"])
+    XCTAssertEqual(model.sessionId, "new")
+    XCTAssertEqual(model.segments.first?.trackId, "new")
+    XCTAssertFalse(model.isEditing)
+    XCTAssertEqual(library.mainThreadOperations, 0)
+  }
+
+  func testHeldExportRemainsBoundToItsOriginalDocument() async {
+    let checkpoint = MetadataCheckpoint()
+    let library = TranscriptTimingLibraryFake(beforeOperation: { kind, _ in
+      if kind == "export" {
+        checkpoint.entered.signal()
+        _ = checkpoint.release.wait(timeout: .now() + 3)
+      }
+    })
+    let model = TranscriptLibraryModel(library: library)
+    await model.load(sessionId: "old")
+    let destination = FileManager.default.temporaryDirectory.appendingPathComponent(
+      UUID().uuidString)
+    let exporting = Task { await model.export(format: .plainText, to: destination) }
+    let entered = await Task.detached {
+      checkpoint.enteredBeforeTimeout()
+    }.value
+    XCTAssertTrue(entered)
+    let duplicate = await model.export(format: .plainText, to: destination)
+    XCTAssertFalse(duplicate)
+    await model.load(sessionId: "new")
+    checkpoint.release.signal()
+    let exported = await exporting.value
+    XCTAssertTrue(exported)
+    XCTAssertEqual(library.lastExportedSessionId, "old")
+    XCTAssertNil(model.message, "an old export must not publish success onto the new document")
+    XCTAssertFalse(model.isExporting)
+    XCTAssertEqual(library.mainThreadOperations, 0)
   }
 
   func testTimestampsAndExportNamesAreStable() {
@@ -564,6 +752,18 @@ final class TranscriptLibraryModelTests: XCTestCase {
     XCTAssertEqual(
       TranscriptSection.fileName("Team: sync/notes", type: .json), "Team- sync-notes.json")
     XCTAssertEqual(TranscriptSection.fileName(" .hidden", type: .plainText), "Transcript.txt")
+  }
+
+  func testAnObsoleteExportActionCannotExportTheNewDocument() async {
+    let library = TranscriptTimingLibraryFake()
+    let model = TranscriptLibraryModel(library: library)
+    await model.load(sessionId: "new")
+    let destination = FileManager.default.temporaryDirectory.appendingPathComponent(
+      UUID().uuidString)
+    let exported = await model.export(format: .plainText, to: destination, from: "old")
+    XCTAssertFalse(exported)
+    XCTAssertNil(library.lastExportedSessionId)
+    XCTAssertFalse(model.isExporting)
   }
 }
 
@@ -583,21 +783,30 @@ private final class TranscriptTimingLibraryFake: NativeTranscriptLibrary, @unche
   private var exportedSessionId: String?
   private var reviewedName: String?
   private let beforeSpeakerMutation: (@Sendable () -> Void)?
+  private let beforeOperation: (@Sendable (String, String) -> Void)?
+  private var mainThreadCalls = 0
+  private var corrections: [String] = []
+  private var deletedSessions: Set<String> = []
+  var mainThreadOperations: Int { lock.withLock { mainThreadCalls } }
+  var correctedSessions: [String] { lock.withLock { corrections } }
   var transcriptReads: Int { lock.withLock { reads } }
   var lastExportedSessionId: String? { lock.withLock { exportedSessionId } }
 
   init(
     rejectsHistoricalAudioOptions: Bool = false, reviewedName: String? = nil,
-    beforeSpeakerMutation: (@Sendable () -> Void)? = nil
+    beforeSpeakerMutation: (@Sendable () -> Void)? = nil,
+    beforeOperation: (@Sendable (String, String) -> Void)? = nil
   ) {
     self.rejectsHistoricalAudioOptions = rejectsHistoricalAudioOptions
     self.reviewedName = reviewedName
     self.beforeSpeakerMutation = beforeSpeakerMutation
+    self.beforeOperation = beforeOperation
     super.init(noHandle: NoHandle())
   }
   required init(unsafeFromHandle handle: UInt64) {
     rejectsHistoricalAudioOptions = false
     beforeSpeakerMutation = nil
+    beforeOperation = nil
     super.init(unsafeFromHandle: handle)
   }
 
@@ -608,12 +817,14 @@ private final class TranscriptTimingLibraryFake: NativeTranscriptLibrary, @unche
 
   override func document(sessionId: String) throws -> [NativeTranscriptSegment] {
     lock.withLock { reads += 1 }
-    return [
+    let snapshot = [
       NativeTranscriptSegment(
         revisionId: "fixture", trackId: sessionId, sequence: 0, startNanoseconds: 0,
         endNanoseconds: 1_000_000_000, verbatimText: "Fixture", effectiveText: "Fixture",
         corrected: false, speakerLabel: "Fixture", speakerNamedByUser: false, namedSpeakerId: nil)
     ]
+    observe("document", sessionId)
+    return snapshot
   }
 
   override func namedSpeakers(sessionId: String) throws -> [NativeNamedTranscriptSpeaker] { [] }
@@ -645,15 +856,58 @@ private final class TranscriptTimingLibraryFake: NativeTranscriptLibrary, @unche
   }
 
   override func contextEvents(sessionId: String) throws -> [NativeContextEvent] { [] }
+
+  override func citeContextEvent(sessionId: String, eventId: String, block: UInt32?) throws
+    -> String
+  {
+    sessionId
+  }
+
+  override func resolveEvidence(referenceJson: String) throws -> NativeResolvedEvidence {
+    observe("resolve", referenceJson)
+    return NativeResolvedEvidence(
+      state: .available, kind: "context", sessionId: referenceJson, startNs: 10,
+      endNs: 20, text: "Evidence", currentRevisionId: nil)
+  }
+
+  override func beginDeletion(sessionId: String) throws -> NativeSessionDeletionInventory {
+    observe("beginDeletion", sessionId)
+    return NativeSessionDeletionInventory(
+      sessionId: sessionId, title: "Fixture", directoryPath: "/synthetic/\(sessionId)",
+      mediaFiles: 1, mediaBytes: 100, transcriptRevisions: 1, humanCorrections: 0,
+      speakerNames: 0, markers: 0, contextEvents: 0, exportFiles: 0, exportBytes: 0)
+  }
+
+  override func completeDeletion(sessionId: String, trashReference: String?) throws
+    -> NativeSessionDeletionReceipt
+  {
+    observe("completeDeletion", sessionId)
+    _ = lock.withLock { deletedSessions.insert(sessionId) }
+    return NativeSessionDeletionReceipt(receiptId: "fixture", walCheckpointed: true)
+  }
+
   override func export(
     sessionId: String, format: NativeTranscriptExportFormat, destinationPath: String
   )
     throws -> NativeTranscriptExportReceipt
   {
+    observe("export", sessionId)
     lock.withLock { exportedSessionId = sessionId }
     return NativeTranscriptExportReceipt(availability: .final, byteLength: 0, segmentCount: 1)
   }
   override func renameSpeaker(sessionId: String, trackId: String, label: String?) throws {}
+
+  override func correctSegment(
+    sessionId: String, revisionId: String, sequence: UInt32, text: String?
+  ) throws {
+    observe("correct", sessionId)
+    lock.withLock { corrections.append(sessionId) }
+  }
+
+  private func observe(_ kind: String, _ id: String) {
+    if Thread.isMainThread { lock.withLock { mainThreadCalls += 1 } }
+    beforeOperation?(kind, id)
+  }
 
   override func renameNamedSpeaker(sessionId: String, speakerId: String, label: String) throws {
     beforeSpeakerMutation?()
@@ -671,16 +925,19 @@ private final class TranscriptTimingLibraryFake: NativeTranscriptLibrary, @unche
   override func search(query: String, sessionId: String?, limit: UInt32) throws
     -> [NativeTranscriptSearchHit]
   {
-    if query.hasPrefix("speaker:"),
-      lock.withLock({ reviewedName?.lowercased() })
-        != String(query.dropFirst("speaker:".count)).lowercased()
-    {
-      return []
+    let matches = lock.withLock {
+      !deletedSessions.contains("valid")
+        && (!query.hasPrefix("speaker:")
+          || reviewedName?.lowercased() == String(query.dropFirst("speaker:".count)).lowercased())
     }
-    return [
-      NativeTranscriptSearchHit(
-        sessionId: "valid", sessionTitle: "Fixture", revisionId: "fixture", trackId: "valid",
-        sequence: 0, startNanoseconds: 0, endNanoseconds: 1_000_000_000, effectiveText: "Fixture")
-    ]
+    let snapshot =
+      matches
+      ? [
+        NativeTranscriptSearchHit(
+          sessionId: "valid", sessionTitle: "Fixture", revisionId: "fixture", trackId: "valid",
+          sequence: 0, startNanoseconds: 0, endNanoseconds: 1_000_000_000, effectiveText: query)
+      ] : []
+    observe("search", query)
+    return snapshot
   }
 }

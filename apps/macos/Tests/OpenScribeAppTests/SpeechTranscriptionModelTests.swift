@@ -137,11 +137,11 @@ final class SpeechTranscriptionModelTests: XCTestCase {
     XCTAssertNil(speech.transcribingSessionId)
 
     let transcripts = TranscriptLibraryModel(managedRoot: root)
-    transcripts.load(sessionId: session)
+    await transcripts.load(sessionId: session)
     XCTAssertEqual(transcripts.availability, .final)
     let text = transcripts.segments.map(\.effectiveText).joined(separator: " ").lowercased()
     XCTAssertTrue(text.contains("recording safe"), text)
-    transcripts.search("transcript")
+    await transcripts.search("transcript")
     XCTAssertEqual(transcripts.searchResults.count, 1)
   }
 
@@ -329,7 +329,7 @@ final class SpeechTranscriptionModelTests: XCTestCase {
     XCTAssertTrue(transcribed, speech.message ?? "")
 
     let transcripts = TranscriptLibraryModel(managedRoot: managedRoot)
-    transcripts.load(sessionId: evidence.sessionId)
+    await transcripts.load(sessionId: evidence.sessionId)
     XCTAssertEqual(transcripts.availability, .final)
     let text = transcripts.segments.map(\.effectiveText).joined(separator: " ").lowercased()
     XCTAssertTrue(text.contains("recording safe"), text)

@@ -105,7 +105,8 @@ struct TranscriptSpeakerReview: View {
         Spacer()
         SheetActionButtons(
           confirmTitle: "Save",
-          isConfirmationDisabled: isSaving || transcripts.sessionId != presentation.sessionId
+          isConfirmationDisabled: isSaving || transcripts.isEditing
+            || transcripts.sessionId != presentation.sessionId
             || (needsName && !validName),
           cancel: onClose, confirm: save)
       }
