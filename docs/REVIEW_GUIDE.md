@@ -54,6 +54,11 @@ export. **Cancel** leaves the saved wording unchanged. The machine reading is
 retained separately; expand **Corrected · Show machine reading** to inspect it.
 **Restore Machine Reading** removes the active correction after it is saved.
 
+Loading and search show their progress while the conversation remains
+responsive. A save already in progress finishes for its original conversation;
+switching conversations does not apply that edit to the new selection. Export
+likewise uses the conversation from which you started it.
+
 Select a passage's speaker label to name that passage's speaker. These names
 are human assignments, not automatic identification. **Edit a person's name**
 renames an existing person. **Audio source labels**, below the reader, applies

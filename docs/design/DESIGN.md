@@ -482,6 +482,26 @@ preview retains its proportions in a bounded height so the authorization sheet
 can expose more of its controls. Its help text describes the existing drag and
 keyboard operations. Source changes are not rendered or runtime proof.
 
+### Resilient review and static pages
+
+Transcript library operations run away from the UI actor. Loading and search
+expose their pending states; operation generations and conversation identities
+prevent late results from replacing a newer selection. Edit and export controls
+reject duplicate submissions while work is in progress. A failed save keeps its
+draft, and a committed edit remains committed if its sheet is dismissed.
+
+Saved context text is fully readable in the document, and context/recording
+history uses lazy rows. Speech-model actions identify the language in their
+accessible names. The region gesture's temporary origin resets when the gesture
+ends or is cancelled.
+
+Current website pages render without requesting hydration scripts or Wasm.
+Their route-specific titles, Open Graph identity and canonical paths come from
+the same metadata collector in production and local SSR checks. Unknown pages
+carry no canonical URL and are marked noindex. The existing security policy and
+canonical document bytes remain authoritative. These implementation choices do
+not establish live hardware, assistive-technology or release acceptance.
+
 ### Shape and separation
 
 - Native component shapes and radii are authoritative for controls, menus, fields, sheets, sidebars, and settings.
