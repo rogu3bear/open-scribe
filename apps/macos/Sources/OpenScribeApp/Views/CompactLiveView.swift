@@ -22,11 +22,10 @@ struct CompactLiveView: View {
         Image(systemName: statusSymbol)
           .foregroundStyle(statusColor)
         Text(statusText)
-          .font(.title2.weight(.semibold))
+          .font(.title.weight(.semibold))
         if let current = store.currentSession {
           Text(current.timerText)
-            .font(.title.monospacedDigit())
-            .foregroundStyle(.secondary)
+            .font(.title.monospacedDigit().weight(.semibold))
         }
       }
       .accessibilityElement(children: .ignore)

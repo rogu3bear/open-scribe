@@ -813,7 +813,7 @@ private struct EmptyConversationWorkspace: View {
   var body: some View {
     VStack(spacing: ScribeSpacing.standard) {
       Text("No conversation is open")
-        .font(.title.weight(.semibold))
+        .font(.title.weight(.bold))
         .accessibilityAddTraits(.isHeader)
       Text(
         "Record a conversation or import audio to start reviewing. Your recordings stay on this Mac."
@@ -833,6 +833,7 @@ private struct EmptyConversationWorkspace: View {
         }
         .disabled(!canImport)
       }
+      .controlSize(.large)
     }
     .padding(32)
     .frame(maxWidth: .infinity, maxHeight: .infinity)

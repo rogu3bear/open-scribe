@@ -61,7 +61,7 @@ struct ContextScopeSheet: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: ScribeSpacing.standard) {
-      Text("Add Screen Context").font(.headline)
+      Text("Add Screen Context").scribeSectionHeading(.title2.weight(.semibold))
       Form {
         DisclosureGroup("Conversation details (optional)") {
           TextField("Participants, separated by commas", text: $participants)

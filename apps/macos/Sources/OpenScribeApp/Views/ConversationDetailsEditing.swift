@@ -39,7 +39,7 @@ struct ConversationRenameSheet: View {
   var body: some View {
     VStack(alignment: .leading, spacing: ScribeSpacing.compact) {
       Text("Rename Conversation")
-        .scribeSectionHeading()
+        .scribeSectionHeading(.title2.weight(.semibold))
       Text(
         "The new name is used in the library, exports, and portable packages. The recording and its transcript are unchanged."
       )
@@ -115,7 +115,7 @@ struct ConversationDetailsSheet: View {
   var body: some View {
     VStack(alignment: .leading, spacing: ScribeSpacing.compact) {
       Text("Conversation Details")
-        .scribeSectionHeading()
+        .scribeSectionHeading(.title2.weight(.semibold))
       Text(
         "Participants and the topic are saved with the conversation's record. They do not identify individual voices in the transcript."
       )

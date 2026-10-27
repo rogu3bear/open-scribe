@@ -11,10 +11,10 @@ enum ScribeSpacing {
 }
 
 extension Text {
-  /// A section label with the existing native type and VoiceOver heading trait.
-  /// Apply only to section headings, not titles or ordinary emphasized text.
-  func scribeSectionHeading() -> some View {
-    font(.headline)
+  /// A native heading with the VoiceOver heading trait. Sections default to
+  /// headline; primary dialog headings can use a larger semantic text style.
+  func scribeSectionHeading(_ style: Font = .headline) -> some View {
+    font(style)
       .accessibilityAddTraits(.isHeader)
   }
 }
@@ -31,6 +31,7 @@ struct SheetActionButtons: View {
     Button("Cancel", role: .cancel, action: cancel)
       .keyboardShortcut(.cancelAction)
     Button(confirmTitle, action: confirm)
+      .buttonStyle(.borderedProminent)
       .keyboardShortcut(.defaultAction)
       .disabled(isConfirmationDisabled)
   }

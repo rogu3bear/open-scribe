@@ -52,7 +52,7 @@ struct TranscriptSpeakerReview: View {
   var body: some View {
     VStack(alignment: .leading, spacing: ScribeSpacing.standard) {
       Text(isPassage ? "Who is speaking?" : "Rename Person")
-        .scribeSectionHeading()
+        .scribeSectionHeading(.title2.weight(.semibold))
       if case .passage(let segment) = presentation.subject {
         Text(segment.effectiveText)
           .font(.callout)

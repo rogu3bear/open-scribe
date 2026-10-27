@@ -14,7 +14,7 @@ struct PolicyDocumentsView: View {
   var body: some View {
     VStack(alignment: .leading, spacing: ScribeSpacing.standard) {
       HStack {
-        Text("Policies and licenses").font(.title2)
+        Text("Policies and licenses").scribeSectionHeading(.title2.weight(.semibold))
         Spacer()
         Button("Done") { dismiss() }
           .keyboardShortcut(.cancelAction)

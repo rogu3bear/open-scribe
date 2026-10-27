@@ -118,7 +118,7 @@ struct TranscriptSection: View {
 
   private var heading: some View {
     Text("Transcript")
-      .scribeSectionHeading()
+      .scribeSectionHeading(.title2.weight(.semibold))
   }
 
   @ViewBuilder
@@ -391,7 +391,7 @@ struct TranscriptSection: View {
   private func correctionSheet(_ segment: NativeTranscriptSegment) -> some View {
     VStack(alignment: .leading, spacing: ScribeSpacing.compact) {
       Text("Correct Transcript Text")
-        .font(.headline)
+        .scribeSectionHeading(.title2.weight(.semibold))
       Text("The machine reading is kept. Your correction is shown and searched instead.")
         .font(.callout)
         .foregroundStyle(.secondary)
@@ -425,7 +425,7 @@ struct TranscriptSection: View {
   private func renameSheet(_ speaker: NativeSessionSpeaker) -> some View {
     VStack(alignment: .leading, spacing: ScribeSpacing.compact) {
       Text("Rename Speaker")
-        .font(.headline)
+        .scribeSectionHeading(.title2.weight(.semibold))
       Text("This names everyone heard on this source. It does not identify individual voices.")
         .font(.callout)
         .foregroundStyle(.secondary)

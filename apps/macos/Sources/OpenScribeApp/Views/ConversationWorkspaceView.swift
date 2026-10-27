@@ -137,7 +137,7 @@ struct ConversationWorkspaceView: View {
     VStack(alignment: .leading, spacing: ScribeSpacing.related) {
       HStack(alignment: .firstTextBaseline, spacing: ScribeSpacing.related) {
         Text(title)
-          .font(.title2.weight(.semibold))
+          .font(.title.weight(.semibold))
           .fixedSize(horizontal: false, vertical: true)
           .textSelection(.enabled)
           .accessibilityAddTraits(.isHeader)
@@ -419,6 +419,8 @@ struct ConversationWorkspaceView: View {
   ) -> some View {
     Button(action.title, systemImage: action == .play ? "play.fill" : "stop.fill", action: onToggle)
       .buttonStyle(.borderedProminent)
+      .controlSize(.large)
+      .font(.headline)
       .disabled(!isEnabled)
       .accessibilityLabel("\(action.title) conversation audio")
   }

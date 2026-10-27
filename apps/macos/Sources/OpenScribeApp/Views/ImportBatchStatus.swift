@@ -17,7 +17,7 @@ struct ImportBatchStatus: View {
     .popover(isPresented: $showsDetails) {
       VStack(alignment: .leading, spacing: ScribeSpacing.compact) {
         Text(title)
-          .scribeSectionHeading()
+          .scribeSectionHeading(.title2.weight(.semibold))
         if imports.selectedFileCount > 0 {
           ProgressView(
             value: Double(imports.importedSessionIds.count + imports.failedImports.count),

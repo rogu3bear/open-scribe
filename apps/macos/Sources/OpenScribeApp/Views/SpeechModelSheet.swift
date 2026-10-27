@@ -12,7 +12,7 @@ struct SpeechModelSheet: View {
   var body: some View {
     VStack(alignment: .leading, spacing: ScribeSpacing.standard) {
       Text("Speech Models")
-        .font(.headline)
+        .scribeSectionHeading(.title2.weight(.semibold))
       Text(
         "Download a model, then install its file. Open Scribe verifies it before transcribing on this Mac."
       )
@@ -54,7 +54,7 @@ struct SpeechModelSheet: View {
     VStack(alignment: .leading, spacing: ScribeSpacing.related) {
       HStack(alignment: .firstTextBaseline) {
         Text(Self.title(model))
-          .font(.subheadline.weight(.semibold))
+          .font(.headline)
         Spacer()
         Text(Self.readinessText(model.readiness))
           .font(.caption)
@@ -90,6 +90,7 @@ struct SpeechModelSheet: View {
           Button(model.readiness == .invalid ? "Repair from File…" : "Install from File…") {
             choose(model)
           }
+          .buttonStyle(.borderedProminent)
         }
       }
     }

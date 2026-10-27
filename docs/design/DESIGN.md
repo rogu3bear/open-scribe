@@ -456,6 +456,19 @@ The website leads with a short, explicitly intended review sequence. Its
 manifest-driven capability table remains in **Development status**; all routes,
 canonical policy text, and the no-public-release notice remain available.
 
+### Stronger hierarchy within the existing system
+
+Conversation and active-recording titles use the native title style; primary
+dialog headings use title2. Body text and secondary disclosures keep their
+existing roles. Primary playback and empty-library actions use large native
+controls. Sheet confirmation and model installation use the existing prominent
+button style, retaining their validation, shortcuts, and user-selected accent.
+
+The website gives the existing heading greater scale and the three ordered
+review steps stronger labels and separators. These are the same system font,
+neutral/divider colors, and semantic sequence; copy, routes, and capability
+claims are unchanged. Settings and the menu bar keep their native density.
+
 ### Shape and separation
 
 - Native component shapes and radii are authoritative for controls, menus, fields, sheets, sidebars, and settings.
