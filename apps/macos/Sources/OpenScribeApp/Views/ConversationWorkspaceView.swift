@@ -171,7 +171,14 @@ struct ConversationWorkspaceView: View {
       .foregroundStyle(.secondary)
       .accessibilityElement(children: .combine)
       if transcripts.sessionId == session.sessionId, let metadata = transcripts.reviewMetadata {
-        reviewMetadataLine(metadata)
+        if metadata.addedAtMs > 0 {
+          Text(
+            Date(timeIntervalSince1970: Double(metadata.addedAtMs) / 1_000)
+              .formatted(date: .abbreviated, time: .shortened)
+          )
+          .font(.caption)
+          .foregroundStyle(.secondary)
+        }
       }
     }
   }
@@ -182,12 +189,6 @@ struct ConversationWorkspaceView: View {
         Text(
           metadata.origin == "import"
             ? "Imported" : metadata.origin == "capture" ? "Capture" : "Conversation")
-        if metadata.addedAtMs > 0 {
-          Text("·")
-          Text(
-            "Added \(Date(timeIntervalSince1970: Double(metadata.addedAtMs) / 1_000).formatted(date: .abbreviated, time: .shortened))"
-          )
-        }
         if metadata.storedMediaBytes > 0 {
           Text("·")
           Text(
@@ -212,22 +213,20 @@ struct ConversationWorkspaceView: View {
       transcripts.sessionId == session.sessionId ? transcripts.contextDetail?.declaration : nil
     let participants = declaration?.participants ?? []
     let topic = declaration?.topic
-    return VStack(alignment: .leading, spacing: ScribeSpacing.related) {
-      HStack(alignment: .firstTextBaseline) {
-        Text("Details")
-          .scribeSectionHeading()
-        Spacer()
-        Button(participants.isEmpty && topic == nil ? "Add Details…" : "Edit Details…") {
-          store.dismissEditMessage()
-          editingDetails = ConversationMetadataPresentation(session: session)
+    return DisclosureGroup("Conversation details") {
+      VStack(alignment: .leading, spacing: ScribeSpacing.related) {
+        HStack(alignment: .firstTextBaseline) {
+          Spacer()
+          Button(participants.isEmpty && topic == nil ? "Add Details…" : "Edit Details…") {
+            store.dismissEditMessage()
+            editingDetails = ConversationMetadataPresentation(session: session)
+          }
+          .buttonStyle(.borderless)
+          .help("Record who took part and what the conversation was about")
         }
-        .buttonStyle(.borderless)
-        .help("Record who took part and what the conversation was about")
-      }
-      if participants.isEmpty && topic == nil {
-        Text("No participants or topic recorded.")
-          .foregroundStyle(.secondary)
-      } else {
+        if let metadata = transcripts.reviewMetadata, transcripts.sessionId == session.sessionId {
+          reviewMetadataLine(metadata)
+        }
         if let topic {
           Text("Topic: \(topic)")
             .textSelection(.enabled)
@@ -237,6 +236,7 @@ struct ConversationWorkspaceView: View {
             .textSelection(.enabled)
         }
       }
+      .padding(.top, ScribeSpacing.related)
     }
     .accessibilityElement(children: .contain)
   }

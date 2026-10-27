@@ -123,10 +123,22 @@ struct TranscriptSection: View {
 
   @ViewBuilder
   private var transcriptionMenu: some View {
-    if session.transcript.documentAvailability == .final
-      || session.transcript.replacementResumable
-    {
-      Menu("Transcription") {
+    Menu("Transcription") {
+      Button("Speech Models…") {
+        speech.dismissMessage()
+        showingModels = true
+      }
+      if speech.installedModel == nil, session.transcriptionUnavailableReason == nil,
+        speech.transcribingSessionId != session.sessionId,
+        scheduler.state(for: session.sessionId) != .running
+      {
+        Button("Rebuild from Saved Parts") {
+          scheduler.request(sessionId: session.sessionId, intent: .reconcileRetained)
+        }
+      }
+      if session.transcript.documentAvailability == .final
+        || session.transcript.replacementResumable
+      {
         if session.transcript.replacementResumable {
           Button("Resume Replacement") {
             scheduler.resumeReplacement(sessionId: session.sessionId)
@@ -257,20 +269,9 @@ struct TranscriptSection: View {
             .fixedSize(horizontal: false, vertical: true)
           }
         } else {
-          Text("Transcription needs a verified local speech model.")
-            .font(.callout)
-        }
-        if session.transcriptionUnavailableReason == nil {
-          HStack(spacing: ScribeSpacing.compact) {
-            Button("Speech Model…") {
-              speech.dismissMessage()
-              showingModels = true
-            }
-            if speech.installedModel == nil {
-              Button("Rebuild from Saved Parts") {
-                scheduler.request(sessionId: session.sessionId, intent: .reconcileRetained)
-              }
-            }
+          Button("Set Up Transcription…") {
+            speech.dismissMessage()
+            showingModels = true
           }
         }
       }
@@ -331,9 +332,6 @@ struct TranscriptSection: View {
         Section("Transcript") {
           Group {
             Button("Plain Text…") { export(.plainText, type: .plainText) }
-            Button("Markdown…") {
-              export(.markdown, type: UTType(filenameExtension: "md") ?? .plainText)
-            }
             Button("WebVTT Subtitles…") {
               export(.webVtt, type: UTType(filenameExtension: "vtt") ?? .plainText)
             }

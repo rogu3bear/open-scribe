@@ -63,7 +63,7 @@ struct ContextScopeSheet: View {
     VStack(alignment: .leading, spacing: ScribeSpacing.standard) {
       Text("Add Screen Context").font(.headline)
       Form {
-        Section("Meeting (optional)") {
+        DisclosureGroup("Conversation details (optional)") {
           TextField("Participants, separated by commas", text: $participants)
           TextField("Topic", text: $topic)
           Text("These names help you review later. They grant no screen access.")
@@ -197,11 +197,13 @@ struct RegionEditor: View {
       .accessibilityElement()
       .accessibilityLabel("Region on \(displayName)")
       .accessibilityValue(ContextScopeSummary.target(boundsRequest))
-      HStack {
-        percentField("X", \.origin.x)
-        percentField("Y", \.origin.y)
-        percentField("Width", \.size.width)
-        percentField("Height", \.size.height)
+      DisclosureGroup("Position and size") {
+        HStack {
+          percentField("X", \.origin.x)
+          percentField("Y", \.origin.y)
+          percentField("Width", \.size.width)
+          percentField("Height", \.size.height)
+        }
       }
     }
   }
@@ -277,16 +279,15 @@ struct ContextEventsSection: View {
   var canSeek = false
   var onSeek: (NativeContextEvent) -> Void = { _ in }
 
+  static func hasHistory(_ detail: NativeContextDetail?) -> Bool {
+    guard let detail else { return false }
+    return !detail.scopes.isEmpty || detail.acceptedEvents > 0
+  }
+
   var body: some View {
-    if let detail, !detail.scopes.isEmpty || !detail.declaration.participants.isEmpty
-      || detail.declaration.topic != nil
-    {
+    if let detail, Self.hasHistory(detail) {
       VStack(alignment: .leading, spacing: 10) {
         Text("Screen context").font(.title3.weight(.semibold)).accessibilityAddTraits(.isHeader)
-        if let topic = detail.declaration.topic { Text("Topic: \(topic)") }
-        if !detail.declaration.participants.isEmpty {
-          Text("Participants: \(ListFormatter.localizedString(byJoining: detail.declaration.participants))")
-        }
         ForEach(Array(detail.scopes.enumerated()), id: \.offset) { _, scope in
           Text("\(ContextScopeSummary.modeName(scope.request.mode)) — \(ContextScopeSummary.target(scope.request)): \(ContextScopeSummary.condition(scope))")
             .font(.callout).foregroundStyle(.secondary)

@@ -10,7 +10,7 @@ Choose a saved conversation in the sidebar. The title, date, duration, and
 status help distinguish recordings with similar names. The pencil beside the
 title renames that conversation.
 
-**Import** opens local recordings. You can select several files; they are
+**Import → Audio Files** opens local recordings. You can select several files; they are
 imported one at a time. **Pause Imports** finishes the current file before
 waiting. **Stop Imports** keeps the conversations already imported. A failed
 file is identified without discarding the other completed imports.
@@ -20,7 +20,7 @@ file afterward does not remove that managed copy. Older imports that retained
 only decoded audio remain playable, but cannot export an original M4A that
 was never retained.
 
-**Open Package** opens a supported `.openscribe` export as a separate local
+**Import → Open Portable Package** opens a supported `.openscribe` export as a separate local
 conversation. It is distinct from importing a recording. Package support is
 limited; use transcript and original-audio exports when the package format
 cannot preserve the conversation's media or speaker assignments.
@@ -41,7 +41,8 @@ filter work together. If a search unexpectedly has no results, choose all
 speakers as well as checking the search words.
 
 Select the timestamp beside a passage to play from its position in the source
-audio. **Follow playback** keeps the currently playing passage in view. Typing
+audio. **Follow playback** appears when playback supplies a transcript position
+and keeps the currently playing passage in view. Typing
 a search or opening a correction stops automatic following so it does not
 pull you away from your work; turn it back on when you want it.
 
@@ -96,7 +97,7 @@ have different states; a failed source is not shown as still recording.
 ## When a transcript is not ready
 
 Audio can remain available before a transcript exists. **Transcribe** requests
-local processing with an installed, verified speech model. **Speech Model**
+local processing with an installed, verified speech model. **Set Up Transcription**
 opens model setup when one is needed. Queue and failure messages explain
 whether processing is waiting, incomplete, cancelled, or failed.
 
@@ -105,5 +106,15 @@ Earlier revisions and corrections remain in history. Review changes can
 prevent a background replacement from becoming selected automatically. Use
 this action to request new processing, not to save an ordinary correction.
 
-Settings contains processing preferences and model management. These are
-setup choices; they are not required actions for each reviewed passage.
+The **Transcription** menu keeps model management and rebuilding saved parts
+available without placing them beside each reviewed passage. Model setup names
+the model currently used; **Verification details** exposes its filename, checksum,
+and licenses. A choice among multiple installed models is not yet offered.
+
+**Conversation details** contains participants, topic, and media information.
+Screen context appears only when a scope or accepted context history exists;
+adding participants and a topic does not imply screen observation.
+
+Settings contains processing preferences and model management. **Advanced**
+opens system information and diagnostics when needed. These are setup choices;
+they are not required actions for each reviewed passage.

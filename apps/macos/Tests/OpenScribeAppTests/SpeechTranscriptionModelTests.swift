@@ -209,22 +209,46 @@ final class SpeechTranscriptionModelTests: XCTestCase {
             ])
           ) {})
       ))
+    views.append(
+      (
+        "settings",
+        AnyView(
+          SettingsView(
+            status: AppStatus(
+              productName: "Open Scribe", coreVersion: "fixture", persistence: "local",
+              capture: "fixture", intelligence: "off"),
+            speech: SpeechTranscriptionModel(preview: installed),
+            library: RuntimeLibraryStore(managedRoot: nil, refreshesImmediately: false),
+            recovery: RecoveredSessionController(managedRoot: nil),
+            scheduler: TranscriptionScheduler.inert(),
+            pressure: SystemPressureMonitor(libraryRoot: nil, samplesAutomatically: false)
+          ).frame(height: 500))
+      ))
     XCTAssertEqual(states[2].1.progressFraction, 0.25)
     XCTAssertEqual(states[2].1.progressText, "Transcribing track 1 of 2…")
     for (name, content) in views {
       let view = content.padding(32).frame(width: 600)
         .background(Color(nsColor: .windowBackgroundColor))
-      let size = NSHostingView(rootView: view).fittingSize
+        .environment(\.colorScheme, .light)
+      let host = NSHostingView(rootView: view)
+      let size = host.fittingSize
       XCTAssertLessThanOrEqual(size.width, 601, name)
       XCTAssertGreaterThan(size.height, 80, name)
       guard let directory = ProcessInfo.processInfo.environment["OPEN_SCRIBE_RENDER_DIR"] else {
         continue
       }
-      let renderer = ImageRenderer(content: view)
-      renderer.scale = 2
-      let image = try XCTUnwrap(renderer.cgImage)
-      let png = try XCTUnwrap(
-        NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]))
+      let window = NSWindow(
+        contentRect: NSRect(origin: NSPoint(x: -10_000, y: -10_000), size: size),
+        styleMask: .borderless, backing: .buffered, defer: false)
+      window.isReleasedWhenClosed = false
+      window.appearance = NSAppearance(named: .aqua)
+      window.contentView = host
+      host.setFrameSize(size)
+      host.layoutSubtreeIfNeeded()
+      let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+      host.cacheDisplay(in: host.bounds, to: bitmap)
+      let png = try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
+      window.close()
       try png.write(to: URL(fileURLWithPath: directory).appendingPathComponent("\(name).png"))
     }
   }

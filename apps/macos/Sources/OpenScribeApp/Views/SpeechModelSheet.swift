@@ -11,14 +11,18 @@ struct SpeechModelSheet: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: ScribeSpacing.standard) {
-      Text("Local Speech Model")
+      Text("Speech Models")
         .font(.headline)
       Text(
-        "Transcription runs on this Mac with a model you download yourself. Open Scribe never downloads; the file you choose is checked against the size and SHA-256 below, then test-run, before it is used."
+        "Download a model, then install its file. Open Scribe verifies it before transcribing on this Mac."
       )
       .font(.callout)
       .foregroundStyle(.secondary)
       .fixedSize(horizontal: false, vertical: true)
+      if let model = speech.installedModel {
+        Text("Transcription uses \(Self.title(model)).")
+          .font(.callout)
+      }
       ForEach(speech.models, id: \.modelId) { model in
         modelDetail(model)
       }
@@ -56,20 +60,26 @@ struct SpeechModelSheet: View {
           .font(.caption)
           .foregroundStyle(.secondary)
       }
-      Group {
-        Text(
-          "\(model.fileName), \(ByteCountFormatter.string(fromByteCount: Int64(clamping: model.byteLength), countStyle: .file))"
-        )
-        Text("SHA-256 \(model.sha256)")
-          .font(.caption.monospaced())
-        Text("Weights: \(model.license) license. Engine: \(model.engine), MIT license.")
+      Text(
+        ByteCountFormatter.string(
+          fromByteCount: Int64(clamping: model.byteLength), countStyle: .file)
+      )
+      .font(.caption)
+      .foregroundStyle(.secondary)
+      DisclosureGroup("Verification details") {
+        VStack(alignment: .leading, spacing: ScribeSpacing.tight) {
+          Text(model.fileName)
+          Text("SHA-256 \(model.sha256)")
+            .font(.caption.monospaced())
+          Text("Weights: \(model.license) license. Engine: \(model.engine), MIT license.")
+        }
+        .textSelection(.enabled)
       }
       .font(.caption)
       .foregroundStyle(.secondary)
-      .textSelection(.enabled)
       HStack(spacing: ScribeSpacing.compact) {
         if let origin = URL(string: model.downloadOrigin) {
-          Link("Get the File in Your Browser", destination: origin)
+          Link("Download File", destination: origin)
             .help(model.downloadOrigin)
         }
         Spacer()
@@ -97,7 +107,7 @@ struct SpeechModelSheet: View {
   }
 
   static func title(_ model: NativeSpeechModel) -> String {
-    model.languages == ["en"] ? "English (small, q5_1)" : "Multilingual (small, q5_1)"
+    model.languages == ["en"] ? "English" : "Multilingual"
   }
   static func readinessText(_ state: NativeModelReadiness) -> String {
     switch state {

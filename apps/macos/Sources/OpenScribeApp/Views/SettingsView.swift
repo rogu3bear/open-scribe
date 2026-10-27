@@ -50,68 +50,74 @@ struct SettingsView: View {
             .fixedSize(horizontal: false, vertical: true)
         }
         Text(
-          "Transcription runs on this Mac with the installed model, one conversation at a time, and waits while a recording is in progress. A conversation you ask for is transcribed even while automatic work is paused."
+          "Runs on this Mac, one conversation at a time, after recording stops. Manual requests still work when automatic transcription is paused."
         )
         .font(.caption)
         .foregroundStyle(.secondary)
         .fixedSize(horizontal: false, vertical: true)
       }
-      Section("System") {
-        LabeledContent("Library disk", value: pressure.reading.diskText)
-        LabeledContent("Memory", value: pressure.reading.memoryText)
-        LabeledContent("Thermal", value: pressure.reading.thermalText)
-        if let processText = pressure.reading.processText {
-          LabeledContent("This app", value: processText)
-        }
-        Text(
-          "Measured by macOS: the space the library volume can still give this app, the kernel's memory-pressure level and free pages, the thermal state, and this process's own CPU time and resident memory. Transcription waits below \(SystemPressureReading.bytes(SystemPressureReading.minimumDiskBytesForTranscription)) of free disk, under critical memory pressure, or in a critical thermal state."
-        )
-        .font(.caption)
-        .foregroundStyle(.secondary)
-        .fixedSize(horizontal: false, vertical: true)
-      }
-      Section("Diagnostics") {
-        LabeledContent("Microphone", value: microphoneLabel)
-        LabeledContent("Screen Recording", value: screenCaptureLabel)
-        LabeledContent("Signature", value: signature)
-        LabeledContent("Recovery", value: recoveryLabel)
+      Section("Advanced") {
         if let warning = recovery.transcriptMaintenanceWarning {
-          Text(warning).font(.caption).foregroundStyle(.secondary)
+          CaptureIssueLabel(message: warning).font(.callout)
         }
-        if !recovery.recoveryFindings.isEmpty {
+        DisclosureGroup("System information") {
+          LabeledContent("Library disk", value: pressure.reading.diskText)
+          LabeledContent("Memory", value: pressure.reading.memoryText)
+          LabeledContent("Thermal", value: pressure.reading.thermalText)
+          if let processText = pressure.reading.processText {
+            LabeledContent("This app", value: processText)
+          }
           Text(
-            "\(recovery.recoveryFindings.count) per-conversation recovery findings retained for inspection."
+            "Measured by macOS: the space the library volume can still give this app, the kernel's memory-pressure level and free pages, the thermal state, and this process's own CPU time and resident memory. Transcription waits below \(SystemPressureReading.bytes(SystemPressureReading.minimumDiskBytesForTranscription)) of free disk, under critical memory pressure, or in a critical thermal state."
           )
-          .font(.caption).foregroundStyle(.secondary)
-        }
-        LabeledContent("Library", value: libraryLabel)
-        LabeledContent(
-          "Models",
-          value: "\(speech.models.filter(\.installed).count) installed of \(speech.models.count)")
-        Text("Recent notes stay on this Mac. They omit titles, transcript text, and file paths.")
           .font(.caption)
           .foregroundStyle(.secondary)
-        if diagnosticLog.events.isEmpty {
-          Text("No notes yet.")
-            .foregroundStyle(.secondary)
-        } else {
-          ForEach(diagnosticLog.events.suffix(12)) { event in
+          .fixedSize(horizontal: false, vertical: true)
+        }
+        DisclosureGroup("Diagnostics") {
+          LabeledContent("Microphone", value: microphoneLabel)
+          LabeledContent("Screen Recording", value: screenCaptureLabel)
+          LabeledContent("Signature", value: signature)
+          LabeledContent("Recovery", value: recoveryLabel)
+          if !recovery.recoveryFindings.isEmpty {
             Text(
-              "\(event.recordedAt.formatted(.dateTime.hour().minute().second()))  \(event.category)  \(event.message)"
+              "\(recovery.recoveryFindings.count) per-conversation recovery findings retained for inspection."
             )
-            .font(.caption.monospaced())
-            .textSelection(.enabled)
+            .font(.caption).foregroundStyle(.secondary)
+          }
+          LabeledContent("Library", value: libraryLabel)
+          LabeledContent(
+            "Models",
+            value: "\(speech.models.filter(\.installed).count) installed of \(speech.models.count)")
+          Text("Recent notes stay on this Mac. They omit titles, transcript text, and file paths.")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+          if diagnosticLog.events.isEmpty {
+            Text("No notes yet.")
+              .foregroundStyle(.secondary)
+          } else {
+            ForEach(diagnosticLog.events.suffix(12)) { event in
+              Text(
+                "\(event.recordedAt.formatted(.dateTime.hour().minute().second()))  \(event.category)  \(event.message)"
+              )
+              .font(.caption.monospaced())
+              .textSelection(.enabled)
+            }
+          }
+          Button("Export Diagnostics…") {
+            exportDocument = DiagnosticsDocument(text: currentReport())
+            exportPresented = true
+            AppTelemetry.commandInvoked("export-diagnostics")
           }
         }
-        Button("Export Diagnostics…") {
-          exportDocument = DiagnosticsDocument(text: currentReport())
-          exportPresented = true
-          AppTelemetry.commandInvoked("export-diagnostics")
-        }
       }
-      Section("Policies and licenses") {
+      Section("Help and policies") {
+        Link(
+          "Review Guide (online)",
+          destination: URL(
+            string: "https://github.com/rogu3bear/open-scribe/blob/main/docs/REVIEW_GUIDE.md")!)
         Button("Read Policies and Licenses…") { showingPolicies = true }
-        Text("Available offline. Privacy and terms remain drafts; release review is incomplete.")
+        Text("Policies are available offline. Privacy and terms remain drafts.")
           .font(.caption)
           .foregroundStyle(.secondary)
           .fixedSize(horizontal: false, vertical: true)

@@ -106,6 +106,17 @@ private func frame(_ lines: [String], noise: UInt8 = 0, size: CGSize = CGSize(wi
 
 @MainActor
 final class ContextTests: XCTestCase {
+
+  func testConversationDetailsDoNotImplyScreenContextHistory() {
+    let declaration = NativeSessionDeclaration(participants: ["Dana"], topic: "Planning")
+    XCTAssertFalse(ContextEventsSection.hasHistory(nil))
+    XCTAssertFalse(
+      ContextEventsSection.hasHistory(
+        NativeContextDetail(scopes: [], acceptedEvents: 0, declaration: declaration)))
+    XCTAssertTrue(
+      ContextEventsSection.hasHistory(
+        NativeContextDetail(scopes: [], acceptedEvents: 1, declaration: declaration)))
+  }
   // MARK: Topology
 
   /// Four displays: negative origins, one above, one rotated at mixed scale.
@@ -482,6 +493,8 @@ final class ContextTests: XCTestCase {
       let host = NSHostingView(rootView: view.padding(24).frame(width: width).background(Color(nsColor: .windowBackgroundColor)))
       host.frame = CGRect(origin: .zero, size: host.fittingSize)
       let window = NSWindow(contentRect: host.frame, styleMask: [.borderless], backing: .buffered, defer: false)
+      window.isReleasedWhenClosed = false
+      defer { window.close() }
       window.contentView = host
       host.layoutSubtreeIfNeeded()
       let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))

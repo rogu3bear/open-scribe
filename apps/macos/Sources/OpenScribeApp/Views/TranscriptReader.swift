@@ -116,15 +116,15 @@ struct TranscriptReader: View {
         HStack(alignment: .firstTextBaseline, spacing: ScribeSpacing.compact) {
           personPicker
           Spacer(minLength: ScribeSpacing.compact)
-          followControl
+          if isPlaybackActive { followControl }
         }
         VStack(alignment: .leading, spacing: ScribeSpacing.related) {
           personPicker
-          followControl
+          if isPlaybackActive { followControl }
         }
       }
       if transcripts.namedSpeakers.isEmpty {
-        Text("Name a passage to identify who is speaking. Names are confirmed by you.")
+        Text("Select a speaker label to name that person.")
           .font(.caption)
           .foregroundStyle(.secondary)
       } else {

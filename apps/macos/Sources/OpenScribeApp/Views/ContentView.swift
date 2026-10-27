@@ -53,9 +53,6 @@ struct ContentView: View {
         captureButton
         RecorderControls(recorder: liveRecording, store: store)
         importButton
-        if importedMediaAuthority.canOpenPackages {
-          openPackageButton
-        }
       }
     }
     .onAppear {
@@ -378,11 +375,14 @@ struct ContentView: View {
       ImportBatchStatus(imports: importedMediaAuthority, canResume: liveRecording.canStart)
     }
     if !importedMediaAuthority.hasPendingAudioImports {
-      Button(
-        importedMediaAuthority.isBusy ? "Importing…" : "Import Audio…",
+      Menu(
+        importedMediaAuthority.isBusy ? "Importing…" : "Import",
         systemImage: "square.and.arrow.down"
       ) {
-        importedMediaAuthority.chooseAndImport()
+        Button("Audio Files…") { importedMediaAuthority.chooseAndImport() }
+        if importedMediaAuthority.canOpenPackages {
+          openPackageButton
+        }
       }
       .disabled(!canImport)
       .help(
@@ -754,7 +754,8 @@ struct LibraryActivityFooter: View {
   }
 
   private var pressureText: String {
-    var parts = [pressure.reading.diskText]
+    var parts: [String] = []
+    if pressure.reading.diskIsLow { parts.append(pressure.reading.diskText) }
     if pressure.reading.memoryPressure != .normal {
       parts.append(pressure.reading.memoryText)
     }
@@ -765,35 +766,39 @@ struct LibraryActivityFooter: View {
   }
 
   var body: some View {
-    VStack(alignment: .leading, spacing: ScribeSpacing.tight) {
-      Divider()
+    if activityText != nil || !pressureText.isEmpty {
       VStack(alignment: .leading, spacing: ScribeSpacing.tight) {
-        if let activityText {
-          HStack(alignment: .firstTextBaseline, spacing: 6) {
-            Image(systemName: scheduler.runningSessionId != nil ? "ellipsis.circle" : "clock")
-            Text(activityText)
-              .fixedSize(horizontal: false, vertical: true)
+        Divider()
+        VStack(alignment: .leading, spacing: ScribeSpacing.tight) {
+          if let activityText {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+              Image(systemName: scheduler.runningSessionId != nil ? "ellipsis.circle" : "clock")
+              Text(activityText)
+                .fixedSize(horizontal: false, vertical: true)
+            }
+            if scheduler.runningSessionId != nil, let fraction = speech.progressFraction {
+              ProgressView(value: fraction)
+                .controlSize(.small)
+                .accessibilityLabel("Transcription progress")
+            }
           }
-          if scheduler.runningSessionId != nil, let fraction = speech.progressFraction {
-            ProgressView(value: fraction)
-              .controlSize(.small)
-              .accessibilityLabel("Transcription progress")
+          if !pressureText.isEmpty {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+              Image(systemName: "exclamationmark.triangle")
+              Text(pressureText)
+                .fixedSize(horizontal: false, vertical: true)
+            }
           }
         }
-        HStack(alignment: .firstTextBaseline, spacing: 6) {
-          Image(systemName: pressure.reading.diskIsLow ? "exclamationmark.triangle" : "internaldrive")
-          Text(pressureText)
-            .fixedSize(horizontal: false, vertical: true)
-        }
+        .font(.caption)
+        .foregroundStyle(!pressureText.isEmpty ? .primary : .secondary)
+        .padding(.horizontal, ScribeSpacing.standard)
+        .padding(.vertical, ScribeSpacing.related)
       }
-      .font(.caption)
-      .foregroundStyle(pressure.reading.diskIsLow ? .primary : .secondary)
-      .padding(.horizontal, ScribeSpacing.standard)
-      .padding(.vertical, ScribeSpacing.related)
+      .accessibilityElement(children: .combine)
+      .accessibilityLabel(
+        "Library activity. " + (activityText.map { "\($0). " } ?? "") + pressureText)
     }
-    .accessibilityElement(children: .combine)
-    .accessibilityLabel(
-      "Library activity. " + (activityText.map { "\($0). " } ?? "") + pressureText)
   }
 }
 
@@ -811,7 +816,7 @@ private struct EmptyConversationWorkspace: View {
         .font(.title.weight(.semibold))
         .accessibilityAddTraits(.isHeader)
       Text(
-        "Record microphone and computer audio, import local CAF or M4A audio, or open a portable package from another Mac. The source stays on this Mac."
+        "Record a conversation or import audio to start reviewing. Your recordings stay on this Mac."
       )
       .foregroundStyle(.secondary)
       .multilineTextAlignment(.center)
@@ -820,12 +825,13 @@ private struct EmptyConversationWorkspace: View {
         Button("Record", systemImage: "record.circle", action: onRecord)
           .disabled(!canRecord)
           .buttonStyle(.borderedProminent)
-        Button(importIsBusy ? "Importing…" : "Import Audio…", action: onImport)
-          .disabled(!canImport)
-        if let onOpenPackage {
-          Button("Open Portable Package…", action: onOpenPackage)
-            .disabled(!canImport)
+        Menu(importIsBusy ? "Importing…" : "Import") {
+          Button("Audio Files…", action: onImport)
+          if let onOpenPackage {
+            Button("Portable Package…", action: onOpenPackage)
+          }
         }
+        .disabled(!canImport)
       }
     }
     .padding(32)

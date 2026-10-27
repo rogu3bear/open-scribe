@@ -64,7 +64,17 @@ struct CompactLiveView: View {
           ContextInspector(model: context)
         }
 
-        RecorderEventList(events: liveRecording.recorderDetail?.events ?? [])
+        let events = liveRecording.recorderDetail?.events ?? []
+        RecorderEventList(events: events.filter { $0.kind == "marker_added" }, heading: "Markers")
+        let details = events.filter { $0.kind != "marker_added" }
+        if !details.isEmpty {
+          DisclosureGroup("Recording events") {
+            ScrollView {
+              RecorderEventList(events: details, heading: "Events")
+            }
+            .frame(maxHeight: 180)
+          }
+        }
       } else {
         Text(
           "Start deliberately from this window or the menu bar. Open Scribe will show Recording only after both required sources are durably active."
