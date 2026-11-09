@@ -1,5 +1,5 @@
-//! Coarse evidence citation and resolution (ADR 0013). References cross as
-//! canonical `open-scribe.evidence-ref/v1` JSON; Swift never assembles or
+//! Coarse evidence citation, claim review, and resolution (ADR 0013).
+//! References and claims cross as canonical JSON; Swift never assembles or
 //! reinterprets their identity.
 
 use super::*;
@@ -32,6 +32,46 @@ pub struct NativeResolvedEvidence {
 
 fn encode(reference: EvidenceRef) -> Result<String, NativeStorageError> {
     open_scribe_core::encode_evidence_ref(&reference).map_err(map_storage_error)
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct NativeClaimTarget {
+    pub side: String,
+    pub state: NativeEvidenceState,
+    pub record_id: String,
+    pub start_ns: i64,
+    pub end_ns: i64,
+    pub text: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct NativeClaimNavigation {
+    pub claim_id: String,
+    pub revision_id: String,
+    pub text: String,
+    pub adjudication: Option<String>,
+    pub targets: Vec<NativeClaimTarget>,
+}
+
+fn evidence_state(state: ResolutionState) -> NativeEvidenceState {
+    match state {
+        ResolutionState::Available => NativeEvidenceState::Available,
+        ResolutionState::Superseded => NativeEvidenceState::Superseded,
+        ResolutionState::Missing => NativeEvidenceState::Missing,
+        ResolutionState::Deleted => NativeEvidenceState::Deleted,
+        ResolutionState::IntegrityMismatch => NativeEvidenceState::IntegrityMismatch,
+        ResolutionState::UnsupportedVersion => NativeEvidenceState::UnsupportedVersion,
+    }
+}
+
+/// The same tokens `derived_claim_revisions.adjudication_action` stores.
+fn adjudication_token(action: open_scribe_core::AdjudicationAction) -> &'static str {
+    match action {
+        open_scribe_core::AdjudicationAction::Accepted => "accepted",
+        open_scribe_core::AdjudicationAction::Corrected => "corrected",
+        open_scribe_core::AdjudicationAction::Rejected => "rejected",
+        open_scribe_core::AdjudicationAction::Unresolved => "unresolved",
+    }
 }
 
 #[uniffi::export]
@@ -113,6 +153,53 @@ impl NativeTranscriptLibrary {
             end_ns: reference.end_ns,
             text: resolved.text,
             current_revision_id: resolved.current_revision_id,
+        })
+    }
+
+    /// Accepts canonical `open-scribe.derived-claim/v1` JSON. Swift does not
+    /// choose storage keys or rewrite the cited evidence.
+    pub fn insert_derived_claim(&self, claim_json: String) -> Result<(), NativeStorageError> {
+        let claim = open_scribe_core::DerivedClaim::parse(&claim_json)
+            .map_err(|_| NativeStorageError::InvalidRequest)?;
+        self.library()?
+            .insert_derived_claim(&claim)
+            .map_err(map_storage_error)
+    }
+
+    /// Opens the effective claim. A later model revision does not replace a
+    /// human acceptance, correction, or rejection.
+    pub fn navigate_derived_claim(
+        &self,
+        session_id: String,
+        claim_id: String,
+    ) -> Result<NativeClaimNavigation, NativeStorageError> {
+        let navigation = self
+            .library()?
+            .navigate_derived_claim(&SessionId(session_id), &claim_id)
+            .map_err(map_storage_error)?;
+        Ok(NativeClaimNavigation {
+            claim_id: navigation.claim_id,
+            revision_id: navigation.revision_id,
+            text: navigation.text,
+            adjudication: navigation
+                .adjudication
+                .map(|action| adjudication_token(action).to_owned()),
+            targets: navigation
+                .targets
+                .into_iter()
+                .map(|target| NativeClaimTarget {
+                    side: match target.side {
+                        open_scribe_core::ClaimEvidenceSide::Supporting => "supporting",
+                        open_scribe_core::ClaimEvidenceSide::Contradicting => "contradicting",
+                    }
+                    .to_owned(),
+                    state: evidence_state(target.state),
+                    record_id: target.record_id,
+                    start_ns: target.start_ns,
+                    end_ns: target.end_ns,
+                    text: target.text,
+                })
+                .collect(),
         })
     }
 }

@@ -1563,6 +1563,8 @@ mod recovery;
 pub use recovery::*;
 mod transcript_library;
 pub use transcript_library::*;
+#[cfg(test)]
+mod evidence_tests;
 uniffi::setup_scaffolding!();
 
 #[cfg(test)]

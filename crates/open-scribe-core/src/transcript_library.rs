@@ -14,11 +14,11 @@ use crate::session_export::{
     FileExportReceipt, PortableSummary, SessionExportError, export_source_media, export_track_wav,
     export_validated_mix, write_portable_package, write_session_manifest,
 };
-use open_scribe_evidence::EvidenceRef;
+use open_scribe_evidence::{DerivedClaim, EvidenceRef};
 use open_scribe_store::{
-    ContextDetail, ContextEventRecord, ConversationReviewMetadata, NamedTranscriptSpeaker,
-    ResolvedEvidence, SessionDeletionInventory, SessionDeletionReceipt, SessionSpeaker,
-    SessionStore, StoreError, TranscriptDocumentSegment, TranscriptSearchHit,
+    ClaimNavigation, ContextDetail, ContextEventRecord, ConversationReviewMetadata,
+    NamedTranscriptSpeaker, ResolvedEvidence, SessionDeletionInventory, SessionDeletionReceipt,
+    SessionSpeaker, SessionStore, StoreError, TranscriptDocumentSegment, TranscriptSearchHit,
     TranscriptSpeakerAssignment,
 };
 use open_scribe_types::SessionId;
@@ -125,6 +125,20 @@ impl TranscriptLibrary {
         reference: &EvidenceRef,
     ) -> Result<ResolvedEvidence, StoreError> {
         self.store.resolve_evidence(reference)
+    }
+
+    /// Stores one validated claim revision. The library does not invent its evidence.
+    pub fn insert_derived_claim(&mut self, claim: &DerivedClaim) -> Result<(), StoreError> {
+        self.store.insert_derived_claim(claim)
+    }
+
+    /// The effective claim and the evidence a review surface can open.
+    pub fn navigate_derived_claim(
+        &self,
+        session: &SessionId,
+        claim_id: &str,
+    ) -> Result<ClaimNavigation, StoreError> {
+        self.store.navigate_derived_claim(session, claim_id)
     }
 
     pub fn correct_segment(

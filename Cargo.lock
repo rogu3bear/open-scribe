@@ -1617,7 +1617,12 @@ name = "open-scribe-uniffi"
 version = "0.0.0"
 dependencies = [
  "open-scribe-core",
+ "open-scribe-evidence",
+ "open-scribe-store",
  "open-scribe-types",
+ "serde_json",
+ "sha2",
+ "tempfile",
  "thiserror 2.0.20",
  "uniffi",
 ]

@@ -57,17 +57,21 @@ pub use transcription_plan::{
 #[cfg(test)]
 mod speech_tests;
 #[cfg(test)]
+mod transcript_library_tests;
+#[cfg(test)]
 mod transcription_projection_tests;
 
 pub use open_scribe_domain::{
     Command, Fixture, Presentation, SessionSnapshot, TimerBehavior, TransitionError, announcement,
     transcription_hold,
 };
-pub use open_scribe_evidence::{EvidenceKind, EvidenceRef, EvidenceRefError, ResolutionState};
+pub use open_scribe_evidence::{
+    AdjudicationAction, DerivedClaim, EvidenceKind, EvidenceRef, EvidenceRefError, ResolutionState,
+};
 pub use open_scribe_store::{
-    DecodedAudioError, LibraryRecovery, RecoveryDisposition, ResolvedEvidence,
-    RuntimeTranscriptState, SessionStore, TranscriptionFailure, TranscriptionOperation,
-    TranscriptionRunPolicy, TranscriptionWork,
+    ClaimEvidenceSide, ClaimNavigation, ClaimNavigationTarget, DecodedAudioError, LibraryRecovery,
+    RecoveryDisposition, ResolvedEvidence, RuntimeTranscriptState, SessionStore,
+    TranscriptionFailure, TranscriptionOperation, TranscriptionRunPolicy, TranscriptionWork,
 };
 
 /// Canonical `open-scribe.evidence-ref/v1` JSON for a Rust-derived reference.

@@ -1845,6 +1845,18 @@ public protocol NativeTranscriptLibraryProtocol: AnyObject, Sendable {
     -> String
 
   /**
+   * Accepts canonical `open-scribe.derived-claim/v1` JSON. Swift does not
+   * choose storage keys or rewrite the cited evidence.
+   */
+  func insertDerivedClaim(claimJson: String) throws
+
+  /**
+   * Opens the effective claim. A later model revision does not replace a
+   * human acceptance, correction, or rejection.
+   */
+  func navigateDerivedClaim(sessionId: String, claimId: String) throws -> NativeClaimNavigation
+
+  /**
    * Re-reads the cited evidence. A malformed reference is an error; a
    * newer schema version is reported as such.
    */
@@ -2034,6 +2046,37 @@ open class NativeTranscriptLibrary: NativeTranscriptLibraryProtocol, @unchecked 
           FfiConverterString.lower(sessionId),
           FfiConverterString.lower(revisionId),
           FfiConverterUInt32.lower(sequence), uniffiCallStatus
+        )
+      })
+  }
+
+  /**
+   * Accepts canonical `open-scribe.derived-claim/v1` JSON. Swift does not
+   * choose storage keys or rewrite the cited evidence.
+   */
+  open func insertDerivedClaim(claimJson: String) throws {
+    try rustCallWithError(FfiConverterTypeNativeStorageError_lift) {
+      uniffiCallStatus in
+      uniffi_open_scribe_uniffi_fn_method_nativetranscriptlibrary_insert_derived_claim(
+        self.uniffiCloneHandle(),
+        FfiConverterString.lower(claimJson), uniffiCallStatus
+      )
+    }
+  }
+
+  /**
+   * Opens the effective claim. A later model revision does not replace a
+   * human acceptance, correction, or rejection.
+   */
+  open func navigateDerivedClaim(sessionId: String, claimId: String) throws -> NativeClaimNavigation
+  {
+    return try FfiConverterTypeNativeClaimNavigation_lift(
+      try rustCallWithError(FfiConverterTypeNativeStorageError_lift) {
+        uniffiCallStatus in
+        uniffi_open_scribe_uniffi_fn_method_nativetranscriptlibrary_navigate_derived_claim(
+          self.uniffiCloneHandle(),
+          FfiConverterString.lower(sessionId),
+          FfiConverterString.lower(claimId), uniffiCallStatus
         )
       })
   }
@@ -2863,6 +2906,146 @@ public func FfiConverterTypeNativeAudioExportOptions_lower(_ value: NativeAudioE
   -> RustBuffer
 {
   return FfiConverterTypeNativeAudioExportOptions.lower(value)
+}
+
+public struct NativeClaimNavigation: Equatable, Hashable {
+  public let claimId: String
+  public let revisionId: String
+  public let text: String
+  public let adjudication: String?
+  public let targets: [NativeClaimTarget]
+
+  // Default memberwise initializers are never public by default, so we
+  // declare one manually.
+  public init(
+    claimId: String, revisionId: String, text: String, adjudication: String?,
+    targets: [NativeClaimTarget]
+  ) {
+    self.claimId = claimId
+    self.revisionId = revisionId
+    self.text = text
+    self.adjudication = adjudication
+    self.targets = targets
+  }
+
+}
+
+#if compiler(>=6)
+  extension NativeClaimNavigation: Sendable {}
+#endif
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeNativeClaimNavigation: FfiConverterRustBuffer {
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws
+    -> NativeClaimNavigation
+  {
+    return
+      try NativeClaimNavigation(
+        claimId: FfiConverterString.read(from: &buf),
+        revisionId: FfiConverterString.read(from: &buf),
+        text: FfiConverterString.read(from: &buf),
+        adjudication: FfiConverterOptionString.read(from: &buf),
+        targets: FfiConverterSequenceTypeNativeClaimTarget.read(from: &buf)
+      )
+  }
+
+  public static func write(_ value: NativeClaimNavigation, into buf: inout [UInt8]) {
+    FfiConverterString.write(value.claimId, into: &buf)
+    FfiConverterString.write(value.revisionId, into: &buf)
+    FfiConverterString.write(value.text, into: &buf)
+    FfiConverterOptionString.write(value.adjudication, into: &buf)
+    FfiConverterSequenceTypeNativeClaimTarget.write(value.targets, into: &buf)
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeClaimNavigation_lift(_ buf: RustBuffer) throws
+  -> NativeClaimNavigation
+{
+  return try FfiConverterTypeNativeClaimNavigation.lift(buf)
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeClaimNavigation_lower(_ value: NativeClaimNavigation)
+  -> RustBuffer
+{
+  return FfiConverterTypeNativeClaimNavigation.lower(value)
+}
+
+public struct NativeClaimTarget: Equatable, Hashable {
+  public let side: String
+  public let state: NativeEvidenceState
+  public let recordId: String
+  public let startNs: Int64
+  public let endNs: Int64
+  public let text: String?
+
+  // Default memberwise initializers are never public by default, so we
+  // declare one manually.
+  public init(
+    side: String, state: NativeEvidenceState, recordId: String, startNs: Int64, endNs: Int64,
+    text: String?
+  ) {
+    self.side = side
+    self.state = state
+    self.recordId = recordId
+    self.startNs = startNs
+    self.endNs = endNs
+    self.text = text
+  }
+
+}
+
+#if compiler(>=6)
+  extension NativeClaimTarget: Sendable {}
+#endif
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeNativeClaimTarget: FfiConverterRustBuffer {
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws
+    -> NativeClaimTarget
+  {
+    return
+      try NativeClaimTarget(
+        side: FfiConverterString.read(from: &buf),
+        state: FfiConverterTypeNativeEvidenceState.read(from: &buf),
+        recordId: FfiConverterString.read(from: &buf),
+        startNs: FfiConverterInt64.read(from: &buf),
+        endNs: FfiConverterInt64.read(from: &buf),
+        text: FfiConverterOptionString.read(from: &buf)
+      )
+  }
+
+  public static func write(_ value: NativeClaimTarget, into buf: inout [UInt8]) {
+    FfiConverterString.write(value.side, into: &buf)
+    FfiConverterTypeNativeEvidenceState.write(value.state, into: &buf)
+    FfiConverterString.write(value.recordId, into: &buf)
+    FfiConverterInt64.write(value.startNs, into: &buf)
+    FfiConverterInt64.write(value.endNs, into: &buf)
+    FfiConverterOptionString.write(value.text, into: &buf)
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeClaimTarget_lift(_ buf: RustBuffer) throws -> NativeClaimTarget {
+  return try FfiConverterTypeNativeClaimTarget.lift(buf)
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeClaimTarget_lower(_ value: NativeClaimTarget) -> RustBuffer {
+  return FfiConverterTypeNativeClaimTarget.lower(value)
 }
 
 public struct NativeCommand: Equatable, Hashable {
@@ -11155,6 +11338,33 @@ private struct FfiConverterSequenceString: FfiConverterRustBuffer {
 #if swift(>=5.8)
   @_documentation(visibility: private)
 #endif
+private struct FfiConverterSequenceTypeNativeClaimTarget: FfiConverterRustBuffer {
+  typealias SwiftType = [NativeClaimTarget]
+
+  public static func write(_ value: [NativeClaimTarget], into buf: inout [UInt8]) {
+    let len = Int32(value.count)
+    writeInt(&buf, len)
+    for item in value {
+      FfiConverterTypeNativeClaimTarget.write(item, into: &buf)
+    }
+  }
+
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws
+    -> [NativeClaimTarget]
+  {
+    let len: Int32 = try readInt(&buf)
+    var seq = [NativeClaimTarget]()
+    seq.reserveCapacity(Int(len))
+    for _ in 0..<len {
+      seq.append(try FfiConverterTypeNativeClaimTarget.read(from: &buf))
+    }
+    return seq
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
 private struct FfiConverterSequenceTypeNativeContextEvent: FfiConverterRustBuffer {
   typealias SwiftType = [NativeContextEvent]
 
@@ -12055,6 +12265,16 @@ private let initializationResult: InitializationResult = {
   }
   if uniffi_open_scribe_uniffi_checksum_method_nativetranscriptlibrary_cite_transcript_segment()
     != 8596
+  {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_open_scribe_uniffi_checksum_method_nativetranscriptlibrary_insert_derived_claim()
+    != 29656
+  {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_open_scribe_uniffi_checksum_method_nativetranscriptlibrary_navigate_derived_claim()
+    != 50287
   {
     return InitializationResult.apiChecksumMismatch
   }
