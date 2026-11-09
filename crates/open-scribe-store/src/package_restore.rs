@@ -1,8 +1,10 @@
 //! Restoring a verified portable package as a new local session (ADR 0010
 //! round trip). The core verifies the package and parses its documents; this
 //! module copies each sealed media file into the managed library, checks it
-//! against the package's length, digest, sample count, and channels, and
-//! journals its placement before projecting it. The session gets new local
+//! against the package's length and digest. PCM is also checked for its
+//! sample count and channels. A compressed import is checked as M4A and
+//! keeps the manifest's companion frame count and channel count. The
+//! placement is journaled before it is projected. The session gets new local
 //! identities; the portable source session ID and package digest remain as
 //! provenance. A restored capture plays from its journaled placements, never
 //! from a synthesized capture clock. A transcript is restored only when its
@@ -11,7 +13,9 @@
 //! the next launch, and leaves a deletion tombstone.
 
 use super::conversation_identity::{PrepareSessionRequest, SessionOrigin};
-use super::import::IMPORT_SOURCE_KIND;
+use super::import::{
+    COMPRESSED_IMPORT_MEDIA_FORMAT, IMPORT_SOURCE_KIND, validate_compressed_import_bounds,
+};
 use super::library_recovery::isolated_disposition;
 use super::recorder::RESERVE_BYTES;
 use super::transcript_input::{DigestedSegment, transcription_input_digest};
@@ -103,6 +107,8 @@ pub struct RestoredSegment {
     pub start_nanoseconds: i64,
     pub sample_count: u64,
     pub channels: u16,
+    /// `caf-pcm-s16le`, or `m4a-alac-or-aac` for one imported original.
+    pub media_format: String,
     pub byte_length: u64,
     pub digest_sha256: String,
     /// The media file inside the verified package.
@@ -263,47 +269,68 @@ impl SessionStore {
             let mut placements = Vec::with_capacity(track.segments.len());
             for segment in &track.segments {
                 let segment_id = Uuid::now_v7().to_string();
-                let file_name = if import {
+                let compressed = segment.media_format == COMPRESSED_IMPORT_MEDIA_FORMAT;
+                let file_name = if import && compressed {
+                    "000000-import.m4a".to_owned()
+                } else if import {
                     "000000-import.caf".to_owned()
                 } else {
                     format!("{:06}-0.caf", segment.sequence)
                 };
                 let relative_path = format!("audio/{track_id}/{file_name}");
                 copy_restored_media(segment, &directory, &file_name)?;
-                let validated = self.validate_media_file(
-                    &session.0,
-                    &relative_path,
-                    MediaLengthRequirement::Exact(segment.byte_length),
-                    true,
-                )?;
-                if validated.digest_sha256.as_deref() != Some(segment.digest_sha256.as_str())
-                    || validated.recoverable_sample_count != Some(segment.sample_count)
-                    || validated.channels != Some(segment.channels)
+                let validated = if compressed {
+                    self.validate_import_media_file(
+                        &session.0,
+                        &relative_path,
+                        segment.byte_length,
+                        COMPRESSED_IMPORT_MEDIA_FORMAT,
+                        true,
+                    )?
+                } else {
+                    self.validate_media_file(
+                        &session.0,
+                        &relative_path,
+                        MediaLengthRequirement::Exact(segment.byte_length),
+                        true,
+                    )?
+                };
+                let pcm_matches = compressed
+                    || (validated.recoverable_sample_count == Some(segment.sample_count)
+                        && validated.channels == Some(segment.channels));
+                if !pcm_matches
+                    || validated.digest_sha256.as_deref() != Some(segment.digest_sha256.as_str())
                 {
                     return Err(StoreError::IntegrityMismatch(
                         "restored media differs from its package entry",
                     ));
                 }
-                entries.push((
-                    "segment_restored",
-                    Some(relative_path.clone()),
-                    json!({
-                        "source_id": source_id,
-                        "source_kind": track.source_kind,
-                        "track_id": track_id,
-                        "segment_id": segment_id,
-                        "sequence": segment.sequence,
-                        "relative_path": relative_path,
-                        "start_nanoseconds": segment.start_nanoseconds,
-                        "sample_count": segment.sample_count,
-                        "channels": segment.channels,
-                        "byte_length": segment.byte_length,
-                        "digest_sha256": segment.digest_sha256,
-                        "file_device": validated.device,
-                        "file_inode": validated.inode,
-                        "source_segment_id": segment.source_segment_id,
-                    }),
-                ));
+                let mut payload = json!({
+                    "source_id": source_id,
+                    "source_kind": track.source_kind,
+                    "track_id": track_id,
+                    "segment_id": segment_id,
+                    "sequence": segment.sequence,
+                    "relative_path": relative_path,
+                    "start_nanoseconds": segment.start_nanoseconds,
+                    "sample_count": segment.sample_count,
+                    "channels": segment.channels,
+                    "media_format": segment.media_format,
+                    "byte_length": segment.byte_length,
+                    "digest_sha256": segment.digest_sha256,
+                    "file_device": validated.device,
+                    "file_inode": validated.inode,
+                    "source_segment_id": segment.source_segment_id,
+                });
+                if compressed {
+                    // The container is not PCM. Channel count stays with the
+                    // original-media record the import lease already reads.
+                    payload["original_media"] = json!({
+                        "format": "m4a",
+                        "channel_count": segment.channels,
+                    });
+                }
+                entries.push(("segment_restored", Some(relative_path.clone()), payload));
                 placements.push(DigestedSegment {
                     segment_id,
                     digest_sha256: segment.digest_sha256.clone(),
@@ -438,7 +465,7 @@ impl SessionStore {
                     != transcription_input_digest(
                         &session.0,
                         &local.track_id,
-                        false,
+                        compressed_track(track),
                         &local.placements,
                     )
             {
@@ -655,6 +682,40 @@ fn complete_restoration(
     Ok(())
 }
 
+fn compressed_track(track: &RestoredTrack) -> bool {
+    track
+        .segments
+        .first()
+        .is_some_and(|segment| segment.media_format == COMPRESSED_IMPORT_MEDIA_FORMAT)
+}
+
+/// PCM capture and PCM import, or exactly one compressed import.
+fn restorable_format(
+    import: bool,
+    segment_count: usize,
+    segment: &RestoredSegment,
+) -> Result<&'static str, StoreError> {
+    match segment.media_format.as_str() {
+        MEDIA_FORMAT_CAF_PCM_S16LE => Ok(MEDIA_FORMAT_CAF_PCM_S16LE),
+        COMPRESSED_IMPORT_MEDIA_FORMAT if import && segment_count == 1 => {
+            Ok(COMPRESSED_IMPORT_MEDIA_FORMAT)
+        }
+        _ => Err(StoreError::InvalidRequest(
+            "a package media file is not restorable",
+        )),
+    }
+}
+
+fn restored_media_format(payload: &Value) -> Result<&'static str, StoreError> {
+    match payload_string(payload, "media_format")? {
+        MEDIA_FORMAT_CAF_PCM_S16LE => Ok(MEDIA_FORMAT_CAF_PCM_S16LE),
+        COMPRESSED_IMPORT_MEDIA_FORMAT => Ok(COMPRESSED_IMPORT_MEDIA_FORMAT),
+        _ => Err(StoreError::IntegrityMismatch(
+            "restored media format is not supported",
+        )),
+    }
+}
+
 fn project_restored_segment(
     transaction: &Transaction<'_>,
     session: &str,
@@ -705,7 +766,7 @@ fn project_restored_segment(
             payload_u64(payload, "sequence")? as i64,
             relative_path,
             payload_i64(payload, "start_nanoseconds")?,
-            MEDIA_FORMAT_CAF_PCM_S16LE,
+            restored_media_format(payload)?,
             payload_u64(payload, "channels")? as i64,
             payload_u64(payload, "sample_count")? as i64,
             payload_u64(payload, "byte_length")? as i64,
@@ -749,7 +810,7 @@ fn insert_restored_transcript(
         input_digest: transcription_input_digest(
             session,
             &local.track_id,
-            false,
+            compressed_track(track),
             &local.placements,
         ),
         engine: transcript.engine.clone(),
@@ -974,8 +1035,13 @@ fn validate_restore(request: &PackageRestoreRequest) -> Result<u64, StoreError> 
                 || segment.byte_length == 0
                 || segment.byte_length > MAX_RESTORED_MEDIA_BYTES
                 || !is_sha256(&segment.digest_sha256)
+                || restorable_format(import, track.segments.len(), segment).is_err()
             {
                 return Err(invalid("a package media file is not restorable"));
+            }
+            if segment.media_format == COMPRESSED_IMPORT_MEDIA_FORMAT {
+                validate_compressed_import_bounds(segment.byte_length, segment.sample_count)
+                    .map_err(|_| invalid("a package media file is not restorable"))?;
             }
             placements.push(DigestedSegment {
                 segment_id: segment.source_segment_id.clone(),
@@ -992,7 +1058,7 @@ fn validate_restore(request: &PackageRestoreRequest) -> Result<u64, StoreError> 
             let source_input = transcription_input_digest(
                 &request.source_session_id,
                 &track.source_track_id,
-                false,
+                compressed_track(track),
                 &placements,
             );
             if source_input != transcript.input_digest {

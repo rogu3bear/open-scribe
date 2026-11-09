@@ -125,6 +125,7 @@ fn restore(
                     + shift,
                 sample_count: (end - start) as u64,
                 channels: track.channels as u16,
+                media_format: "caf-pcm-s16le".into(),
                 byte_length,
                 digest_sha256,
                 path,

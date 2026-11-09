@@ -25,6 +25,8 @@ use std::path::Path;
 /// Neither document may exceed this.
 const MAX_DOCUMENT_BYTES: u64 = 64 << 20;
 const PCM_MEDIA_FORMAT: &str = "caf-pcm-s16le";
+/// The store's compressed-import format. A package may carry that one file.
+const COMPRESSED_IMPORT_MEDIA_FORMAT: &str = "m4a-alac-or-aac";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PackageImportReceipt {
@@ -80,10 +82,12 @@ pub fn import_portable_package(
         let track_id = text(track, "track_id")?;
         let mut segments = Vec::new();
         for segment in array(track, "segments")? {
-            if text(segment, "media_format")? != PCM_MEDIA_FORMAT {
-                return Err(SessionExportError::Unavailable(
-                    "a package holding a compressed import cannot be opened yet",
-                ));
+            let media_format = text(segment, "media_format")?;
+            if media_format != PCM_MEDIA_FORMAT
+                && (origin != SessionOrigin::Import
+                    || media_format != COMPRESSED_IMPORT_MEDIA_FORMAT)
+            {
+                return Err(invalid("a media format is not restorable"));
             }
             let relative_path = format!("media/{}", text(segment, "relative_path")?);
             let byte_length = unsigned(segment, "byte_length")?;
@@ -104,6 +108,7 @@ pub fn import_portable_package(
                 sample_count: unsigned(segment, "sample_count")?,
                 channels: u16::try_from(unsigned(segment, "channels")?)
                     .map_err(|_| invalid("a channel count is invalid"))?,
+                media_format: media_format.to_owned(),
                 byte_length,
                 digest_sha256,
                 path: package.join(normalized_relative(&relative_path)?),

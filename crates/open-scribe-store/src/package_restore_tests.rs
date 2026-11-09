@@ -31,6 +31,7 @@ fn segment(directory: &Path, id: &str, sequence: u64, start: i64, frames: u64) -
         start_nanoseconds: start,
         sample_count: frames,
         channels: 1,
+        media_format: "caf-pcm-s16le".into(),
         byte_length,
         digest_sha256,
         path,
@@ -477,4 +478,92 @@ fn crafted_counts_sequences_and_sizes_are_refused_before_any_file() {
         Err(StoreError::Io(error)) if error.kind() == ErrorKind::StorageFull
     ));
     package.store.require_restore_space(1).unwrap();
+}
+
+#[test]
+fn a_restored_compressed_import_keeps_its_m4a_bytes_and_transcript() {
+    let temp = TempDir::new().unwrap();
+    let path = temp.path().join("memo.m4a");
+    let mut bytes = b"\x00\x00\x00\x1cftypM4A \x00\x00\x00\x00M4A isommp42".to_vec();
+    bytes.extend_from_slice(&[42; 256]);
+    fs::write(&path, &bytes).unwrap();
+    let digest = hex(&Sha256::digest(&bytes));
+    let segment = RestoredSegment {
+        source_segment_id: "import-0".into(),
+        sequence: 0,
+        start_nanoseconds: 0,
+        sample_count: 48_000,
+        channels: 2,
+        media_format: "m4a-alac-or-aac".into(),
+        byte_length: bytes.len() as u64,
+        digest_sha256: digest.clone(),
+        path,
+    };
+    let mut placements = vec![DigestedSegment {
+        segment_id: segment.source_segment_id.clone(),
+        digest_sha256: digest.clone(),
+        start_nanoseconds: 0,
+        gap_nanoseconds: 0,
+        frames: segment.sample_count,
+    }];
+    fill_gaps(&mut placements).unwrap();
+    let input = transcription_input_digest(SOURCE_SESSION, "track-import", true, &placements);
+    let root = temp.path().join("Open Scribe");
+    let mut store = SessionStore::open(&root).unwrap();
+    let request = PackageRestoreRequest {
+        title: "Stereo memo".into(),
+        origin: SessionOrigin::Import,
+        source_session_id: SOURCE_SESSION.into(),
+        source_created_at_ms: 0,
+        package_sha256: "d".repeat(64),
+        tracks: vec![RestoredTrack {
+            source_track_id: "track-import".into(),
+            source_id: "source-import".into(),
+            source_kind: IMPORT_SOURCE_KIND.into(),
+            human_speaker_label: Some("Grace".into()),
+            transcript: Some(transcript(input, &[("hello", Some("Corrected words"))])),
+            segments: vec![segment],
+        }],
+        markers: Vec::new(),
+    };
+    let session = store.restore_portable_session(&request).unwrap().session_id;
+    let inventory = store.session_inventory(&session).unwrap();
+    assert_eq!(inventory.media.len(), 1);
+    let media = &inventory.media[0];
+    assert_eq!(media.media_format, "m4a-alac-or-aac");
+    assert_eq!(media.channels, 2);
+    assert_eq!(media.sample_count, 48_000);
+    assert_eq!(media.digest_sha256, digest);
+    assert!(media.relative_path.ends_with("/000000-import.m4a"));
+    assert_eq!(
+        fs::read(
+            root.join(SESSIONS_DIRECTORY)
+                .join(&session.0)
+                .join(&media.relative_path)
+        )
+        .unwrap(),
+        bytes
+    );
+    let lease = store.lease_imported_playback(&session).unwrap();
+    assert_eq!(lease.media_format(), "m4a-alac-or-aac");
+    assert_eq!(lease.byte_length(), bytes.len() as u64);
+    assert_eq!(lease.digest_sha256(), digest);
+    let document = store.transcript_document(&session).unwrap();
+    assert_eq!(document.len(), 1);
+    assert_eq!(document[0].effective_text, "Corrected words");
+    assert_eq!(document[0].speaker_label, "Grace");
+    let restored = store
+        .transcription_input(&session, &media.track_id)
+        .unwrap();
+    assert!(restored.compressed);
+    assert_eq!((restored.channels, restored.spans[0].frames), (2, 48_000));
+
+    let mut capture = request;
+    capture.origin = SessionOrigin::Capture;
+    capture.tracks[0].source_kind = "microphone".into();
+    assert!(matches!(
+        store.restore_portable_session(&capture),
+        Err(StoreError::InvalidRequest(_))
+    ));
+    assert_eq!(session_directories(&root), 1);
 }

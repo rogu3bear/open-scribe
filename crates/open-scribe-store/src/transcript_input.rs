@@ -449,8 +449,10 @@ impl SessionStore {
         let channels = self.connection.query_row(
             "SELECT json_extract(payload_json, '$.original_media.channel_count')
              FROM session_events
-             WHERE session_id = ?1 AND event_kind = 'media_imported'
-               AND json_extract(payload_json, '$.segment_id') = ?2",
+             WHERE session_id = ?1
+               AND event_kind IN ('media_imported', 'segment_restored')
+               AND json_extract(payload_json, '$.segment_id') = ?2
+               AND json_extract(payload_json, '$.original_media.channel_count') IN (1, 2)",
             [&session.0, segment_id],
             |row| row.get::<_, Option<i64>>(0),
         );

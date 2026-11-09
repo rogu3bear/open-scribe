@@ -1439,7 +1439,7 @@ fn validate_import_bounds(byte_length: u64, sample_count: u64) -> Result<(), Sto
     Ok(())
 }
 
-fn validate_compressed_import_bounds(
+pub(super) fn validate_compressed_import_bounds(
     byte_length: u64,
     sample_count: u64,
 ) -> Result<(), StoreError> {

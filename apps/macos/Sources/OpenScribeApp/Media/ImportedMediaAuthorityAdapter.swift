@@ -308,7 +308,7 @@ final class ImportedMediaAuthorityAdapter: ObservableObject {
     case .InvalidRequest:
       "This package's transcript, timeline, or markers do not match its audio. Nothing was added."
     case .InvalidState:
-      "This package holds something this version cannot open yet, such as a compressed import. Nothing was added."
+      "This package holds something this version cannot open yet. Nothing was added."
     default:
       "Open Scribe could not save a local copy of this package. Check that this Mac has enough free space, then try again. Nothing was added."
     }
