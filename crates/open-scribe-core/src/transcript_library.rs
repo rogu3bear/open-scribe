@@ -14,7 +14,7 @@ use crate::session_export::{
     FileExportReceipt, PortableSummary, SessionExportError, export_source_media, export_track_wav,
     export_validated_mix, write_portable_package, write_session_manifest,
 };
-use open_scribe_evidence::{DerivedClaim, EvidenceRef};
+use open_scribe_evidence::{AdjudicationAction, DerivedClaim, EvidenceRef};
 use open_scribe_store::{
     ClaimNavigation, ContextDetail, ContextEventRecord, ConversationReviewMetadata,
     NamedTranscriptSpeaker, ResolvedEvidence, SessionDeletionInventory, SessionDeletionReceipt,
@@ -130,6 +130,20 @@ impl TranscriptLibrary {
     /// Stores one validated claim revision. The library does not invent its evidence.
     pub fn insert_derived_claim(&mut self, claim: &DerivedClaim) -> Result<(), StoreError> {
         self.store.insert_derived_claim(claim)
+    }
+
+    /// Confirms, corrects, or rejects the effective claim. Rust chooses the new
+    /// ids. The returned revision id is the one review should show.
+    pub fn adjudicate_derived_claim(
+        &mut self,
+        session: &SessionId,
+        claim_id: &str,
+        action: AdjudicationAction,
+        text: Option<&str>,
+    ) -> Result<String, StoreError> {
+        self.store
+            .adjudicate_derived_claim(session, claim_id, action, text)
+            .map(|claim| claim.revision_id)
     }
 
     /// The effective claim and the evidence a review surface can open.

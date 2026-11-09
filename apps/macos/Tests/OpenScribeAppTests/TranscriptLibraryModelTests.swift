@@ -830,6 +830,49 @@ final class TranscriptLibraryModelTests: XCTestCase {
     XCTAssertEqual(model.focusedClaim?.revisionId, "revision-b")
     XCTAssertFalse(model.claimEvidenceOpen)
   }
+
+  func testAdjudicationConfirmsTheClaimAndACorrectionReplacesItsText() async throws {
+    let library = TranscriptTimingLibraryFake()
+    library.claimsJSON = """
+      [{"claim_id":"claim-decision","revision_id":"revision-a","kind":"decision","status":"agreed","text":"The team agreed to ship the local recorder.","adjudication":null,"supporting_count":1,"contradicting_count":0}]
+      """
+    let model = TranscriptLibraryModel(library: library)
+    await model.load(sessionId: "valid")
+    let confirmed = await model.adjudicateClaim(
+      claimId: "claim-decision", action: "accepted", text: nil)
+    XCTAssertTrue(confirmed)
+    let accepted = try XCTUnwrap(library.lastAdjudication)
+    XCTAssertEqual(accepted.action, "accepted")
+    XCTAssertNil(accepted.text)
+    XCTAssertEqual(model.derivedClaims.first?.adjudication, "accepted")
+    XCTAssertEqual(
+      model.derivedClaims.first?.text, "The team agreed to ship the local recorder.")
+    XCTAssertEqual(model.derivedClaims.first?.revisionId, "revision-accepted")
+
+    let corrected = await model.adjudicateClaim(
+      claimId: "claim-decision", action: "corrected",
+      text: "The team deferred the remote recorder.")
+    XCTAssertTrue(corrected)
+    let correction = try XCTUnwrap(library.lastAdjudication)
+    XCTAssertEqual(correction.action, "corrected")
+    XCTAssertEqual(correction.text, "The team deferred the remote recorder.")
+    XCTAssertEqual(model.derivedClaims.first?.text, "The team deferred the remote recorder.")
+    XCTAssertEqual(model.derivedClaims.first?.revisionId, "revision-corrected")
+    XCTAssertEqual(model.derivedClaims.first?.adjudication, "corrected")
+
+    let unresolved = await model.adjudicateClaim(
+      claimId: "claim-decision", action: "unresolved", text: nil)
+    XCTAssertFalse(unresolved)
+    XCTAssertEqual(library.lastAdjudication?.action, "corrected")
+    XCTAssertEqual(model.derivedClaims.first?.text, "The team deferred the remote recorder.")
+    XCTAssertNil(model.message)
+  }
+}
+
+private struct RecordedAdjudication: Equatable {
+  let claimId: String
+  let action: String
+  let text: String?
 }
 
 private final class TrashMoveCounter: @unchecked Sendable {
@@ -854,6 +897,8 @@ private final class TranscriptTimingLibraryFake: NativeTranscriptLibrary, @unche
   private var deletedSessions: Set<String> = []
   var claimsJSON = "[]"
   var claimNavigation: NativeClaimNavigation?
+  private var storedAdjudication: RecordedAdjudication?
+  var lastAdjudication: RecordedAdjudication? { lock.withLock { storedAdjudication } }
   var mainThreadOperations: Int { lock.withLock { mainThreadCalls } }
   var correctedSessions: [String] { lock.withLock { corrections } }
   var transcriptReads: Int { lock.withLock { reads } }
@@ -927,6 +972,30 @@ private final class TranscriptTimingLibraryFake: NativeTranscriptLibrary, @unche
   override func effectiveDerivedClaims(sessionId: String) throws -> String {
     observe("claims", sessionId)
     return lock.withLock { claimsJSON }
+  }
+
+  override func adjudicateDerivedClaim(
+    sessionId: String, claimId: String, action: String, text: String?
+  ) throws -> String {
+    observe("adjudicate", action)
+    return try lock.withLock {
+      storedAdjudication = RecordedAdjudication(claimId: claimId, action: action, text: text)
+      switch action {
+      case "accepted":
+        claimsJSON = """
+          [{"claim_id":"\(claimId)","revision_id":"revision-accepted","kind":"decision","status":"agreed","text":"The team agreed to ship the local recorder.","adjudication":"accepted","supporting_count":1,"contradicting_count":0}]
+          """
+        return "revision-accepted"
+      case "corrected":
+        let replacement = text ?? ""
+        claimsJSON = """
+          [{"claim_id":"\(claimId)","revision_id":"revision-corrected","kind":"decision","status":"agreed","text":"\(replacement)","adjudication":"corrected","supporting_count":1,"contradicting_count":0}]
+          """
+        return "revision-corrected"
+      default:
+        throw NativeStorageError.InvalidRequest
+      }
+    }
   }
 
   override func navigateDerivedClaim(sessionId: String, claimId: String) throws

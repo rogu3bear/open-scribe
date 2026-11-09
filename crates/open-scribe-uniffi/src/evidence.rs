@@ -156,6 +156,28 @@ impl NativeTranscriptLibrary {
         })
     }
 
+    /// Confirms, corrects, or rejects the effective claim. `action` is
+    /// `accepted`, `corrected`, or `rejected`. Rust chooses the new ids.
+    /// A correction may replace the text; confirmation and rejection may not.
+    /// Leaving a claim unresolved is not an action and writes nothing.
+    pub fn adjudicate_derived_claim(
+        &self,
+        session_id: String,
+        claim_id: String,
+        action: String,
+        text: Option<String>,
+    ) -> Result<String, NativeStorageError> {
+        let action = match action.as_str() {
+            "accepted" => open_scribe_core::AdjudicationAction::Accepted,
+            "corrected" => open_scribe_core::AdjudicationAction::Corrected,
+            "rejected" => open_scribe_core::AdjudicationAction::Rejected,
+            _ => return Err(NativeStorageError::InvalidRequest),
+        };
+        self.library()?
+            .adjudicate_derived_claim(&SessionId(session_id), &claim_id, action, text.as_deref())
+            .map_err(map_storage_error)
+    }
+
     /// Accepts canonical `open-scribe.derived-claim/v1` JSON. Swift does not
     /// choose storage keys or rewrite the cited evidence.
     pub fn insert_derived_claim(&self, claim_json: String) -> Result<(), NativeStorageError> {

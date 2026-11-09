@@ -587,6 +587,7 @@ struct ClaimReviewSection: View {
           actions(claim, returning: returning)
         }
       }
+      ClaimAdjudicationControls(transcripts: transcripts, claim: claim)
     }
     .padding(.vertical, ScribeSpacing.tight)
     .accessibilityElement(children: .contain)
@@ -632,9 +633,62 @@ struct ClaimReviewSection: View {
     }
     if let adjudication = claim.adjudication {
       parts.append(ClaimReviewSpeech.words(adjudication))
+    } else {
+      parts.append("Not confirmed")
     }
     parts.append(claim.text)
     return parts.joined(separator: ". ")
+  }
+}
+
+/// Confirm, correct, or reject one claim. Doing none of these leaves it unresolved.
+private struct ClaimAdjudicationControls: View {
+  @ObservedObject var transcripts: TranscriptLibraryModel
+  let claim: DerivedClaimSummary
+  @State private var correction: String
+  @State private var busy = false
+
+  init(transcripts: TranscriptLibraryModel, claim: DerivedClaimSummary) {
+    self.transcripts = transcripts
+    self.claim = claim
+    _correction = State(initialValue: claim.text)
+  }
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: ScribeSpacing.compact) {
+      TextField("Correct this claim", text: $correction)
+        .textFieldStyle(.roundedBorder)
+        .disabled(busy)
+        .accessibilityLabel("Corrected claim text")
+      ViewThatFits(in: .horizontal) {
+        HStack(spacing: ScribeSpacing.related) { reviewActions }
+        VStack(alignment: .leading, spacing: ScribeSpacing.compact) { reviewActions }
+      }
+    }
+    .onChange(of: claim.text) { updated in
+      correction = updated
+    }
+  }
+
+  @ViewBuilder private var reviewActions: some View {
+    Button("Confirm") { submit("accepted", text: nil) }
+      .disabled(busy)
+      .accessibilityLabel("Confirm claim")
+    Button("Correct") { submit("corrected", text: correction) }
+      .disabled(busy || correction.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+      .accessibilityLabel("Correct claim")
+    Button("Reject") { submit("rejected", text: nil) }
+      .disabled(busy)
+      .accessibilityLabel("Reject claim")
+  }
+
+  private func submit(_ action: String, text: String?) {
+    let claimId = claim.claimId
+    busy = true
+    Task {
+      _ = await transcripts.adjudicateClaim(claimId: claimId, action: action, text: text)
+      busy = false
+    }
   }
 }
 

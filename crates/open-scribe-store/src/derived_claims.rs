@@ -11,6 +11,7 @@ use open_scribe_evidence::{
 };
 use open_scribe_types::SessionId;
 use rusqlite::{OptionalExtension, params};
+use uuid::Uuid;
 
 pub(super) const DERIVED_CLAIM_MIGRATION_VERSION: i64 = 17;
 
@@ -156,6 +157,51 @@ impl SessionStore {
         )?;
         transaction.commit()?;
         Ok(())
+    }
+
+    /// Records a human confirmation, correction, or rejection of the effective
+    /// claim. Rust chooses the revision and adjudication ids. Leaving a claim
+    /// unresolved writes nothing, and this does not advance meeting memory.
+    pub fn adjudicate_derived_claim(
+        &mut self,
+        session: &SessionId,
+        claim_id: &str,
+        action: AdjudicationAction,
+        text: Option<&str>,
+    ) -> Result<DerivedClaim, StoreError> {
+        let _writer = self.write_guard()?;
+        if action == AdjudicationAction::Unresolved {
+            return Err(StoreError::InvalidRequest(
+                "leaving a claim unresolved does not write a revision",
+            ));
+        }
+        let current = self
+            .effective_derived_claim(session, claim_id)?
+            .ok_or(StoreError::InvalidRequest("derived claim was not found"))?;
+        if matches!(
+            action,
+            AdjudicationAction::Accepted | AdjudicationAction::Rejected
+        ) && text.is_some_and(|value| value != current.text)
+        {
+            return Err(StoreError::InvalidRequest(
+                "only a correction can change claim text",
+            ));
+        }
+        let mut revised = current
+            .with_adjudication(
+                action,
+                Uuid::now_v7().to_string(),
+                Uuid::now_v7().to_string(),
+            )
+            .map_err(reject_claim)?;
+        if action == AdjudicationAction::Corrected
+            && let Some(value) = text
+        {
+            revised.text = value.to_owned();
+        }
+        revised.validate().map_err(reject_claim)?;
+        self.insert_derived_claim(&revised)?;
+        Ok(revised)
     }
 
     /// The effective claim is the latest accepted, corrected, or rejected

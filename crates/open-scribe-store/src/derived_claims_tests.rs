@@ -142,3 +142,132 @@ fn an_unsupported_claim_is_not_canonical_navigation() {
         Err(StoreError::InvalidRequest(_))
     ));
 }
+
+#[test]
+fn adjudicate_derived_claim_locks_human_text_without_advancing_meeting_memory() {
+    let mut fixture = imported_fixture(144_000);
+    let run = fixture
+        .store
+        .begin_transcription_run(&identity(&fixture, "options-a"), &plan())
+        .unwrap();
+    let revision = complete_all(&mut fixture, &run, ["alpha", "bravo"]);
+    let session = fixture.session.clone();
+    let cited = fixture
+        .store
+        .cite_transcript_segment(&session, &revision, 0)
+        .unwrap();
+    fixture
+        .store
+        .insert_derived_claim(&agreed(&session, cited))
+        .unwrap();
+
+    assert!(matches!(
+        fixture.store.adjudicate_derived_claim(
+            &session,
+            "missing",
+            AdjudicationAction::Accepted,
+            None,
+        ),
+        Err(StoreError::InvalidRequest(_))
+    ));
+    assert!(matches!(
+        fixture.store.adjudicate_derived_claim(
+            &session,
+            "claim-decision",
+            AdjudicationAction::Unresolved,
+            None,
+        ),
+        Err(StoreError::InvalidRequest(_))
+    ));
+    assert!(matches!(
+        fixture.store.adjudicate_derived_claim(
+            &session,
+            "claim-decision",
+            AdjudicationAction::Accepted,
+            Some("The team deferred the remote recorder."),
+        ),
+        Err(StoreError::InvalidRequest(_))
+    ));
+    assert!(matches!(
+        fixture.store.adjudicate_derived_claim(
+            &session,
+            "claim-decision",
+            AdjudicationAction::Corrected,
+            Some("   "),
+        ),
+        Err(StoreError::InvalidRequest(_))
+    ));
+
+    let accepted = fixture
+        .store
+        .adjudicate_derived_claim(
+            &session,
+            "claim-decision",
+            AdjudicationAction::Accepted,
+            None,
+        )
+        .unwrap();
+    assert_eq!(accepted.text, "The team agreed to ship the local recorder.");
+    assert_eq!(
+        accepted.adjudication.as_ref().map(|item| item.action),
+        Some(AdjudicationAction::Accepted)
+    );
+    assert_ne!(accepted.revision_id, "revision-a");
+
+    let corrected = fixture
+        .store
+        .adjudicate_derived_claim(
+            &session,
+            "claim-decision",
+            AdjudicationAction::Corrected,
+            Some("The team deferred the remote recorder."),
+        )
+        .unwrap();
+    assert_eq!(corrected.text, "The team deferred the remote recorder.");
+    assert_eq!(
+        corrected.adjudication.as_ref().map(|item| item.action),
+        Some(AdjudicationAction::Corrected)
+    );
+
+    let rejected = fixture
+        .store
+        .adjudicate_derived_claim(
+            &session,
+            "claim-decision",
+            AdjudicationAction::Rejected,
+            None,
+        )
+        .unwrap();
+    assert_eq!(rejected.text, "The team deferred the remote recorder.");
+    assert_eq!(
+        rejected.adjudication.as_ref().map(|item| item.action),
+        Some(AdjudicationAction::Rejected)
+    );
+
+    let mut rerun = agreed(
+        &session,
+        fixture
+            .store
+            .cite_transcript_segment(&session, &revision, 0)
+            .unwrap(),
+    );
+    rerun.revision_id = "revision-model-later".into();
+    rerun.text = "The team agreed to upload every recording.".into();
+    fixture.store.insert_derived_claim(&rerun).unwrap();
+
+    let effective = fixture
+        .store
+        .effective_derived_claim(&session, "claim-decision")
+        .unwrap()
+        .unwrap();
+    assert_eq!(effective.revision_id, rejected.revision_id);
+    assert_eq!(effective.text, "The team deferred the remote recorder.");
+    assert_eq!(
+        body(&fixture.store, "revision-a").contains("upload every"),
+        false
+    );
+    assert_eq!(
+        fixture.store.meeting_memory_revision(&session).unwrap(),
+        "0"
+    );
+}

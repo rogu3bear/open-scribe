@@ -495,6 +495,44 @@ final class TranscriptLibraryModel: ObservableObject {
     }
   }
 
+  /// Confirms, corrects, or rejects the effective claim. Rust chooses the new
+  /// revision. Leaving a claim unresolved is not an action.
+  @discardableResult
+  func adjudicateClaim(claimId: String, action: String, text: String?) async -> Bool {
+    guard let expectedSession = sessionId,
+      action == "accepted" || action == "corrected" || action == "rejected"
+    else { return false }
+    do {
+      let library = try await readyLibrary()
+      let revision = try await StructuredNativeIO.mutation {
+        try library.adjudicateDerivedClaim(
+          sessionId: expectedSession, claimId: claimId, action: action, text: text)
+      }
+      guard !revision.isEmpty, !Task.isCancelled, sessionId == expectedSession else { return false }
+      let json = try await StructuredNativeIO.read {
+        try library.effectiveDerivedClaims(sessionId: expectedSession)
+      }
+      guard !Task.isCancelled, sessionId == expectedSession else { return false }
+      derivedClaims = try Self.decodeClaims(json)
+      if focusedClaim?.claimId == claimId,
+        let updated = derivedClaims.first(where: { $0.claimId == claimId })
+      {
+        focusedClaim = ClaimReviewFocus(
+          claimId: updated.claimId, revisionId: updated.revisionId, text: updated.text,
+          adjudication: updated.adjudication)
+      }
+      report(nil)
+      return true
+    } catch is CancellationError {
+      return false
+    } catch {
+      if sessionId == expectedSession {
+        report(Self.describe(error, action: "record this claim review"), failure: true)
+      }
+      return false
+    }
+  }
+
   /// Leaves the cited passage and asks the review to focus the claim again.
   func returnToClaim() {
     guard claimEvidenceOpen, focusedClaim != nil else { return }

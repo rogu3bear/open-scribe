@@ -1839,6 +1839,15 @@ public protocol NativeTranscriptLibraryProtocol: AnyObject, Sendable {
 
   func contextEvents(sessionId: String) throws -> [NativeContextEvent]
 
+  /**
+   * Confirms, corrects, or rejects the effective claim. `action` is
+   * `accepted`, `corrected`, or `rejected`. Rust chooses the new ids.
+   * A correction may replace the text; confirmation and rejection may not.
+   * Leaving a claim unresolved is not an action and writes nothing.
+   */
+  func adjudicateDerivedClaim(sessionId: String, claimId: String, action: String, text: String?)
+    throws -> String
+
   func citeContextEvent(sessionId: String, eventId: String, block: UInt32?) throws -> String
 
   func citeTranscriptSegment(sessionId: String, revisionId: String, sequence: UInt32) throws
@@ -2036,6 +2045,28 @@ open class NativeTranscriptLibrary: NativeTranscriptLibraryProtocol, @unchecked 
         uniffi_open_scribe_uniffi_fn_method_nativetranscriptlibrary_context_events(
           self.uniffiCloneHandle(),
           FfiConverterString.lower(sessionId), uniffiCallStatus
+        )
+      })
+  }
+
+  /**
+   * Confirms, corrects, or rejects the effective claim. `action` is
+   * `accepted`, `corrected`, or `rejected`. Rust chooses the new ids.
+   * A correction may replace the text; confirmation and rejection may not.
+   * Leaving a claim unresolved is not an action and writes nothing.
+   */
+  open func adjudicateDerivedClaim(
+    sessionId: String, claimId: String, action: String, text: String?
+  ) throws -> String {
+    return try FfiConverterString.lift(
+      try rustCallWithError(FfiConverterTypeNativeStorageError_lift) {
+        uniffiCallStatus in
+        uniffi_open_scribe_uniffi_fn_method_nativetranscriptlibrary_adjudicate_derived_claim(
+          self.uniffiCloneHandle(),
+          FfiConverterString.lower(sessionId),
+          FfiConverterString.lower(claimId),
+          FfiConverterString.lower(action),
+          FfiConverterOptionString.lower(text), uniffiCallStatus
         )
       })
   }
@@ -12320,6 +12351,11 @@ private let initializationResult: InitializationResult = {
     return InitializationResult.apiChecksumMismatch
   }
   if uniffi_open_scribe_uniffi_checksum_method_nativetranscriptlibrary_context_events() != 14257 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_open_scribe_uniffi_checksum_method_nativetranscriptlibrary_adjudicate_derived_claim()
+    != 3266
+  {
     return InitializationResult.apiChecksumMismatch
   }
   if uniffi_open_scribe_uniffi_checksum_method_nativetranscriptlibrary_cite_context_event() != 44738

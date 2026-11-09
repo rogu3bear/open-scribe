@@ -150,6 +150,73 @@ fn prepared_transcript() -> PreparedTranscript {
     }
 }
 
+#[test]
+fn native_library_adjudicates_a_claim_without_a_caller_chosen_revision() {
+    let prepared = prepared_transcript();
+    let library = NativeTranscriptLibrary::open(prepared.root.display().to_string()).unwrap();
+    let session_id = prepared.session.0.clone();
+    let cited_json = library
+        .cite_transcript_segment(session_id.clone(), prepared.revision.clone(), 0)
+        .unwrap();
+    let cited = EvidenceRef::parse(&cited_json).unwrap();
+    library
+        .insert_derived_claim(claim_json(
+            &prepared.session,
+            cited,
+            "revision-a",
+            "The team agreed to ship the local recorder.",
+        ))
+        .unwrap();
+    assert!(matches!(
+        library.adjudicate_derived_claim(
+            session_id.clone(),
+            "claim-decision".into(),
+            "unresolved".into(),
+            None,
+        ),
+        Err(NativeStorageError::InvalidRequest)
+    ));
+    assert!(matches!(
+        library.adjudicate_derived_claim(
+            session_id.clone(),
+            "claim-decision".into(),
+            "accepted".into(),
+            Some("The team deferred the remote recorder.".into()),
+        ),
+        Err(NativeStorageError::InvalidRequest)
+    ));
+    let revision = library
+        .adjudicate_derived_claim(
+            session_id.clone(),
+            "claim-decision".into(),
+            "corrected".into(),
+            Some("The team deferred the remote recorder.".into()),
+        )
+        .unwrap();
+    assert_ne!(revision, "revision-a");
+    let navigation = library
+        .navigate_derived_claim(session_id.clone(), "claim-decision".into())
+        .unwrap();
+    assert_eq!(navigation.revision_id, revision);
+    assert_eq!(navigation.text, "The team deferred the remote recorder.");
+    assert_eq!(navigation.adjudication.as_deref(), Some("corrected"));
+    let rejected = library
+        .adjudicate_derived_claim(
+            session_id.clone(),
+            "claim-decision".into(),
+            "rejected".into(),
+            None,
+        )
+        .unwrap();
+    assert_ne!(rejected, revision);
+    let navigation = library
+        .navigate_derived_claim(session_id, "claim-decision".into())
+        .unwrap();
+    assert_eq!(navigation.revision_id, rejected);
+    assert_eq!(navigation.adjudication.as_deref(), Some("rejected"));
+    assert_eq!(navigation.text, "The team deferred the remote recorder.");
+}
+
 fn claim_json(session: &SessionId, cited: EvidenceRef, revision_id: &str, text: &str) -> String {
     let claim = DerivedClaim {
         schema: DERIVED_CLAIM_SCHEMA.to_owned(),
