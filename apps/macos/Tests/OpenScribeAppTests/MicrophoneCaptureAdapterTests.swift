@@ -1020,4 +1020,276 @@ final class MicrophoneCaptureAdapterTests: XCTestCase {
       SystemAudioCaptureAdapter.sampleFailure(for: zeroSample, type: .screen)
     )
   }
+
+  func testProvisionalDraftWindowDefaultsAreTwelveSecondsWithTwoSecondOverlap() throws {
+    let format = try XCTUnwrap(
+      AVAudioFormat(
+        commonFormat: .pcmFormatInt16, sampleRate: 48_000, channels: 1, interleaved: false))
+    let adapter = MicrophoneCaptureAdapter(
+      backend: FakeMicrophoneBackend(inputFormat: format),
+      writer: ProgressCapturedWriter()
+    )
+    adapter.installProvisionalDraftAdmission(
+      preparation: NativeRecordingPreparation(noHandle: .init()))
+
+    XCTAssertEqual(adapter.provisionalDraftWindowFrameCount(), 576_000)
+    XCTAssertEqual(adapter.provisionalDraftOverlapFrameCount(), 96_000)
+    XCTAssertEqual(
+      ProvisionalDraftQueue.defaultWindowFrames / ProvisionalDraftQueue.captureSampleRate, 12)
+    XCTAssertEqual(
+      ProvisionalDraftQueue.defaultOverlapFrames / ProvisionalDraftQueue.captureSampleRate, 2)
+    XCTAssertEqual(ProvisionalDraftQueue.maximumWindows, 2)
+  }
+
+  func testAcceptedAudioCommitsAProvisionalDraftThroughTheWriter() throws {
+    let fixture = try openedMicrophone(title: "Live draft writer")
+    let backend = FakeMicrophoneBackend(inputFormat: fixture.format)
+    let adapter = MicrophoneCaptureAdapter(
+      backend: backend,
+      writer: fixture.writer,
+      identity: MicrophoneCaptureIdentity(authorization: fixture.authorization)
+    )
+    adapter.installProvisionalDraftAdmission(
+      preparation: fixture.controller,
+      hypothesis: { _, _ in provisionalFixture("provisional meadow") },
+      windowFrames: 480,
+      overlapFrames: 96
+    )
+    let failures = try startAndConfirm(
+      adapter: adapter, backend: backend, controller: fixture.controller, format: fixture.format)
+    backend.emit(try microphoneFrames(fixture.format, 384), hostTime: 20)
+    adapter.waitForAcceptedAudio()
+    adapter.waitForProvisionalDraftAdmission()
+
+    XCTAssertEqual(
+      try fixture.controller.readableDraftTexts(sessionId: fixture.authorization.sessionId),
+      ["provisional meadow"]
+    )
+    XCTAssertTrue(failures.snapshot().isEmpty)
+    XCTAssertGreaterThanOrEqual(try capturedLength(fixture.authorization), 480)
+    _ = adapter.stop()
+  }
+
+  func testARejectedDraftDoesNotStopCaptureOrInventText() throws {
+    let fixture = try openedMicrophone(title: "Rejected live draft")
+    let backend = FakeMicrophoneBackend(inputFormat: fixture.format)
+    let adapter = MicrophoneCaptureAdapter(
+      backend: backend,
+      writer: fixture.writer,
+      identity: MicrophoneCaptureIdentity(authorization: fixture.authorization)
+    )
+    adapter.installProvisionalDraftAdmission(
+      preparation: fixture.controller,
+      hypothesis: { _, _ in provisionalFixture("not stored", digest: "not-a-digest") },
+      windowFrames: 480,
+      overlapFrames: 96
+    )
+    let failures = try startAndConfirm(
+      adapter: adapter, backend: backend, controller: fixture.controller, format: fixture.format)
+    backend.emit(try microphoneFrames(fixture.format, 384), hostTime: 20)
+    adapter.waitForAcceptedAudio()
+    adapter.waitForProvisionalDraftAdmission()
+    backend.emit(try microphoneFrames(fixture.format, 96), hostTime: 30)
+    adapter.waitForAcceptedAudio()
+
+    XCTAssertEqual(
+      try fixture.controller.readableDraftTexts(sessionId: fixture.authorization.sessionId),
+      []
+    )
+    XCTAssertTrue(failures.snapshot().isEmpty)
+    XCTAssertGreaterThanOrEqual(try capturedLength(fixture.authorization), 576)
+    _ = adapter.stop()
+  }
+
+  func testNilHypothesisDoesNotInventProvisionalText() throws {
+    let fixture = try openedMicrophone(title: "No live recognizer")
+    let backend = FakeMicrophoneBackend(inputFormat: fixture.format)
+    let adapter = MicrophoneCaptureAdapter(
+      backend: backend,
+      writer: fixture.writer,
+      identity: MicrophoneCaptureIdentity(authorization: fixture.authorization)
+    )
+    adapter.installProvisionalDraftAdmission(
+      preparation: fixture.controller,
+      hypothesis: nil,
+      windowFrames: 480,
+      overlapFrames: 96
+    )
+    let failures = try startAndConfirm(
+      adapter: adapter, backend: backend, controller: fixture.controller, format: fixture.format)
+    backend.emit(try microphoneFrames(fixture.format, 384), hostTime: 20)
+    adapter.waitForAcceptedAudio()
+    adapter.waitForProvisionalDraftAdmission()
+
+    XCTAssertEqual(
+      try fixture.controller.readableDraftTexts(sessionId: fixture.authorization.sessionId),
+      []
+    )
+    XCTAssertTrue(failures.snapshot().isEmpty)
+    XCTAssertGreaterThanOrEqual(try capturedLength(fixture.authorization), 480)
+    _ = adapter.stop()
+  }
+
+  func testAThirdProvisionalWindowDropsTheOldestPendingOneAndKeepsAudio() throws {
+    let fixture = try openedMicrophone(title: "Bounded live draft")
+    let backend = FakeMicrophoneBackend(inputFormat: fixture.format)
+    let adapter = MicrophoneCaptureAdapter(
+      backend: backend,
+      writer: fixture.writer,
+      identity: MicrophoneCaptureIdentity(authorization: fixture.authorization)
+    )
+    let blocker = BlockingDraftHypothesis()
+    adapter.installProvisionalDraftAdmission(
+      preparation: fixture.controller,
+      hypothesis: { _, _ in blocker.next() },
+      windowFrames: 480,
+      overlapFrames: 96
+    )
+    let failures = try startAndConfirm(
+      adapter: adapter, backend: backend, controller: fixture.controller, format: fixture.format)
+    backend.emit(try microphoneFrames(fixture.format, 384), hostTime: 20)
+    XCTAssertEqual(blocker.entered.wait(timeout: .now() + 2), .success)
+    backend.emit(try microphoneFrames(fixture.format, 768), hostTime: 30)
+    adapter.waitForAcceptedAudio()
+    blocker.allow.signal()
+    adapter.waitForProvisionalDraftAdmission()
+
+    XCTAssertEqual(blocker.callCount, 2)
+    XCTAssertEqual(
+      try fixture.controller.readableDraftTexts(sessionId: fixture.authorization.sessionId),
+      ["provisional meadow", "later brook"]
+    )
+    XCTAssertTrue(failures.snapshot().isEmpty)
+    XCTAssertGreaterThanOrEqual(try capturedLength(fixture.authorization), 1_248)
+    _ = adapter.stop()
+  }
+
+  private func openedMicrophone(title: String) throws -> OpenedMicrophone {
+    let root = FileManager.default.temporaryDirectory
+      .appendingPathComponent("open-scribe-microphone-tests", isDirectory: true)
+      .appendingPathComponent(UUID().uuidString.lowercased(), isDirectory: true)
+    managedRoots.append(root)
+    let controller = try NativeRecordingPreparation.open(managedRoot: root.path)
+    let prepared = try controller.prepareSession(title: title)
+    let authorization = try controller.authorizeInitialMedia(
+      sessionId: prepared.sessionId,
+      sourceKind: .microphone,
+      sourceDisplayName: "Synthetic microphone"
+    )
+    let writer = try ManagedCAFWriter(authorization: authorization)
+    let opened = try controller.acceptMediaOpen(receipt: writer.receipt())
+    XCTAssertTrue(opened.journalDurable)
+    XCTAssertTrue(opened.mediaFilesOpen)
+    XCTAssertFalse(opened.recordingStarted)
+    let format = try XCTUnwrap(
+      AVAudioFormat(
+        commonFormat: .pcmFormatInt16,
+        sampleRate: 48_000,
+        channels: 1,
+        interleaved: false
+      )
+    )
+    return OpenedMicrophone(
+      controller: controller, authorization: authorization, writer: writer, format: format)
+  }
+
+  private func startAndConfirm(
+    adapter: MicrophoneCaptureAdapter,
+    backend: FakeMicrophoneBackend,
+    controller: NativeRecordingPreparation,
+    format: AVAudioFormat
+  ) throws -> FailureBox {
+    let receipts = ReceiptBox()
+    let failures = FailureBox()
+    let firstSample = expectation(description: "first sample before the provisional window")
+    try adapter.start(
+      onFirstSample: { receipt in
+        receipts.append(receipt)
+        firstSample.fulfill()
+      },
+      onFailure: { failures.append($0) }
+    )
+    backend.emit(try microphoneFrames(format, 96), hostTime: 10)
+    wait(for: [firstSample], timeout: 2)
+    let evidence = try controller.acceptFirstSample(
+      receipt: try XCTUnwrap(receipts.snapshot().first))
+    XCTAssertTrue(evidence.firstSampleDurable)
+    XCTAssertFalse(evidence.recordingStarted)
+    let started = try controller.confirmRecording(sessionId: evidence.sessionId)
+    XCTAssertTrue(started.recordingStarted)
+    return failures
+  }
+
+  private func capturedLength(_ authorization: NativeMediaOpenAuthorization) throws -> Int64 {
+    try AVAudioFile(forReading: URL(fileURLWithPath: authorization.absolutePath)).length
+  }
+}
+
+private struct OpenedMicrophone {
+  let controller: NativeRecordingPreparation
+  let authorization: NativeMediaOpenAuthorization
+  let writer: ManagedCAFWriter
+  let format: AVAudioFormat
+}
+
+private func microphoneFrames(_ format: AVAudioFormat, _ frames: AVAudioFrameCount) throws
+  -> AVAudioPCMBuffer
+{
+  let buffer = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frames))
+  buffer.frameLength = frames
+  let samples = try XCTUnwrap(buffer.int16ChannelData?[0])
+  for frame in 0..<Int(frames) {
+    samples[frame] = Int16((frame % 32) + 1)
+  }
+  return buffer
+}
+
+private func provisionalFixture(
+  _ text: String,
+  digest: String = String(repeating: "a", count: 64)
+) -> ProvisionalDraftHypothesis {
+  ProvisionalDraftHypothesis(
+    text: text,
+    engine: "fixture-engine",
+    engineVersion: "1",
+    modelId: "fixture-model",
+    modelSha256: digest,
+    optionsDigest: "live-options",
+    reconciliationVersion: "overlap-midpoint-v3"
+  )
+}
+
+private final class FailureBox: @unchecked Sendable {
+  private let lock = NSLock()
+  private var failures: [MicrophoneCaptureAdapterError] = []
+
+  func append(_ failure: MicrophoneCaptureAdapterError) {
+    lock.withLock { failures.append(failure) }
+  }
+
+  func snapshot() -> [MicrophoneCaptureAdapterError] {
+    lock.withLock { failures }
+  }
+}
+
+private final class BlockingDraftHypothesis: @unchecked Sendable {
+  let entered = DispatchSemaphore(value: 0)
+  let allow = DispatchSemaphore(value: 0)
+  private let lock = NSLock()
+  private var calls = 0
+
+  var callCount: Int { lock.withLock { calls } }
+
+  func next() -> ProvisionalDraftHypothesis {
+    let index = lock.withLock { () -> Int in
+      calls += 1
+      return calls
+    }
+    if index == 1 {
+      entered.signal()
+      allow.wait()
+      return provisionalFixture("provisional meadow")
+    }
+    return provisionalFixture("later brook")
+  }
 }

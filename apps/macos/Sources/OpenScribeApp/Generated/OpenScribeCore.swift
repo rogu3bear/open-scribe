@@ -936,6 +936,19 @@ public protocol NativeRecordingPreparationProtocol: AnyObject, Sendable {
   func proposeContextEvent(sessionId: String, proposal: NativeContextProposal) throws
     -> NativeContextDecision
 
+  /**
+   * One sealed provisional window. Probabilities stay unset: the capture
+   * writer does not invent a recognizer score. Empty text is still rejected
+   * by the store.
+   */
+  func commitLiveDraftWindow(
+    sessionId: String, trackId: String, startNanoseconds: Int64, endNanoseconds: Int64,
+    text: String, engine: String, engineVersion: String, modelId: String, modelSha256: String,
+    optionsDigest: String, reconciliationVersion: String
+  ) throws -> String
+
+  func readableDraftTexts(sessionId: String) throws -> [String]
+
   func recorderAction(sessionId: String, action: NativeRecorderAction) throws
     -> NativeRecorderDetail
 
@@ -1390,6 +1403,47 @@ open class NativeRecordingPreparation: NativeRecordingPreparationProtocol, @unch
           self.uniffiCloneHandle(),
           FfiConverterString.lower(sessionId),
           FfiConverterTypeNativeContextProposal_lower(proposal), uniffiCallStatus
+        )
+      })
+  }
+
+  /**
+   * One sealed provisional window. Probabilities stay unset: the capture
+   * writer does not invent a recognizer score. Empty text is still rejected
+   * by the store.
+   */
+  open func commitLiveDraftWindow(
+    sessionId: String, trackId: String, startNanoseconds: Int64, endNanoseconds: Int64,
+    text: String, engine: String, engineVersion: String, modelId: String, modelSha256: String,
+    optionsDigest: String, reconciliationVersion: String
+  ) throws -> String {
+    return try FfiConverterString.lift(
+      try rustCallWithError(FfiConverterTypeNativeStorageError_lift) {
+        uniffiCallStatus in
+        uniffi_open_scribe_uniffi_fn_method_nativerecordingpreparation_commit_live_draft_window(
+          self.uniffiCloneHandle(),
+          FfiConverterString.lower(sessionId),
+          FfiConverterString.lower(trackId),
+          FfiConverterInt64.lower(startNanoseconds),
+          FfiConverterInt64.lower(endNanoseconds),
+          FfiConverterString.lower(text),
+          FfiConverterString.lower(engine),
+          FfiConverterString.lower(engineVersion),
+          FfiConverterString.lower(modelId),
+          FfiConverterString.lower(modelSha256),
+          FfiConverterString.lower(optionsDigest),
+          FfiConverterString.lower(reconciliationVersion), uniffiCallStatus
+        )
+      })
+  }
+
+  open func readableDraftTexts(sessionId: String) throws -> [String] {
+    return try FfiConverterSequenceString.lift(
+      try rustCallWithError(FfiConverterTypeNativeStorageError_lift) {
+        uniffiCallStatus in
+        uniffi_open_scribe_uniffi_fn_method_nativerecordingpreparation_readable_draft_texts(
+          self.uniffiCloneHandle(),
+          FfiConverterString.lower(sessionId), uniffiCallStatus
         )
       })
   }
@@ -12322,6 +12376,16 @@ private let initializationResult: InitializationResult = {
   }
   if uniffi_open_scribe_uniffi_checksum_method_nativerecordingpreparation_propose_context_event()
     != 32195
+  {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_open_scribe_uniffi_checksum_method_nativerecordingpreparation_commit_live_draft_window()
+    != 38349
+  {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_open_scribe_uniffi_checksum_method_nativerecordingpreparation_readable_draft_texts()
+    != 31773
   {
     return InitializationResult.apiChecksumMismatch
   }

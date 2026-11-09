@@ -484,6 +484,22 @@ uniffi_open_scribe_uniffi_fn_method_nativerecordingpreparation_propose_context_e
     uint64_t ptr, RustBuffer session_id, RustBuffer proposal,
     RustCallStatus *_Nonnull out_status);
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_FN_METHOD_NATIVERECORDINGPREPARATION_COMMIT_LIVE_DRAFT_WINDOW
+#define UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_FN_METHOD_NATIVERECORDINGPREPARATION_COMMIT_LIVE_DRAFT_WINDOW
+RustBuffer
+uniffi_open_scribe_uniffi_fn_method_nativerecordingpreparation_commit_live_draft_window(
+    uint64_t ptr, RustBuffer session_id, RustBuffer track_id,
+    int64_t start_nanoseconds, int64_t end_nanoseconds, RustBuffer text,
+    RustBuffer engine, RustBuffer engine_version, RustBuffer model_id,
+    RustBuffer model_sha256, RustBuffer options_digest,
+    RustBuffer reconciliation_version, RustCallStatus *_Nonnull out_status);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_FN_METHOD_NATIVERECORDINGPREPARATION_READABLE_DRAFT_TEXTS
+#define UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_FN_METHOD_NATIVERECORDINGPREPARATION_READABLE_DRAFT_TEXTS
+RustBuffer
+uniffi_open_scribe_uniffi_fn_method_nativerecordingpreparation_readable_draft_texts(
+    uint64_t ptr, RustBuffer session_id, RustCallStatus *_Nonnull out_status);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_FN_METHOD_NATIVERECORDINGPREPARATION_RECORDER_ACTION
 #define UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_FN_METHOD_NATIVERECORDINGPREPARATION_RECORDER_ACTION
 RustBuffer
@@ -1490,6 +1506,22 @@ uniffi_open_scribe_uniffi_checksum_method_nativerecordingpreparation_declare_ses
 #define UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_CHECKSUM_METHOD_NATIVERECORDINGPREPARATION_PROPOSE_CONTEXT_EVENT
 uint16_t
 uniffi_open_scribe_uniffi_checksum_method_nativerecordingpreparation_propose_context_event(
+    void
+
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_CHECKSUM_METHOD_NATIVERECORDINGPREPARATION_COMMIT_LIVE_DRAFT_WINDOW
+#define UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_CHECKSUM_METHOD_NATIVERECORDINGPREPARATION_COMMIT_LIVE_DRAFT_WINDOW
+uint16_t
+uniffi_open_scribe_uniffi_checksum_method_nativerecordingpreparation_commit_live_draft_window(
+    void
+
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_CHECKSUM_METHOD_NATIVERECORDINGPREPARATION_READABLE_DRAFT_TEXTS
+#define UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_CHECKSUM_METHOD_NATIVERECORDINGPREPARATION_READABLE_DRAFT_TEXTS
+uint16_t
+uniffi_open_scribe_uniffi_checksum_method_nativerecordingpreparation_readable_draft_texts(
     void
 
 );

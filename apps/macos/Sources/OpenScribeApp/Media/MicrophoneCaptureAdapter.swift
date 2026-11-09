@@ -301,6 +301,8 @@ final class MicrophoneCaptureAdapter: @unchecked Sendable {
   private var callbackCount: UInt64 = 0
   private var successfullyWrittenFrameCount: UInt64 = 0
   private var lastProgressMonotonicNanoseconds: UInt64 = 0
+  private let provisionalLock = NSLock()
+  private var provisionalQueue: ProvisionalDraftQueue?
 
   init(
     backend: MicrophoneCaptureBackend,
@@ -316,6 +318,48 @@ final class MicrophoneCaptureAdapter: @unchecked Sendable {
     self.identity = identity
     self.observationCadenceNanoseconds = observationCadenceNanoseconds
     self.monotonicClock = monotonicClock
+  }
+
+  /// Installs admission of sealed provisional windows. `hypothesis` is nil in
+  /// the shipped app until a real recognizer supplies text. A nil or empty
+  /// hypothesis does not create transcript words. The writer queue only counts
+  /// accepted frames; the store call runs on the queue's own serial queue.
+  func installProvisionalDraftAdmission(
+    preparation: NativeRecordingPreparationProtocol,
+    hypothesis: ProvisionalHypothesisProvider? = nil,
+    originNanoseconds: Int64 = 0,
+    windowFrames: UInt64 = ProvisionalDraftQueue.defaultWindowFrames,
+    overlapFrames: UInt64 = ProvisionalDraftQueue.defaultOverlapFrames
+  ) {
+    let queue = ProvisionalDraftQueue(
+      preparation: preparation,
+      sessionId: identity.sessionId,
+      trackId: identity.trackId,
+      hypothesis: hypothesis,
+      originNanoseconds: originNanoseconds,
+      windowFrames: windowFrames,
+      overlapFrames: overlapFrames
+    )
+    provisionalLock.withLock { provisionalQueue = queue }
+  }
+
+  func provisionalDraftWindowFrameCount() -> UInt64? {
+    provisionalLock.withLock { provisionalQueue?.windowFrames }
+  }
+
+  func provisionalDraftOverlapFrameCount() -> UInt64? {
+    provisionalLock.withLock { provisionalQueue?.overlapFrames }
+  }
+
+  /// Returns after accepted frames have been offered to the provisional queue.
+  /// The capture callback never calls this.
+  func waitForAcceptedAudio() {
+    writerQueue.sync {}
+  }
+
+  func waitForProvisionalDraftAdmission() {
+    let queue = provisionalLock.withLock { provisionalQueue }
+    queue?.waitUntilIdle()
   }
 
   convenience init(writer: ManagedCAFWriter) {
@@ -439,6 +483,7 @@ final class MicrophoneCaptureAdapter: @unchecked Sendable {
           let writtenFrames = try self.writer.writeCapturedBuffer(copy, hostTime: hostTime)
           guard writtenFrames > 0 else { return }
           self.recordWrittenProgress(UInt64(writtenFrames))
+          self.noteProvisionalAudio(writtenFrames)
           self.stateLock.lock()
           self.lastWrittenSampleHostTime = hostTime
           let shouldReport = self.started && self.acceptingCallbacks && !self.firstSampleReported
@@ -502,6 +547,11 @@ final class MicrophoneCaptureAdapter: @unchecked Sendable {
       observationHandler = nil
     }
     return lastHostTime
+  }
+
+  private func noteProvisionalAudio(_ writtenFrames: AVAudioFrameCount) {
+    let queue = provisionalLock.withLock { provisionalQueue }
+    queue?.accept(writtenFrames: writtenFrames)
   }
 
   private func recordCallbackProgress() {
@@ -638,5 +688,163 @@ final class MicrophoneCaptureAdapter: @unchecked Sendable {
       }
       eventQueue.async { handler(failure) }
     }
+  }
+}
+
+struct ProvisionalDraftHypothesis: Equatable, Sendable {
+  var text: String
+  var engine: String
+  var engineVersion: String
+  var modelId: String
+  var modelSha256: String
+  var optionsDigest: String
+  var reconciliationVersion: String
+}
+
+typealias ProvisionalHypothesisProvider = @Sendable (_ startNanoseconds: Int64, _ endNanoseconds: Int64)
+  -> ProvisionalDraftHypothesis?
+
+private struct ProvisionalWindow {
+  var startFrames: UInt64
+  var endFrames: UInt64
+}
+
+/// Counts accepted capture frames and admits at most two sealed windows.
+/// The writer queue returns after the count. A commit, if the hypothesis has
+/// text, happens on `commitQueue`. A third sealed window drops the oldest
+/// window that has not started. Dropped audio stays in the capture file.
+final class ProvisionalDraftQueue: @unchecked Sendable {
+  static let captureSampleRate: UInt64 = 48_000
+  static let defaultWindowFrames: UInt64 = 576_000
+  static let defaultOverlapFrames: UInt64 = 96_000
+  static let maximumWindows = 2
+
+  let windowFrames: UInt64
+  let overlapFrames: UInt64
+  private let hopFrames: UInt64
+  private let preparation: NativeRecordingPreparationProtocol
+  private let sessionId: String
+  private let trackId: String
+  private let hypothesisProvider: ProvisionalHypothesisProvider?
+  private let originNanoseconds: Int64
+  private let commitQueue = DispatchQueue(
+    label: "app.open-scribe.microphone-provisional-draft",
+    qos: .utility
+  )
+  private let stateLock = NSLock()
+  private var acceptedFrames: UInt64 = 0
+  private var nextWindowStartFrames: UInt64 = 0
+  private var pending: [ProvisionalWindow] = []
+  private var inFlight = 0
+
+  init(
+    preparation: NativeRecordingPreparationProtocol,
+    sessionId: String,
+    trackId: String,
+    hypothesis: ProvisionalHypothesisProvider?,
+    originNanoseconds: Int64,
+    windowFrames: UInt64,
+    overlapFrames: UInt64
+  ) {
+    self.preparation = preparation
+    self.sessionId = sessionId
+    self.trackId = trackId
+    self.hypothesisProvider = hypothesis
+    self.originNanoseconds = originNanoseconds
+    self.windowFrames = windowFrames
+    self.overlapFrames = overlapFrames
+    self.hopFrames = overlapFrames < windowFrames ? windowFrames - overlapFrames : 0
+  }
+
+  static func nanoseconds(forFrames frames: UInt64) -> Int64 {
+    let wholeSeconds = frames / captureSampleRate
+    let remainder = frames % captureSampleRate
+    return Int64(wholeSeconds * 1_000_000_000 + remainder * 1_000_000_000 / captureSampleRate)
+  }
+
+  func accept(writtenFrames: AVAudioFrameCount) {
+    guard writtenFrames > 0, hopFrames > 0 else { return }
+    acceptedFrames += UInt64(writtenFrames)
+    var sealed: [ProvisionalWindow] = []
+    while acceptedFrames >= nextWindowStartFrames + windowFrames {
+      let start = nextWindowStartFrames
+      let end = start + windowFrames
+      sealed.append(ProvisionalWindow(startFrames: start, endFrames: end))
+      nextWindowStartFrames += hopFrames
+    }
+    guard !sealed.isEmpty else { return }
+    schedule(sealed)
+  }
+
+  func waitUntilIdle() {
+    commitQueue.sync {}
+  }
+
+  private func schedule(_ windows: [ProvisionalWindow]) {
+    var starting: ProvisionalWindow?
+    stateLock.lock()
+    pending.append(contentsOf: windows)
+    while pending.count + inFlight > Self.maximumWindows {
+      pending.removeFirst()
+    }
+    if inFlight == 0, !pending.isEmpty {
+      inFlight = 1
+      starting = pending.removeFirst()
+    }
+    stateLock.unlock()
+    if let starting {
+      commitQueue.async { [weak self] in
+        self?.commit(starting)
+      }
+    }
+  }
+
+  private func commit(_ window: ProvisionalWindow) {
+    defer { finishCommit() }
+    guard let start = timelineNanoseconds(window.startFrames),
+      let end = timelineNanoseconds(window.endFrames),
+      end > start,
+      let hypothesis = hypothesisProvider?(start, end)
+    else { return }
+    let text = hypothesis.text.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !text.isEmpty else { return }
+    do {
+      _ = try preparation.commitLiveDraftWindow(
+        sessionId: sessionId,
+        trackId: trackId,
+        startNanoseconds: start,
+        endNanoseconds: end,
+        text: text,
+        engine: hypothesis.engine,
+        engineVersion: hypothesis.engineVersion,
+        modelId: hypothesis.modelId,
+        modelSha256: hypothesis.modelSha256,
+        optionsDigest: hypothesis.optionsDigest,
+        reconciliationVersion: hypothesis.reconciliationVersion
+      )
+    } catch {
+      // The store rejected this window. Capture keeps the audio.
+    }
+  }
+
+  private func finishCommit() {
+    var next: ProvisionalWindow?
+    stateLock.lock()
+    inFlight = 0
+    if !pending.isEmpty {
+      inFlight = 1
+      next = pending.removeFirst()
+    }
+    stateLock.unlock()
+    if let next {
+      commit(next)
+    }
+  }
+
+  private func timelineNanoseconds(_ frames: UInt64) -> Int64? {
+    let (sum, overflow) = originNanoseconds.addingReportingOverflow(
+      Self.nanoseconds(forFrames: frames))
+    guard !overflow else { return nil }
+    return sum
   }
 }

@@ -97,7 +97,7 @@ pub use transcript_speakers::{NamedTranscriptSpeaker, TranscriptSpeakerAssignmen
 mod transcripts;
 pub use transcript_selection::TranscriptSelectionPolicy;
 pub use transcripts::{
-    PlannedTranscriptChunk, RevisionSegmentInput, StoredTranscriptionRun,
+    LiveDraftWindow, PlannedTranscriptChunk, RevisionSegmentInput, StoredTranscriptionRun,
     TRANSCRIPT_SCHEMA_VERSION, TranscriptChunk, TranscriptChunkState, TranscriptRevisionSummary,
     TranscriptSegmentView, TranscriptionFailure, TranscriptionRunHandle, TranscriptionRunIdentity,
     TranscriptionRunSummary,

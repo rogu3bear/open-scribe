@@ -130,4 +130,50 @@ impl NativeRecordingPreparation {
             .map(Into::into)
             .map_err(map_storage_error)
     }
+
+    /// One sealed provisional window. Probabilities stay unset: the capture
+    /// writer does not invent a recognizer score. Empty text is still rejected
+    /// by the store.
+    pub fn commit_live_draft_window(
+        &self,
+        session_id: String,
+        track_id: String,
+        start_nanoseconds: i64,
+        end_nanoseconds: i64,
+        text: String,
+        engine: String,
+        engine_version: String,
+        model_id: String,
+        model_sha256: String,
+        options_digest: String,
+        reconciliation_version: String,
+    ) -> Result<String, NativeStorageError> {
+        let window = open_scribe_core::LiveDraftWindow {
+            session_id: open_scribe_types::SessionId(session_id),
+            track_id,
+            start_nanoseconds,
+            end_nanoseconds,
+            text,
+            mean_probability: None,
+            no_speech_probability: None,
+            engine,
+            engine_version,
+            model_id,
+            model_sha256,
+            options_digest,
+            reconciliation_version,
+        };
+        self.controller()?
+            .commit_live_draft_window(window)
+            .map_err(map_storage_error)
+    }
+
+    pub fn readable_draft_texts(
+        &self,
+        session_id: String,
+    ) -> Result<Vec<String>, NativeStorageError> {
+        self.controller()?
+            .readable_draft_texts(&open_scribe_types::SessionId(session_id))
+            .map_err(map_storage_error)
+    }
 }

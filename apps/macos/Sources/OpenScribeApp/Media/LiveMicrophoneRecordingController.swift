@@ -547,6 +547,8 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
         microphoneCapture = captureFactory(microphoneWriter)
         microphoneCaptureIdentity = MicrophoneCaptureIdentity(
           authorization: microphoneWriter.authorization)
+        admitProvisionalDrafts(
+          on: microphoneCapture, preparation: preparation, writer: microphoneWriter)
       }
       self.microphoneCapture = microphoneCapture
 
@@ -1642,6 +1644,21 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
       generation: generation, preparation: preparation, sessionId: sessionId)
   }
 
+  /// The shipped capture path offers sealed windows only. No recognizer is
+  /// installed here, so a missing hypothesis never becomes transcript text.
+  private func admitProvisionalDrafts(
+    on capture: MicrophoneCapturing?,
+    preparation: NativeRecordingPreparationProtocol,
+    writer: ManagedSegmentWriting
+  ) {
+    guard let adapter = capture as? MicrophoneCaptureAdapter else { return }
+    adapter.installProvisionalDraftAdmission(
+      preparation: preparation,
+      hypothesis: nil,
+      originNanoseconds: writer.authorization.mappedStartNanoseconds
+    )
+  }
+
   private func microphoneRestoreHasReserve() throws -> Bool {
     guard
       let path = (writers.first { $0.key != .microphone }?.value ?? writers.values.first)?
@@ -1702,6 +1719,8 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
       acceptedMicrophoneObservationSequence = 0
       microphoneSourceHealth = nil
       let capture = captureFactory(writers[.microphone] ?? writer)
+      admitProvisionalDrafts(
+        on: capture, preparation: preparation, writer: writers[.microphone] ?? writer)
       microphoneRestoreCapture = capture
       try capture.bindInput(to: selectedMicrophoneDevice)
       try capture.start(

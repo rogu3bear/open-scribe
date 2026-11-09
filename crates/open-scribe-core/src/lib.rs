@@ -100,7 +100,7 @@ pub use open_scribe_store::{
     SourceFailureRequest, StoreError, TimelineSegment, ValidatedMixdown, import_policy,
 };
 pub use open_scribe_store::{
-    NamedTranscriptSpeaker, SelectedRevisionProvenance, SessionDeletionInventory,
+    LiveDraftWindow, NamedTranscriptSpeaker, SelectedRevisionProvenance, SessionDeletionInventory,
     SessionDeletionReceipt, SessionSpeaker, SpeakerLabelOrigin, TranscriptDocumentSegment,
     TranscriptExportContext, TranscriptSearchHit, TranscriptSpeakerAssignment,
 };
@@ -315,6 +315,29 @@ impl RecordingPreparationController {
         session_id: open_scribe_types::SessionId,
     ) -> Result<RecordingStartedEvidence, StoreError> {
         self.store.confirm_recording(session_id)
+    }
+
+    /// Admits one provisional window while capture is open. The caller supplies
+    /// the hypothesis text and model identity. This does not load a model.
+    pub fn commit_live_draft_window(
+        &mut self,
+        window: LiveDraftWindow,
+    ) -> Result<String, StoreError> {
+        self.store.commit_live_draft_window(&window)
+    }
+
+    /// Draft text a reader can show. Selected Final text is omitted.
+    pub fn readable_draft_texts(
+        &self,
+        session: &open_scribe_types::SessionId,
+    ) -> Result<Vec<String>, StoreError> {
+        Ok(self
+            .store
+            .readable_transcript(session)?
+            .into_iter()
+            .filter(|segment| segment.finality == "draft")
+            .map(|segment| segment.effective_text)
+            .collect())
     }
 
     pub fn authorize_initial_media(
