@@ -39,14 +39,23 @@ impl TranscriptLibrary {
         &self,
         session: &SessionId,
     ) -> Result<TranscriptAvailability, TranscriptExportError> {
-        Ok(TranscriptExport::collect(&self.store, session, 0)?.availability())
+        let mut availability = TranscriptExport::collect(&self.store, session, 0)?.availability();
+        if self.store.has_open_transcript_draft(session)?
+            && matches!(
+                availability,
+                TranscriptAvailability::Final | TranscriptAvailability::Unavailable
+            )
+        {
+            availability = TranscriptAvailability::Draft;
+        }
+        Ok(availability)
     }
 
     pub fn document(
         &self,
         session: &SessionId,
     ) -> Result<Vec<TranscriptDocumentSegment>, StoreError> {
-        self.store.transcript_document(session)
+        self.store.readable_transcript(session)
     }
 
     pub fn speakers(&self, session: &SessionId) -> Result<Vec<SessionSpeaker>, StoreError> {

@@ -20,6 +20,12 @@ final class TranscriptLibraryModelTests: XCTestCase {
     XCTAssertTrue(TranscriptSearch.matching(rows, query: "Reject").isEmpty)
     XCTAssertEqual(TranscriptSearch.matching(rows, query: " \n"), rows)
     XCTAssertEqual(TranscriptSearch.matching(Array(rows.suffix(1)), query: "café"), [rows[2]])
+    let draft = segment(
+      3, 9_000_000_000, "Dana", named: true, "Café secret draft", finality: "draft")
+    XCTAssertTrue(TranscriptSearch.matching(rows + [draft], query: "secret").isEmpty)
+    XCTAssertEqual(
+      TranscriptSearch.matching(rows + [draft], query: "café").map(\.id),
+      [rows[0].id, rows[2].id])
     let value = "Café — café ☕"
     XCTAssertEqual(
       TranscriptSearch.ranges(in: value, query: "CAFE").map { String(value[$0]) },
@@ -617,13 +623,13 @@ final class TranscriptLibraryModelTests: XCTestCase {
 
   private func segment(
     _ sequence: UInt32, _ start: Int64, _ speaker: String, named: Bool, _ text: String,
-    machine: String? = nil
+    machine: String? = nil, finality: String = "final"
   ) -> NativeTranscriptSegment {
     NativeTranscriptSegment(
       revisionId: "revision", trackId: named ? "system" : "microphone", sequence: sequence,
       startNanoseconds: start, endNanoseconds: start + 3_000_000_000,
       verbatimText: machine ?? text, effectiveText: text, corrected: machine != nil,
-      speakerLabel: speaker, speakerNamedByUser: named, namedSpeakerId: nil)
+      speakerLabel: speaker, speakerNamedByUser: named, namedSpeakerId: nil, finality: finality)
   }
 
   func testTranscriptReaderStaysHiddenUntilThePreviewBelongsToTheSession() async {
@@ -995,7 +1001,8 @@ private final class TranscriptTimingLibraryFake: NativeTranscriptLibrary, @unche
       NativeTranscriptSegment(
         revisionId: "fixture", trackId: sessionId, sequence: 0, startNanoseconds: 0,
         endNanoseconds: 1_000_000_000, verbatimText: "Fixture", effectiveText: "Fixture",
-        corrected: false, speakerLabel: "Fixture", speakerNamedByUser: false, namedSpeakerId: nil)
+        corrected: false, speakerLabel: "Fixture", speakerNamedByUser: false, namedSpeakerId: nil,
+        finality: "final")
     ]
     observe("document", sessionId)
     return snapshot

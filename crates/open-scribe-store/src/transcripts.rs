@@ -1,17 +1,20 @@
-//! Derived final-transcript storage (ADR 0009).
+//! Derived transcript storage (ADR 0009).
 //!
 //! Verbatim machine output is interpretation over sealed media, never media
-//! authority. Every chunk commits on its own; a complete chunk, a finished
-//! run, a revision, and its segments are immutable. Retry and replacement
-//! create new runs, and a session track's selected revision changes only when
-//! a replacement has completed. Rows cascade from their session so a future
-//! deletion removes all derived text with it; the search projection in
-//! `transcript_review` has no foreign keys and is cleared explicitly.
+//! authority. Every chunk commits on its own. A complete chunk, a finished
+//! run, and a revision's segments are immutable. A Draft revision stays Draft:
+//! final text is a new revision, and the only revision update is marking an
+//! overlapping Draft row `superseded`. Retry and replacement create new runs,
+//! and a session track's selected revision changes only when a final
+//! replacement has completed. Draft rows are not selected and are not indexed.
+//! Rows cascade from their session so a future deletion removes all derived
+//! text with it; the search projection in `transcript_review` has no foreign
+//! keys and is cleared explicitly.
 
 use super::transcript_review::reindex_session_search;
 use super::{SessionStore, StoreError, wall_time_milliseconds};
 use open_scribe_types::SessionId;
-use rusqlite::{OptionalExtension, Transaction, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
@@ -20,6 +23,8 @@ type RunningTranscriptionOrphanClasses = (Vec<String>, Vec<(String, String)>);
 
 pub const TRANSCRIPT_SCHEMA_VERSION: i64 = 1;
 pub(super) const TRANSCRIPT_MIGRATION_VERSION: i64 = 5;
+/// Allows `draft` and `superseded` beside `final` on databases created earlier.
+pub(super) const DRAFT_FINALITY_MIGRATION_VERSION: i64 = 19;
 
 pub(super) fn apply_transcript_schema(transaction: &Transaction<'_>) -> Result<(), StoreError> {
     transaction.execute_batch(
@@ -69,7 +74,7 @@ pub(super) fn apply_transcript_schema(transaction: &Transaction<'_>) -> Result<(
             track_id TEXT NOT NULL,
             run_id TEXT NOT NULL UNIQUE REFERENCES transcription_runs(id) ON DELETE CASCADE,
             kind TEXT NOT NULL CHECK (kind = 'verbatim'),
-            finality TEXT NOT NULL CHECK (finality = 'final'),
+            finality TEXT NOT NULL CHECK (finality IN ('draft', 'final', 'superseded')),
             reconciliation_version TEXT NOT NULL,
             rejections_json TEXT NOT NULL,
             discontinuities_json TEXT NOT NULL,
@@ -96,6 +101,19 @@ pub(super) fn apply_transcript_schema(transaction: &Transaction<'_>) -> Result<(
         );
         CREATE TRIGGER IF NOT EXISTS transcript_revisions_immutable
             BEFORE UPDATE ON transcript_revisions
+            WHEN NOT (
+                OLD.finality = 'draft' AND NEW.finality = 'superseded'
+                AND OLD.id = NEW.id
+                AND OLD.schema_version = NEW.schema_version
+                AND OLD.session_id = NEW.session_id
+                AND OLD.track_id = NEW.track_id
+                AND OLD.run_id = NEW.run_id
+                AND OLD.kind = NEW.kind
+                AND OLD.reconciliation_version = NEW.reconciliation_version
+                AND OLD.rejections_json = NEW.rejections_json
+                AND OLD.discontinuities_json = NEW.discontinuities_json
+                AND OLD.created_at_ms = NEW.created_at_ms
+            )
             BEGIN SELECT RAISE(ABORT, 'transcript revisions are immutable'); END;
         CREATE TRIGGER IF NOT EXISTS transcript_segments_immutable
             BEFORE UPDATE ON transcript_segments
@@ -107,6 +125,104 @@ pub(super) fn apply_transcript_schema(transaction: &Transaction<'_>) -> Result<(
             BEFORE UPDATE ON transcription_runs WHEN OLD.state <> 'running'
             BEGIN SELECT RAISE(ABORT, 'finished transcription runs are immutable'); END;",
     )?;
+    Ok(())
+}
+
+/// Rebuilds a revision table whose check still admits only `final`.
+///
+/// `CREATE TABLE IF NOT EXISTS` does not change an existing check. Foreign
+/// keys stay off only for this rename, then the caller turns them back on
+/// before any later statement. The following schema apply recreates the
+/// immutability trigger, which this drop removes with the old table.
+pub(super) fn migrate_legacy_revision_finality(
+    connection: &mut Connection,
+) -> Result<(), StoreError> {
+    let sql: Option<String> = connection
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'transcript_revisions'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let Some(sql) = sql else {
+        return Ok(());
+    };
+    if sql.contains("'draft'") {
+        return Ok(());
+    }
+    connection.pragma_update(None, "foreign_keys", false)?;
+    let rebuilt = (|| -> Result<(), StoreError> {
+        let transaction = connection.transaction()?;
+        let triggers = suspend_triggers_that_reference_revisions(&transaction)?;
+        transaction.execute_batch(
+            "CREATE TABLE transcript_revisions__next (
+                id TEXT PRIMARY KEY,
+                schema_version INTEGER NOT NULL,
+                session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+                track_id TEXT NOT NULL,
+                run_id TEXT NOT NULL UNIQUE REFERENCES transcription_runs(id) ON DELETE CASCADE,
+                kind TEXT NOT NULL CHECK (kind = 'verbatim'),
+                finality TEXT NOT NULL CHECK (finality IN ('draft', 'final', 'superseded')),
+                reconciliation_version TEXT NOT NULL,
+                rejections_json TEXT NOT NULL,
+                discontinuities_json TEXT NOT NULL,
+                created_at_ms INTEGER NOT NULL
+            );
+            INSERT INTO transcript_revisions__next
+                SELECT id, schema_version, session_id, track_id, run_id, kind, finality,
+                       reconciliation_version, rejections_json, discontinuities_json, created_at_ms
+                FROM transcript_revisions;
+            DROP TABLE transcript_revisions;
+            ALTER TABLE transcript_revisions__next RENAME TO transcript_revisions;",
+        )?;
+        restore_trigger_sql(&transaction, &triggers)?;
+        transaction.commit()?;
+        Ok(())
+    })();
+    connection.pragma_update(None, "foreign_keys", true)?;
+    rebuilt
+}
+
+/// Other tables' triggers name `transcript_revisions`. SQLite rejects dropping
+/// that table until those triggers are removed, then they can be created again.
+fn suspend_triggers_that_reference_revisions(
+    transaction: &Transaction<'_>,
+) -> Result<Vec<String>, StoreError> {
+    let mut statement = transaction.prepare(
+        "SELECT name, sql FROM sqlite_master
+         WHERE type = 'trigger' AND tbl_name <> 'transcript_revisions'
+           AND instr(sql, 'transcript_revisions') > 0
+         ORDER BY name",
+    )?;
+    let found = statement
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    drop(statement);
+    let mut sql = Vec::with_capacity(found.len());
+    for (name, create) in found {
+        if !name
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || character == '_')
+        {
+            return Err(StoreError::IntegrityMismatch(
+                "unexpected transcript revision trigger",
+            ));
+        }
+        transaction.execute_batch(&format!("DROP TRIGGER IF EXISTS \"{name}\";"))?;
+        sql.push(create);
+    }
+    Ok(sql)
+}
+
+fn restore_trigger_sql(
+    transaction: &Transaction<'_>,
+    statements: &[String],
+) -> Result<(), StoreError> {
+    for statement in statements {
+        transaction.execute_batch(statement)?;
+    }
     Ok(())
 }
 
@@ -298,6 +414,8 @@ pub struct TranscriptRevisionSummary {
     pub selected: bool,
     pub segment_count: u32,
     pub created_at_ms: i64,
+    /// `draft`, `final`, or `superseded`. Selection is only for `final`.
+    pub finality: String,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -620,6 +738,45 @@ impl SessionStore {
         discontinuities_json: &str,
         selection: super::TranscriptSelectionPolicy,
     ) -> Result<String, StoreError> {
+        self.commit_revision(
+            run_id,
+            segments,
+            rejections_json,
+            discontinuities_json,
+            selection,
+            false,
+        )
+    }
+
+    /// Stores provisional text for one finished window. The row stays `draft`,
+    /// is not selected, and is not added to the search index. A later final
+    /// revision for an overlapping range supersedes it without changing this text.
+    pub fn commit_draft_transcript_revision(
+        &mut self,
+        run_id: &str,
+        segments: &[RevisionSegmentInput],
+        rejections_json: &str,
+        discontinuities_json: &str,
+    ) -> Result<String, StoreError> {
+        self.commit_revision(
+            run_id,
+            segments,
+            rejections_json,
+            discontinuities_json,
+            super::TranscriptSelectionPolicy::KeepCurrent,
+            true,
+        )
+    }
+
+    fn commit_revision(
+        &mut self,
+        run_id: &str,
+        segments: &[RevisionSegmentInput],
+        rejections_json: &str,
+        discontinuities_json: &str,
+        selection: super::TranscriptSelectionPolicy,
+        draft: bool,
+    ) -> Result<String, StoreError> {
         let _writer = self.write_guard()?;
         serde_json::from_str::<serde_json::Value>(rejections_json)?;
         serde_json::from_str::<serde_json::Value>(discontinuities_json)?;
@@ -662,17 +819,19 @@ impl SessionStore {
         }
         let now = wall_time_milliseconds();
         let revision_id = Uuid::now_v7().to_string();
+        let finality = if draft { "draft" } else { "final" };
         transaction.execute(
             "INSERT INTO transcript_revisions(
                 id, schema_version, session_id, track_id, run_id, kind, finality,
                 reconciliation_version, rejections_json, discontinuities_json, created_at_ms)
-             VALUES(?1, ?2, ?3, ?4, ?5, 'verbatim', 'final', ?6, ?7, ?8, ?9)",
+             VALUES(?1, ?2, ?3, ?4, ?5, 'verbatim', ?6, ?7, ?8, ?9, ?10)",
             params![
                 revision_id,
                 TRANSCRIPT_SCHEMA_VERSION,
                 session_id,
                 track_id,
                 run_id,
+                finality,
                 reconciliation_version,
                 rejections_json,
                 discontinuities_json,
@@ -697,11 +856,15 @@ impl SessionStore {
                 ],
             )?;
         }
+        if !draft {
+            supersede_overlapping_drafts(&transaction, &session_id, &track_id, &revision_id)?;
+        }
         transaction.execute(
             "UPDATE transcription_runs SET state = 'complete', updated_at_ms = ?2 WHERE id = ?1",
             params![run_id, now],
         )?;
-        if selection == super::TranscriptSelectionPolicy::IfUnchanged
+        if !draft
+            && selection == super::TranscriptSelectionPolicy::IfUnchanged
             && !transaction.query_row("SELECT EXISTS(SELECT 1 FROM transcription_intent WHERE session_id = ?1 AND declined_auto = 1)", [&session_id], |r| r.get::<_,bool>(0))?
             && super::transcript_selection::expectation_matches(
                 &transaction,
@@ -726,16 +889,26 @@ impl SessionStore {
         let _writer = self.write_guard()?;
         super::session_deletion::require_available(&self.connection, &session.0)?;
         let transaction = self.connection.transaction()?;
-        let owned: bool = transaction.query_row(
-            "SELECT EXISTS(SELECT 1 FROM transcript_revisions
-                           WHERE id = ?1 AND session_id = ?2 AND track_id = ?3)",
-            params![revision_id, session.0, track_id],
-            |row| row.get(0),
-        )?;
-        if !owned {
-            return Err(StoreError::InvalidRequest(
-                "revision does not belong to this track",
-            ));
+        let finality: Option<String> = transaction
+            .query_row(
+                "SELECT finality FROM transcript_revisions
+                 WHERE id = ?1 AND session_id = ?2 AND track_id = ?3",
+                params![revision_id, session.0, track_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        match finality.as_deref() {
+            Some("final") => {}
+            Some(_) => {
+                return Err(StoreError::InvalidRequest(
+                    "only a final revision can be selected",
+                ));
+            }
+            None => {
+                return Err(StoreError::InvalidRequest(
+                    "revision does not belong to this track",
+                ));
+            }
         }
         select_revision(
             &transaction,
@@ -1001,7 +1174,7 @@ impl SessionStore {
                     EXISTS(SELECT 1 FROM transcript_selections
                            WHERE transcript_selections.revision_id = revisions.id),
                     (SELECT COUNT(*) FROM transcript_segments WHERE revision_id = revisions.id),
-                    revisions.reconciliation_version
+                    revisions.reconciliation_version, revisions.finality
              FROM transcript_revisions AS revisions
              JOIN transcription_runs AS runs ON runs.id = revisions.run_id
              WHERE revisions.session_id = ?1
@@ -1020,10 +1193,21 @@ impl SessionStore {
                     selected: row.get(7)?,
                     segment_count: row.get(8)?,
                     reconciliation_version: row.get(9)?,
+                    finality: row.get(10)?,
                 })
             })?
             .collect::<Result<_, _>>()?;
         Ok(revisions)
+    }
+
+    /// True when a Draft revision is still waiting for a final range.
+    pub fn has_open_transcript_draft(&self, session: &SessionId) -> Result<bool, StoreError> {
+        Ok(self.connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM transcript_revisions
+             WHERE session_id = ?1 AND finality = 'draft')",
+            [&session.0],
+            |row| row.get(0),
+        )?)
     }
 
     /// Selected Final text across tracks, ordered on the session timeline.
@@ -1094,6 +1278,28 @@ fn require_running(
         )
         .optional()?
         .ok_or(StoreError::InvalidState("transcription run is not running"))
+}
+
+fn supersede_overlapping_drafts(
+    transaction: &Transaction<'_>,
+    session_id: &str,
+    track_id: &str,
+    final_revision_id: &str,
+) -> Result<(), StoreError> {
+    transaction.execute(
+        "UPDATE transcript_revisions SET finality = 'superseded'
+         WHERE session_id = ?1 AND track_id = ?2 AND finality = 'draft'
+           AND EXISTS (
+             SELECT 1 FROM transcript_segments AS draft_segments
+             JOIN transcript_segments AS final_segments
+               ON final_segments.revision_id = ?3
+              AND draft_segments.start_ns < final_segments.end_ns
+              AND final_segments.start_ns < draft_segments.end_ns
+             WHERE draft_segments.revision_id = transcript_revisions.id
+           )",
+        params![session_id, track_id, final_revision_id],
+    )?;
+    Ok(())
 }
 
 pub(super) fn select_revision(

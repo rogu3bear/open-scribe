@@ -208,8 +208,9 @@ struct TranscriptReader: View {
 
   private func passage(_ segment: NativeTranscriptSegment, isPlaying: Bool) -> some View {
     let stamp = TranscriptSection.timestamp(segment.startNanoseconds)
+    let isDraft = segment.finality == "draft"
     let isCited =
-      transcripts.claimEvidenceOpen && transcripts.claimHighlightSegmentId == segment.id
+      !isDraft && transcripts.claimEvidenceOpen && transcripts.claimHighlightSegmentId == segment.id
     return HStack(alignment: .firstTextBaseline, spacing: ScribeSpacing.compact) {
       Button(stamp) { onSeek(segment.startNanoseconds) }
         .buttonStyle(.link)
@@ -219,10 +220,21 @@ struct TranscriptReader: View {
         .accessibilityLabel(canSeek ? "Play from \(stamp)" : stamp)
       VStack(alignment: .leading, spacing: ScribeSpacing.tight) {
         HStack(spacing: ScribeSpacing.related) {
-          Button(segment.speakerLabel) { namePassage(segment) }
-            .buttonStyle(.borderless)
-            .font(.subheadline.weight(.semibold))
-            .accessibilityLabel("Name the speaker at \(stamp): \(segment.speakerLabel)")
+          if isDraft {
+            Text(segment.speakerLabel)
+              .font(.subheadline.weight(.semibold))
+          } else {
+            Button(segment.speakerLabel) { namePassage(segment) }
+              .buttonStyle(.borderless)
+              .font(.subheadline.weight(.semibold))
+              .accessibilityLabel("Name the speaker at \(stamp): \(segment.speakerLabel)")
+          }
+          if isDraft {
+            Text("Draft")
+              .font(.caption)
+              .foregroundStyle(.secondary)
+              .accessibilityLabel("Draft")
+          }
           if isPlaying {
             Label("Playing", systemImage: "speaker.wave.2.fill")
               .font(.caption)
@@ -244,6 +256,7 @@ struct TranscriptReader: View {
             .accessibilityAddTraits(.isStaticText)
             .accessibilityLabel(
               "\(segment.speakerLabel). \(segment.effectiveText)"
+                + (isDraft ? " Draft." : "")
                 + (isPlaying ? " Playing." : "")
                 + (isCited ? " Cited evidence." : "")
                 + (segment.corrected ? " Corrected." : ""))
@@ -261,15 +274,17 @@ struct TranscriptReader: View {
       }
       .frame(maxWidth: 500, alignment: .leading)
       Spacer(minLength: ScribeSpacing.related)
-      Button {
-        followsPlayback = false
-        onCorrect(segment)
-      } label: {
-        Image(systemName: "pencil")
+      if !isDraft {
+        Button {
+          followsPlayback = false
+          onCorrect(segment)
+        } label: {
+          Image(systemName: "pencil")
+        }
+        .buttonStyle(.borderless)
+        .help("Correct text")
+        .accessibilityLabel("Correct the text at \(stamp)")
       }
-      .buttonStyle(.borderless)
-      .help("Correct text")
-      .accessibilityLabel("Correct the text at \(stamp)")
     }
     .padding(.vertical, ScribeSpacing.tight)
     .frame(maxWidth: 660, alignment: .leading)

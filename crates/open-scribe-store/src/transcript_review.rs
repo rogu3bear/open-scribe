@@ -134,11 +134,14 @@ pub struct SessionSpeaker {
     pub origin: SpeakerLabelOrigin,
 }
 
-/// One selected Final segment as the transcript document presents it.
+/// One readable transcript segment. `finality` is `final` for a selected
+/// revision and `draft` for provisional text no selected Final range covers.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TranscriptDocumentSegment {
     pub revision_id: String,
     pub track_id: String,
+    /// `final` or `draft`. Superseded rows are not part of the document.
+    pub finality: String,
     pub sequence: u32,
     pub start_nanoseconds: i64,
     pub end_nanoseconds: i64,
@@ -198,7 +201,8 @@ impl SessionStore {
                            JOIN transcript_revisions AS revisions
                              ON revisions.id = segments.revision_id
                            WHERE segments.revision_id = ?1 AND segments.sequence = ?2
-                             AND revisions.session_id = ?3)",
+                             AND revisions.session_id = ?3
+                             AND revisions.finality = 'final')",
             params![revision_id, sequence, session.0],
             |row| row.get(0),
         )?;
@@ -321,21 +325,77 @@ impl SessionStore {
 
     /// Selected Final text across tracks on the session timeline, with
     /// effective text, correction provenance, and speaker identity.
+    /// Draft rows are omitted so an export cannot cite provisional text.
     pub fn transcript_document(
         &self,
         session: &SessionId,
     ) -> Result<Vec<TranscriptDocumentSegment>, StoreError> {
-        let speakers = self.session_speakers(session)?;
-        let turn_speakers = self.transcript_turn_speakers(session)?;
-        let mut statement = self.connection.prepare(&format!(
+        self.document_segments(
+            session,
             "SELECT segments.revision_id, revisions.track_id, segments.sequence,
-                    segments.start_ns, segments.end_ns, segments.text, {EFFECTIVE_TEXT}
+                    segments.start_ns, segments.end_ns, segments.text, {EFFECTIVE_TEXT},
+                    revisions.finality
              FROM transcript_selections AS selections
              JOIN transcript_revisions AS revisions ON revisions.id = selections.revision_id
              JOIN transcript_segments AS segments ON segments.revision_id = revisions.id
-             WHERE selections.session_id = ?1
-             ORDER BY segments.start_ns, revisions.track_id, segments.sequence"
-        ))?;
+             WHERE selections.session_id = ?1 AND revisions.finality = 'final'
+             ORDER BY segments.start_ns, revisions.track_id, segments.sequence",
+        )
+    }
+
+    /// Selected Final text plus Draft text that no selected Final range on
+    /// the same track overlaps. Superseded drafts are omitted. The order is
+    /// the session timeline. Default search still reads only selected Final text.
+    pub fn readable_transcript(
+        &self,
+        session: &SessionId,
+    ) -> Result<Vec<TranscriptDocumentSegment>, StoreError> {
+        let mut segments = self.transcript_document(session)?;
+        let drafts = self.document_segments(
+            session,
+            "SELECT segments.revision_id, revisions.track_id, segments.sequence,
+                    segments.start_ns, segments.end_ns, segments.text, {EFFECTIVE_TEXT},
+                    revisions.finality
+             FROM transcript_revisions AS revisions
+             JOIN transcript_segments AS segments ON segments.revision_id = revisions.id
+             WHERE revisions.session_id = ?1 AND revisions.finality = 'draft'
+               AND NOT EXISTS (
+                 SELECT 1 FROM transcript_segments AS draft_segments
+                 JOIN transcript_selections AS selections
+                   ON selections.session_id = revisions.session_id
+                  AND selections.track_id = revisions.track_id
+                 JOIN transcript_segments AS final_segments
+                   ON final_segments.revision_id = selections.revision_id
+                 WHERE draft_segments.revision_id = revisions.id
+                   AND draft_segments.start_ns < final_segments.end_ns
+                   AND final_segments.start_ns < draft_segments.end_ns
+               )
+             ORDER BY segments.start_ns, revisions.track_id, segments.sequence",
+        )?;
+        if drafts.is_empty() {
+            return Ok(segments);
+        }
+        segments.extend(drafts);
+        segments.sort_by(|left, right| {
+            left.start_nanoseconds
+                .cmp(&right.start_nanoseconds)
+                .then_with(|| left.track_id.cmp(&right.track_id))
+                .then_with(|| left.sequence.cmp(&right.sequence))
+                .then_with(|| left.revision_id.cmp(&right.revision_id))
+        });
+        Ok(segments)
+    }
+
+    fn document_segments(
+        &self,
+        session: &SessionId,
+        sql: &str,
+    ) -> Result<Vec<TranscriptDocumentSegment>, StoreError> {
+        let speakers = self.session_speakers(session)?;
+        let turn_speakers = self.transcript_turn_speakers(session)?;
+        let mut statement = self
+            .connection
+            .prepare(&sql.replace("{EFFECTIVE_TEXT}", EFFECTIVE_TEXT))?;
         let rows = statement
             .query_map([&session.0], |row| {
                 Ok((
@@ -346,12 +406,13 @@ impl SessionStore {
                     row.get::<_, i64>(4)?,
                     row.get::<_, String>(5)?,
                     row.get::<_, String>(6)?,
+                    row.get::<_, String>(7)?,
                 ))
             })?
             .collect::<Result<Vec<_>, _>>()?;
         rows.into_iter()
             .map(
-                |(revision_id, track_id, sequence, start, end, verbatim, effective)| {
+                |(revision_id, track_id, sequence, start, end, verbatim, effective, finality)| {
                     let speaker = speakers
                         .iter()
                         .find(|speaker| speaker.track_id == track_id)
@@ -371,6 +432,7 @@ impl SessionStore {
                         named_speaker_id: named.map(|person| person.id.clone()),
                         revision_id,
                         track_id,
+                        finality,
                         sequence,
                         start_nanoseconds: start,
                         end_nanoseconds: end,

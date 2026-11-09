@@ -385,7 +385,7 @@ final class TranscriptionSchedulerTests: XCTestCase {
           startNanoseconds: 0, endNanoseconds: 100_000_000,
           verbatimText: "Machine reading", effectiveText: "Human corrected reading",
           corrected: true, speakerLabel: "Local user", speakerNamedByUser: false,
-          namedSpeakerId: nil)
+          namedSpeakerId: nil, finality: "final")
       ], speakers: [])
     let section = TranscriptSection(
       session: session, transcripts: transcript,

@@ -7539,13 +7539,21 @@ public struct NativeTranscriptSegment: Equatable, Hashable {
   public let speakerLabel: String
   public let speakerNamedByUser: Bool
   public let namedSpeakerId: String?
+  /**
+   * `final` for a selected revision, `draft` for provisional text.
+   */
+  public let finality: String
 
   // Default memberwise initializers are never public by default, so we
   // declare one manually.
   public init(
     revisionId: String, trackId: String, sequence: UInt32, startNanoseconds: Int64,
     endNanoseconds: Int64, verbatimText: String, effectiveText: String, corrected: Bool,
-    speakerLabel: String, speakerNamedByUser: Bool, namedSpeakerId: String?
+    speakerLabel: String, speakerNamedByUser: Bool, namedSpeakerId: String?,
+    /**
+     * `final` for a selected revision, `draft` for provisional text.
+     */
+    finality: String
   ) {
     self.revisionId = revisionId
     self.trackId = trackId
@@ -7558,6 +7566,7 @@ public struct NativeTranscriptSegment: Equatable, Hashable {
     self.speakerLabel = speakerLabel
     self.speakerNamedByUser = speakerNamedByUser
     self.namedSpeakerId = namedSpeakerId
+    self.finality = finality
   }
 
 }
@@ -7585,7 +7594,8 @@ public struct FfiConverterTypeNativeTranscriptSegment: FfiConverterRustBuffer {
         corrected: FfiConverterBool.read(from: &buf),
         speakerLabel: FfiConverterString.read(from: &buf),
         speakerNamedByUser: FfiConverterBool.read(from: &buf),
-        namedSpeakerId: FfiConverterOptionString.read(from: &buf)
+        namedSpeakerId: FfiConverterOptionString.read(from: &buf),
+        finality: FfiConverterString.read(from: &buf)
       )
   }
 
@@ -7601,6 +7611,7 @@ public struct FfiConverterTypeNativeTranscriptSegment: FfiConverterRustBuffer {
     FfiConverterString.write(value.speakerLabel, into: &buf)
     FfiConverterBool.write(value.speakerNamedByUser, into: &buf)
     FfiConverterOptionString.write(value.namedSpeakerId, into: &buf)
+    FfiConverterString.write(value.finality, into: &buf)
   }
 }
 

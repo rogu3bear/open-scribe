@@ -145,7 +145,7 @@ final class TranscriptLibraryModel: ObservableObject {
     if let transcriptionUnavailableReason { return transcriptionUnavailableReason }
     return switch availability {
     case .final: "Final transcript"
-    case .draft: "Draft — some tracks do not have a Final transcript yet"
+    case .draft: "Draft — a Final transcript does not cover every range yet"
     case .failed: "Transcription failed. The recorded audio is unaffected."
     case .unavailable:
       "No transcript yet."

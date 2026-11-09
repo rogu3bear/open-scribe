@@ -8,7 +8,9 @@ enum TranscriptSearch {
   ) -> [NativeTranscriptSegment] {
     let term = query.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !term.isEmpty else { return segments }
-    return segments.filter { $0.effectiveText.localizedStandardContains(term) }
+    return segments.filter {
+      $0.finality != "draft" && $0.effectiveText.localizedStandardContains(term)
+    }
   }
 
   static func ranges(in text: String, query: String) -> [Range<String.Index>] {

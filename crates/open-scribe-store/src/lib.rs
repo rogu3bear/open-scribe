@@ -3058,6 +3058,7 @@ fn configure_connection(connection: &mut Connection) -> Result<(), StoreError> {
 }
 
 fn apply_schema(connection: &mut Connection) -> Result<(), StoreError> {
+    transcripts::migrate_legacy_revision_finality(connection)?;
     let transaction = connection.transaction()?;
     transaction.execute_batch(
         "CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -3216,6 +3217,10 @@ fn apply_schema(connection: &mut Connection) -> Result<(), StoreError> {
     transaction.execute(
         "INSERT OR IGNORE INTO schema_migrations (version, applied_at_ms) VALUES (?1, ?2)",
         params![transcripts::TRANSCRIPT_MIGRATION_VERSION, applied_at],
+    )?;
+    transaction.execute(
+        "INSERT OR IGNORE INTO schema_migrations (version, applied_at_ms) VALUES (?1, ?2)",
+        params![transcripts::DRAFT_FINALITY_MIGRATION_VERSION, applied_at],
     )?;
     transcript_review::apply_review_schema(&transaction)?;
     transaction.execute(
@@ -4236,7 +4241,7 @@ mod tests {
         }
         assert_eq!(
             database_value(&store, "SELECT MAX(version) FROM schema_migrations"),
-            18
+            19
         );
         let segment_columns: BTreeSet<String> = store
             .connection
@@ -4294,7 +4299,7 @@ mod tests {
         assert_eq!(channels, 1);
         assert_eq!(
             database_value(&store, "SELECT MAX(version) FROM schema_migrations"),
-            18
+            19
         );
     }
 

@@ -40,6 +40,8 @@ pub struct NativeTranscriptSegment {
     pub speaker_label: String,
     pub speaker_named_by_user: bool,
     pub named_speaker_id: Option<String>,
+    /// `final` for a selected revision, `draft` for provisional text.
+    pub finality: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
@@ -171,6 +173,7 @@ impl NativeTranscriptLibrary {
                 speaker_label: segment.speaker_label,
                 speaker_named_by_user: segment.speaker_origin == SpeakerLabelOrigin::Human,
                 named_speaker_id: segment.named_speaker_id,
+                finality: segment.finality,
             })
             .collect())
     }
