@@ -553,6 +553,68 @@ final class TranscriptLibraryModelTests: XCTestCase {
     withExtendedLifetime(capture) {}
   }
 
+  func testCancelDeletionKeepsAudioTranscriptAndCorrections() async throws {
+    let (root, sessionId, capture) = try capturedSession()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let library = try NativeTranscriptLibrary.open(managedRoot: root.path)
+    let model = TranscriptLibraryModel(library: library)
+    await model.load(sessionId: sessionId)
+    let transcriptBefore = model.segments.map(\.effectiveText)
+    let correctedBefore = model.segments.map(\.corrected)
+    let availabilityBefore = model.availability
+
+    await model.requestDeletion(sessionId: sessionId)
+    let inventory = try XCTUnwrap(model.pendingDeletion)
+    XCTAssertEqual(inventory.sessionId, sessionId)
+    XCTAssertGreaterThan(inventory.mediaBytes, 0)
+    XCTAssertGreaterThan(inventory.mediaFiles, 0)
+    let directory = URL(fileURLWithPath: inventory.directoryPath, isDirectory: true)
+    let bytesBefore = try Self.fileBytes(in: directory)
+
+    await model.cancelDeletion()
+    XCTAssertNil(model.pendingDeletion)
+    XCTAssertNil(model.message)
+    XCTAssertFalse(model.messageIsFailure)
+
+    let preparation = try NativeRecordingPreparation.open(managedRoot: root.path)
+    XCTAssertTrue(
+      try preparation.runtimeLibrarySnapshot().savedSessions.contains { $0.sessionId == sessionId })
+    XCTAssertEqual(try Self.fileBytes(in: directory), bytesBefore)
+
+    await model.load(sessionId: sessionId)
+    XCTAssertEqual(model.segments.map(\.effectiveText), transcriptBefore)
+    XCTAssertEqual(model.segments.map(\.corrected), correctedBefore)
+    XCTAssertEqual(model.availability, availabilityBefore)
+
+    await model.requestDeletion(sessionId: sessionId)
+    let again = try XCTUnwrap(model.pendingDeletion)
+    XCTAssertEqual(again.mediaBytes, inventory.mediaBytes)
+    XCTAssertEqual(again.mediaFiles, inventory.mediaFiles)
+    XCTAssertEqual(again.transcriptRevisions, inventory.transcriptRevisions)
+    XCTAssertEqual(again.humanCorrections, inventory.humanCorrections)
+    await model.cancelDeletion()
+    XCTAssertNil(model.pendingDeletion)
+    XCTAssertEqual(try Self.fileBytes(in: directory), bytesBefore)
+    withExtendedLifetime(capture) {}
+  }
+
+  private static func fileBytes(in directory: URL) throws -> [String: Data] {
+    let root = directory.path
+    guard let enumerator = FileManager.default.enumerator(atPath: root) else {
+      throw CocoaError(.fileReadNoSuchFile)
+    }
+    var files: [String: Data] = [:]
+    for case let relative as String in enumerator {
+      let url = directory.appendingPathComponent(relative)
+      var isDirectory: ObjCBool = false
+      guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory),
+        !isDirectory.boolValue
+      else { continue }
+      files[relative] = try Data(contentsOf: url)
+    }
+    return files
+  }
+
   private func segment(
     _ sequence: UInt32, _ start: Int64, _ speaker: String, named: Bool, _ text: String,
     machine: String? = nil
