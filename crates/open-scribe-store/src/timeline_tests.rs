@@ -1017,6 +1017,166 @@ fn source_scope_change_while_paused_keeps_the_captured_span_playable() {
     );
 }
 
+#[test]
+fn a_live_draft_during_recording_stays_unselected_and_leaves_the_media() {
+    let temp = TempDir::new().unwrap();
+    let mut store = SessionStore::open(temp.path()).unwrap();
+    let (session, sources) = recording_pair(&mut store);
+    let microphone = &sources[0];
+    let before: Vec<_> = sources
+        .iter()
+        .map(|source| fs::read(&source.absolute_path).unwrap())
+        .collect();
+    assert!(store.capture_active().unwrap());
+    assert_eq!(
+        store.recorder_detail(&session).unwrap().lifecycle,
+        "recording"
+    );
+
+    let first = store
+        .commit_live_draft_window(&live_window(
+            &session,
+            &microphone.track_id,
+            0,
+            1_000_000_000,
+            "provisional meadow",
+        ))
+        .unwrap();
+    let replacement = store
+        .commit_live_draft_window(&live_window(
+            &session,
+            &microphone.track_id,
+            500_000_000,
+            1_500_000_000,
+            "provisional cedar",
+        ))
+        .unwrap();
+    let later = store
+        .commit_live_draft_window(&live_window(
+            &session,
+            &microphone.track_id,
+            2_000_000_000,
+            3_000_000_000,
+            "later brook",
+        ))
+        .unwrap();
+
+    let finality = |revision: &str| {
+        store
+            .transcript_revisions(&session)
+            .unwrap()
+            .into_iter()
+            .find(|row| row.revision_id == revision)
+            .unwrap()
+            .finality
+    };
+    assert_eq!(finality(&first), "superseded");
+    assert_eq!(finality(&replacement), "draft");
+    assert_eq!(finality(&later), "draft");
+    assert_eq!(
+        store
+            .transcript_revision_segments(&first)
+            .unwrap()
+            .iter()
+            .map(|segment| segment.text.as_str())
+            .collect::<Vec<_>>(),
+        ["provisional meadow"]
+    );
+    let readable = store.readable_transcript(&session).unwrap();
+    assert_eq!(
+        readable
+            .iter()
+            .map(|segment| (segment.finality.as_str(), segment.effective_text.as_str()))
+            .collect::<Vec<_>>(),
+        [("draft", "provisional cedar"), ("draft", "later brook")]
+    );
+    assert!(store.transcript_document(&session).unwrap().is_empty());
+    assert!(store.selected_transcript(&session).unwrap().is_empty());
+    assert!(
+        store
+            .search_transcripts("meadow", Some(&session), 10)
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        store
+            .search_transcripts("cedar", Some(&session), 10)
+            .unwrap()
+            .is_empty()
+    );
+    assert!(store.capture_active().unwrap());
+    let refused = store.begin_transcription_run(
+        &TranscriptionRunIdentity {
+            session_id: session.clone(),
+            track_id: microphone.track_id.clone(),
+            input_digest: "live-unsealed".into(),
+            engine: "fixture-engine".into(),
+            engine_version: "1".into(),
+            model_id: "fixture-model".into(),
+            model_sha256: "a".repeat(64),
+            options_digest: "live-options".into(),
+            reconciliation_version: "overlap-midpoint-v3".into(),
+        },
+        &[PlannedTranscriptChunk {
+            span_index: 0,
+            start_nanoseconds: 0,
+            end_nanoseconds: 1_000_000_000,
+        }],
+    );
+    assert!(refused.is_err());
+    assert!(
+        store
+            .commit_live_draft_window(&live_window(
+                &session,
+                &microphone.track_id,
+                0,
+                12_000_000_001,
+                "too long",
+            ))
+            .is_err()
+    );
+    assert!(
+        store
+            .commit_live_draft_window(&live_window(
+                &session,
+                "missing-track",
+                0,
+                1_000_000_000,
+                "nowhere",
+            ))
+            .is_err()
+    );
+    let after: Vec<_> = sources
+        .iter()
+        .map(|source| fs::read(&source.absolute_path).unwrap())
+        .collect();
+    assert_eq!(after, before);
+}
+
+fn live_window(
+    session: &SessionId,
+    track: &str,
+    start: i64,
+    end: i64,
+    text: &str,
+) -> super::transcripts::LiveDraftWindow {
+    super::transcripts::LiveDraftWindow {
+        session_id: session.clone(),
+        track_id: track.into(),
+        start_nanoseconds: start,
+        end_nanoseconds: end,
+        text: text.into(),
+        mean_probability: Some(0.8),
+        no_speech_probability: None,
+        engine: "fixture-engine".into(),
+        engine_version: "1".into(),
+        model_id: "fixture-model".into(),
+        model_sha256: "a".repeat(64),
+        options_digest: "live-options".into(),
+        reconciliation_version: "overlap-midpoint-v3".into(),
+    }
+}
+
 /// F3: quitting while paused with a pending scope change must still finalize
 /// on relaunch instead of being skipped on every launch.
 #[test]

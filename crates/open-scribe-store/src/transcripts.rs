@@ -1,12 +1,14 @@
 //! Derived transcript storage (ADR 0009).
 //!
-//! Verbatim machine output is interpretation over sealed media, never media
-//! authority. Every chunk commits on its own. A complete chunk, a finished
-//! run, and a revision's segments are immutable. A Draft revision stays Draft:
-//! final text is a new revision, and the only revision update is marking an
-//! overlapping Draft row `superseded`. Retry and replacement create new runs,
-//! and a session track's selected revision changes only when a final
-//! replacement has completed. Draft rows are not selected and are not indexed.
+//! Verbatim machine output is interpretation, never media authority. A final
+//! run reads sealed media. A live draft window is admitted while recording is
+//! still open and does not read that media. Every chunk commits on its own. A
+//! complete chunk, a finished run, and a revision's segments are immutable. A
+//! Draft revision stays Draft: final text is a new revision, and the only
+//! revision update is marking an overlapping Draft row `superseded`. Retry and
+//! replacement create new runs, and a session track's selected revision
+//! changes only when a final replacement has completed. Draft rows are not
+//! selected and are not indexed.
 //! Rows cascade from their session so a future deletion removes all derived
 //! text with it; the search projection in `transcript_review` has no foreign
 //! keys and is cleared explicitly.
@@ -25,6 +27,8 @@ pub const TRANSCRIPT_SCHEMA_VERSION: i64 = 1;
 pub(super) const TRANSCRIPT_MIGRATION_VERSION: i64 = 5;
 /// Allows `draft` and `superseded` beside `final` on databases created earlier.
 pub(super) const DRAFT_FINALITY_MIGRATION_VERSION: i64 = 19;
+/// ADR 0009's longest provisional window. A longer span is a final chunk, not a live draft.
+pub const LIVE_DRAFT_WINDOW_MAX_NS: i64 = 12_000_000_000;
 
 pub(super) fn apply_transcript_schema(transaction: &Transaction<'_>) -> Result<(), StoreError> {
     transaction.execute_batch(
@@ -222,6 +226,39 @@ fn restore_trigger_sql(
 ) -> Result<(), StoreError> {
     for statement in statements {
         transaction.execute_batch(statement)?;
+    }
+    Ok(())
+}
+
+/// One bounded provisional window admitted while a recording is still open.
+///
+/// `model_sha256` is the installed model's digest supplied by the caller.
+/// This path does not download or load a model, and `input_digest` is the
+/// fixed marker `live-unsealed` so the window cannot be reused as a sealed checkpoint.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LiveDraftWindow {
+    pub session_id: SessionId,
+    pub track_id: String,
+    pub start_nanoseconds: i64,
+    pub end_nanoseconds: i64,
+    pub text: String,
+    pub mean_probability: Option<f64>,
+    pub no_speech_probability: Option<f64>,
+    pub engine: String,
+    pub engine_version: String,
+    pub model_id: String,
+    pub model_sha256: String,
+    pub options_digest: String,
+    pub reconciliation_version: String,
+}
+
+fn unit_probability(value: Option<f64>) -> Result<(), StoreError> {
+    if let Some(value) = value
+        && (!value.is_finite() || !(0.0..=1.0).contains(&value))
+    {
+        return Err(StoreError::InvalidRequest(
+            "transcript probability is outside 0..=1",
+        ));
     }
     Ok(())
 }
@@ -746,6 +783,185 @@ impl SessionStore {
             selection,
             false,
         )
+    }
+
+    /// Stores one provisional window while the session is still recording.
+    ///
+    /// The write does not read or hash media, does not select the revision,
+    /// and does not add it to the search index. A final transcription run
+    /// stays refused for the whole time capture is active. An overlapping
+    /// older draft is marked `superseded`; its text is left in place.
+    pub fn commit_live_draft_window(
+        &mut self,
+        window: &LiveDraftWindow,
+    ) -> Result<String, StoreError> {
+        let text = window.text.trim();
+        if text.is_empty() {
+            return Err(StoreError::InvalidRequest("live draft text is empty"));
+        }
+        if window.start_nanoseconds < 0
+            || window
+                .end_nanoseconds
+                .checked_sub(window.start_nanoseconds)
+                .is_none_or(|duration| duration == 0 || duration > LIVE_DRAFT_WINDOW_MAX_NS)
+        {
+            return Err(StoreError::InvalidRequest(
+                "live draft window must be within 12 seconds",
+            ));
+        }
+        for (value, reason) in [
+            (window.track_id.as_str(), "live draft track is empty"),
+            (window.engine.as_str(), "live draft engine is empty"),
+            (
+                window.engine_version.as_str(),
+                "live draft engine version is empty",
+            ),
+            (window.model_id.as_str(), "live draft model is empty"),
+            (
+                window.reconciliation_version.as_str(),
+                "live draft reconciliation version is empty",
+            ),
+            (
+                window.options_digest.as_str(),
+                "live draft options digest is empty",
+            ),
+        ] {
+            if value.trim().is_empty() {
+                return Err(StoreError::InvalidRequest(reason));
+            }
+        }
+        if window.model_sha256.len() != 64
+            || !window
+                .model_sha256
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit())
+        {
+            return Err(StoreError::InvalidRequest(
+                "live draft model digest is not 64 hex characters",
+            ));
+        }
+        unit_probability(window.mean_probability)?;
+        unit_probability(window.no_speech_probability)?;
+
+        let _writer = self.write_guard()?;
+        super::session_deletion::require_available(&self.connection, &window.session_id.0)?;
+        if self.session_lifecycle(&window.session_id.0)? != "recording" {
+            return Err(StoreError::InvalidState(
+                "live draft requires an open recording",
+            ));
+        }
+        let track_capturing: bool = self.connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM segments
+             WHERE session_id = ?1 AND track_id = ?2 AND lifecycle = 'capturing')",
+            params![window.session_id.0, window.track_id],
+            |row| row.get(0),
+        )?;
+        if !track_capturing {
+            return Err(StoreError::InvalidRequest(
+                "track is not capturing for this recording",
+            ));
+        }
+
+        let identity = TranscriptionRunIdentity {
+            session_id: window.session_id.clone(),
+            track_id: window.track_id.clone(),
+            input_digest: "live-unsealed".into(),
+            engine: window.engine.clone(),
+            engine_version: window.engine_version.clone(),
+            model_id: window.model_id.clone(),
+            model_sha256: window.model_sha256.clone(),
+            options_digest: window.options_digest.clone(),
+            reconciliation_version: window.reconciliation_version.clone(),
+        };
+        let chunk_identity =
+            identity.chunk_identity(0, window.start_nanoseconds, window.end_nanoseconds);
+        let hypothesis = serde_json::json!({
+            "language": "und",
+            "segments": [{
+                "start_ns": window.start_nanoseconds,
+                "end_ns": window.end_nanoseconds,
+                "text": text,
+            }]
+        })
+        .to_string();
+        let now = wall_time_milliseconds();
+        let run_id = Uuid::now_v7().to_string();
+        let revision_id = Uuid::now_v7().to_string();
+        let transaction = self.connection.transaction()?;
+        transaction.execute(
+            "INSERT INTO transcription_runs(
+                id, schema_version, session_id, track_id, identity, input_digest, engine,
+                engine_version, model_id, model_sha256, options_digest, reconciliation_version,
+                state, created_at_ms, updated_at_ms)
+             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 'complete', ?13, ?13)",
+            params![
+                run_id,
+                TRANSCRIPT_SCHEMA_VERSION,
+                window.session_id.0,
+                window.track_id,
+                identity.digest(),
+                identity.input_digest,
+                identity.engine,
+                identity.engine_version,
+                identity.model_id,
+                identity.model_sha256,
+                identity.options_digest,
+                identity.reconciliation_version,
+                now
+            ],
+        )?;
+        transaction.execute(
+            "INSERT INTO transcript_chunks(
+                run_id, sequence, identity, span_index, start_ns, end_ns, state,
+                language, hypothesis_json, updated_at_ms)
+             VALUES(?1, 0, ?2, 0, ?3, ?4, 'complete', 'und', ?5, ?6)",
+            params![
+                run_id,
+                chunk_identity,
+                window.start_nanoseconds,
+                window.end_nanoseconds,
+                hypothesis,
+                now
+            ],
+        )?;
+        transaction.execute(
+            "INSERT INTO transcript_revisions(
+                id, schema_version, session_id, track_id, run_id, kind, finality,
+                reconciliation_version, rejections_json, discontinuities_json, created_at_ms)
+             VALUES(?1, ?2, ?3, ?4, ?5, 'verbatim', 'draft', ?6, '{}', '[]', ?7)",
+            params![
+                revision_id,
+                TRANSCRIPT_SCHEMA_VERSION,
+                window.session_id.0,
+                window.track_id,
+                run_id,
+                identity.reconciliation_version,
+                now
+            ],
+        )?;
+        transaction.execute(
+            "INSERT INTO transcript_segments(
+                revision_id, sequence, start_ns, end_ns, text, mean_probability,
+                no_speech_probability, chunk_identity)
+             VALUES(?1, 0, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                revision_id,
+                window.start_nanoseconds,
+                window.end_nanoseconds,
+                text,
+                window.mean_probability,
+                window.no_speech_probability,
+                chunk_identity
+            ],
+        )?;
+        supersede_overlapping_drafts(
+            &transaction,
+            &window.session_id.0,
+            &window.track_id,
+            &revision_id,
+        )?;
+        transaction.commit()?;
+        Ok(revision_id)
     }
 
     /// Stores provisional text for one finished window. The row stays `draft`,
@@ -1289,6 +1505,7 @@ fn supersede_overlapping_drafts(
     transaction.execute(
         "UPDATE transcript_revisions SET finality = 'superseded'
          WHERE session_id = ?1 AND track_id = ?2 AND finality = 'draft'
+           AND id <> ?3
            AND EXISTS (
              SELECT 1 FROM transcript_segments AS draft_segments
              JOIN transcript_segments AS final_segments
