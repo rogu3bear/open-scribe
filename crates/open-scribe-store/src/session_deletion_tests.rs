@@ -351,6 +351,40 @@ fn confirmation_freezes_review_and_legacy_checkpoints_without_blocking_orphan_de
 }
 
 #[test]
+fn cancelling_deletion_preserves_media_bytes_and_review_rows() {
+    let (mut fixture, _) = reviewed_fixture();
+    let session = fixture.session.clone();
+    fixture.store.cancel_transcription(&session).unwrap();
+    let media_digest = digest(&fixture.media);
+    let segments = rows(&fixture.store, "segments", &session);
+    let corrections = rows(&fixture.store, "transcript_corrections", &session);
+    assert!(segments > 0);
+    assert!(corrections > 0);
+    fixture.store.begin_session_deletion(&session).unwrap();
+    fixture.store.abandon_session_deletion(&session).unwrap();
+    assert_eq!(digest(&fixture.media), media_digest);
+    assert_eq!(rows(&fixture.store, "segments", &session), segments);
+    assert_eq!(
+        rows(&fixture.store, "transcript_corrections", &session),
+        corrections
+    );
+    assert_eq!(
+        rows(&fixture.store, "session_deletion_intents", &session),
+        0
+    );
+    let lifecycle: String = fixture
+        .store
+        .connection
+        .query_row(
+            "SELECT lifecycle FROM sessions WHERE id = ?1",
+            [&session.0],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_ne!(lifecycle, "deleted");
+}
+
+#[test]
 fn deletion_reports_a_busy_wal_instead_of_claiming_erasure() {
     let (mut fixture, _) = reviewed_fixture();
     let session = fixture.session.clone();

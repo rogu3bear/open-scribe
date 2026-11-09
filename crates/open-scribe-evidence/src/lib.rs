@@ -4,7 +4,9 @@
 //! deterministic validation (ADR 0013). Native Rust resolves references
 //! through the media ledger, transcript revisions, and SQLite; other surfaces
 //! consume resolved projections and never reinterpret reference identity.
-//! Derived-claim schemas remain unimplemented.
+//! `claim` owns `open-scribe.derived-claim/v1` validation. The store persists
+//! append-only revisions and resolves their evidence. Navigation UI and
+//! model-delta ingestion stay with their own owners.
 
 #![forbid(unsafe_code)]
 
@@ -12,6 +14,12 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 
 pub const EVIDENCE_REF_SCHEMA: &str = "open-scribe.evidence-ref/v1";
+
+mod claim;
+pub use claim::{
+    Adjudication, AdjudicationAction, ClaimError, ClaimKind, ClaimProducer, ClaimStatus,
+    DERIVED_CLAIM_SCHEMA, DerivedClaim,
+};
 
 /// What an evidence reference cites.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
@@ -135,7 +143,7 @@ impl EvidenceRef {
     }
 }
 
-fn identifier_is_valid(value: &str) -> bool {
+pub(crate) fn identifier_is_valid(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= 128
         && value

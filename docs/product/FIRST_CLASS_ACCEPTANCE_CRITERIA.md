@@ -243,6 +243,30 @@ This is a test projection of the founding PRD, not an independent product author
 
 **Then** Open Scribe states what will be removed, what may remain in external exports or backups, and whether the local operation is recoverable through Trash before changing data
 
+### AC-36: Cancelling deletion
+
+**Given** a conversation has audio, a transcript, and corrections, and deletion has been requested but not confirmed
+
+**When** the user cancels that deletion
+
+**Then** the conversation stays in the library and its audio bytes, transcript, and corrections remain unchanged
+
+### AC-37: Explicit context without raw pixels
+
+**Given** context observation is off, paused, or revoked
+
+**When** the display changes, or the user later inspects context saved while observation was active
+
+**Then** no new context event is written while observation is inactive, and every saved event is reduced text with no raw pixels retained
+
+### AC-38: Human adjudication stays in effect
+
+**Given** a material derived claim cites transcript evidence and a person has rejected or corrected that claim
+
+**When** a later model run proposes another revision of the same claim
+
+**Then** the human adjudication remains the effective claim, the earlier revision is unchanged, and the effective claim still navigates to its original evidence
+
 ## Non-Functional Criteria
 
 ### AC-29: Local-only operation

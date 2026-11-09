@@ -78,6 +78,8 @@ pub use transcript_input::{
     DecodedAudioError, DigestedSegment, InputSegment, InputSpan, SealedTrackReader,
     TranscriptionInput, transcription_input_digest,
 };
+mod derived_claims;
+pub use derived_claims::{ClaimEvidenceSide, ClaimNavigation, ClaimNavigationTarget};
 mod evidence_resolution;
 pub use evidence_resolution::ResolvedEvidence;
 mod session_inventory;
@@ -3240,6 +3242,7 @@ fn apply_schema(connection: &mut Connection) -> Result<(), StoreError> {
     transcription_operation::apply_schema(&transaction)?;
     library_recovery::apply_schema(&transaction)?;
     transcript_speakers::apply_schema(&transaction)?;
+    derived_claims::apply_schema(&transaction)?;
     transaction.commit()?;
     Ok(())
 }
@@ -4222,12 +4225,13 @@ mod tests {
             "context_events",
             "session_declarations",
             "session_restorations",
+            "derived_claim_revisions",
         ] {
             assert!(names.contains(required), "missing table {required}");
         }
         assert_eq!(
             database_value(&store, "SELECT MAX(version) FROM schema_migrations"),
-            16
+            17
         );
         let segment_columns: BTreeSet<String> = store
             .connection
@@ -4285,7 +4289,7 @@ mod tests {
         assert_eq!(channels, 1);
         assert_eq!(
             database_value(&store, "SELECT MAX(version) FROM schema_migrations"),
-            16
+            17
         );
     }
 

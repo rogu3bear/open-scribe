@@ -394,7 +394,7 @@ fn migration_16_leaves_legacy_failures_unbound_and_preserves_replacement_guards(
             .unwrap()
             .map(Result::unwrap)
             .collect();
-        assert_eq!(versions, (1..=16).collect::<Vec<_>>());
+        assert_eq!(versions, (1..=17).collect::<Vec<_>>());
     }
     let mut reopened = SessionStore::open(&f.root).unwrap();
     reopened.resume_replacement(&f.session).unwrap();

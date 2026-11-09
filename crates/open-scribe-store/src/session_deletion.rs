@@ -216,6 +216,7 @@ impl SessionStore {
         // Derived and human-review rows first, then evidence rows in foreign
         // key order. The session row survives only as a tombstone.
         for statement in [
+            "DELETE FROM derived_claim_revisions WHERE session_id = ?1",
             "DELETE FROM transcript_search WHERE session_id = ?1",
             "DELETE FROM speaker_adjudications WHERE session_id = ?1",
             // Sessions remain tombstones; remove people explicitly so their
