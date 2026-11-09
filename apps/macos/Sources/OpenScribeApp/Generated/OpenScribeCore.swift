@@ -1845,10 +1845,28 @@ public protocol NativeTranscriptLibraryProtocol: AnyObject, Sendable {
     -> String
 
   /**
+   * Effective canonical claims as a JSON array. Swift displays this projection
+   * and passes a claim id back to navigation. It does not assemble identity.
+   */
+  func effectiveDerivedClaims(sessionId: String) throws -> String
+
+  /**
+   * Accepts `open-scribe.meeting-memory-delta/v1`. Rust derives storage ids,
+   * receipts every operation, and does not replace a human adjudication.
+   * The returned text is the canonical receipt JSON.
+   */
+  func ingestMeetingMemoryDelta(deltaJson: String) throws -> String
+
+  /**
    * Accepts canonical `open-scribe.derived-claim/v1` JSON. Swift does not
    * choose storage keys or rewrite the cited evidence.
    */
   func insertDerivedClaim(claimJson: String) throws
+
+  /**
+   * The meeting-memory revision a model delta must name. `"0"` means none yet.
+   */
+  func meetingMemoryRevision(sessionId: String) throws -> String
 
   /**
    * Opens the effective claim. A later model revision does not replace a
@@ -2051,6 +2069,37 @@ open class NativeTranscriptLibrary: NativeTranscriptLibraryProtocol, @unchecked 
   }
 
   /**
+   * Effective canonical claims as a JSON array. Swift displays this projection
+   * and passes a claim id back to navigation. It does not assemble identity.
+   */
+  open func effectiveDerivedClaims(sessionId: String) throws -> String {
+    return try FfiConverterString.lift(
+      try rustCallWithError(FfiConverterTypeNativeStorageError_lift) {
+        uniffiCallStatus in
+        uniffi_open_scribe_uniffi_fn_method_nativetranscriptlibrary_effective_derived_claims(
+          self.uniffiCloneHandle(),
+          FfiConverterString.lower(sessionId), uniffiCallStatus
+        )
+      })
+  }
+
+  /**
+   * Accepts `open-scribe.meeting-memory-delta/v1`. Rust derives storage ids,
+   * receipts every operation, and does not replace a human adjudication.
+   * The returned text is the canonical receipt JSON.
+   */
+  open func ingestMeetingMemoryDelta(deltaJson: String) throws -> String {
+    return try FfiConverterString.lift(
+      try rustCallWithError(FfiConverterTypeNativeStorageError_lift) {
+        uniffiCallStatus in
+        uniffi_open_scribe_uniffi_fn_method_nativetranscriptlibrary_ingest_meeting_memory_delta(
+          self.uniffiCloneHandle(),
+          FfiConverterString.lower(deltaJson), uniffiCallStatus
+        )
+      })
+  }
+
+  /**
    * Accepts canonical `open-scribe.derived-claim/v1` JSON. Swift does not
    * choose storage keys or rewrite the cited evidence.
    */
@@ -2062,6 +2111,20 @@ open class NativeTranscriptLibrary: NativeTranscriptLibraryProtocol, @unchecked 
         FfiConverterString.lower(claimJson), uniffiCallStatus
       )
     }
+  }
+
+  /**
+   * The meeting-memory revision a model delta must name. `"0"` means none yet.
+   */
+  open func meetingMemoryRevision(sessionId: String) throws -> String {
+    return try FfiConverterString.lift(
+      try rustCallWithError(FfiConverterTypeNativeStorageError_lift) {
+        uniffiCallStatus in
+        uniffi_open_scribe_uniffi_fn_method_nativetranscriptlibrary_meeting_memory_revision(
+          self.uniffiCloneHandle(),
+          FfiConverterString.lower(sessionId), uniffiCallStatus
+        )
+      })
   }
 
   /**
@@ -12268,8 +12331,23 @@ private let initializationResult: InitializationResult = {
   {
     return InitializationResult.apiChecksumMismatch
   }
+  if uniffi_open_scribe_uniffi_checksum_method_nativetranscriptlibrary_effective_derived_claims()
+    != 42899
+  {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_open_scribe_uniffi_checksum_method_nativetranscriptlibrary_ingest_meeting_memory_delta()
+    != 20267
+  {
+    return InitializationResult.apiChecksumMismatch
+  }
   if uniffi_open_scribe_uniffi_checksum_method_nativetranscriptlibrary_insert_derived_claim()
     != 29656
+  {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_open_scribe_uniffi_checksum_method_nativetranscriptlibrary_meeting_memory_revision()
+    != 5602
   {
     return InitializationResult.apiChecksumMismatch
   }

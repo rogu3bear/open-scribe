@@ -65,6 +65,12 @@ struct TranscriptReader: View {
         followsPlayback = false
       }
     }
+    .onChange(of: transcripts.claimHighlightSegmentId) { id in
+      if transcripts.claimEvidenceOpen, let id {
+        followsPlayback = false
+        onFollowPlayback(id)
+      }
+    }
   }
 
   private func searchControls(resultCount: Int) -> some View {
@@ -202,6 +208,8 @@ struct TranscriptReader: View {
 
   private func passage(_ segment: NativeTranscriptSegment, isPlaying: Bool) -> some View {
     let stamp = TranscriptSection.timestamp(segment.startNanoseconds)
+    let isCited =
+      transcripts.claimEvidenceOpen && transcripts.claimHighlightSegmentId == segment.id
     return HStack(alignment: .firstTextBaseline, spacing: ScribeSpacing.compact) {
       Button(stamp) { onSeek(segment.startNanoseconds) }
         .buttonStyle(.link)
@@ -220,6 +228,12 @@ struct TranscriptReader: View {
               .font(.caption)
               .foregroundStyle(.secondary)
           }
+          if isCited {
+            Label("Cited", systemImage: "text.quote")
+              .font(.caption)
+              .foregroundStyle(.secondary)
+              .accessibilityLabel("Cited evidence")
+          }
         }
         VStack(alignment: .leading, spacing: ScribeSpacing.tight) {
           Text(highlightedText(segment.effectiveText))
@@ -231,6 +245,7 @@ struct TranscriptReader: View {
             .accessibilityLabel(
               "\(segment.speakerLabel). \(segment.effectiveText)"
                 + (isPlaying ? " Playing." : "")
+                + (isCited ? " Cited evidence." : "")
                 + (segment.corrected ? " Corrected." : ""))
           if segment.corrected {
             DisclosureGroup("Corrected · Show machine reading") {
@@ -258,7 +273,10 @@ struct TranscriptReader: View {
     }
     .padding(.vertical, ScribeSpacing.tight)
     .frame(maxWidth: 660, alignment: .leading)
-    .background(isPlaying ? Color.accentColor.opacity(0.08) : Color.clear)
+    .background(
+      isCited
+        ? Color.accentColor.opacity(0.16)
+        : isPlaying ? Color.accentColor.opacity(0.08) : Color.clear)
     .accessibilityElement(children: .contain)
   }
 

@@ -84,6 +84,21 @@ struct ConversationWorkspaceView: View {
               onFollowPlayback: { id in proxy.scrollTo("transcript-\(id)", anchor: .center) }
             )
           }
+          if session.lifecycle == "ready_for_review",
+            transcripts.sessionId == session.sessionId, !transcripts.derivedClaims.isEmpty
+          {
+            ClaimReviewSection(
+              transcripts: transcripts,
+              canSeek: session.hasCaptureTimeline || session.playableMedia?.isPlayable == true,
+              onSeek: { position in
+                if session.hasCaptureTimeline {
+                  playbackController.playSynchronized(
+                    sessionId: session.sessionId, startNanoseconds: position)
+                } else {
+                  playbackController.play(session, startNanoseconds: position)
+                }
+              })
+          }
           if session.lifecycle == "ready_for_review" {
             conversationDetails
           }
@@ -114,6 +129,11 @@ struct ConversationWorkspaceView: View {
         guard audioReviewRequest?.sessionId == session.sessionId, hasPreservedAudio else { return }
         showsAudioDetails = true
         proxy.scrollTo("audio-details", anchor: .top)
+      }
+      .onChange(of: transcripts.claimFocusGeneration) { _ in
+        if let id = transcripts.focusedClaim?.claimId {
+          proxy.scrollTo("claim-\(id)", anchor: .center)
+        }
       }
     }
     .navigationTitle(title)

@@ -180,6 +180,14 @@ impl DerivedClaim {
     }
 }
 
+pub(crate) fn claim_text_is_valid(value: &str) -> bool {
+    text_is_valid(value)
+}
+
+pub fn claim_status_allowed(kind: ClaimKind, status: ClaimStatus) -> bool {
+    status_allowed(kind, status)
+}
+
 fn text_is_valid(value: &str) -> bool {
     let trimmed = value.trim();
     !trimmed.is_empty()

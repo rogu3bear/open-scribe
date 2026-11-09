@@ -554,3 +554,118 @@ struct TranscriptSection: View {
     return hours > 0 ? "\(hours):\(pad(minutes)):\(pad(remainder))" : "\(minutes):\(pad(remainder))"
   }
 }
+
+/// One effective claim and the actions that open its evidence or return to it.
+struct ClaimReviewSection: View {
+  @ObservedObject var transcripts: TranscriptLibraryModel
+  let canSeek: Bool
+  let onSeek: (Int64) -> Void
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: ScribeSpacing.related) {
+      Text("Claims")
+        .font(.headline)
+        .accessibilityAddTraits(.isHeader)
+      ForEach(transcripts.derivedClaims) { claim in
+        claimRow(claim)
+          .id("claim-\(claim.claimId)")
+      }
+    }
+  }
+
+  private func claimRow(_ claim: DerivedClaimSummary) -> some View {
+    let returning =
+      transcripts.claimEvidenceOpen && transcripts.focusedClaim?.claimId == claim.claimId
+    return VStack(alignment: .leading, spacing: ScribeSpacing.compact) {
+      Text(claim.text)
+        .fixedSize(horizontal: false, vertical: true)
+        .textSelection(.enabled)
+        .accessibilityLabel(spokenSummary(claim))
+      ViewThatFits(in: .horizontal) {
+        HStack(spacing: ScribeSpacing.related) { actions(claim, returning: returning) }
+        VStack(alignment: .leading, spacing: ScribeSpacing.compact) {
+          actions(claim, returning: returning)
+        }
+      }
+    }
+    .padding(.vertical, ScribeSpacing.tight)
+    .accessibilityElement(children: .contain)
+  }
+
+  @ViewBuilder private func actions(_ claim: DerivedClaimSummary, returning: Bool) -> some View {
+    if claim.supportingCount > 0 {
+      Button("Supporting evidence") {
+        open(claim.claimId, side: "supporting")
+      }
+      .disabled(!canSeek)
+      .accessibilityLabel("Supporting evidence, \(claim.supportingCount)")
+    }
+    if claim.contradictingCount > 0 {
+      Button("Contradicting evidence") {
+        open(claim.claimId, side: "contradicting")
+      }
+      .disabled(!canSeek)
+      .accessibilityLabel("Contradicting evidence, \(claim.contradictingCount)")
+    }
+    if returning {
+      Button("Return to claim") { transcripts.returnToClaim() }
+        .accessibilityLabel("Return to claim")
+    }
+  }
+
+  private func open(_ claimId: String, side: String) {
+    Task {
+      if let start = await transcripts.openClaimEvidence(claimId: claimId, side: side) {
+        onSeek(start)
+      }
+    }
+  }
+
+  private func spokenSummary(_ claim: DerivedClaimSummary) -> String {
+    var parts = [
+      ClaimReviewSpeech.words(claim.kind),
+      ClaimReviewSpeech.words(claim.status),
+      "\(claim.supportingCount) supporting",
+    ]
+    if claim.contradictingCount > 0 {
+      parts.append("\(claim.contradictingCount) contradicting")
+    }
+    if let adjudication = claim.adjudication {
+      parts.append(ClaimReviewSpeech.words(adjudication))
+    }
+    parts.append(claim.text)
+    return parts.joined(separator: ". ")
+  }
+}
+
+enum ClaimReviewSpeech {
+  static func words(_ token: String) -> String {
+    switch token {
+    case "decision": "Decision"
+    case "commitment": "Commitment"
+    case "fact": "Fact"
+    case "question": "Question"
+    case "open_loop": "Open loop"
+    case "loose_end": "Loose end"
+    case "topic": "Topic"
+    case "number_or_term": "Number or term"
+    case "summary_statement": "Summary"
+    case "mentioned": "Mentioned"
+    case "proposed": "Proposed"
+    case "agreed": "Agreed"
+    case "assigned": "Assigned"
+    case "accepted": "Accepted"
+    case "completed": "Completed"
+    case "contradicted": "Contradicted"
+    case "superseded": "Superseded"
+    case "unresolved": "Unresolved"
+    case "unknown": "Unknown"
+    case "open": "Open"
+    case "answered": "Answered"
+    case "closed": "Closed"
+    case "corrected": "Corrected"
+    case "rejected": "Rejected"
+    default: token
+    }
+  }
+}

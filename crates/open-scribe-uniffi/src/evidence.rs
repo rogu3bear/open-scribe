@@ -166,6 +166,39 @@ impl NativeTranscriptLibrary {
             .map_err(map_storage_error)
     }
 
+    /// The meeting-memory revision a model delta must name. `"0"` means none yet.
+    pub fn meeting_memory_revision(
+        &self,
+        session_id: String,
+    ) -> Result<String, NativeStorageError> {
+        self.library()?
+            .meeting_memory_revision(&SessionId(session_id))
+            .map_err(map_storage_error)
+    }
+
+    /// Accepts `open-scribe.meeting-memory-delta/v1`. Rust derives storage ids,
+    /// receipts every operation, and does not replace a human adjudication.
+    /// The returned text is the canonical receipt JSON.
+    pub fn ingest_meeting_memory_delta(
+        &self,
+        delta_json: String,
+    ) -> Result<String, NativeStorageError> {
+        self.library()?
+            .ingest_meeting_memory_delta(&delta_json)
+            .map_err(map_storage_error)
+    }
+
+    /// Effective canonical claims as a JSON array. Swift displays this projection
+    /// and passes a claim id back to navigation. It does not assemble identity.
+    pub fn effective_derived_claims(
+        &self,
+        session_id: String,
+    ) -> Result<String, NativeStorageError> {
+        self.library()?
+            .effective_derived_claims(&SessionId(session_id))
+            .map_err(map_storage_error)
+    }
+
     /// Opens the effective claim. A later model revision does not replace a
     /// human acceptance, correction, or rejection.
     pub fn navigate_derived_claim(

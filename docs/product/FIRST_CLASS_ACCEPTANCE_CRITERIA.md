@@ -109,7 +109,7 @@ This is a test projection of the founding PRD, not an independent product author
 
 **When** the user inspects that item
 
-**Then** the user can navigate to supporting or contradicting transcript and audio ranges and can confirm, correct, reject, or leave the item unresolved
+**Then** the user can open a supporting or contradicting reference, which seeks the audio to that range and highlights that transcript revision and range, and a return action restores focus to the same claim. The user can confirm, correct, reject, or leave the item unresolved
 
 ### AC-13: Portable export
 

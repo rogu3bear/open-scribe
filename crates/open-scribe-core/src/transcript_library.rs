@@ -141,6 +141,24 @@ impl TranscriptLibrary {
         self.store.navigate_derived_claim(session, claim_id)
     }
 
+    /// The revision a model delta must name. A session with no accepted delta is `"0"`.
+    pub fn meeting_memory_revision(&self, session: &SessionId) -> Result<String, StoreError> {
+        self.store.meeting_memory_revision(session)
+    }
+
+    /// Stores the proposal, then appends only the operations Rust accepts.
+    /// Human adjudication is not replaced. The returned receipt is canonical JSON.
+    pub fn ingest_meeting_memory_delta(&mut self, json: &str) -> Result<String, StoreError> {
+        let receipt = self.store.ingest_meeting_memory_delta(json)?;
+        serde_json::to_string(&receipt).map_err(StoreError::Json)
+    }
+
+    /// Effective canonical claims for the review list. Unsupported drafts are omitted.
+    pub fn effective_derived_claims(&self, session: &SessionId) -> Result<String, StoreError> {
+        let summaries = self.store.effective_derived_claim_summaries(session)?;
+        serde_json::to_string(&summaries).map_err(StoreError::Json)
+    }
+
     pub fn correct_segment(
         &mut self,
         session: &SessionId,

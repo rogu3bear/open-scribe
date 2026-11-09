@@ -6,8 +6,8 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use open_scribe_evidence::{
-    AdjudicationAction, ClaimKind, ClaimProducer, ClaimStatus, DERIVED_CLAIM_SCHEMA, DerivedClaim,
-    EvidenceRef,
+    AdjudicationAction, ClaimKind, ClaimProducer, ClaimStatus, DERIVED_CLAIM_SCHEMA,
+    DeltaIngestReceipt, DerivedClaim, EvidenceRef, MEETING_MEMORY_DELTA_SCHEMA,
 };
 use open_scribe_store::{
     ImportMediaRequest, PlannedTranscriptChunk, RevisionSegmentInput, SessionStore,
@@ -254,5 +254,177 @@ fn native_library_keeps_human_adjudication_ahead_of_a_later_model_revision() {
     assert_eq!(after_cancel.adjudication.as_deref(), Some("corrected"));
     assert_eq!(after_cancel.text, navigation.text);
     assert_eq!(after_cancel.targets[0].text.as_deref(), Some("alpha"));
+    assert_eq!(file_sha256(&prepared.media), prepared.digest_sha256);
+}
+
+#[test]
+fn native_library_keeps_a_human_adjudication_ahead_of_a_meeting_memory_delta() {
+    let prepared = prepared_transcript();
+    let library = NativeTranscriptLibrary::open(prepared.root.display().to_string()).unwrap();
+    let session_id = prepared.session.0.clone();
+    assert_eq!(
+        library.meeting_memory_revision(session_id.clone()).unwrap(),
+        "0"
+    );
+    assert!(matches!(
+        library.ingest_meeting_memory_delta(r#"{"adjudication":"accepted"}"#.into()),
+        Err(NativeStorageError::InvalidRequest)
+    ));
+    let cited = EvidenceRef::parse(
+        &library
+            .cite_transcript_segment(session_id.clone(), prepared.revision.clone(), 0)
+            .unwrap(),
+    )
+    .unwrap();
+    let mut proposal = serde_json::json!({
+        "schema": MEETING_MEMORY_DELTA_SCHEMA,
+        "model_run_id": "run-1",
+        "input_manifest_digest": "b".repeat(64),
+        "session_id": session_id,
+        "base_revision": "stale",
+        "operations": [{
+            "op": "propose_claim",
+            "operation_id": "op-propose",
+            "kind": "decision",
+            "text": "The team agreed to ship the local recorder.",
+            "status": "agreed",
+            "supporting": [cited.clone()],
+            "contradicting": []
+        }]
+    });
+    assert!(matches!(
+        library.ingest_meeting_memory_delta(proposal.to_string()),
+        Err(NativeStorageError::InvalidRequest)
+    ));
+    assert_eq!(
+        library.meeting_memory_revision(session_id.clone()).unwrap(),
+        "0"
+    );
+    proposal["base_revision"] = serde_json::json!("0");
+    let receipt: DeltaIngestReceipt = serde_json::from_str(
+        &library
+            .ingest_meeting_memory_delta(proposal.to_string())
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(receipt.operations[0].outcome, "accepted");
+    let claim_id = receipt.operations[0].claim_id.clone().unwrap();
+    let model_revision = receipt.operations[0].revision_id.clone().unwrap();
+    assert_eq!(
+        library.meeting_memory_revision(session_id.clone()).unwrap(),
+        receipt.next_revision
+    );
+
+    let proposed = DerivedClaim {
+        schema: DERIVED_CLAIM_SCHEMA.to_owned(),
+        claim_id: claim_id.clone(),
+        revision_id: model_revision.clone(),
+        session_id: session_id.clone(),
+        kind: ClaimKind::Decision,
+        text: "The team agreed to ship the local recorder.".into(),
+        status: ClaimStatus::Agreed,
+        supporting: vec![cited.clone()],
+        contradicting: Vec::new(),
+        producer: ClaimProducer::ModelRun,
+        adjudication: None,
+    };
+    let mut corrected = proposed
+        .with_adjudication(
+            AdjudicationAction::Corrected,
+            "revision-human",
+            "adjudication-1",
+        )
+        .unwrap();
+    corrected.text = "The team deferred the remote recorder.".into();
+    library
+        .insert_derived_claim(serde_json::to_string(&corrected).unwrap())
+        .unwrap();
+
+    let mut later = serde_json::json!({
+        "schema": MEETING_MEMORY_DELTA_SCHEMA,
+        "model_run_id": "run-2",
+        "input_manifest_digest": "c".repeat(64),
+        "session_id": session_id,
+        "base_revision": receipt.next_revision,
+        "operations": [
+            {
+                "op": "revise_claim",
+                "operation_id": "op-revise",
+                "claim_id": claim_id,
+                "kind": "decision",
+                "text": "The team agreed to upload every recording.",
+                "status": "agreed",
+                "supporting": [cited.clone()],
+                "contradicting": []
+            },
+            {
+                "op": "propose_claim",
+                "operation_id": "op-other",
+                "kind": "question",
+                "text": "Who owns the recorder?",
+                "status": "open",
+                "supporting": [cited.clone()],
+                "contradicting": []
+            }
+        ]
+    });
+    let second: DeltaIngestReceipt = serde_json::from_str(
+        &library
+            .ingest_meeting_memory_delta(later.to_string())
+            .unwrap(),
+    )
+    .unwrap();
+    let revise = second
+        .operations
+        .iter()
+        .find(|item| item.operation_id == "op-revise")
+        .unwrap();
+    assert_eq!(revise.outcome, "rejected");
+    assert_eq!(
+        revise.reason.as_deref(),
+        Some("human adjudication stays in effect")
+    );
+    assert_eq!(revise.revision_id.as_deref(), Some("revision-human"));
+    let other = second
+        .operations
+        .iter()
+        .find(|item| item.operation_id == "op-other")
+        .unwrap();
+    assert_eq!(other.outcome, "accepted");
+    assert_ne!(other.claim_id.as_deref(), Some(claim_id.as_str()));
+
+    let navigation = library
+        .navigate_derived_claim(session_id.clone(), claim_id.clone())
+        .unwrap();
+    assert_eq!(navigation.revision_id, "revision-human");
+    assert_eq!(navigation.text, "The team deferred the remote recorder.");
+    assert_eq!(navigation.adjudication.as_deref(), Some("corrected"));
+    assert_eq!(navigation.targets[0].text.as_deref(), Some("alpha"));
+    assert_ne!(navigation.revision_id, model_revision);
+    let listed = library
+        .effective_derived_claims(session_id.clone())
+        .unwrap();
+    assert!(listed.contains("The team deferred the remote recorder."));
+    assert!(listed.contains("Who owns the recorder?"));
+    assert!(!listed.contains("upload every recording"));
+
+    later["base_revision"] = serde_json::json!(second.next_revision);
+    assert!(matches!(
+        library.ingest_meeting_memory_delta(later.to_string()),
+        Err(NativeStorageError::InvalidRequest)
+    ));
+    assert!(matches!(
+        library.ingest_meeting_memory_delta(
+            r#"{"schema":"open-scribe.meeting-memory-delta/v1","operations":[{"op":"delete_evidence"}]}"#
+                .into()
+        ),
+        Err(NativeStorageError::InvalidRequest)
+    ));
+    let after = library
+        .navigate_derived_claim(session_id, claim_id)
+        .unwrap();
+    assert_eq!(after.revision_id, "revision-human");
+    assert_eq!(after.text, navigation.text);
+    assert_eq!(after.targets[0].text.as_deref(), Some("alpha"));
     assert_eq!(file_sha256(&prepared.media), prepared.digest_sha256);
 }

@@ -765,6 +765,71 @@ final class TranscriptLibraryModelTests: XCTestCase {
     XCTAssertNil(library.lastExportedSessionId)
     XCTAssertFalse(model.isExporting)
   }
+
+  func testClaimEvidenceSeeksHighlightsTheCitedPassageAndReturnsFocus() async throws {
+    let library = TranscriptTimingLibraryFake()
+    library.claimsJSON = """
+      [{"claim_id":"claim-decision","revision_id":"revision-b","kind":"decision","status":"agreed","text":"The team deferred the remote recorder.","adjudication":"corrected","supporting_count":1,"contradicting_count":1}]
+      """
+    library.claimNavigation = NativeClaimNavigation(
+      claimId: "claim-decision", revisionId: "revision-b",
+      text: "The team deferred the remote recorder.", adjudication: "corrected",
+      targets: [
+        NativeClaimTarget(
+          side: "supporting", state: .available, recordId: "fixture", startNs: 0,
+          endNs: 1_000_000_000, text: "alpha"),
+        NativeClaimTarget(
+          side: "contradicting", state: .missing, recordId: "missing", startNs: 5, endNs: 9,
+          text: nil),
+      ])
+    let model = TranscriptLibraryModel(library: library)
+    await model.load(sessionId: "valid")
+    let claim = try XCTUnwrap(model.derivedClaims.first)
+    XCTAssertEqual(claim.claimId, "claim-decision")
+    XCTAssertEqual(claim.adjudication, "corrected")
+
+    var sought: [Int64] = []
+    if let start = await model.openClaimEvidence(claimId: claim.claimId, side: "supporting") {
+      sought.append(start)
+    }
+    XCTAssertEqual(sought, [0])
+    XCTAssertEqual(model.claimHighlightSegmentId, "fixture#0")
+    XCTAssertEqual(model.focusedClaim?.claimId, "claim-decision")
+    XCTAssertEqual(model.focusedClaim?.revisionId, "revision-b")
+    XCTAssertEqual(model.focusedClaim?.text, "The team deferred the remote recorder.")
+    XCTAssertTrue(model.claimEvidenceOpen)
+    XCTAssertNil(model.message)
+    let generation = model.claimFocusGeneration
+    model.returnToClaim()
+    XCTAssertFalse(model.claimEvidenceOpen)
+    XCTAssertNil(model.claimHighlightSegmentId)
+    XCTAssertEqual(model.focusedClaim?.claimId, "claim-decision")
+    XCTAssertEqual(model.claimFocusGeneration, generation + 1)
+
+    let contradicted = await model.openClaimEvidence(claimId: claim.claimId, side: "contradicting")
+    XCTAssertNil(contradicted)
+    XCTAssertFalse(model.claimEvidenceOpen)
+    XCTAssertEqual(
+      model.message, TranscriptLibraryModel.evidenceProblem(.missing))
+
+    library.claimNavigation = NativeClaimNavigation(
+      claimId: "claim-decision", revisionId: "revision-b",
+      text: "The team deferred the remote recorder.", adjudication: "corrected",
+      targets: [
+        NativeClaimTarget(
+          side: "supporting", state: .available, recordId: "other-revision", startNs: 0,
+          endNs: 1_000_000_000, text: "alpha")
+      ])
+    let unmatched = await model.openClaimEvidence(claimId: claim.claimId, side: "supporting")
+    XCTAssertEqual(unmatched, 0)
+    XCTAssertNil(
+      model.claimHighlightSegmentId,
+      "a different revision at the same range is not the cited passage")
+    XCTAssertTrue(model.claimEvidenceOpen)
+    model.returnToClaim()
+    XCTAssertEqual(model.focusedClaim?.revisionId, "revision-b")
+    XCTAssertFalse(model.claimEvidenceOpen)
+  }
 }
 
 private final class TrashMoveCounter: @unchecked Sendable {
@@ -787,6 +852,8 @@ private final class TranscriptTimingLibraryFake: NativeTranscriptLibrary, @unche
   private var mainThreadCalls = 0
   private var corrections: [String] = []
   private var deletedSessions: Set<String> = []
+  var claimsJSON = "[]"
+  var claimNavigation: NativeClaimNavigation?
   var mainThreadOperations: Int { lock.withLock { mainThreadCalls } }
   var correctedSessions: [String] { lock.withLock { corrections } }
   var transcriptReads: Int { lock.withLock { reads } }
@@ -856,6 +923,19 @@ private final class TranscriptTimingLibraryFake: NativeTranscriptLibrary, @unche
   }
 
   override func contextEvents(sessionId: String) throws -> [NativeContextEvent] { [] }
+
+  override func effectiveDerivedClaims(sessionId: String) throws -> String {
+    observe("claims", sessionId)
+    return lock.withLock { claimsJSON }
+  }
+
+  override func navigateDerivedClaim(sessionId: String, claimId: String) throws
+    -> NativeClaimNavigation
+  {
+    observe("navigate", claimId)
+    if let claimNavigation = lock.withLock({ claimNavigation }) { return claimNavigation }
+    throw NativeStorageError.InvalidRequest
+  }
 
   override func citeContextEvent(sessionId: String, eventId: String, block: UInt32?) throws
     -> String

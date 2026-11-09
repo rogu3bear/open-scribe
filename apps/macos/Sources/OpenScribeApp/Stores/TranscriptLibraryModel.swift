@@ -36,6 +36,14 @@ final class TranscriptLibraryModel: ObservableObject {
   /// Scope history, declared metadata, and accepted screen context, read-only.
   @Published private(set) var contextDetail: NativeContextDetail?
   @Published private(set) var contextEvents: [NativeContextEvent] = []
+  /// Effective claims Rust projected. Swift does not invent or renumber them.
+  @Published private(set) var derivedClaims: [DerivedClaimSummary] = []
+  /// The claim whose evidence is open, and the passage that citation highlights.
+  @Published private(set) var focusedClaim: ClaimReviewFocus?
+  @Published private(set) var claimHighlightSegmentId: String?
+  @Published private(set) var claimEvidenceOpen = false
+  /// Advances when Return restores focus to `focusedClaim`.
+  @Published private(set) var claimFocusGeneration: UInt64 = 0
 
   @Published private(set) var isLoading = false
   @Published private(set) var isSearching = false
@@ -197,6 +205,12 @@ final class TranscriptLibraryModel: ObservableObject {
       audioOptions = snapshot.audioOptions
       contextDetail = snapshot.context
       contextEvents = snapshot.events
+      derivedClaims = try Self.decodeClaims(snapshot.claimsJSON)
+      if let focusedClaim, !derivedClaims.contains(where: { $0.claimId == focusedClaim.claimId }) {
+        self.focusedClaim = nil
+        claimHighlightSegmentId = nil
+        claimEvidenceOpen = false
+      }
       report(nil)
     } catch is CancellationError {
       return
@@ -440,6 +454,74 @@ final class TranscriptLibraryModel: ObservableObject {
     }
   }
 
+  /// Opens one side of a claim. The returned audio position is what the view
+  /// seeks. The highlighted passage is the loaded segment with that revision
+  /// and range. A missing side explains itself and does not seek.
+  func openClaimEvidence(claimId: String, side: String) async -> Int64? {
+    guard let expectedSession = sessionId, side == "supporting" || side == "contradicting" else {
+      return nil
+    }
+    do {
+      let library = try await readyLibrary()
+      let navigation = try await StructuredNativeIO.read {
+        try library.navigateDerivedClaim(sessionId: expectedSession, claimId: claimId)
+      }
+      guard !Task.isCancelled, sessionId == expectedSession else { return nil }
+      focusedClaim = ClaimReviewFocus(
+        claimId: navigation.claimId, revisionId: navigation.revisionId, text: navigation.text,
+        adjudication: navigation.adjudication)
+      guard let target = navigation.targets.first(where: { $0.side == side }) else {
+        closeClaimEvidence()
+        report("This claim has no \(side) evidence.", failure: true)
+        return nil
+      }
+      guard target.state == .available else {
+        closeClaimEvidence()
+        report(Self.evidenceProblem(target.state), failure: true)
+        return nil
+      }
+      claimHighlightSegmentId = Self.citedSegmentId(in: segments, target: target)
+      claimEvidenceOpen = true
+      report(nil)
+      return target.startNs
+    } catch is CancellationError {
+      return nil
+    } catch {
+      if sessionId == expectedSession {
+        closeClaimEvidence()
+        report(Self.describe(error, action: "open this claim"), failure: true)
+      }
+      return nil
+    }
+  }
+
+  /// Leaves the cited passage and asks the review to focus the claim again.
+  func returnToClaim() {
+    guard claimEvidenceOpen, focusedClaim != nil else { return }
+    closeClaimEvidence()
+    claimFocusGeneration &+= 1
+  }
+
+  private func closeClaimEvidence() {
+    claimEvidenceOpen = false
+    claimHighlightSegmentId = nil
+  }
+
+  static func citedSegmentId(
+    in segments: [NativeTranscriptSegment], target: NativeClaimTarget
+  ) -> String? {
+    segments.first {
+      $0.revisionId == target.recordId && $0.startNanoseconds == target.startNs
+        && $0.endNanoseconds == target.endNs
+    }?.id
+  }
+
+  static func decodeClaims(_ json: String) throws -> [DerivedClaimSummary] {
+    let decoder = JSONDecoder()
+    decoder.keyDecodingStrategy = .convertFromSnakeCase
+    return try decoder.decode([DerivedClaimSummary].self, from: Data(json.utf8))
+  }
+
   nonisolated static func evidenceProblem(_ state: NativeEvidenceState) -> String {
     switch state {
     case .available: "The evidence is available."
@@ -604,6 +686,10 @@ final class TranscriptLibraryModel: ObservableObject {
     audioOptions = nil
     contextDetail = nil
     contextEvents = []
+    derivedClaims = []
+    focusedClaim = nil
+    claimHighlightSegmentId = nil
+    claimEvidenceOpen = false
     report(message)
   }
 
@@ -668,6 +754,7 @@ private struct TranscriptDocumentSnapshot: Sendable {
   let audioOptions: NativeAudioExportOptions?
   let context: NativeContextDetail?
   let events: [NativeContextEvent]
+  let claimsJSON: String
 
   init(library: NativeTranscriptLibrary, sessionId: String, isUntimed: Bool) throws {
     availability = isUntimed ? .unavailable : try library.availability(sessionId: sessionId)
@@ -687,7 +774,28 @@ private struct TranscriptDocumentSnapshot: Sendable {
     audioOptions = try? library.audioExportOptions(sessionId: sessionId)
     context = try? library.contextDetail(sessionId: sessionId)
     events = (try? library.contextEvents(sessionId: sessionId)) ?? []
+    claimsJSON = try library.effectiveDerivedClaims(sessionId: sessionId)
   }
+}
+
+struct ClaimReviewFocus: Equatable {
+  let claimId: String
+  let revisionId: String
+  let text: String
+  let adjudication: String?
+}
+
+struct DerivedClaimSummary: Decodable, Equatable, Identifiable, Sendable {
+  let claimId: String
+  let revisionId: String
+  let kind: String
+  let status: String
+  let text: String
+  let adjudication: String?
+  let supportingCount: Int
+  let contradictingCount: Int
+
+  var id: String { claimId }
 }
 
 private struct TranscriptDeletionOutcome: Sendable {

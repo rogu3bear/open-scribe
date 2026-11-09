@@ -4,9 +4,10 @@
 //! deterministic validation (ADR 0013). Native Rust resolves references
 //! through the media ledger, transcript revisions, and SQLite; other surfaces
 //! consume resolved projections and never reinterpret reference identity.
-//! `claim` owns `open-scribe.derived-claim/v1` validation. The store persists
-//! append-only revisions and resolves their evidence. Navigation UI and
-//! model-delta ingestion stay with their own owners.
+//! `claim` owns `open-scribe.derived-claim/v1` validation. `delta` owns
+//! `open-scribe.meeting-memory-delta/v1` validation. The store persists
+//! append-only revisions, resolves their evidence, and ingests a delta.
+//! Navigation UI consumes the resolved projection.
 
 #![forbid(unsafe_code)]
 
@@ -18,7 +19,13 @@ pub const EVIDENCE_REF_SCHEMA: &str = "open-scribe.evidence-ref/v1";
 mod claim;
 pub use claim::{
     Adjudication, AdjudicationAction, ClaimError, ClaimKind, ClaimProducer, ClaimStatus,
-    DERIVED_CLAIM_SCHEMA, DerivedClaim,
+    DERIVED_CLAIM_SCHEMA, DerivedClaim, claim_status_allowed,
+};
+mod delta;
+pub use delta::{
+    DeltaError, DeltaIngestReceipt, DeltaOperation, DeltaOperationReceipt, DerivedClaimSummary,
+    MAX_DELTA_BYTES, MEETING_MEMORY_DELTA_RECEIPT_SCHEMA, MEETING_MEMORY_DELTA_SCHEMA,
+    MeetingMemoryDelta,
 };
 
 /// What an evidence reference cites.
