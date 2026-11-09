@@ -18,7 +18,10 @@ use open_scribe_types::SessionId;
 use sha2::{Digest, Sha256};
 use tempfile::TempDir;
 
-use crate::{ClaimEvidenceSide, ResolutionState, TranscriptLibrary};
+use crate::{
+    ClaimEvidenceSide, ResolutionState, SpeakerDiarizationTrackInput, SpeakerLabelOrigin,
+    StoreError, TranscriptLibrary, TranscriptSpeakerAssignment,
+};
 
 const SECOND: i64 = 1_000_000_000;
 
@@ -246,4 +249,89 @@ fn human_adjudication_stays_effective_through_the_library_and_cancelled_deletion
     let saved = reopened.session_inventory(session).unwrap();
     assert_eq!(saved.lifecycle, "ready_for_review");
     assert_eq!(saved.media[0].digest_sha256, prepared.digest_sha256);
+}
+
+#[test]
+fn imported_review_keeps_unknown_speakers_when_diarization_is_uncalibrated() {
+    let prepared = prepared_transcript();
+    let mut library = TranscriptLibrary::open(&prepared.root).unwrap();
+    let session = &prepared.session;
+    let first = library.prepare_speaker_diarization(session).unwrap();
+    assert!(first.inserted);
+    assert_eq!(first.algorithm_id, open_scribe_diarize::ALGORITHM_ID);
+    assert_eq!(
+        first.clustering_state,
+        open_scribe_diarize::CLUSTERING_UNAVAILABLE
+    );
+    assert_eq!(first.reason, open_scribe_diarize::UNAVAILABLE_REASON);
+    assert_eq!(first.tracks.len(), 1);
+    let track = &first.tracks[0];
+    assert_eq!(track.source_kind, "imported_audio");
+    assert_eq!(track.disposition, "unresolved");
+    assert_eq!(track.label, "Unknown speaker");
+    assert_eq!(track.label_origin, "source_default");
+    assert!(!track.label.contains("Speaker "));
+
+    let named = library
+        .assign_speaker(
+            session,
+            &prepared.revision,
+            0,
+            &TranscriptSpeakerAssignment::New("Dana".into()),
+        )
+        .unwrap();
+    assert!(named.is_some());
+    let second = library.prepare_speaker_diarization(session).unwrap();
+    assert!(!second.inserted);
+    assert_eq!(second.run_id, first.run_id);
+    assert_eq!(second.tracks, first.tracks);
+
+    let document = library.document(session).unwrap();
+    let alpha = document
+        .iter()
+        .find(|segment| segment.sequence == 0)
+        .unwrap();
+    let bravo = document
+        .iter()
+        .find(|segment| segment.sequence == 1)
+        .unwrap();
+    assert_eq!(alpha.revision_id, prepared.revision);
+    assert_eq!(alpha.verbatim_text, "alpha");
+    assert_eq!(alpha.effective_text, "alpha");
+    assert_eq!(alpha.speaker_label, "Dana");
+    assert_eq!(alpha.speaker_origin, SpeakerLabelOrigin::Human);
+    assert_eq!(bravo.verbatim_text, "bravo");
+    assert_eq!(bravo.effective_text, "bravo");
+    assert_eq!(bravo.speaker_label, "Unknown speaker");
+    assert_eq!(bravo.speaker_origin, SpeakerLabelOrigin::SourceDefault);
+    assert_eq!(file_sha256(&prepared.media), prepared.digest_sha256);
+
+    let mut store = SessionStore::open(&prepared.root).unwrap();
+    let uncalibrated = store.record_speaker_diarization(
+        session,
+        open_scribe_diarize::ALGORITHM_ID,
+        "clustered",
+        open_scribe_diarize::UNAVAILABLE_REASON,
+        &[SpeakerDiarizationTrackInput {
+            track_id: track.track_id.clone(),
+            disposition: "unresolved".into(),
+        }],
+    );
+    assert!(matches!(uncalibrated, Err(StoreError::InvalidRequest(_))));
+    let mismatched = store.record_speaker_diarization(
+        session,
+        open_scribe_diarize::ALGORITHM_ID,
+        open_scribe_diarize::CLUSTERING_UNAVAILABLE,
+        open_scribe_diarize::UNAVAILABLE_REASON,
+        &[SpeakerDiarizationTrackInput {
+            track_id: track.track_id.clone(),
+            disposition: "topology".into(),
+        }],
+    );
+    assert!(matches!(mismatched, Err(StoreError::InvalidRequest(_))));
+    drop(store);
+    let third = library.prepare_speaker_diarization(session).unwrap();
+    assert!(!third.inserted);
+    assert_eq!(third.run_id, first.run_id);
+    assert_eq!(file_sha256(&prepared.media), prepared.digest_sha256);
 }

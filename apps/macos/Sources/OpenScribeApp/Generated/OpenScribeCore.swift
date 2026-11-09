@@ -2021,6 +2021,14 @@ public protocol NativeTranscriptLibraryProtocol: AnyObject, Sendable {
   func namedSpeakers(sessionId: String) throws -> [NativeNamedTranscriptSpeaker]
 
   /**
+   * Records that known audio sources keep their topology and that voice
+   * clustering is unavailable. A repeated identical decision does not
+   * insert another run. Speaker names, transcript text, and media stay
+   * as they were.
+   */
+  func prepareSpeakerDiarization(sessionId: String) throws -> NativeSpeakerDiarization
+
+  /**
    * Rebuilds Final transcripts from chunks earlier runs retained but could
    * not commit, without loading a model. `session_id` limits the pass to
    * one conversation. Media, failed runs, and selected revisions are
@@ -2481,6 +2489,23 @@ open class NativeTranscriptLibrary: NativeTranscriptLibraryProtocol, @unchecked 
       try rustCallWithError(FfiConverterTypeNativeStorageError_lift) {
         uniffiCallStatus in
         uniffi_open_scribe_uniffi_fn_method_nativetranscriptlibrary_named_speakers(
+          self.uniffiCloneHandle(),
+          FfiConverterString.lower(sessionId), uniffiCallStatus
+        )
+      })
+  }
+
+  /**
+   * Records that known audio sources keep their topology and that voice
+   * clustering is unavailable. A repeated identical decision does not
+   * insert another run. Speaker names, transcript text, and media stay
+   * as they were.
+   */
+  open func prepareSpeakerDiarization(sessionId: String) throws -> NativeSpeakerDiarization {
+    return try FfiConverterTypeNativeSpeakerDiarization_lift(
+      try rustCallWithError(FfiConverterTypeNativeStorageError_lift) {
+        uniffiCallStatus in
+        uniffi_open_scribe_uniffi_fn_method_nativetranscriptlibrary_prepare_speaker_diarization(
           self.uniffiCloneHandle(),
           FfiConverterString.lower(sessionId), uniffiCallStatus
         )
@@ -7186,6 +7211,151 @@ public func FfiConverterTypeNativeSourceSnapshot_lift(_ buf: RustBuffer) throws
 public func FfiConverterTypeNativeSourceSnapshot_lower(_ value: NativeSourceSnapshot) -> RustBuffer
 {
   return FfiConverterTypeNativeSourceSnapshot.lower(value)
+}
+
+/// Voice clustering is `unavailable` until a calibrated model exists.
+/// `topology` keeps a known audio source; `unresolved` keeps an unknown one.
+public struct NativeSpeakerDiarization: Equatable, Hashable {
+  public let runId: String
+  public let algorithmId: String
+  public let clusteringState: String
+  public let reason: String
+  public let inserted: Bool
+  public let tracks: [NativeSpeakerDiarizationTrack]
+
+  // Default memberwise initializers are never public by default, so we
+  // declare one manually.
+  public init(
+    runId: String, algorithmId: String, clusteringState: String, reason: String, inserted: Bool,
+    tracks: [NativeSpeakerDiarizationTrack]
+  ) {
+    self.runId = runId
+    self.algorithmId = algorithmId
+    self.clusteringState = clusteringState
+    self.reason = reason
+    self.inserted = inserted
+    self.tracks = tracks
+  }
+
+}
+
+#if compiler(>=6)
+  extension NativeSpeakerDiarization: Sendable {}
+#endif
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeNativeSpeakerDiarization: FfiConverterRustBuffer {
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws
+    -> NativeSpeakerDiarization
+  {
+    return
+      try NativeSpeakerDiarization(
+        runId: FfiConverterString.read(from: &buf),
+        algorithmId: FfiConverterString.read(from: &buf),
+        clusteringState: FfiConverterString.read(from: &buf),
+        reason: FfiConverterString.read(from: &buf),
+        inserted: FfiConverterBool.read(from: &buf),
+        tracks: FfiConverterSequenceTypeNativeSpeakerDiarizationTrack.read(from: &buf)
+      )
+  }
+
+  public static func write(_ value: NativeSpeakerDiarization, into buf: inout [UInt8]) {
+    FfiConverterString.write(value.runId, into: &buf)
+    FfiConverterString.write(value.algorithmId, into: &buf)
+    FfiConverterString.write(value.clusteringState, into: &buf)
+    FfiConverterString.write(value.reason, into: &buf)
+    FfiConverterBool.write(value.inserted, into: &buf)
+    FfiConverterSequenceTypeNativeSpeakerDiarizationTrack.write(value.tracks, into: &buf)
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeSpeakerDiarization_lift(_ buf: RustBuffer) throws
+  -> NativeSpeakerDiarization
+{
+  return try FfiConverterTypeNativeSpeakerDiarization.lift(buf)
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeSpeakerDiarization_lower(_ value: NativeSpeakerDiarization)
+  -> RustBuffer
+{
+  return FfiConverterTypeNativeSpeakerDiarization.lower(value)
+}
+
+public struct NativeSpeakerDiarizationTrack: Equatable, Hashable {
+  public let trackId: String
+  public let sourceKind: String
+  public let disposition: String
+  public let label: String
+  public let labelOrigin: String
+
+  // Default memberwise initializers are never public by default, so we
+  // declare one manually.
+  public init(
+    trackId: String, sourceKind: String, disposition: String, label: String, labelOrigin: String
+  ) {
+    self.trackId = trackId
+    self.sourceKind = sourceKind
+    self.disposition = disposition
+    self.label = label
+    self.labelOrigin = labelOrigin
+  }
+
+}
+
+#if compiler(>=6)
+  extension NativeSpeakerDiarizationTrack: Sendable {}
+#endif
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeNativeSpeakerDiarizationTrack: FfiConverterRustBuffer {
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws
+    -> NativeSpeakerDiarizationTrack
+  {
+    return
+      try NativeSpeakerDiarizationTrack(
+        trackId: FfiConverterString.read(from: &buf),
+        sourceKind: FfiConverterString.read(from: &buf),
+        disposition: FfiConverterString.read(from: &buf),
+        label: FfiConverterString.read(from: &buf),
+        labelOrigin: FfiConverterString.read(from: &buf)
+      )
+  }
+
+  public static func write(_ value: NativeSpeakerDiarizationTrack, into buf: inout [UInt8]) {
+    FfiConverterString.write(value.trackId, into: &buf)
+    FfiConverterString.write(value.sourceKind, into: &buf)
+    FfiConverterString.write(value.disposition, into: &buf)
+    FfiConverterString.write(value.label, into: &buf)
+    FfiConverterString.write(value.labelOrigin, into: &buf)
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeSpeakerDiarizationTrack_lift(_ buf: RustBuffer) throws
+  -> NativeSpeakerDiarizationTrack
+{
+  return try FfiConverterTypeNativeSpeakerDiarizationTrack.lift(buf)
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeSpeakerDiarizationTrack_lower(
+  _ value: NativeSpeakerDiarizationTrack
+) -> RustBuffer {
+  return FfiConverterTypeNativeSpeakerDiarizationTrack.lower(value)
 }
 
 public struct NativeSpeechModel: Equatable, Hashable {
@@ -11980,6 +12150,33 @@ private struct FfiConverterSequenceTypeNativeSourceSnapshot: FfiConverterRustBuf
 #if swift(>=5.8)
   @_documentation(visibility: private)
 #endif
+private struct FfiConverterSequenceTypeNativeSpeakerDiarizationTrack: FfiConverterRustBuffer {
+  typealias SwiftType = [NativeSpeakerDiarizationTrack]
+
+  public static func write(_ value: [NativeSpeakerDiarizationTrack], into buf: inout [UInt8]) {
+    let len = Int32(value.count)
+    writeInt(&buf, len)
+    for item in value {
+      FfiConverterTypeNativeSpeakerDiarizationTrack.write(item, into: &buf)
+    }
+  }
+
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws
+    -> [NativeSpeakerDiarizationTrack]
+  {
+    let len: Int32 = try readInt(&buf)
+    var seq = [NativeSpeakerDiarizationTrack]()
+    seq.reserveCapacity(Int(len))
+    for _ in 0..<len {
+      seq.append(try FfiConverterTypeNativeSpeakerDiarizationTrack.read(from: &buf))
+    }
+    return seq
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
 private struct FfiConverterSequenceTypeNativeSpeechModel: FfiConverterRustBuffer {
   typealias SwiftType = [NativeSpeechModel]
 
@@ -12556,6 +12753,11 @@ private let initializationResult: InitializationResult = {
     return InitializationResult.apiChecksumMismatch
   }
   if uniffi_open_scribe_uniffi_checksum_method_nativetranscriptlibrary_named_speakers() != 51817 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_open_scribe_uniffi_checksum_method_nativetranscriptlibrary_prepare_speaker_diarization()
+    != 59089
+  {
     return InitializationResult.apiChecksumMismatch
   }
   if uniffi_open_scribe_uniffi_checksum_method_nativetranscriptlibrary_recover_retained_transcripts()

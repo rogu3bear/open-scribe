@@ -38,6 +38,9 @@ final class TranscriptLibraryModel: ObservableObject {
   @Published private(set) var contextEvents: [NativeContextEvent] = []
   /// Effective claims Rust projected. Swift does not invent or renumber them.
   @Published private(set) var derivedClaims: [DerivedClaimSummary] = []
+  /// Plain review sentence when voice clustering is unavailable. Nil when the
+  /// session has no such decision.
+  @Published private(set) var speakerDiarizationText: String?
   /// The claim whose evidence is open, and the passage that citation highlights.
   @Published private(set) var focusedClaim: ClaimReviewFocus?
   @Published private(set) var claimHighlightSegmentId: String?
@@ -201,6 +204,7 @@ final class TranscriptLibraryModel: ObservableObject {
       segments = snapshot.segments
       speakers = snapshot.speakers
       namedSpeakers = snapshot.namedSpeakers
+      speakerDiarizationText = snapshot.speakerDiarizationText
       reviewMetadata = snapshot.metadata
       audioOptions = snapshot.audioOptions
       contextDetail = snapshot.context
@@ -720,6 +724,7 @@ final class TranscriptLibraryModel: ObservableObject {
     segments = []
     speakers = []
     namedSpeakers = []
+    speakerDiarizationText = nil
     reviewMetadata = nil
     audioOptions = nil
     contextDetail = nil
@@ -729,6 +734,16 @@ final class TranscriptLibraryModel: ObservableObject {
     claimHighlightSegmentId = nil
     claimEvidenceOpen = false
     report(message)
+  }
+
+  /// The sentence shown when clustering stayed unavailable. Any other state
+  /// is not described as a finished diarization.
+  nonisolated static func speakerDiarizationText(for record: NativeSpeakerDiarization) -> String? {
+    guard record.clusteringState == "unavailable",
+      record.reason == "no calibrated diarization model"
+    else { return nil }
+    return
+      "Speakers follow the audio source. Voice diarization is unavailable without a calibrated model."
   }
 
   nonisolated static func describe(_ error: Error, action: String) -> String {
@@ -793,6 +808,7 @@ private struct TranscriptDocumentSnapshot: Sendable {
   let context: NativeContextDetail?
   let events: [NativeContextEvent]
   let claimsJSON: String
+  let speakerDiarizationText: String?
 
   init(library: NativeTranscriptLibrary, sessionId: String, isUntimed: Bool) throws {
     availability = isUntimed ? .unavailable : try library.availability(sessionId: sessionId)
@@ -813,6 +829,14 @@ private struct TranscriptDocumentSnapshot: Sendable {
     context = try? library.contextDetail(sessionId: sessionId)
     events = (try? library.contextEvents(sessionId: sessionId)) ?? []
     claimsJSON = try library.effectiveDerivedClaims(sessionId: sessionId)
+    let diarization: NativeSpeakerDiarization?
+    if isUntimed {
+      diarization = try? library.prepareSpeakerDiarization(sessionId: sessionId)
+    } else {
+      diarization = try library.prepareSpeakerDiarization(sessionId: sessionId)
+    }
+    speakerDiarizationText = diarization.flatMap(
+      TranscriptLibraryModel.speakerDiarizationText(for:))
   }
 }
 

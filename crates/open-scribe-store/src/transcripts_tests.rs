@@ -647,7 +647,7 @@ fn schema_v4_fixture_migrates_without_rewriting_sealed_evidence() {
             .unwrap()
             .map(Result::unwrap)
             .collect();
-        assert_eq!(versions, (1..=19).collect::<Vec<_>>());
+        assert_eq!(versions, (1..=20).collect::<Vec<_>>());
         let derived: i64 = store
             .connection
             .query_row(
@@ -1438,7 +1438,7 @@ fn migration_19_keeps_an_existing_final_revision_and_accepts_a_draft() {
         .unwrap()
         .map(Result::unwrap)
         .collect();
-    assert_eq!(versions, (1..=19).collect::<Vec<_>>());
+    assert_eq!(versions, (1..=20).collect::<Vec<_>>());
     let draft = commit_window(
         &mut fixture,
         "after-migration",

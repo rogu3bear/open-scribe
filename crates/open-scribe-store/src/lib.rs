@@ -94,6 +94,10 @@ pub use transcript_review::{
 mod transcript_selection;
 mod transcript_speakers;
 pub use transcript_speakers::{NamedTranscriptSpeaker, TranscriptSpeakerAssignment};
+mod speaker_diarization;
+pub use speaker_diarization::{
+    SpeakerDiarization, SpeakerDiarizationTrack, SpeakerDiarizationTrackInput,
+};
 mod transcripts;
 pub use transcript_selection::TranscriptSelectionPolicy;
 pub use transcripts::{
@@ -3250,6 +3254,7 @@ fn apply_schema(connection: &mut Connection) -> Result<(), StoreError> {
     transcript_speakers::apply_schema(&transaction)?;
     derived_claims::apply_schema(&transaction)?;
     meeting_memory::apply_schema(&transaction)?;
+    speaker_diarization::apply_schema(&transaction)?;
     transaction.commit()?;
     Ok(())
 }
@@ -4226,6 +4231,8 @@ mod tests {
             "transcript_named_speakers",
             "transcript_speaker_names",
             "transcript_turn_speakers",
+            "speaker_diarization_runs",
+            "speaker_diarization_tracks",
             "transcript_search",
             "session_deletion_intents",
             "context_scopes",
@@ -4241,7 +4248,7 @@ mod tests {
         }
         assert_eq!(
             database_value(&store, "SELECT MAX(version) FROM schema_migrations"),
-            19
+            20
         );
         let segment_columns: BTreeSet<String> = store
             .connection
@@ -4299,7 +4306,7 @@ mod tests {
         assert_eq!(channels, 1);
         assert_eq!(
             database_value(&store, "SELECT MAX(version) FROM schema_migrations"),
-            19
+            20
         );
     }
 

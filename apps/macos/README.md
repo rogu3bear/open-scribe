@@ -80,8 +80,11 @@ never transfer by passage number to a replacement transcript. Whole-source
 labels remain separately editable. Filter the reader by person or search the
 library with `speaker:Dana`; speaker searches match a literal name prefix,
 without interpreting punctuation as search syntax. Names are human assertions,
-not voice recognition. Automatic diarization remains unavailable until the
-model and calibration prerequisites in ADRs 0008–0009 are satisfied.
+not voice recognition. Opening a transcript records that microphone,
+application, and system tracks keep those source labels, and that imported
+or other unknown audio stays unresolved. Automatic diarization remains
+unavailable until the model and calibration prerequisites in ADRs 0008–0009
+are satisfied. The review does not invent speaker numbers.
 
 During saved-audio playback, Follow playback reads the native renderer clock
 and keeps the current passage in view. It can be turned off for free reading.

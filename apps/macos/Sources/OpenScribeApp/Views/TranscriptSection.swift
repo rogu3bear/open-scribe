@@ -57,6 +57,12 @@ struct TranscriptSection: View {
         Text(session.transcriptionUnavailableReason ?? availabilityText)
           .font(.callout)
           .foregroundStyle(.secondary)
+        if session.transcriptionUnavailableReason == nil, let diarization = transcripts.speakerDiarizationText {
+          Text(diarization)
+            .font(.callout)
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+        }
       }
       if showsTranscriptionControls {
         transcriptionControls

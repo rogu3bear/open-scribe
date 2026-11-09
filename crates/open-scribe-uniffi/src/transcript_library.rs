@@ -75,6 +75,27 @@ pub struct NativeSessionSpeaker {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct NativeSpeakerDiarizationTrack {
+    pub track_id: String,
+    pub source_kind: String,
+    pub disposition: String,
+    pub label: String,
+    pub label_origin: String,
+}
+
+/// Voice clustering is `unavailable` until a calibrated model exists.
+/// `topology` keeps a known audio source; `unresolved` keeps an unknown one.
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct NativeSpeakerDiarization {
+    pub run_id: String,
+    pub algorithm_id: String,
+    pub clustering_state: String,
+    pub reason: String,
+    pub inserted: bool,
+    pub tracks: Vec<NativeSpeakerDiarizationTrack>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
 pub struct NativeTranscriptSearchHit {
     pub session_id: String,
     pub session_title: String,
@@ -195,6 +216,38 @@ impl NativeTranscriptLibrary {
                 named_by_user: speaker.origin == SpeakerLabelOrigin::Human,
             })
             .collect())
+    }
+
+    /// Records that known audio sources keep their topology and that voice
+    /// clustering is unavailable. A repeated identical decision does not
+    /// insert another run. Speaker names, transcript text, and media stay
+    /// as they were.
+    pub fn prepare_speaker_diarization(
+        &self,
+        session_id: String,
+    ) -> Result<NativeSpeakerDiarization, NativeStorageError> {
+        let decision = self
+            .library()?
+            .prepare_speaker_diarization(&SessionId(session_id))
+            .map_err(map_storage_error)?;
+        Ok(NativeSpeakerDiarization {
+            run_id: decision.run_id,
+            algorithm_id: decision.algorithm_id,
+            clustering_state: decision.clustering_state,
+            reason: decision.reason,
+            inserted: decision.inserted,
+            tracks: decision
+                .tracks
+                .into_iter()
+                .map(|track| NativeSpeakerDiarizationTrack {
+                    track_id: track.track_id,
+                    source_kind: track.source_kind,
+                    disposition: track.disposition,
+                    label: track.label,
+                    label_origin: track.label_origin,
+                })
+                .collect(),
+        })
     }
 
     /// `None` restores the verbatim reading.

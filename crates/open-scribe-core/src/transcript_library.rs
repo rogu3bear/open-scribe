@@ -3,7 +3,8 @@
 //!
 //! It owns its own store connection beside the recording controller; SQLite
 //! WAL and immediate transactions serialize their writes. Nothing here runs
-//! inference: a transcript exists only when a local run has committed one.
+//! speech inference: a transcript exists only when a local run has committed
+//! one, and voice clustering stays unavailable until a calibrated model exists.
 
 use crate::export::{
     TranscriptAvailability, TranscriptExport, TranscriptExportError, TranscriptExportFormat,
@@ -14,12 +15,13 @@ use crate::session_export::{
     FileExportReceipt, PortableSummary, SessionExportError, export_source_media, export_track_wav,
     export_validated_mix, write_portable_package, write_session_manifest,
 };
+use open_scribe_diarize::disposition_for_source_kind;
 use open_scribe_evidence::{AdjudicationAction, DerivedClaim, EvidenceRef};
 use open_scribe_store::{
     ClaimNavigation, ContextDetail, ContextEventRecord, ConversationReviewMetadata,
     NamedTranscriptSpeaker, ResolvedEvidence, SessionDeletionInventory, SessionDeletionReceipt,
-    SessionSpeaker, SessionStore, StoreError, TranscriptDocumentSegment, TranscriptSearchHit,
-    TranscriptSpeakerAssignment,
+    SessionSpeaker, SessionStore, SpeakerDiarization, SpeakerDiarizationTrackInput, StoreError,
+    TranscriptDocumentSegment, TranscriptSearchHit, TranscriptSpeakerAssignment,
 };
 use open_scribe_types::SessionId;
 use std::path::Path;
@@ -60,6 +62,35 @@ impl TranscriptLibrary {
 
     pub fn speakers(&self, session: &SessionId) -> Result<Vec<SessionSpeaker>, StoreError> {
         self.store.session_speakers(session)
+    }
+
+    /// Records source topology for this review and leaves voice clustering
+    /// unavailable. Microphone, application, and system tracks are not
+    /// reclustered. Imported and other unknown tracks stay unresolved.
+    /// Labels, transcript text, selections, and media bytes are unchanged.
+    /// A repeated call with the same decision does not insert another run.
+    pub fn prepare_speaker_diarization(
+        &mut self,
+        session: &SessionId,
+    ) -> Result<SpeakerDiarization, StoreError> {
+        let speakers = self.store.session_speakers(session)?;
+        let decisions = speakers
+            .iter()
+            .map(|speaker| SpeakerDiarizationTrackInput {
+                track_id: speaker.track_id.clone(),
+                disposition: disposition_for_source_kind(&speaker.source_kind)
+                    .disposition
+                    .as_str()
+                    .to_owned(),
+            })
+            .collect::<Vec<_>>();
+        self.store.record_speaker_diarization(
+            session,
+            open_scribe_diarize::ALGORITHM_ID,
+            open_scribe_diarize::CLUSTERING_UNAVAILABLE,
+            open_scribe_diarize::UNAVAILABLE_REASON,
+            &decisions,
+        )
     }
 
     pub fn named_speakers(

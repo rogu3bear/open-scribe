@@ -1,4 +1,5 @@
 import AppKit
+import CryptoKit
 import SwiftUI
 import UniformTypeIdentifiers
 import XCTest
@@ -190,6 +191,83 @@ final class TranscriptLibraryModelTests: XCTestCase {
       entered.signal()
       _ = release.wait(timeout: .now() + 3)
     }
+  }
+
+  func testImportedReviewRecordsUnresolvedSpeakersWithoutACalibratedModel() async throws {
+    let root = FileManager.default.temporaryDirectory
+      .appendingPathComponent("diarize-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let source = root.appendingPathComponent("source.caf")
+    try Self.recoverableCaf(frames: 4_800).write(to: source)
+    let libraryRoot = root.appendingPathComponent("Library", isDirectory: true)
+    let preparation = try NativeRecordingPreparation.open(managedRoot: libraryRoot.path)
+    let imported = try preparation.importRecoverableCaf(
+      title: "Imported review", sourcePath: source.path)
+    let before = try Self.mediaDigests(under: libraryRoot)
+    let library = try NativeTranscriptLibrary.open(managedRoot: libraryRoot.path)
+    let first = try library.prepareSpeakerDiarization(sessionId: imported.sessionId)
+    XCTAssertTrue(first.inserted)
+    XCTAssertEqual(first.clusteringState, "unavailable")
+    XCTAssertEqual(first.reason, "no calibrated diarization model")
+    XCTAssertEqual(first.algorithmId, "topology-before-clustering-v1")
+    XCTAssertEqual(first.tracks.count, 1)
+    XCTAssertEqual(first.tracks[0].sourceKind, "imported_audio")
+    XCTAssertEqual(first.tracks[0].disposition, "unresolved")
+    XCTAssertEqual(first.tracks[0].label, "Unknown speaker")
+    XCTAssertEqual(first.tracks[0].labelOrigin, "source_default")
+    let model = TranscriptLibraryModel(library: library)
+    await model.load(session: session(imported.sessionId, calibrated: false, sources: []))
+    XCTAssertEqual(
+      model.speakerDiarizationText,
+      "Speakers follow the audio source. Voice diarization is unavailable without a calibrated model."
+    )
+    XCTAssertEqual(model.speakers.first?.label, "Unknown speaker")
+    XCTAssertEqual(model.speakers.first?.namedByUser, false)
+    XCTAssertNil(model.message)
+    let second = try library.prepareSpeakerDiarization(sessionId: imported.sessionId)
+    XCTAssertFalse(second.inserted)
+    XCTAssertEqual(second.runId, first.runId)
+    XCTAssertEqual(try Self.mediaDigests(under: libraryRoot), before)
+  }
+
+  private static func append(_ value: some FixedWidthInteger, to data: inout Data) {
+    withUnsafeBytes(of: value) { data.append(contentsOf: $0) }
+  }
+
+  private static func recoverableCaf(frames: Int) -> Data {
+    var data = Data()
+    data.append(contentsOf: [0x63, 0x61, 0x66, 0x66, 0x00, 0x01, 0x00, 0x00])
+    data.append(contentsOf: Array("desc".utf8))
+    append(Int64(32).bigEndian, to: &data)
+    append(Double(48_000).bitPattern.bigEndian, to: &data)
+    data.append(contentsOf: Array("lpcm".utf8))
+    for value in [UInt32(2), 2, 1, 1, 16] {
+      append(value.bigEndian, to: &data)
+    }
+    data.append(contentsOf: Array("data".utf8))
+    append(Int64(-1).bigEndian, to: &data)
+    append(UInt32(0).bigEndian, to: &data)
+    for frame in 0..<frames {
+      let sample = Int16(((frame % 997) - 498) * 31)
+      append(sample.littleEndian, to: &data)
+    }
+    return data
+  }
+
+  private static func mediaDigests(under root: URL) throws -> [String: String] {
+    let sessions = root.appendingPathComponent("Sessions")
+    guard
+      let enumerator = FileManager.default.enumerator(
+        at: sessions, includingPropertiesForKeys: [.isRegularFileKey])
+    else { return [:] }
+    var digests: [String: String] = [:]
+    for case let url as URL in enumerator {
+      guard url.pathExtension == "caf" else { continue }
+      let digest = SHA256.hash(data: try Data(contentsOf: url))
+      digests[url.lastPathComponent] = digest.map { String(format: "%02x", $0) }.joined()
+    }
+    return digests
   }
 
   private func session(
@@ -1021,6 +1099,17 @@ private final class TranscriptTimingLibraryFake: NativeTranscriptLibrary, @unche
       NativeSessionSpeaker(
         trackId: sessionId, sourceKind: "microphone", label: "Fixture", namedByUser: false)
     ]
+  }
+
+  override func prepareSpeakerDiarization(sessionId: String) throws -> NativeSpeakerDiarization {
+    NativeSpeakerDiarization(
+      runId: "fixture-run", algorithmId: "topology-before-clustering-v1",
+      clusteringState: "unavailable", reason: "no calibrated diarization model", inserted: false,
+      tracks: [
+        NativeSpeakerDiarizationTrack(
+          trackId: sessionId, sourceKind: "microphone", disposition: "topology", label: "Fixture",
+          labelOrigin: "source_default")
+      ])
   }
 
   override func audioExportOptions(sessionId: String) throws -> NativeAudioExportOptions {

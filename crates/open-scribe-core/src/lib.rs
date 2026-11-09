@@ -101,7 +101,8 @@ pub use open_scribe_store::{
 };
 pub use open_scribe_store::{
     LiveDraftWindow, NamedTranscriptSpeaker, SelectedRevisionProvenance, SessionDeletionInventory,
-    SessionDeletionReceipt, SessionSpeaker, SpeakerLabelOrigin, TranscriptDocumentSegment,
+    SessionDeletionReceipt, SessionSpeaker, SpeakerDiarization, SpeakerDiarizationTrack,
+    SpeakerDiarizationTrackInput, SpeakerLabelOrigin, TranscriptDocumentSegment,
     TranscriptExportContext, TranscriptSearchHit, TranscriptSpeakerAssignment,
 };
 
