@@ -98,6 +98,8 @@ enum SpeechFailurePresentation {
     case "not_ggml", "wrong_model": "it is not the listed model"
     case "incompatible_engine", "engine_version": "it does not match this build's speech engine"
     case "model_rejected", "self_test_failed": "the speech engine could not run it"
+    case "active_run": "a transcription is still using it"
+    case "removing": "it is being removed"
     default: "it could not be read and checked"
     }
   }

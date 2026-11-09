@@ -1495,6 +1495,13 @@ public protocol NativeSpeechModelsProtocol: AnyObject, Sendable {
   func needsDecodedCompanionForIntent(sessionId: String, intent: NativeTranscriptionIntent) throws
     -> Bool
 
+  /**
+   * Quarantines one installed model version. The returned directory is no
+   * longer loadable; the caller may move it to Trash. `active_run` means
+   * a transcription still holds the version, so the caller retries.
+   */
+  func removeInstalled(modelId: String, cancelActiveRuns: Bool) throws -> String
+
   func repairFromFile(modelId: String, sourcePath: String) throws
 
   /**
@@ -1622,6 +1629,23 @@ open class NativeSpeechModels: NativeSpeechModelsProtocol, @unchecked Sendable {
           self.uniffiCloneHandle(),
           FfiConverterString.lower(sessionId),
           FfiConverterTypeNativeTranscriptionIntent_lower(intent), uniffiCallStatus
+        )
+      })
+  }
+
+  /**
+   * Quarantines one installed model version. The returned directory is no
+   * longer loadable; the caller may move it to Trash. `active_run` means
+   * a transcription still holds the version, so the caller retries.
+   */
+  open func removeInstalled(modelId: String, cancelActiveRuns: Bool) throws -> String {
+    return try FfiConverterString.lift(
+      try rustCallWithError(FfiConverterTypeNativeSpeechError_lift) {
+        uniffiCallStatus in
+        uniffi_open_scribe_uniffi_fn_method_nativespeechmodels_remove_installed(
+          self.uniffiCloneHandle(),
+          FfiConverterString.lower(modelId),
+          FfiConverterBool.lower(cancelActiveRuns), uniffiCallStatus
         )
       })
   }
@@ -12319,6 +12343,9 @@ private let initializationResult: InitializationResult = {
   if uniffi_open_scribe_uniffi_checksum_method_nativespeechmodels_needs_decoded_companion_for_intent()
     != 15853
   {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_open_scribe_uniffi_checksum_method_nativespeechmodels_remove_installed() != 21378 {
     return InitializationResult.apiChecksumMismatch
   }
   if uniffi_open_scribe_uniffi_checksum_method_nativespeechmodels_repair_from_file() != 12844 {

@@ -5,7 +5,8 @@
 
 use super::*;
 use open_scribe_core::{
-    SpeechError, SpeechModelError, SpeechModels, StoreError, TranscriptionError, TranscriptionStage,
+    RemovalChoice, SpeechError, SpeechModelError, SpeechModels, StoreError, TranscriptionError,
+    TranscriptionStage,
 };
 use open_scribe_types::SessionId;
 use std::path::Path;
@@ -249,6 +250,25 @@ impl NativeSpeechModels {
         self.models
             .repair_from_file(&model_id, Path::new(&source_path))
             .map(|_| ())
+            .map_err(map_model_error)
+    }
+
+    /// Quarantines one installed model version. The returned directory is no
+    /// longer loadable; the caller may move it to Trash. `active_run` means
+    /// a transcription still holds the version, so the caller retries.
+    pub fn remove_installed(
+        &self,
+        model_id: String,
+        cancel_active_runs: bool,
+    ) -> Result<String, NativeSpeechError> {
+        let choice = if cancel_active_runs {
+            RemovalChoice::CancelActive
+        } else {
+            RemovalChoice::Wait
+        };
+        self.models
+            .remove(&model_id, choice)
+            .map(|removed| removed.quarantined_directory.to_string_lossy().into_owned())
             .map_err(map_model_error)
     }
 

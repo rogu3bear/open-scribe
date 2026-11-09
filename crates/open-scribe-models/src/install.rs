@@ -127,6 +127,16 @@ pub struct InstalledArtifact {
     pub relative_path: String,
 }
 
+/// An installed version directory renamed out of its loadable path.
+/// The bytes are still in `directory`. The platform may move that directory
+/// to Trash; this crate does not delete them.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct QuarantinedModel {
+    pub model_id: String,
+    pub version: String,
+    pub directory: PathBuf,
+}
+
 #[derive(Debug)]
 pub enum InstallError {
     RecordMismatch,
@@ -135,6 +145,8 @@ pub enum InstallError {
     ChangedSinceVerification,
     ConflictingInstallation,
     StagingExists,
+    NotInstalled,
+    NotOwnedDirectory,
     Io(io::Error),
 }
 
@@ -147,6 +159,8 @@ impl InstallError {
             Self::ChangedSinceVerification => "changed_since_verification",
             Self::ConflictingInstallation => "conflicting_installation",
             Self::StagingExists => "staging_exists",
+            Self::NotInstalled => "not_installed",
+            Self::NotOwnedDirectory => "not_owned_directory",
             Self::Io(_) => "io",
         }
     }
@@ -394,6 +408,72 @@ impl ModelLayout {
         discard_owned_file(&self.partial_path(record), device, inode)
     }
 
+    /// Renames `Models/<id>/<version>` out of the loadable path. The bytes
+    /// stay in the returned directory. A symlink, or a directory that is not
+    /// directly owned, is left untouched. An absent version is `NotInstalled`.
+    pub fn quarantine_installed(
+        &self,
+        record: &ModelRecord,
+    ) -> Result<QuarantinedModel, InstallError> {
+        let source = self.install_directory(record);
+        if !source.starts_with(&self.models) {
+            return Err(InstallError::NotOwnedDirectory);
+        }
+        let metadata = match fs::symlink_metadata(&source) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                return Err(InstallError::NotInstalled);
+            }
+            Err(error) => return Err(error.into()),
+        };
+        self.require_direct_owned(&source, &metadata)?;
+        let removed_root = self.models.join(".removed").join(&record.id);
+        self.ensure_owned_directory(&removed_root)?;
+        let destination = quarantine_destination(&removed_root, &record.version, metadata.ino())?;
+        let current = fs::symlink_metadata(&source)?;
+        if current.file_type() != metadata.file_type()
+            || current.dev() != metadata.dev()
+            || current.ino() != metadata.ino()
+        {
+            return Err(InstallError::NotOwnedDirectory);
+        }
+        fs::rename(&source, &destination)?;
+        sync_directory(&removed_root)?;
+        if let Some(parent) = source.parent() {
+            sync_directory(parent)?;
+        }
+        Ok(QuarantinedModel {
+            model_id: record.id.clone(),
+            version: record.version.clone(),
+            directory: destination,
+        })
+    }
+
+    fn require_direct_owned(
+        &self,
+        directory: &Path,
+        metadata: &fs::Metadata,
+    ) -> Result<(), InstallError> {
+        let root = self.models.parent().expect("managed model parent");
+        let owner = fs::symlink_metadata(root)?.uid();
+        if !metadata.is_dir() || metadata.file_type().is_symlink() || metadata.uid() != owner {
+            return Err(InstallError::NotOwnedDirectory);
+        }
+        let mut path = root.to_path_buf();
+        for part in directory
+            .strip_prefix(root)
+            .map_err(|_| InstallError::NotOwnedDirectory)?
+            .components()
+        {
+            path.push(part);
+            let metadata = fs::symlink_metadata(&path)?;
+            if !metadata.is_dir() || metadata.file_type().is_symlink() || metadata.uid() != owner {
+                return Err(InstallError::NotOwnedDirectory);
+            }
+        }
+        Ok(())
+    }
+
     fn ensure_owned_directory(&self, directory: &Path) -> io::Result<()> {
         let root = self.models.parent().expect("managed model parent");
         let metadata = fs::symlink_metadata(root)?;
@@ -435,6 +515,23 @@ fn retained_invalid_pair(existing: &fs::Metadata, retained: &Path) -> io::Result
         && retained.dev() == existing.dev()
         && retained.ino() == existing.ino()
         && retained.uid() == existing.uid())
+}
+
+fn quarantine_destination(root: &Path, version: &str, inode: u64) -> io::Result<PathBuf> {
+    for attempt in 0..1_000 {
+        let name = if attempt == 0 {
+            format!("{version}-{inode}")
+        } else {
+            format!("{version}-{inode}-{attempt}")
+        };
+        let path = root.join(name);
+        match fs::symlink_metadata(&path) {
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(path),
+            Ok(_) => continue,
+            Err(error) => return Err(error),
+        }
+    }
+    Err(io::Error::other("model quarantine name is exhausted"))
 }
 
 fn discard_owned_file(path: &Path, device: u64, inode: u64) -> io::Result<()> {
@@ -771,6 +868,52 @@ mod tests {
         assert_eq!(
             resume_decision(&record, Some(&wrong_length), &wrong_length, 10),
             ResumeDecision::Restart
+        );
+    }
+
+    #[test]
+    fn quarantine_moves_an_installed_version_and_leaves_a_recording_in_place() {
+        let root = tempfile::tempdir().unwrap();
+        let layout = ModelLayout::new(root.path());
+        let bytes = fixture_bytes(51864);
+        let record = fixture(&bytes);
+        let staged = stage(&layout, &record, &bytes);
+        let verified = verify_staged(&record, ENGINE, COMPATIBILITY, &staged).unwrap();
+        layout.install(&record, &verified, &staged).unwrap();
+        let installed = layout.installed_path(&record);
+        let recording = root.path().join("Sessions/s/audio/mic/000000-0.caf");
+        fs::create_dir_all(recording.parent().unwrap()).unwrap();
+        fs::write(&recording, b"recording-bytes").unwrap();
+
+        let removed = layout.quarantine_installed(&record).unwrap();
+        assert!(!installed.exists());
+        assert!(
+            removed
+                .directory
+                .starts_with(root.path().join("Models/.removed"))
+        );
+        assert_eq!(
+            fs::read(removed.directory.join(&record.file_name)).unwrap(),
+            bytes
+        );
+        assert_eq!(fs::read(&recording).unwrap(), b"recording-bytes");
+        assert!(matches!(
+            layout.quarantine_installed(&record),
+            Err(InstallError::NotInstalled)
+        ));
+
+        let outside = root.path().join("outside-model");
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(outside.join(&record.file_name), b"keep-me").unwrap();
+        fs::create_dir_all(layout.install_directory(&record).parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(&outside, layout.install_directory(&record)).unwrap();
+        assert!(matches!(
+            layout.quarantine_installed(&record),
+            Err(InstallError::NotOwnedDirectory)
+        ));
+        assert_eq!(
+            fs::read(outside.join(&record.file_name)).unwrap(),
+            b"keep-me"
         );
     }
 

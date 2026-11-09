@@ -1,8 +1,10 @@
 //! Local speech models and final transcription of a saved session (ADR 0008,
 //! ADR 0009). The checked manifest is the only catalog. A model file enters
 //! only by copy into managed staging, full verification, a decode self-test,
-//! and atomic installation, and it is reverified before every load. Nothing
-//! here touches the network.
+//! and atomic installation, and it is reverified before every load. Removal
+//! blocks a new run, asks an active run to stop at its next checkpoint, then
+//! renames the version directory out of the loadable path. Nothing here
+//! touches the network or the conversation library.
 
 use crate::transcription::{TranscriptionError, TranscriptionOutcome, TranscriptionProgress};
 use open_scribe_asr::{
@@ -10,15 +12,17 @@ use open_scribe_asr::{
     WHISPER_ENGINE, WHISPER_ENGINE_COMPATIBILITY, WhisperLoadError, WhisperRecognizer,
 };
 use open_scribe_models::{
-    Catalog, CatalogError, InstallError, InstalledArtifact, ModelLayout, ModelRecord, VerifyError,
-    verify_staged,
+    Catalog, CatalogError, InstallError, InstalledArtifact, ModelLayout, ModelRecord,
+    QuarantinedModel, VerifyError, verify_staged,
 };
 use open_scribe_store::{SessionStore, StoreError};
 use open_scribe_types::{ModelReadiness, SessionId};
+use std::collections::HashMap;
 use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SpeechModelStatus {
@@ -46,6 +50,12 @@ pub enum SpeechModelError {
     Install(InstallError),
     Load(WhisperLoadError),
     SelfTest(RecognizerError),
+    /// A transcription run still holds this model. The installed directory
+    /// stays where it is.
+    ActiveRun,
+    /// Removal has blocked new runs and the installed directory is not yet
+    /// quarantined.
+    Removing,
 }
 
 impl SpeechModelError {
@@ -59,6 +69,8 @@ impl SpeechModelError {
             Self::Install(error) => error.class(),
             Self::Load(error) => error.class(),
             Self::SelfTest(_) => "self_test_failed",
+            Self::ActiveRun => "active_run",
+            Self::Removing => "removing",
         }
     }
 }
@@ -88,10 +100,74 @@ impl fmt::Display for SpeechError {
 
 impl std::error::Error for SpeechError {}
 
+/// What to do with a transcription run that still holds the model.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RemovalChoice {
+    /// Leave the installed directory in place until the run drops.
+    Wait,
+    /// Ask the run to stop. The directory stays until the run drops.
+    CancelActive,
+}
+
+/// The former version directory, no longer on the loadable path.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RemovedSpeechModel {
+    pub model_id: String,
+    pub version: String,
+    pub quarantined_directory: PathBuf,
+}
+
+struct ModelRunState {
+    holders: usize,
+    cancel: Arc<AtomicBool>,
+    removing: bool,
+}
+
+impl Default for ModelRunState {
+    fn default() -> Self {
+        Self {
+            holders: 0,
+            cancel: Arc::new(AtomicBool::new(false)),
+            removing: false,
+        }
+    }
+}
+
+struct ModelRunGate {
+    inner: Mutex<HashMap<String, ModelRunState>>,
+}
+
+impl ModelRunGate {
+    fn lock(&self) -> MutexGuard<'_, HashMap<String, ModelRunState>> {
+        self.inner.lock().unwrap_or_else(|error| error.into_inner())
+    }
+}
+
+/// Held for the recognizer portion of one transcription call.
+pub(crate) struct ModelRunGuard {
+    gate: Arc<ModelRunGate>,
+    model_id: String,
+    pub(crate) cancel: Arc<AtomicBool>,
+}
+
+impl Drop for ModelRunGuard {
+    fn drop(&mut self) {
+        let mut runs = self.gate.lock();
+        let Some(entry) = runs.get_mut(&self.model_id) else {
+            return;
+        };
+        entry.holders = entry.holders.saturating_sub(1);
+        if entry.holders == 0 && !entry.removing {
+            runs.remove(&self.model_id);
+        }
+    }
+}
+
 pub struct SpeechModels {
     managed_root: PathBuf,
     catalog: Catalog,
     layout: ModelLayout,
+    runs: Arc<ModelRunGate>,
 }
 
 impl SpeechModels {
@@ -103,6 +179,9 @@ impl SpeechModels {
         Ok(Self {
             catalog: Catalog::canonical().map_err(SpeechModelError::Catalog)?,
             layout: ModelLayout::new(&managed_root),
+            runs: Arc::new(ModelRunGate {
+                inner: Mutex::new(HashMap::new()),
+            }),
             managed_root,
         })
     }
@@ -178,8 +257,77 @@ impl SpeechModels {
         self.stage_verify_install(record, source, true)
     }
 
+    /// Blocks new runs, then renames the version directory out of the loadable
+    /// path. An active run keeps that directory until it drops. Cancel asks
+    /// the run to stop at its next checkpoint. Bytes stay in the quarantined
+    /// directory. This does not open the conversation library.
+    pub fn remove(
+        &self,
+        model_id: &str,
+        choice: RemovalChoice,
+    ) -> Result<RemovedSpeechModel, SpeechModelError> {
+        let record = self.record(model_id)?.clone();
+        let mut runs = self.runs.lock();
+        {
+            let entry = runs.entry(record.id.clone()).or_default();
+            entry.removing = true;
+            if entry.holders > 0 {
+                if choice == RemovalChoice::CancelActive {
+                    entry.cancel.store(true, Ordering::Release);
+                }
+                return Err(SpeechModelError::ActiveRun);
+            }
+        }
+        let quarantined = match self.layout.quarantine_installed(&record) {
+            Ok(quarantined) => quarantined,
+            Err(InstallError::NotInstalled) => {
+                runs.remove(&record.id);
+                return Err(SpeechModelError::NotInstalled);
+            }
+            Err(error) => {
+                if let Some(entry) = runs.get_mut(&record.id) {
+                    entry.removing = false;
+                    if entry.holders == 0 {
+                        runs.remove(&record.id);
+                    }
+                }
+                return Err(SpeechModelError::Install(error));
+            }
+        };
+        runs.remove(&record.id);
+        Ok(removed_model(quarantined))
+    }
+
+    /// One in-flight recognizer use. Transcription holds this across load and
+    /// execution so removal cannot rename the model underneath it.
+    pub(crate) fn begin_model_run(
+        &self,
+        model_id: &str,
+    ) -> Result<ModelRunGuard, SpeechModelError> {
+        let mut runs = self.runs.lock();
+        let entry = runs.entry(model_id.to_owned()).or_default();
+        if entry.removing {
+            return Err(SpeechModelError::Removing);
+        }
+        entry.holders += 1;
+        Ok(ModelRunGuard {
+            gate: Arc::clone(&self.runs),
+            model_id: model_id.to_owned(),
+            cancel: Arc::clone(&entry.cancel),
+        })
+    }
+
+    fn ensure_not_removing(&self, model_id: &str) -> Result<(), SpeechModelError> {
+        let runs = self.runs.lock();
+        if runs.get(model_id).is_some_and(|entry| entry.removing) {
+            return Err(SpeechModelError::Removing);
+        }
+        Ok(())
+    }
+
     /// Reverifies the installed bytes, then loads them.
     pub fn load(&self, model_id: &str) -> Result<WhisperRecognizer, SpeechModelError> {
+        self.ensure_not_removing(model_id)?;
         let record = self.record(model_id)?;
         let path = self.layout.installed_path(record);
         if !fs::symlink_metadata(&path).is_ok_and(|metadata| metadata.is_file()) {
@@ -284,18 +432,31 @@ impl SpeechModels {
             .map_err(SpeechError::Transcription);
         }
         let record = self.record(model_id).map_err(SpeechError::Model)?;
+        let run = self.begin_model_run(model_id).map_err(SpeechError::Model)?;
+        let removal_cancel = Arc::clone(&run.cancel);
+        let mut bridge = |index, count, update| {
+            if removal_cancel.load(Ordering::Acquire) {
+                cancel.store(true, Ordering::Release);
+            }
+            progress(index, count, update);
+        };
+        if removal_cancel.load(Ordering::Acquire) {
+            cancel.store(true, Ordering::Release);
+        }
         let options = DecodeOptions::final_pass(decode_language(&record.languages));
         let mut recognizer = self.load(model_id).map_err(SpeechError::Model)?;
-        crate::execute_transcription_plan(
+        let transcribed = crate::execute_transcription_plan(
             &mut store,
             Some(&mut recognizer),
             &options,
             &plan,
             decoded_companion,
             cancel,
-            progress,
-        )
-        .map_err(SpeechError::Transcription)
+            &mut bridge,
+        );
+        drop(recognizer);
+        drop(run);
+        transcribed.map_err(SpeechError::Transcription)
     }
 
     fn stage_verify_install(
@@ -372,6 +533,14 @@ pub fn transcribe_session(
 /// One second of silence must decode before a model is installed. This
 /// proves the verified bytes load and run in this engine; it is not an
 /// accuracy test.
+fn removed_model(quarantined: QuarantinedModel) -> RemovedSpeechModel {
+    RemovedSpeechModel {
+        model_id: quarantined.model_id,
+        version: quarantined.version,
+        quarantined_directory: quarantined.directory,
+    }
+}
+
 fn self_test(staged: &Path, record: &ModelRecord) -> Result<(), SpeechModelError> {
     let mut recognizer = WhisperRecognizer::load(staged, &record.id, &record.sha256)
         .map_err(SpeechModelError::Load)?;

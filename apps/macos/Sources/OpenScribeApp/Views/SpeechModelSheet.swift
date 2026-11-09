@@ -84,9 +84,9 @@ struct SpeechModelSheet: View {
             .accessibilityLabel("Download \(Self.title(model)) speech model")
         }
         Spacer()
-        if speech.isInstalling {
+        if speech.isInstalling || speech.isRemoving {
           ProgressView().controlSize(.small)
-          Text("Checking…").font(.caption)
+          Text(speech.isRemoving ? "Removing…" : "Checking…").font(.caption)
         } else if !model.installed {
           Button(model.readiness == .invalid ? "Repair from File…" : "Install from File…") {
             choose(model)
@@ -95,6 +95,12 @@ struct SpeechModelSheet: View {
           .accessibilityLabel(
             "\(model.readiness == .invalid ? "Repair" : "Install") \(Self.title(model)) speech model from file"
           )
+        }
+        if model.readiness != .absent && !speech.isInstalling && !speech.isRemoving {
+          Button("Remove", role: .destructive) {
+            Task { await speech.remove(model) }
+          }
+          .accessibilityLabel("Remove \(Self.title(model)) speech model")
         }
       }
     }

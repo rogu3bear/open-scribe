@@ -8,6 +8,7 @@ import Foundation
 final class SpeechTranscriptionModel: ObservableObject {
   @Published private(set) var models: [NativeSpeechModel] = []
   @Published private(set) var isInstalling = false
+  @Published private(set) var isRemoving = false
   @Published private(set) var isRefreshing = false
   @Published private(set) var catalogWarning: String?
   @Published private(set) var transcribingSessionId: String?
@@ -104,7 +105,7 @@ final class SpeechTranscriptionModel: ObservableObject {
   /// The chosen source file is not changed; rejected bytes install nothing.
   @discardableResult
   func install(_ model: NativeSpeechModel, from url: URL) async -> Bool {
-    guard let speech, !isInstalling else { return false }
+    guard let speech, !isInstalling, !isRemoving else { return false }
     isInstalling = true
     report(nil)
     defer { isInstalling = false }
@@ -133,6 +134,66 @@ final class SpeechTranscriptionModel: ObservableObject {
       report("\(model.fileName) verified and installed.")
       AppTelemetry.libraryNote(
         stage: "speech-install", detail: "model=\(modelToken) result=installed")
+      return true
+    } catch {
+      refresh()
+      report(Self.describe(error), failure: true)
+      AppTelemetry.libraryNote(
+        stage: "speech-install",
+        detail: "model=\(modelToken) result=rejected code=\(Self.speechCode(error))"
+      )
+      return false
+    }
+  }
+
+  /// Moves one installed version out of the loadable path, then to Trash.
+  /// An active transcription is asked to stop; this wait does not run on the
+  /// capture path. The model bytes stay on disk until Trash accepts them.
+  @discardableResult
+  func remove(_ model: NativeSpeechModel) async -> Bool {
+    guard let speech, !isInstalling, !isRemoving else { return false }
+    isRemoving = true
+    report(nil)
+    defer { isRemoving = false }
+    let modelId = model.modelId
+    let modelToken = DiagnosticPrivacy.token(modelId)
+    let fileName = model.fileName
+    do {
+      let quarantined = try await Task.detached(priority: .utility) {
+        var pending = 0
+        while true {
+          do {
+            return try speech.removeInstalled(modelId: modelId, cancelActiveRuns: true)
+          } catch let error as NativeSpeechError {
+            if case .ModelRejected(let reason) = error, reason == "active_run", pending < 50 {
+              pending += 1
+              try await Task.sleep(for: .milliseconds(200))
+              continue
+            }
+            throw error
+          }
+        }
+      }.value
+      var trashed = false
+      if FileManager.default.fileExists(atPath: quarantined) {
+        do {
+          try FileManager.default.trashItem(
+            at: URL(fileURLWithPath: quarantined, isDirectory: true), resultingItemURL: nil)
+          trashed = true
+        } catch {
+          trashed = false
+        }
+      }
+      await refreshAndWait()
+      if trashed {
+        report("\(fileName) was removed.")
+      } else {
+        report(
+          "\(fileName) was removed from transcription. The file is still on this Mac.",
+          failure: true)
+      }
+      AppTelemetry.libraryNote(
+        stage: "speech-install", detail: "model=\(modelToken) result=deleted")
       return true
     } catch {
       refresh()

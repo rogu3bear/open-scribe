@@ -1,16 +1,16 @@
 use crate::speech::{
-    SpeechError, SpeechModelError, SpeechModels, decode_language, transcribe_session,
+    RemovalChoice, SpeechError, SpeechModelError, SpeechModels, decode_language, transcribe_session,
 };
 use crate::transcription::tests::{BurstRecognizer, imported};
 use crate::{TranscriptLibrary, TranscriptionError};
 use open_scribe_asr::{
     DecodeOptions, Language, WHISPER_ENGINE, WHISPER_ENGINE_COMPATIBILITY, WHISPER_ENGINE_VERSION,
 };
-use open_scribe_models::{Catalog, VerifyError};
+use open_scribe_models::{Catalog, ModelLayout, VerifyError};
 use open_scribe_store::{ImportMediaRequest, SessionStore, StoreError};
 use open_scribe_types::SessionId;
 use std::path::PathBuf;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 #[test]
 fn every_manifest_speech_model_names_this_exact_engine() {
@@ -358,4 +358,68 @@ fn the_pinned_model_installs_and_transcribes_an_imported_conversation() {
         "SPEECH_END_TO_END_GREEN segments={} text={text:?}",
         outcomes[0].segment_count
     );
+}
+
+#[test]
+fn removing_an_installed_model_keeps_its_bytes_and_the_recording() {
+    let fixture = imported(1);
+    let media_before = std::fs::read(&fixture.media).unwrap();
+    let models = SpeechModels::open(&fixture.root).unwrap();
+    let record = Catalog::canonical()
+        .unwrap()
+        .get("whisper-small.en-q5_1")
+        .unwrap()
+        .clone();
+    let layout = ModelLayout::new(&fixture.root);
+    let installed = layout.installed_path(&record);
+    std::fs::create_dir_all(installed.parent().unwrap()).unwrap();
+    let weights = b"not-a-weight";
+    std::fs::write(&installed, weights).unwrap();
+
+    let held = models.begin_model_run(&record.id).unwrap();
+    assert!(matches!(
+        models.remove(&record.id, RemovalChoice::Wait),
+        Err(SpeechModelError::ActiveRun)
+    ));
+    assert_eq!(std::fs::read(&installed).unwrap(), weights);
+    assert!(matches!(
+        models.remove(&record.id, RemovalChoice::CancelActive),
+        Err(SpeechModelError::ActiveRun)
+    ));
+    assert!(held.cancel.load(Ordering::Acquire));
+    assert_eq!(std::fs::read(&installed).unwrap(), weights);
+    drop(held);
+
+    let removed = models
+        .remove(&record.id, RemovalChoice::Wait)
+        .expect("idle removal quarantines the version");
+    assert!(!installed.exists());
+    assert_eq!(
+        std::fs::read(removed.quarantined_directory.join(&record.file_name)).unwrap(),
+        weights
+    );
+    assert_eq!(std::fs::read(&fixture.media).unwrap(), media_before);
+    assert!(matches!(
+        models.load(&record.id),
+        Err(SpeechModelError::NotInstalled)
+    ));
+    assert!(matches!(
+        models.transcribe(
+            &record.id,
+            &fixture.session,
+            None,
+            &AtomicBool::new(false),
+            &mut |_, _, _| {}
+        ),
+        Err(SpeechError::Model(SpeechModelError::NotInstalled))
+    ));
+    assert_eq!(std::fs::read(&fixture.media).unwrap(), media_before);
+    assert!(matches!(
+        models.remove("not-a-model", RemovalChoice::Wait),
+        Err(SpeechModelError::UnknownModel)
+    ));
+    assert!(matches!(
+        models.remove("whisper-small-q5_1", RemovalChoice::Wait),
+        Err(SpeechModelError::NotInstalled)
+    ));
 }

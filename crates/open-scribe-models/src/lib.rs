@@ -3,8 +3,9 @@
 //! The checked `docs/models/manifest.v1.json` is the only catalog authority
 //! (ADR 0008, ADR 0017). This crate never downloads: platform adapters move
 //! bytes into a staging `.part` file, and this crate decides whether a
-//! partial may resume, verifies completed bytes, and atomically installs a
-//! verified artifact. Nothing here loads or executes a model.
+//! partial may resume, verifies completed bytes, atomically installs a
+//! verified artifact, and quarantines an installed version directory without
+//! deleting its bytes. Nothing here loads, executes, or downloads a model.
 
 mod catalog;
 mod install;
@@ -12,8 +13,8 @@ mod verify;
 
 pub use catalog::{Catalog, CatalogError, ModelHeader, ModelRecord};
 pub use install::{
-    InstallError, InstalledArtifact, LocalStagedModel, ModelLayout, ResumeDecision,
-    TransferValidator, resume_decision,
+    InstallError, InstalledArtifact, LocalStagedModel, ModelLayout, QuarantinedModel,
+    ResumeDecision, TransferValidator, resume_decision,
 };
 pub use verify::{VerifiedArtifact, VerifyError, verify_staged};
 

@@ -18,7 +18,7 @@ Shared crates must remain free of filesystem, SQLite, network, Apple, model-runt
 - `open-scribe-asr` — `SpeechRecognizer` capability, 48 kHz to 16 kHz mono conversion, chunk planning, overlap reconciliation, and the in-process whisper.cpp 1.8.3 recognizer (Accelerate and Metal)
 - `open-scribe-diarize` — intended VAD/embedding/clustering pipeline
 - `open-scribe-memory` — intended structured meeting-memory validation
-- `open-scribe-models` — checked model catalog, staging from a chosen file, verification, and atomic installation policy; it never downloads or loads a model
+- `open-scribe-models` — checked model catalog, staging from a chosen file, verification, atomic installation, and quarantine of an installed version; it never downloads, loads, or deletes model bytes
 - `open-scribe-core` — native orchestration: recording preparation, the review library, transcript, audio, and portable package exports, opening a portable package from another Mac, and local model installation and transcription
 - `open-scribe-uniffi` — the coarse Swift control and query boundary
 

@@ -47,8 +47,8 @@ mod transcription_plan;
 pub use open_scribe_asr::{WHISPER_ENGINE, WHISPER_ENGINE_VERSION};
 pub use open_scribe_types::TranscriptionIntent;
 pub use speech::{
-    SpeechError, SpeechModelError, SpeechModelStatus, SpeechModels, decode_language,
-    transcribe_session,
+    RemovalChoice, RemovedSpeechModel, SpeechError, SpeechModelError, SpeechModelStatus,
+    SpeechModels, decode_language, transcribe_session,
 };
 pub use transcription_plan::{
     SessionTranscriptionPlan, execute_transcription_plan, plan_session_transcription,

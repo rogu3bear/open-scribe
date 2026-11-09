@@ -557,6 +557,13 @@ uniffi_open_scribe_uniffi_fn_method_nativespeechmodels_needs_decoded_companion_f
     uint64_t ptr, RustBuffer session_id, RustBuffer intent,
     RustCallStatus *_Nonnull out_status);
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_FN_METHOD_NATIVESPEECHMODELS_REMOVE_INSTALLED
+#define UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_FN_METHOD_NATIVESPEECHMODELS_REMOVE_INSTALLED
+RustBuffer
+uniffi_open_scribe_uniffi_fn_method_nativespeechmodels_remove_installed(
+    uint64_t ptr, RustBuffer model_id, int8_t cancel_active_runs,
+    RustCallStatus *_Nonnull out_status);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_FN_METHOD_NATIVESPEECHMODELS_REPAIR_FROM_FILE
 #define UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_FN_METHOD_NATIVESPEECHMODELS_REPAIR_FROM_FILE
 void uniffi_open_scribe_uniffi_fn_method_nativespeechmodels_repair_from_file(
@@ -1545,6 +1552,14 @@ uniffi_open_scribe_uniffi_checksum_method_nativespeechmodels_needs_decoded_compa
 #define UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_CHECKSUM_METHOD_NATIVESPEECHMODELS_NEEDS_DECODED_COMPANION_FOR_INTENT
 uint16_t
 uniffi_open_scribe_uniffi_checksum_method_nativespeechmodels_needs_decoded_companion_for_intent(
+    void
+
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_CHECKSUM_METHOD_NATIVESPEECHMODELS_REMOVE_INSTALLED
+#define UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_CHECKSUM_METHOD_NATIVESPEECHMODELS_REMOVE_INSTALLED
+uint16_t
+uniffi_open_scribe_uniffi_checksum_method_nativespeechmodels_remove_installed(
     void
 
 );
