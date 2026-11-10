@@ -3017,6 +3017,160 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
     withExtendedLifetime(window) {}
   }
 
+  /// A pasteboard carrying the file URL and filename list Finder writes stages
+  /// the audio. Confirming the banner imports it and Play starts that
+  /// conversation. The original stays unchanged. The drag supplies no item
+  /// provider. The test does not call `stageDroppedAudio`,
+  /// `confirmPendingAudioImport`, or `play`.
+  func testHostedFinderFileDropConfirmsImportAndLeavesTheOriginal() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "open-scribe-finder-drop-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let source = root.appendingPathComponent("Finder drop.m4a")
+    do {
+      let file = try AVAudioFile(
+        forWriting: source,
+        settings: [
+          AVFormatIDKey: kAudioFormatAppleLossless,
+          AVSampleRateKey: 48_000.0,
+          AVNumberOfChannelsKey: 1,
+          AVEncoderBitDepthHintKey: 16,
+        ])
+      let buffer = try XCTUnwrap(
+        AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: 48_000))
+      buffer.frameLength = 48_000
+      let channel = try XCTUnwrap(buffer.floatChannelData?[0])
+      for frame in 0..<48_000 {
+        channel[frame] = frame < 24_000 ? 0.25 : -0.5
+      }
+      try file.write(from: buffer)
+    }
+    let original = try Data(contentsOf: source)
+    let importRoot = root.appendingPathComponent("Library", isDirectory: true)
+    try FileManager.default.createDirectory(at: importRoot, withIntermediateDirectories: false)
+    let store = RuntimeLibraryStore(managedRoot: importRoot, refreshesImmediately: false)
+    let player = RecoveredAudioPlayerFake()
+    let recovery = RecoveredSessionController(
+      recoveryFactory: {
+        try NativeRecordingPreparation.open(managedRoot: importRoot.path)
+      },
+      importedPlaybackLeaseProvider: { sessionId in
+        try NativeRecordingPreparation.open(managedRoot: importRoot.path)
+          .leaseImportedPlayback(sessionId: sessionId)
+      },
+      player: player
+    )
+    let live = LiveMicrophoneRecordingController(managedRoot: importRoot)
+    let adapter = ImportedMediaAuthorityAdapter(
+      startSecurityScope: { _ in true },
+      stopSecurityScope: { _ in },
+      canBeginImport: { live.canStart },
+      importer: { title, url in
+        try store.importManagedAudio(title: title, sourceURL: url)
+      }
+    )
+    let view = ContentView(
+      store: store,
+      importedMediaAuthority: adapter,
+      liveRecording: live,
+      recoveredSessions: recovery,
+      transcripts: TranscriptLibraryModel(managedRoot: importRoot),
+      speech: SpeechTranscriptionModel(managedRoot: importRoot),
+      scheduler: TranscriptionScheduler.inert(),
+      pressure: SystemPressureMonitor(libraryRoot: importRoot, samplesAutomatically: false),
+      context: ContextScopeModel(
+        binding: { nil },
+        frames: IdleContextFrames(),
+        permissionCheck: { .denied },
+        permissionRequest: { .denied },
+        topology: { [] }
+      ),
+      navigation: MainWorkspaceNavigation()
+    )
+    let host = NSHostingView(rootView: view)
+    host.sizingOptions = []
+    let window = NSWindow(
+      contentRect: NSRect(x: 0, y: 0, width: 1100, height: 720),
+      styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    window.contentView = host
+    window.setContentSize(NSSize(width: 1100, height: 720))
+    host.frame = window.contentLayoutRect
+    window.makeKeyAndOrderFront(nil)
+    window.orderFrontRegardless()
+    defer { window.close() }
+    let ready = await waitUntil(timeoutNanoseconds: 5_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      window.displayIfNeeded()
+      return self.dropDestination(in: host) != nil
+    }
+    let destination = try XCTUnwrap(self.dropDestination(in: host))
+    XCTAssertTrue(ready && window.contentView === host)
+    XCTAssertEqual(destination.accessibilityIdentifier(), "Audio drop")
+    XCTAssertTrue(destination.registeredDraggedTypes.contains(.fileURL))
+    XCTAssertTrue(
+      destination.registeredDraggedTypes.contains(
+        NSPasteboard.PasteboardType("NSFilenamesPboardType")))
+    let location = destination.convert(
+      NSPoint(x: destination.bounds.midX, y: destination.bounds.midY), to: nil)
+    let drag = FinderFileDrag(fileURL: source, window: window, location: location)
+    defer { drag.draggingPasteboard.releaseGlobally() }
+    XCTAssertTrue(drag.wroteFileURL)
+    XCTAssertTrue(drag.draggingPasteboard.types?.contains(.fileURL) == true)
+    XCTAssertEqual(
+      drag.draggingPasteboard.propertyList(
+        forType: NSPasteboard.PasteboardType("NSFilenamesPboardType")) as? [String],
+      [source.path])
+    let entered = destinationDragOperation("draggingEntered:", on: destination, info: drag)
+    let updated = destinationDragOperation("draggingUpdated:", on: destination, info: drag)
+    let prepared = destinationDragAccepted("prepareForDragOperation:", on: destination, info: drag)
+    let performed = destinationDragAccepted("performDragOperation:", on: destination, info: drag)
+    destinationDragEnded("concludeDragOperation:", on: destination, info: drag)
+    destinationDragEnded("draggingEnded:", on: destination, info: drag)
+    XCTAssertFalse(drag.didEnumerateItems)
+    let operation = updated == 0 ? entered : updated
+    XCTAssertNotEqual(operation, 0)
+    XCTAssertTrue(prepared && performed)
+    let staged = await waitUntil(timeoutNanoseconds: 5_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      window.displayIfNeeded()
+      return adapter.pendingAudioImport?.urls == [source]
+        && self.bannerImportButton(in: host) != nil
+    }
+    XCTAssertTrue(staged && window.contentView === host, adapter.statusMessage ?? "nil")
+    XCTAssertTrue(store.savedSessions.isEmpty)
+    let confirm = try XCTUnwrap(self.bannerImportButton(in: host))
+    confirm.performClick(nil)
+    let imported = await waitUntil(timeoutNanoseconds: 15_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      window.displayIfNeeded()
+      return adapter.phase == .succeeded
+        && adapter.importedSessionId != nil
+        && self.playConversationButton(in: host) != nil
+    }
+    XCTAssertTrue(
+      imported,
+      "phase=\(adapter.phase) message=\(adapter.statusMessage ?? "nil")"
+    )
+    let sessionId = try XCTUnwrap(adapter.importedSessionId)
+    let saved = try XCTUnwrap(store.savedSessions.first { $0.sessionId == sessionId })
+    XCTAssertEqual(saved.playableMedia?.isPlayable, true)
+    let play = try XCTUnwrap(self.playConversationButton(in: host))
+    play.performClick(nil)
+    let playing = await waitUntil(timeoutNanoseconds: 5_000_000_000) {
+      return recovery.playingSessionId == sessionId
+        && player.importedReceipt?.isEmpty == false
+    }
+    XCTAssertTrue(playing, recovery.errorMessage ?? "not playing")
+    XCTAssertEqual(try Data(contentsOf: source), original)
+    withExtendedLifetime(store) {}
+    withExtendedLifetime(live) {}
+    withExtendedLifetime(recovery) {}
+    withExtendedLifetime(window) {}
+    withExtendedLifetime(drag) {}
+  }
+
   /// A file dropped on the hosted library imports when that same hosting view's
   /// banner button is pressed, then plays when that same view's Play button is
   /// pressed. The original file stays unchanged. The test does not call
@@ -3908,11 +4062,12 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
   private func dropDestination(in root: NSView) -> NSView? {
     var matched: NSView?
     func walk(_ view: NSView) {
-      let name = String(describing: type(of: view))
-      if name.contains("DraggingDestination"),
+      if matched != nil { return }
+      if view.accessibilityIdentifier() == "Audio drop",
         view.responds(to: NSSelectorFromString("performDragOperation:"))
       {
         matched = view
+        return
       }
       for child in view.subviews {
         walk(child)
@@ -3923,7 +4078,7 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
   }
 
   private func destinationDragOperation(
-    _ selectorName: String, on view: NSView, info: AudioFileDrag
+    _ selectorName: String, on view: NSView, info: NSDraggingInfo
   ) -> UInt {
     let selector = NSSelectorFromString(selectorName)
     guard view.responds(to: selector) else { return 0 }
@@ -3933,7 +4088,7 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
   }
 
   private func destinationDragAccepted(
-    _ selectorName: String, on view: NSView, info: AudioFileDrag
+    _ selectorName: String, on view: NSView, info: NSDraggingInfo
   ) -> Bool {
     let selector = NSSelectorFromString(selectorName)
     guard view.responds(to: selector) else { return false }
@@ -3943,7 +4098,7 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
   }
 
   private func destinationDragEnded(
-    _ selectorName: String, on view: NSView, info: AudioFileDrag
+    _ selectorName: String, on view: NSView, info: NSDraggingInfo
   ) {
     let selector = NSSelectorFromString(selectorName)
     guard view.responds(to: selector) else { return }
@@ -4518,6 +4673,63 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
 private struct IdleContextFrames: ContextFrameCapturing {
   func captureFrame(_ target: ContextCaptureTarget) async throws -> CGImage {
     throw CancellationError()
+  }
+}
+
+/// A file drop whose pasteboard carries the public types Finder writes.
+/// It does not install an item provider.
+private final class FinderFileDrag: NSObject, NSDraggingInfo {
+  let fileURL: URL
+  let draggingDestinationWindow: NSWindow?
+  let draggingLocation: NSPoint
+  let wroteFileURL: Bool
+  private(set) var didEnumerateItems = false
+  private let pasteboard: NSPasteboard
+
+  init(fileURL: URL, window: NSWindow?, location: NSPoint) {
+    self.fileURL = fileURL
+    self.draggingDestinationWindow = window
+    self.draggingLocation = location
+    let pasteboard = NSPasteboard(
+      name: NSPasteboard.Name("open-scribe-finder-drop-\(UUID().uuidString)"))
+    let filenames = NSPasteboard.PasteboardType("NSFilenamesPboardType")
+    pasteboard.clearContents()
+    let wrote = pasteboard.writeObjects([fileURL as NSURL])
+    pasteboard.addTypes([filenames], owner: nil)
+    pasteboard.setPropertyList([fileURL.path], forType: filenames)
+    self.wroteFileURL = wrote
+    self.pasteboard = pasteboard
+    super.init()
+  }
+
+  var draggingSourceOperationMask: NSDragOperation { .copy }
+  var draggedImageLocation: NSPoint { draggingLocation }
+  var draggedImage: NSImage? { nil }
+  var draggingPasteboard: NSPasteboard { pasteboard }
+  var draggingSource: Any? { nil }
+  var draggingSequenceNumber: Int { 1 }
+
+  func slideDraggedImage(to screenPoint: NSPoint) {}
+
+  override func namesOfPromisedFilesDropped(atDestination dropDestination: URL) -> [String]? {
+    nil
+  }
+
+  var draggingFormation: NSDraggingFormation = .default
+  var animatesToDestination = false
+  var numberOfValidItemsForDrop = 1
+  var springLoadingHighlight: NSSpringLoadingHighlight { .none }
+
+  func resetSpringLoading() {}
+
+  func enumerateDraggingItems(
+    options enumOpts: NSDraggingItemEnumerationOptions,
+    for view: NSView?,
+    classes classArray: [AnyClass],
+    searchOptions: [NSPasteboard.ReadingOptionKey: Any] = [:],
+    using block: (NSDraggingItem, Int, UnsafeMutablePointer<ObjCBool>) -> Void
+  ) {
+    didEnumerateItems = true
   }
 }
 

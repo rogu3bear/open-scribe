@@ -61,13 +61,10 @@ struct ContentView: View {
       selectedWorkspace
     }
     .navigationSplitViewStyle(.balanced)
-    .onDrop(of: [UTType.fileURL, UTType.url], isTargeted: nil) { providers in
-      guard !providers.isEmpty else { return false }
-      Task {
-        let urls = await ImportedMediaAuthorityAdapter.fileURLs(from: providers)
+    .background {
+      AudioDropMount { urls in
         importedMediaAuthority.stageDroppedAudio(urls)
       }
-      return true
     }
     .toolbar {
       ToolbarItemGroup(placement: .primaryAction) {
@@ -544,6 +541,92 @@ struct ContentView: View {
 /// the destination. A SwiftUI banner computed in that pass does not appear in
 /// the hosting view that received the drop. This strip is created with the
 /// first layout and reveals its own buttons when the pending file changes.
+/// The library drop target. It reads the file URL and filename list a Finder
+/// drag puts on the pasteboard, then stages those files for confirmation.
+private struct AudioDropMount: NSViewRepresentable {
+  let onDrop: ([URL]) -> Void
+
+  func makeNSView(context: Context) -> AudioDropControl {
+    let view = AudioDropControl()
+    view.bind(onDrop: onDrop)
+    return view
+  }
+
+  func updateNSView(_ view: AudioDropControl, context: Context) {
+    view.bind(onDrop: onDrop)
+  }
+}
+
+private final class AudioDropControl: NSView {
+  private var onDrop: (([URL]) -> Void)?
+
+  override init(frame frameRect: NSRect) {
+    super.init(frame: frameRect)
+    setAccessibilityIdentifier("Audio drop")
+    registerForDraggedTypes([
+      .fileURL,
+      NSPasteboard.PasteboardType("NSFilenamesPboardType"),
+    ])
+  }
+
+  required init?(coder: NSCoder) {
+    nil
+  }
+
+  func bind(onDrop: @escaping ([URL]) -> Void) {
+    self.onDrop = onDrop
+  }
+
+  override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+    fileURLs(on: sender.draggingPasteboard).isEmpty ? [] : .copy
+  }
+
+  override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+    draggingEntered(sender)
+  }
+
+  override func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool {
+    !fileURLs(on: sender.draggingPasteboard).isEmpty
+  }
+
+  override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+    let urls = fileURLs(on: sender.draggingPasteboard)
+    guard !urls.isEmpty else { return false }
+    onDrop?(urls)
+    return true
+  }
+
+  override func concludeDragOperation(_ sender: NSDraggingInfo?) {}
+
+  override func draggingEnded(_ sender: NSDraggingInfo?) {}
+
+  private func fileURLs(on pasteboard: NSPasteboard) -> [URL] {
+    var urls: [URL] = []
+    if let objects = pasteboard.readObjects(
+      forClasses: [NSURL.self],
+      options: [.urlReadingFileURLsOnly: true]
+    ) as? [URL] {
+      urls.append(contentsOf: objects)
+    }
+    if let value = pasteboard.string(forType: .fileURL),
+      let url = URL(string: value), url.isFileURL
+    {
+      urls.append(url)
+    }
+    let filenames = NSPasteboard.PasteboardType("NSFilenamesPboardType")
+    if let paths = pasteboard.propertyList(forType: filenames) as? [String] {
+      urls.append(contentsOf: paths.map { URL(fileURLWithPath: $0) })
+    }
+    var seen: [String] = []
+    return urls.filter { url in
+      let path = url.standardizedFileURL.path
+      guard !seen.contains(path) else { return false }
+      seen.append(path)
+      return true
+    }
+  }
+}
+
 private struct DropConfirmationMount: NSViewRepresentable {
   @ObservedObject var authority: ImportedMediaAuthorityAdapter
 
