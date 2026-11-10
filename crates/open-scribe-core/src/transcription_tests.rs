@@ -41,6 +41,11 @@ impl BurstRecognizer {
             ..Self::new(model_sha256)
         }
     }
+
+    pub(crate) fn with_model_id(mut self, model_id: &str) -> Self {
+        self.identity.model_id = model_id.to_owned();
+        self
+    }
 }
 
 impl SpeechRecognizer for BurstRecognizer {
@@ -173,6 +178,13 @@ fn digest(path: &Path) -> Vec<u8> {
     Sha256::digest(std::fs::read(path).unwrap()).to_vec()
 }
 
+fn hex_digest(path: &Path) -> String {
+    digest(path)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
 pub(crate) fn run(
     imported: &mut Imported,
     recognizer: &mut BurstRecognizer,
@@ -285,6 +297,151 @@ fn engine_failure_ends_only_the_run_and_retry_reuses_committed_chunks() {
         .unwrap();
     assert_eq!(runs[0].state, "failed");
     assert_eq!(runs[1].state, "complete");
+}
+
+#[test]
+fn failed_or_cancelled_transcription_keeps_playable_audio_and_a_distinct_run() {
+    for (label, error, failure, state, availability) in [
+        (
+            "engine",
+            RecognizerError::Engine("injected"),
+            TranscriptionFailure::EngineError,
+            "failed",
+            crate::TranscriptAvailability::Failed,
+        ),
+        (
+            "cancelled",
+            RecognizerError::Cancelled,
+            TranscriptionFailure::Cancelled,
+            "cancelled",
+            crate::TranscriptAvailability::Unavailable,
+        ),
+        (
+            "exhausted",
+            RecognizerError::ResourceExhausted,
+            TranscriptionFailure::ResourceExhausted,
+            "failed",
+            crate::TranscriptAvailability::Failed,
+        ),
+    ] {
+        let mut imported = imported(10);
+        let audio = std::fs::read(&imported.media).unwrap();
+        let before = digest(&imported.media);
+        let first_lease = imported
+            .store
+            .lease_imported_playback(&imported.session)
+            .unwrap();
+        assert_eq!(first_lease.byte_length(), audio.len() as u64, "{label}");
+        assert_eq!(
+            first_lease.digest_sha256(),
+            hex_digest(&imported.media),
+            "{label}"
+        );
+
+        let stopped = run(
+            &mut imported,
+            &mut BurstRecognizer::failing(&"a".repeat(64), 1, error).with_model_id("fixture-a"),
+        );
+        let Err(TranscriptionError::RunEnded {
+            run_id,
+            failure: stopped_failure,
+        }) = stopped
+        else {
+            panic!("{label} must end the run");
+        };
+        assert_eq!(stopped_failure, failure, "{label}");
+        assert_eq!(std::fs::read(&imported.media).unwrap(), audio, "{label}");
+        let lease = imported
+            .store
+            .lease_imported_playback(&imported.session)
+            .unwrap();
+        assert_eq!(lease.byte_length(), audio.len() as u64, "{label}");
+        assert_eq!(
+            lease.digest_sha256(),
+            hex_digest(&imported.media),
+            "{label}"
+        );
+        let library = crate::TranscriptLibrary::open(&imported.root).unwrap();
+        assert_eq!(
+            library.availability(&imported.session).unwrap(),
+            availability,
+            "{label}"
+        );
+        assert!(
+            library.document(&imported.session).unwrap().is_empty(),
+            "{label}"
+        );
+        let runs = imported
+            .store
+            .transcription_runs(&imported.session)
+            .unwrap();
+        assert_eq!(runs.len(), 1, "{label}");
+        assert_eq!(runs[0].run_id, run_id, "{label}");
+        assert_eq!(runs[0].state, state, "{label}");
+        assert_eq!(runs[0].model_id, "fixture-a", "{label}");
+        assert!(
+            imported
+                .store
+                .transcript_revisions(&imported.session)
+                .unwrap()
+                .is_empty(),
+            "{label}"
+        );
+
+        let retry = run(
+            &mut imported,
+            &mut BurstRecognizer::new(&"b".repeat(64)).with_model_id("fixture-b"),
+        )
+        .unwrap();
+        assert_ne!(retry.run_id, run_id, "{label}");
+        let library = crate::TranscriptLibrary::open(&imported.root).unwrap();
+        assert_eq!(
+            library.availability(&imported.session).unwrap(),
+            crate::TranscriptAvailability::Final,
+            "{label}"
+        );
+        let document = library.document(&imported.session).unwrap();
+        assert!(!document.is_empty(), "{label}");
+        assert!(
+            document.iter().all(|segment| segment.finality == "final"),
+            "{label}"
+        );
+        let runs = imported
+            .store
+            .transcription_runs(&imported.session)
+            .unwrap();
+        let stopped_run = runs.iter().find(|run| run.run_id == run_id).unwrap();
+        assert_eq!(stopped_run.state, state, "{label}");
+        assert_eq!(stopped_run.model_id, "fixture-a", "{label}");
+        let completed = runs.iter().find(|run| run.run_id == retry.run_id).unwrap();
+        assert_eq!(completed.state, "complete", "{label}");
+        assert_eq!(completed.model_id, "fixture-b", "{label}");
+        let revisions = imported
+            .store
+            .transcript_revisions(&imported.session)
+            .unwrap();
+        assert!(
+            revisions
+                .iter()
+                .any(|revision| revision.run_id == retry.run_id && revision.finality == "final"),
+            "{label}"
+        );
+        assert!(
+            revisions.iter().all(|revision| revision.run_id != run_id),
+            "{label}"
+        );
+        assert_eq!(digest(&imported.media), before, "{label}");
+        let lease = imported
+            .store
+            .lease_imported_playback(&imported.session)
+            .unwrap();
+        assert_eq!(lease.byte_length(), audio.len() as u64, "{label}");
+        assert_eq!(
+            lease.digest_sha256(),
+            hex_digest(&imported.media),
+            "{label}"
+        );
+    }
 }
 
 #[test]
