@@ -5,6 +5,16 @@ import ObjectiveC
 import SwiftUI
 import XCTest
 
+@_silgen_name("sandbox_init")
+fileprivate func openScribeProofSandboxInit(
+  _ profile: UnsafePointer<CChar>,
+  _ flags: UInt64,
+  _ errorbuf: UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>?
+) -> Int32
+
+@_silgen_name("sandbox_free_error")
+fileprivate func openScribeProofSandboxFreeError(_ errorbuf: UnsafeMutablePointer<CChar>?)
+
 @testable import OpenScribeApp
 
 @MainActor
@@ -3716,8 +3726,9 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
     withExtendedLifetime(drag) {}
   }
 
-  /// Two saved conversations already have final transcripts. Typing in the
-  /// sidebar field lists a match for each, and pressing a match opens that
+  /// Two saved conversations already have final transcripts. After both
+  /// transcripts exist, IP is denied for the rest of this process. Typing in
+  /// the sidebar field lists a match for each, and pressing a match opens that
   /// conversation at its timestamp. The test does not call `search` or
   /// `playTranscriptSearchHit`.
   func testHostedSearchListsBothConversationsAndOpensEachRange() async throws {
@@ -3835,6 +3846,10 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
     let field = try XCTUnwrap(self.hostedSearchField(in: host))
     XCTAssertTrue(ready && window.contentView === host && field.isDescendant(of: host))
     XCTAssertTrue(self.hostedResultButtons(containing: "recording", in: host).isEmpty)
+    let reachable = self.loopbackConnectErrno()
+    XCTAssertNotEqual(reachable, EPERM, "loopback was already denied: \(reachable)")
+    try self.denyInternetProtocol()
+    XCTAssertEqual(self.loopbackConnectErrno(), EPERM)
     field.stringValue = "recording"
     let matched = await waitUntil(timeoutNanoseconds: 10_000_000_000) {
       host.layoutSubtreeIfNeeded()
@@ -4978,6 +4993,41 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
     }
     walk(root)
     return matched
+  }
+
+  /// Seatbelt profile matching the local-only harness: default allow, IP denied.
+  /// `sandbox_init` cannot be lifted, so later tests in this process also lose IP.
+  private func denyInternetProtocol() throws {
+    let profile =
+      "(version 1)(allow default)(deny network-outbound (remote ip))(deny network-inbound (local ip))(deny network-bind (local ip))"
+    var error: UnsafeMutablePointer<CChar>?
+    let status = profile.withCString { openScribeProofSandboxInit($0, 0, &error) }
+    let detail = error.map { String(cString: $0) } ?? ""
+    if error != nil {
+      openScribeProofSandboxFreeError(error)
+    }
+    if status != 0 {
+      throw NSError(
+        domain: "OpenScribeProof", code: Int(status),
+        userInfo: [NSLocalizedDescriptionKey: detail.isEmpty ? "sandbox_init failed" : detail])
+    }
+  }
+
+  private func loopbackConnectErrno() -> Int32 {
+    let descriptor = socket(AF_INET, SOCK_STREAM, 0)
+    guard descriptor >= 0 else { return errno }
+    defer { close(descriptor) }
+    var address = sockaddr_in()
+    address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+    address.sin_family = sa_family_t(AF_INET)
+    address.sin_port = in_port_t(9).bigEndian
+    address.sin_addr.s_addr = inet_addr("127.0.0.1")
+    let connected = withUnsafePointer(to: &address) {
+      $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+        connect(descriptor, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+      }
+    }
+    return connected == 0 ? 0 : errno
   }
 
   private func hostedSearchField(in root: NSView) -> NSSearchField? {
