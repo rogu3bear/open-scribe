@@ -1,5 +1,11 @@
 import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
+
+/// Audio the user dropped on the library and has not confirmed.
+struct PendingAudioImport: Equatable {
+  let urls: [URL]
+}
 
 enum ImportedMediaAuthorityPhase: Equatable {
   case idle
@@ -34,6 +40,8 @@ final class ImportedMediaAuthorityAdapter: ObservableObject {
   @Published private(set) var hasPendingAudioImports = false
   @Published private(set) var pauseRequested = false
   @Published private(set) var failedImports: [ImportedAudioFailure] = []
+  /// Set by a drop. Import starts only after `confirmPendingAudioImport()`.
+  @Published private(set) var pendingAudioImport: PendingAudioImport?
 
   private let picker: BatchPicker
   private let startSecurityScope: StartSecurityScope
@@ -101,6 +109,114 @@ final class ImportedMediaAuthorityAdapter: ObservableObject {
       phase = .idle
       return
     }
+    pendingAudioImport = nil
+    importSelectedFiles(selected)
+  }
+
+  /// Remembers a library drop. Nothing is copied until the user confirms.
+  func stageDroppedAudio(_ urls: [URL]) {
+    guard operationTask == nil, !hasPendingAudioImports else {
+      statusMessage = "Finish the current import before adding more audio. Nothing was added."
+      return
+    }
+    guard canBeginImport() else {
+      statusMessage = "Finish the current recording before importing audio. Nothing was added."
+      return
+    }
+    let files = urls.filter(\.isFileURL)
+    guard !files.isEmpty, files.allSatisfy(Self.isDroppableAudioFile) else {
+      pendingAudioImport = nil
+      phase = .idle
+      statusMessage = "Drop a PCM CAF or an AAC or Apple Lossless M4A file. Nothing was added."
+      return
+    }
+    pendingAudioImport = PendingAudioImport(urls: files)
+    phase = .idle
+    importedSessionId = nil
+    importedSessionIds = []
+    failedImports = []
+    statusMessage = Self.dropConfirmationMessage(urls: files)
+  }
+
+  func confirmPendingAudioImport() {
+    guard operationTask == nil, let pending = pendingAudioImport else { return }
+    pendingAudioImport = nil
+    guard canBeginImport() else {
+      statusMessage = "Finish the current recording before importing audio. Nothing was added."
+      return
+    }
+    importedSessionId = nil
+    importedSessionIds = []
+    failedImports = []
+    pauseRequested = false
+    selectedFileCount = pending.urls.count
+    importSelectedFiles(pending.urls)
+  }
+
+  func cancelPendingAudioImport() {
+    guard pendingAudioImport != nil else { return }
+    pendingAudioImport = nil
+    phase = .idle
+    statusMessage = "Import cancelled. No conversation was added."
+  }
+
+  /// A file URL from a library drop. Directories and other types are refused.
+  static func isDroppableAudioFile(_ url: URL) -> Bool {
+    guard url.isFileURL else { return false }
+    var isDirectory: ObjCBool = false
+    if FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory),
+      isDirectory.boolValue
+    {
+      return false
+    }
+    switch url.pathExtension.lowercased() {
+    case "caf", "m4a": return true
+    default: return false
+    }
+  }
+
+  static func dropConfirmationMessage(urls: [URL]) -> String {
+    if urls.count == 1 {
+      return "Import \(urls[0].lastPathComponent)? The original file stays where it is."
+    }
+    return "Import \(urls.count) audio files? The original files stay where they are."
+  }
+
+  /// File URLs carried by a drop. Order follows the providers.
+  /// The drop handler owns the providers, so this stays on the main actor with it.
+  static func fileURLs(from providers: [NSItemProvider]) async -> [URL] {
+    var urls: [URL] = []
+    for provider in providers {
+      if let url = await fileURL(from: provider) {
+        urls.append(url)
+      }
+    }
+    return urls
+  }
+
+  private static func fileURL(from provider: NSItemProvider) async -> URL? {
+    for identifier in [UTType.fileURL.identifier, UTType.url.identifier] {
+      guard provider.hasItemConformingToTypeIdentifier(identifier) else { continue }
+      let loaded = await withCheckedContinuation { continuation in
+        provider.loadItem(forTypeIdentifier: identifier, options: nil) { item, _ in
+          continuation.resume(returning: url(from: item))
+        }
+      }
+      if let loaded { return loaded }
+    }
+    return nil
+  }
+
+  nonisolated private static func url(from item: NSSecureCoding?) -> URL? {
+    if let url = item as? URL { return url }
+    if let url = item as? NSURL { return url as URL }
+    if let data = item as? Data {
+      return URL(dataRepresentation: data, relativeTo: nil)
+    }
+    return nil
+  }
+
+  private func importSelectedFiles(_ selected: [URL]) {
     // Preserve immediate single-file permission failures. A batch acquires
     // just one file's scope at a time and reports each refused file separately.
     var firstAuthorized = false
@@ -390,7 +506,7 @@ final class ImportedMediaAuthorityAdapter: ObservableObject {
   }
 
   static var importLimitHelp: String {
-    "Add local CAF or M4A audio (PCM CAF up to \(pcmLimitMiB) MiB, M4A up to \(m4aLimitGiB) GiB, four hours)"
+    "Add local CAF or M4A audio (PCM CAF up to \(pcmLimitMiB) MiB, M4A up to \(m4aLimitGiB) GiB, four hours). Drop a file on the library, then confirm the import."
   }
 
   private static var importLimitPrompt: String {

@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct ContentView: View {
   @Environment(\.isSceneVerification) private var isSceneVerification
@@ -48,6 +49,14 @@ struct ContentView: View {
       selectedWorkspace
     }
     .navigationSplitViewStyle(.balanced)
+    .onDrop(of: [UTType.fileURL, UTType.url], isTargeted: nil) { providers in
+      guard !providers.isEmpty else { return false }
+      Task {
+        let urls = await ImportedMediaAuthorityAdapter.fileURLs(from: providers)
+        importedMediaAuthority.stageDroppedAudio(urls)
+      }
+      return true
+    }
     .toolbar {
       ToolbarItemGroup(placement: .primaryAction) {
         captureButton
@@ -273,6 +282,7 @@ struct ContentView: View {
   @ViewBuilder
   private var selectedWorkspace: some View {
     VStack(spacing: 0) {
+      dropConfirmation
       statusBanner
       if let selectedSession {
         if selectedSession.sessionId == store.currentSession?.sessionId,
@@ -317,6 +327,24 @@ struct ContentView: View {
       }
     }
     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+  }
+
+  @ViewBuilder
+  private var dropConfirmation: some View {
+    if let pending = importedMediaAuthority.pendingAudioImport {
+      HStack(alignment: .firstTextBaseline, spacing: ScribeSpacing.related) {
+        Text(ImportedMediaAuthorityAdapter.dropConfirmationMessage(urls: pending.urls))
+          .frame(maxWidth: .infinity, alignment: .leading)
+        Button("Import") { importedMediaAuthority.confirmPendingAudioImport() }
+          .accessibilityLabel("Confirm audio import")
+        Button("Cancel") { importedMediaAuthority.cancelPendingAudioImport() }
+          .accessibilityLabel("Cancel audio import")
+      }
+      .font(.callout)
+      .padding(.horizontal, ScribeSpacing.standard)
+      .padding(.vertical, ScribeSpacing.related)
+      .accessibilityElement(children: .contain)
+    }
   }
 
   @ViewBuilder
@@ -446,7 +474,9 @@ struct ContentView: View {
       let message = importedMediaAuthority.statusMessage
     {
       notices.append(.init(id: "import", message: message, isFailure: true))
-    } else if notices.isEmpty, let message = importedMediaAuthority.statusMessage {
+    } else if notices.isEmpty, importedMediaAuthority.pendingAudioImport == nil,
+      let message = importedMediaAuthority.statusMessage
+    {
       notices.append(.init(id: "import", message: message, isFailure: false))
     }
     if let message = transcripts.message {
@@ -823,7 +853,7 @@ private struct EmptyConversationWorkspace: View {
         .font(.title.weight(.bold))
         .accessibilityAddTraits(.isHeader)
       Text(
-        "Record a conversation or import audio to start reviewing. Your recordings stay on this Mac."
+        "Record a conversation, choose Import, or drop a CAF or M4A file and confirm it. Your recordings stay on this Mac."
       )
       .foregroundStyle(.secondary)
       .multilineTextAlignment(.center)

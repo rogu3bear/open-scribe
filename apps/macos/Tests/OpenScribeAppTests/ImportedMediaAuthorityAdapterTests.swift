@@ -1006,6 +1006,147 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
     XCTAssertTrue(gate.scopeClosed)
   }
 
+  /// A drop is not an import. Cancel and an unsupported file add nothing.
+  func testADropWaitsForConfirmationAndACancelAddsNothing() async {
+    let events = ImportEventRecorder()
+    var allowScope = false
+    let adapter = ImportedMediaAuthorityAdapter(
+      startSecurityScope: { _ in
+        if !allowScope {
+          XCTFail("a drop must not open the file before confirmation")
+        }
+        return allowScope
+      },
+      importer: { _, _ in
+        events.append("import")
+        return acceptedEvidence()
+      }
+    )
+    let audio = URL(fileURLWithPath: "/tmp/open-scribe-drop-\(UUID().uuidString).caf")
+    adapter.stageDroppedAudio([audio])
+    XCTAssertEqual(adapter.pendingAudioImport?.urls, [audio])
+    XCTAssertEqual(adapter.phase, .idle)
+    XCTAssertNil(adapter.importedSessionId)
+    XCTAssertEqual(
+      adapter.statusMessage, ImportedMediaAuthorityAdapter.dropConfirmationMessage(urls: [audio]))
+    XCTAssertEqual(events.snapshot(), [])
+
+    adapter.cancelPendingAudioImport()
+    XCTAssertNil(adapter.pendingAudioImport)
+    XCTAssertEqual(adapter.phase, .idle)
+    XCTAssertEqual(adapter.statusMessage, "Import cancelled. No conversation was added.")
+    XCTAssertEqual(events.snapshot(), [])
+
+    adapter.stageDroppedAudio([URL(fileURLWithPath: "/tmp/notes.txt")])
+    XCTAssertNil(adapter.pendingAudioImport)
+    XCTAssertEqual(
+      adapter.statusMessage,
+      "Drop a PCM CAF or an AAC or Apple Lossless M4A file. Nothing was added.")
+    XCTAssertEqual(events.snapshot(), [])
+
+    let blockedEvents = ImportEventRecorder()
+    let blocked = ImportedMediaAuthorityAdapter(
+      canBeginImport: { false },
+      importer: { _, _ in
+        blockedEvents.append("import")
+        return acceptedEvidence()
+      }
+    )
+    blocked.stageDroppedAudio([audio])
+    XCTAssertNil(blocked.pendingAudioImport)
+    XCTAssertEqual(
+      blocked.statusMessage,
+      "Finish the current recording before importing audio. Nothing was added.")
+    XCTAssertEqual(blockedEvents.snapshot(), [])
+
+    allowScope = true
+    adapter.stageDroppedAudio([audio])
+    adapter.confirmPendingAudioImport()
+    await assertEventually { adapter.phase == .succeeded }
+    XCTAssertNil(adapter.pendingAudioImport)
+    XCTAssertEqual(events.snapshot(), ["import"])
+    XCTAssertEqual(adapter.importedSessionId, acceptedEvidence().sessionId)
+  }
+
+  func testAFileDropProviderKeepsTheAudioURL() async {
+    let source = URL(fileURLWithPath: "/tmp/Dropped memo.m4a")
+    let provider = NSItemProvider(object: source as NSURL)
+    let urls = await ImportedMediaAuthorityAdapter.fileURLs(from: [provider])
+    XCTAssertEqual(urls, [source])
+  }
+
+  /// The library drop copies a supported file only after confirmation.
+  /// No speech model is installed, so the new item is untranscribed.
+  func testADroppedAudioFileImportsOnlyAfterConfirmationAndLeavesTheOriginal() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "open-scribe-drop-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let source = root.appendingPathComponent("Dropped memo.m4a")
+    do {
+      let file = try AVAudioFile(
+        forWriting: source,
+        settings: [
+          AVFormatIDKey: kAudioFormatAppleLossless,
+          AVSampleRateKey: 48_000.0,
+          AVNumberOfChannelsKey: 1,
+          AVEncoderBitDepthHintKey: 16,
+        ])
+      let buffer = try XCTUnwrap(
+        AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: 48_000))
+      buffer.frameLength = 48_000
+      let channel = try XCTUnwrap(buffer.floatChannelData?[0])
+      for frame in 0..<48_000 {
+        channel[frame] = frame < 24_000 ? 0.25 : -0.5
+      }
+      try file.write(from: buffer)
+    }
+    let original = try Data(contentsOf: source)
+    let importRoot = root.appendingPathComponent("Library", isDirectory: true)
+    try FileManager.default.createDirectory(at: importRoot, withIntermediateDirectories: false)
+    let store = RuntimeLibraryStore(managedRoot: importRoot, refreshesImmediately: false)
+    let adapter = ImportedMediaAuthorityAdapter(
+      startSecurityScope: { _ in true },
+      stopSecurityScope: { _ in },
+      importer: { title, url in
+        try store.importManagedAudio(title: title, sourceURL: url)
+      }
+    )
+
+    adapter.stageDroppedAudio([source])
+    XCTAssertEqual(adapter.phase, .idle)
+    XCTAssertNil(adapter.importedSessionId)
+    XCTAssertEqual(adapter.pendingAudioImport?.urls, [source])
+    XCTAssertEqual(
+      adapter.statusMessage, "Import Dropped memo.m4a? The original file stays where it is.")
+    XCTAssertEqual(try Data(contentsOf: source), original)
+    let preparation = try NativeRecordingPreparation.open(managedRoot: importRoot.path)
+    XCTAssertTrue(try preparation.runtimeLibrarySnapshot().savedSessions.isEmpty)
+
+    adapter.confirmPendingAudioImport()
+    await assertEventually { adapter.phase == .succeeded }
+    XCTAssertNil(adapter.pendingAudioImport)
+    let sessionId = try XCTUnwrap(adapter.importedSessionId)
+    XCTAssertEqual(
+      adapter.statusMessage, "Imported Dropped memo into the local conversation library.")
+    XCTAssertEqual(try Data(contentsOf: source), original)
+
+    let library = try NativeTranscriptLibrary.open(managedRoot: importRoot.path)
+    let model = TranscriptLibraryModel(library: library)
+    await model.load(sessionId: sessionId)
+    XCTAssertEqual(model.availability, .unavailable)
+    XCTAssertEqual(model.availabilityText, "No transcript yet.")
+    XCTAssertEqual(model.segments, [])
+    XCTAssertEqual(model.speakers.first?.label, "Unknown speaker")
+    XCTAssertEqual(
+      model.speakerDiarizationText,
+      "Speakers follow the audio source. Voice diarization is unavailable without a calibrated model."
+    )
+    XCTAssertTrue(try library.search(query: "memo", sessionId: sessionId, limit: 20).isEmpty)
+    XCTAssertNotEqual(correctionRefusal(library, sessionId: sessionId), "accepted")
+    XCTAssertEqual(try Data(contentsOf: source), original)
+  }
+
   private func waitUntil(
     timeoutNanoseconds: UInt64 = 3_000_000_000,
     _ predicate: () -> Bool
