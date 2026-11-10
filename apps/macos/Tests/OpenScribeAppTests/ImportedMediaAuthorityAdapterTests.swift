@@ -641,6 +641,121 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
     withExtendedLifetime(lease) {}
   }
 
+  /// An imported file stays unchanged and follows the same untranscribed review
+  /// posture as a saved microphone recording. No speech model is installed.
+  func testAnImportedFileKeepsTheOriginalAndMatchesAnUntranscribedRecording() async throws {
+    let root = FileManager.default.temporaryDirectory
+      .appendingPathComponent("open-scribe-import-journey-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let source = root.appendingPathComponent("Two halves.m4a")
+    do {
+      let file = try AVAudioFile(
+        forWriting: source,
+        settings: [
+          AVFormatIDKey: kAudioFormatAppleLossless,
+          AVSampleRateKey: 48_000.0,
+          AVNumberOfChannelsKey: 2,
+          AVEncoderBitDepthHintKey: 16,
+        ])
+      let buffer = try XCTUnwrap(
+        AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: 96_000))
+      buffer.frameLength = 96_000
+      let channels = try XCTUnwrap(buffer.floatChannelData)
+      for frame in 0..<96_000 {
+        channels[0][frame] = frame < 48_000 ? 0.25 : -0.5
+        channels[1][frame] = channels[0][frame]
+      }
+      try file.write(from: buffer)
+    }
+    let original = try Data(contentsOf: source)
+    let importRoot = root.appendingPathComponent("Imported", isDirectory: true)
+    let evidence = try RuntimeLibraryStore(managedRoot: importRoot)
+      .importManagedAudio(title: "Two halves", sourceURL: source)
+    XCTAssertEqual(try Data(contentsOf: source), original)
+    let importedLibrary = try NativeTranscriptLibrary.open(managedRoot: importRoot.path)
+    let imported = TranscriptLibraryModel(library: importedLibrary)
+    await imported.load(sessionId: evidence.sessionId)
+
+    XCTAssertEqual(imported.availability, .unavailable)
+    XCTAssertEqual(imported.availabilityText, "No transcript yet.")
+    XCTAssertEqual(
+      imported.availabilityText, TranscriptLibraryModel.text(for: .unavailable))
+    XCTAssertEqual(imported.segments, [])
+    XCTAssertEqual(
+      RuntimeTranscriptPresentation.failureText("model_unavailable"),
+      "The speech model is not installed.")
+    XCTAssertEqual(
+      imported.speakerDiarizationText,
+      "Speakers follow the audio source. Voice diarization is unavailable without a calibrated model."
+    )
+    let importedDecision = try importedLibrary.prepareSpeakerDiarization(
+      sessionId: evidence.sessionId)
+    XCTAssertEqual(importedDecision.clusteringState, "unavailable")
+    XCTAssertEqual(importedDecision.reason, "no calibrated diarization model")
+    XCTAssertEqual(importedDecision.algorithmId, "topology-before-clustering-v1")
+    XCTAssertEqual(imported.speakers.first?.label, "Unknown speaker")
+    XCTAssertEqual(imported.speakers.first?.namedByUser, false)
+    let hits = try importedLibrary.search(query: "brook", sessionId: evidence.sessionId, limit: 20)
+    XCTAssertTrue(hits.isEmpty)
+    XCTAssertNotEqual(
+      correctionRefusal(importedLibrary, sessionId: evidence.sessionId), "accepted")
+
+    let importedTrack = try XCTUnwrap(imported.speakers.first?.trackId)
+    let renamed = await imported.renameSpeaker(trackId: importedTrack, label: " Dana ")
+    XCTAssertTrue(renamed)
+    XCTAssertEqual(imported.speakers.first?.label, "Dana")
+    let restoredName = await imported.renameSpeaker(trackId: importedTrack, label: nil)
+    XCTAssertTrue(restoredName)
+    XCTAssertEqual(imported.speakers.first?.label, "Unknown speaker")
+    XCTAssertEqual(imported.speakers.first?.namedByUser, false)
+    let restored = try importedLibrary.prepareSpeakerDiarization(sessionId: evidence.sessionId)
+    XCTAssertEqual(restored.tracks.first?.labelOrigin, "source_default")
+    XCTAssertEqual(restored.clusteringState, "unavailable")
+    XCTAssertEqual(imported.segments, [])
+
+    let lease = try NativeRecordingPreparation.open(managedRoot: importRoot.path)
+      .leaseImportedPlayback(sessionId: evidence.sessionId)
+    let receipt = try RecoveredPlaybackDescriptorReceipt(serialized: lease.playbackPath())
+    let decoder = try CallbackCAFDecoder(
+      source: try VerifiedDescriptorPlaybackSource.prepare(receipt: receipt),
+      fileTypeHint: receipt.fileTypeHint, onClose: {})
+    defer { decoder.close() }
+    let beginning = try XCTUnwrap(decoder.read(maximumFrames: 1))
+    XCTAssertEqual(beginning.floatChannelData?[0][0] ?? 0, 0.25, accuracy: 0.001)
+    try decoder.seek(toFrame: 60_000)
+    let later = try XCTUnwrap(decoder.read(maximumFrames: 1))
+    XCTAssertEqual(later.floatChannelData?[0][0] ?? 0, -0.5, accuracy: 0.001)
+    withExtendedLifetime(lease) {}
+
+    let exported = root.appendingPathComponent("Exported.m4a")
+    let exportedOriginal = await imported.export(.original, to: exported)
+    XCTAssertTrue(exportedOriginal, imported.message ?? "")
+    let managedCopy = importRoot.appendingPathComponent("Sessions")
+      .appendingPathComponent(evidence.sessionId)
+      .appendingPathComponent(evidence.relativePath)
+    XCTAssertEqual(try Data(contentsOf: exported), try Data(contentsOf: managedCopy))
+    let refusedMix = await imported.export(.validatedMix, to: root.appendingPathComponent("Mix.m4a"))
+    XCTAssertFalse(refusedMix)
+    XCTAssertTrue(imported.messageIsFailure)
+    let markdown = root.appendingPathComponent("Imported.md")
+    let wroteTranscript = await imported.export(format: .markdown, to: markdown)
+    XCTAssertTrue(wroteTranscript, imported.message ?? "")
+    XCTAssertFalse(imported.messageIsFailure)
+    XCTAssertGreaterThan(try Data(contentsOf: markdown).count, 0)
+    XCTAssertEqual(try Data(contentsOf: source), original)
+  }
+
+  private func correctionRefusal(_ library: NativeTranscriptLibrary, sessionId: String) -> String {
+    do {
+      _ = try library.correctSegment(
+        sessionId: sessionId, revisionId: "missing-revision", sequence: 0, text: "changed words")
+      return "accepted"
+    } catch {
+      return String(describing: type(of: error))
+    }
+  }
+
   private func peakResidentBytes() -> Int64 {
     var usage = rusage()
     XCTAssertEqual(getrusage(RUSAGE_SELF, &usage), 0)

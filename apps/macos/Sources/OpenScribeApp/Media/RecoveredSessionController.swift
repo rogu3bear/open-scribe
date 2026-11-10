@@ -86,7 +86,7 @@ final class RecoveredSessionController: ObservableObject {
   private let recoveredPlaybackLeaseProvider: RecoveredPlaybackLeaseProvider
   private let player: RecoveredAudioPlaying
   private let timelineProvider: (@Sendable (String) throws -> [NativeTimelineSegment])?
-  private let timelinePlayer = TimelineAudioPlayer()
+  let timelinePlayer = TimelineAudioPlayer()
   private let playbackTerminationDecisionObserver: PlaybackTerminationDecisionObserver
   private var playbackTask: Task<Void, Never>?
   private var recoveryTask: Task<Void, Never>?

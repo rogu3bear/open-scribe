@@ -82,12 +82,14 @@ struct TranscriptReader: View {
           Image(systemName: "magnifyingglass")
         }
         .buttonStyle(.borderless)
-        .keyboardShortcut("f", modifiers: .command)
-        .accessibilityLabel("Find in this transcript")
-        TextField("Find in this transcript", text: $query)
+        .keyboardShortcut(
+          ConversationControlLabels.findShortcut.key,
+          modifiers: ConversationControlLabels.findShortcut.modifiers)
+        .accessibilityLabel(ConversationControlLabels.findInTranscript)
+        TextField(ConversationControlLabels.findInTranscript, text: $query)
           .textFieldStyle(.plain)
           .focused($isSearchFocused)
-          .accessibilityLabel("Find in this transcript")
+          .accessibilityLabel(ConversationControlLabels.findInTranscript)
         if !query.isEmpty {
           Button {
             query = ""
@@ -97,7 +99,7 @@ struct TranscriptReader: View {
           }
           .buttonStyle(.borderless)
           .foregroundStyle(.secondary)
-          .accessibilityLabel("Clear transcript search")
+          .accessibilityLabel(ConversationControlLabels.clearTranscriptSearch)
         }
       }
       .padding(10)
@@ -163,7 +165,7 @@ struct TranscriptReader: View {
     .pickerStyle(.menu)
     .frame(maxWidth: 320, alignment: .leading)
     .lineLimit(1)
-    .accessibilityLabel("Filter transcript by person")
+    .accessibilityLabel(ConversationControlLabels.filterByPerson)
   }
 
   private var followControl: some View {
@@ -217,7 +219,8 @@ struct TranscriptReader: View {
         .font(.caption.monospacedDigit())
         .frame(minWidth: 48, alignment: .leading)
         .disabled(!canSeek)
-        .accessibilityLabel(canSeek ? "Play from \(stamp)" : stamp)
+        .accessibilityLabel(
+          ConversationControlLabels.seekAccessibility(stamp: stamp, canSeek: canSeek))
       VStack(alignment: .leading, spacing: ScribeSpacing.tight) {
         HStack(spacing: ScribeSpacing.related) {
           if isDraft {
@@ -227,13 +230,15 @@ struct TranscriptReader: View {
             Button(segment.speakerLabel) { namePassage(segment) }
               .buttonStyle(.borderless)
               .font(.subheadline.weight(.semibold))
-              .accessibilityLabel("Name the speaker at \(stamp): \(segment.speakerLabel)")
+              .accessibilityLabel(
+                ConversationControlLabels.nameSpeakerAccessibility(
+                  stamp: stamp, label: segment.speakerLabel))
           }
           if isDraft {
             Text("Draft")
               .font(.caption)
               .foregroundStyle(.secondary)
-              .accessibilityLabel("Draft")
+              .accessibilityLabel(ConversationControlLabels.draftState)
           }
           if isPlaying {
             Label("Playing", systemImage: "speaker.wave.2.fill")
@@ -255,11 +260,13 @@ struct TranscriptReader: View {
             .accessibilityElement(children: .ignore)
             .accessibilityAddTraits(.isStaticText)
             .accessibilityLabel(
-              "\(segment.speakerLabel). \(segment.effectiveText)"
-                + (isDraft ? " Draft." : "")
-                + (isPlaying ? " Playing." : "")
-                + (isCited ? " Cited evidence." : "")
-                + (segment.corrected ? " Corrected." : ""))
+              ConversationControlLabels.passageAccessibility(
+                speaker: segment.speakerLabel,
+                text: segment.effectiveText,
+                finality: segment.finality,
+                corrected: segment.corrected,
+                isPlaying: isPlaying,
+                isCited: isCited))
           if segment.corrected {
             DisclosureGroup("Corrected · Show machine reading") {
               Text(segment.verbatimText)
@@ -283,7 +290,7 @@ struct TranscriptReader: View {
         }
         .buttonStyle(.borderless)
         .help("Correct text")
-        .accessibilityLabel("Correct the text at \(stamp)")
+        .accessibilityLabel(ConversationControlLabels.correctAccessibility(stamp: stamp))
       }
     }
     .padding(.vertical, ScribeSpacing.tight)

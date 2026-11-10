@@ -604,6 +604,63 @@ final class ContextTests: XCTestCase {
     XCTAssertEqual(ContextOverlayController.cocoaFrame(CGRect(x: 10, y: 20, width: 100, height: 50)).width, 100)
   }
 
+  /// The words and shortcuts the conversation controls use. This does not drive
+  /// VoiceOver, a hosted menu, or an increased-text layout pass.
+  func testRequiredConversationControlsStayWordedWithoutColor() {
+    XCTAssertEqual(ConversationControlLabels.record, "Record")
+    XCTAssertEqual(ConversationControlLabels.stopAndSave, "Stop and Save")
+    XCTAssertEqual(ConversationControlLabels.pause, "Pause")
+    XCTAssertEqual(ConversationControlLabels.resume, "Resume")
+    XCTAssertEqual(ConversationControlLabels.addMarker, "Add Marker")
+    XCTAssertEqual(ConversationControlLabels.reviewPreservedAudio, "Review Preserved Audio")
+    XCTAssertEqual(ConversationControlLabels.findInTranscript, "Find in this transcript")
+    XCTAssertEqual(ConversationControlLabels.searchTranscripts, "Search transcripts")
+    XCTAssertEqual(ConversationControlLabels.exportTranscript, "Export Transcript…")
+    XCTAssertEqual(ConversationControlLabels.recordShortcut.key.character, "r")
+    XCTAssertEqual(ConversationControlLabels.recordShortcut.modifiers, [.command, .shift])
+    XCTAssertEqual(ConversationControlLabels.stopShortcut.key.character, "s")
+    XCTAssertEqual(ConversationControlLabels.stopShortcut.modifiers, [.command, .shift])
+    XCTAssertEqual(ConversationControlLabels.pauseShortcut.key.character, "p")
+    XCTAssertEqual(ConversationControlLabels.pauseShortcut.modifiers, [.command, .shift])
+    XCTAssertEqual(ConversationControlLabels.markerShortcut.key.character, "m")
+    XCTAssertEqual(ConversationControlLabels.markerShortcut.modifiers, [.command, .shift])
+    XCTAssertEqual(ConversationControlLabels.findShortcut.key.character, "f")
+    XCTAssertEqual(ConversationControlLabels.findShortcut.modifiers, .command)
+    XCTAssertEqual(
+      ConversationControlLabels.playConversationAudio(.play), "Play conversation audio")
+    XCTAssertEqual(
+      ConversationControlLabels.recoveredSegment(.play, name: "Interview", segment: "A"),
+      "Play Interview, segment A")
+    XCTAssertEqual(
+      ConversationControlLabels.seekAccessibility(stamp: "0:01", canSeek: true), "Play from 0:01")
+    XCTAssertEqual(
+      ConversationControlLabels.correctAccessibility(stamp: "0:01"), "Correct the text at 0:01")
+    XCTAssertEqual(
+      ConversationControlLabels.passageAccessibility(
+        speaker: "Local user", text: "later brook", finality: "draft", corrected: false,
+        isPlaying: false, isCited: false),
+      "Local user. later brook Draft.")
+    XCTAssertEqual(
+      ConversationControlLabels.passageAccessibility(
+        speaker: "Local user", text: "later brook", finality: "final", corrected: false,
+        isPlaying: false, isCited: false),
+      "Local user. later brook Final.")
+    XCTAssertEqual(
+      ConversationControlLabels.passageAccessibility(
+        speaker: "Local user", text: "later brook", finality: "final", corrected: true,
+        isPlaying: true, isCited: false),
+      "Local user. later brook Playing. Corrected.")
+    XCTAssertFalse(ConversationControlLabels.stopAndSave.contains("#"))
+    let reduced = PerimeterStyle.transition(reduceMotion: true)
+    let full = PerimeterStyle.transition(reduceMotion: false)
+    XCTAssertEqual(reduced.luminance, 0.1)
+    XCTAssertEqual(reduced.depth, 0)
+    XCTAssertEqual(full.luminance, 0.16)
+    XCTAssertEqual(full.depth, 0.2)
+    XCTAssertEqual(PlaybackControlAction.play.title, "Play")
+    XCTAssertEqual(PlaybackControlAction.stop.title, "Stop")
+  }
+
   func testScopeSummariesStateScopeRetentionAndWhyContextStopped() throws {
     let fixture = try RecordingFixture()
     defer { try? FileManager.default.removeItem(at: fixture.root) }

@@ -14,20 +14,24 @@ struct RecorderControls: View {
 
   var body: some View {
     if recorder.canPause {
-      Button("Pause", systemImage: "pause.fill") {
+      Button(ConversationControlLabels.pause, systemImage: "pause.fill") {
         Task {
           await recorder.stop(pausing: true)
           store.refresh()
         }
-      }.keyboardShortcut("p", modifiers: [.command, .shift])
+      }.keyboardShortcut(
+        ConversationControlLabels.pauseShortcut.key,
+        modifiers: ConversationControlLabels.pauseShortcut.modifiers)
     }
     if recorder.canResume {
-      Button("Resume", systemImage: "play.fill") {
+      Button(ConversationControlLabels.resume, systemImage: "play.fill") {
         Task {
           await recorder.start(resuming: true)
           store.refresh()
         }
-      }.keyboardShortcut("p", modifiers: [.command, .shift])
+      }.keyboardShortcut(
+        ConversationControlLabels.pauseShortcut.key,
+        modifiers: ConversationControlLabels.pauseShortcut.modifiers)
     }
     if let microphoneName = recorder.replacementMicrophoneName {
       Button {
@@ -51,11 +55,13 @@ struct RecorderControls: View {
       }
     }
     if recorder.canMark {
-      Button("Add Marker", systemImage: "bookmark") {
+      Button(ConversationControlLabels.addMarker, systemImage: "bookmark") {
         recorder.addMarker()
         store.refresh()
       }
-      .keyboardShortcut("m", modifiers: [.command, .shift])
+      .keyboardShortcut(
+        ConversationControlLabels.markerShortcut.key,
+        modifiers: ConversationControlLabels.markerShortcut.modifiers)
     }
     let sourcesEnabled = recorder.canStart || recorder.canResume
     switch sourcesPresentation {

@@ -93,16 +93,20 @@ struct MenuBarContent: View {
         }
       }
       .disabled(!recordActionEnabled)
-      .keyboardShortcut("r", modifiers: [.command, .shift])
+      .keyboardShortcut(
+        ConversationControlLabels.recordShortcut.key,
+        modifiers: ConversationControlLabels.recordShortcut.modifiers)
     }
     if liveRecording.canStop {
-      Button("Stop and Save") {
+      Button(ConversationControlLabels.stopAndSave) {
         Task {
           await liveRecording.stop()
           store.refresh()
         }
       }
-      .keyboardShortcut("s", modifiers: [.command, .shift])
+      .keyboardShortcut(
+        ConversationControlLabels.stopShortcut.key,
+        modifiers: ConversationControlLabels.stopShortcut.modifiers)
     }
     RecorderControls(recorder: liveRecording, store: store, sourcesPresentation: .menu)
     ContextMenuSection(model: context)
@@ -119,7 +123,7 @@ struct MenuBarContent: View {
         .accessibilityLabel("\(title)\(reference.map { ", reference \($0)" } ?? "")")
       Text("Verified local audio is available for review.")
         .foregroundStyle(.secondary)
-      Button("Review Preserved Audio") {
+      Button(ConversationControlLabels.reviewPreservedAudio) {
         navigation.reviewPreservedAudio(sessionId: recovered.sessionId)
         openPrimaryWindow()
       }

@@ -257,7 +257,8 @@ struct ContentView: View {
         presentation.close(&renaming)
       }
     }
-    .searchable(text: $searchQuery, placement: .sidebar, prompt: "Search transcripts")
+    .searchable(
+      text: $searchQuery, placement: .sidebar, prompt: ConversationControlLabels.searchTranscripts)
     .onDeleteCommand {
       // Delete (or Edit > Delete) moves the selected saved conversation to
       // Trash through the same confirmation as the context menu.
@@ -346,15 +347,17 @@ struct ContentView: View {
   private var captureButton: some View {
     Group {
       if liveRecording.canStop {
-        Button("Stop and Save", systemImage: "stop.fill") {
+        Button(ConversationControlLabels.stopAndSave, systemImage: "stop.fill") {
           Task {
             await liveRecording.stop()
             store.refresh()
           }
         }
-        .keyboardShortcut("s", modifiers: [.command, .shift])
+        .keyboardShortcut(
+          ConversationControlLabels.stopShortcut.key,
+          modifiers: ConversationControlLabels.stopShortcut.modifiers)
       } else {
-        Button("Record", systemImage: "record.circle") {
+        Button(ConversationControlLabels.record, systemImage: "record.circle") {
           startRecording()
         }
         .disabled(
@@ -363,7 +366,9 @@ struct ContentView: View {
             importIsBusy: importedMediaAuthority.isBusy
           )
         )
-        .keyboardShortcut("r", modifiers: [.command, .shift])
+        .keyboardShortcut(
+          ConversationControlLabels.recordShortcut.key,
+          modifiers: ConversationControlLabels.recordShortcut.modifiers)
         .help("Record \(liveRecording.captureSelection.recordedAudio)")
       }
     }

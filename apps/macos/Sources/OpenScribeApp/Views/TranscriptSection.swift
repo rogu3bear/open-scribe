@@ -374,7 +374,7 @@ struct TranscriptSection: View {
         ProgressView().controlSize(.small)
         Text("Exporting…").font(.caption).foregroundStyle(.secondary)
       }
-      Button("Export Transcript…") {
+      Button(ConversationControlLabels.exportTranscript) {
         export(.markdown, type: UTType(filenameExtension: "md") ?? .plainText)
       }
       .disabled(

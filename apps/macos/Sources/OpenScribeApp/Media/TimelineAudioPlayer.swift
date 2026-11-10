@@ -186,6 +186,9 @@ final class TimelineAudioPlayer {
   private var generation: UUID?
   private var playbackStartNanoseconds: Int64 = 0
   private var playbackEndNanoseconds: Int64 = 0
+  /// Session-timeline position accepted by the last explicit Play after the
+  /// output engine started. Stop leaves it in place.
+  private(set) var lastOpenedStartNanoseconds: Int64?
 
   var transcriptPositionNanoseconds: Int64? {
     guard isPlaying, let player, let renderTime = player.lastRenderTime,
@@ -229,6 +232,7 @@ final class TimelineAudioPlayer {
         completion(PlaybackTermination(generation: generation, outcome: .outputRouteChanged))
       }
       player.play()
+      lastOpenedStartNanoseconds = reader.playbackStartNanoseconds
     } catch {
       stop()
       throw error

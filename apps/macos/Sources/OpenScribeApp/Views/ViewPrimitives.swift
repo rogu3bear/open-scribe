@@ -10,6 +10,72 @@ enum ScribeSpacing {
   static let section: CGFloat = 24
 }
 
+struct ConversationShortcut {
+  let key: KeyEquivalent
+  let modifiers: EventModifiers
+}
+
+/// Worded labels and shortcuts the conversation controls speak. Views call these
+/// so a test reads the same words the control uses.
+enum ConversationControlLabels {
+  static let record = "Record"
+  static let stopAndSave = "Stop and Save"
+  static let pause = "Pause"
+  static let resume = "Resume"
+  static let addMarker = "Add Marker"
+  static let reviewPreservedAudio = "Review Preserved Audio"
+  static let findInTranscript = "Find in this transcript"
+  static let searchTranscripts = "Search transcripts"
+  static let clearTranscriptSearch = "Clear transcript search"
+  static let filterByPerson = "Filter transcript by person"
+  static let exportTranscript = "Export Transcript…"
+  static let draftState = "Draft"
+
+  static let recordShortcut = ConversationShortcut(key: "r", modifiers: [.command, .shift])
+  static let stopShortcut = ConversationShortcut(key: "s", modifiers: [.command, .shift])
+  static let pauseShortcut = ConversationShortcut(key: "p", modifiers: [.command, .shift])
+  static let markerShortcut = ConversationShortcut(key: "m", modifiers: [.command, .shift])
+  static let findShortcut = ConversationShortcut(key: "f", modifiers: [.command])
+
+  static func playConversationAudio(_ action: PlaybackControlAction) -> String {
+    "\(action.title) conversation audio"
+  }
+
+  static func recoveredSegment(
+    _ action: PlaybackControlAction, name: String, segment: String
+  ) -> String {
+    "\(action.title) \(name), segment \(segment)"
+  }
+
+  static func seekAccessibility(stamp: String, canSeek: Bool) -> String {
+    canSeek ? "Play from \(stamp)" : stamp
+  }
+
+  static func correctAccessibility(stamp: String) -> String {
+    "Correct the text at \(stamp)"
+  }
+
+  static func nameSpeakerAccessibility(stamp: String, label: String) -> String {
+    "Name the speaker at \(stamp): \(label)"
+  }
+
+  /// Names provisional, final, and corrected text in words. A corrected final
+  /// says Corrected; an uncorrected final says Final; a draft says Draft.
+  static func passageAccessibility(
+    speaker: String, text: String, finality: String, corrected: Bool, isPlaying: Bool,
+    isCited: Bool
+  ) -> String {
+    let provisional = finality == "draft"
+    let final = finality == "final" && !corrected
+    return "\(speaker). \(text)"
+      + (provisional ? " Draft." : "")
+      + (final ? " Final." : "")
+      + (isPlaying ? " Playing." : "")
+      + (isCited ? " Cited evidence." : "")
+      + (corrected ? " Corrected." : "")
+  }
+}
+
 extension Text {
   /// A native heading with the VoiceOver heading trait. Sections default to
   /// headline; primary dialog headings can use a larger semantic text style.

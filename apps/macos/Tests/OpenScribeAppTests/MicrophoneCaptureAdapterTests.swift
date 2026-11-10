@@ -1126,6 +1126,126 @@ final class MicrophoneCaptureAdapterTests: XCTestCase {
     _ = adapter.stop()
   }
 
+  /// A saved later draft names itself as provisional and Play opens that
+  /// interval. No speech model is installed. Final and corrected revisions are
+  /// not created here.
+  func testALaterDraftSeeksToItsAudioIntervalAndSaysDraft() async throws {
+    let fixture = try openedMicrophone(title: "Draft seek")
+    var timebase = mach_timebase_info_data_t()
+    XCTAssertEqual(mach_timebase_info(&timebase), KERN_SUCCESS)
+    let anchor = mach_absolute_time()
+    try fixture.controller.anchorCaptureClock(
+      sessionId: fixture.authorization.sessionId,
+      hostAnchor: anchor,
+      numerator: timebase.numer,
+      denominator: timebase.denom)
+    let firstHost = anchor
+    let rising = RisingSamples()
+    let backend = FakeMicrophoneBackend(inputFormat: fixture.format)
+    let adapter = MicrophoneCaptureAdapter(
+      backend: backend,
+      writer: fixture.writer,
+      identity: MicrophoneCaptureIdentity(authorization: fixture.authorization)
+    )
+    adapter.installProvisionalDraftAdmission(
+      preparation: fixture.controller,
+      hypothesis: { start, _ in
+        provisionalFixture(start == 0 ? "early meadow" : "later brook")
+      },
+      windowFrames: 480,
+      overlapFrames: 96
+    )
+    let failures = try startAndConfirm(
+      adapter: adapter, backend: backend, controller: fixture.controller, format: fixture.format,
+      firstHostTime: firstHost)
+    let sessionId = fixture.authorization.sessionId
+    backend.emit(try rising.fill(fixture.format, 384), hostTime: firstHost &+ 1)
+    adapter.waitForAcceptedAudio()
+    adapter.waitForProvisionalDraftAdmission()
+    backend.emit(
+      try rising.fill(fixture.format, 384),
+      hostTime: firstHost &+ AVAudioTime.hostTime(forSeconds: 0.01))
+    adapter.waitForAcceptedAudio()
+    adapter.waitForProvisionalDraftAdmission()
+    XCTAssertEqual(
+      try fixture.controller.readableDraftTexts(sessionId: sessionId), ["later brook"])
+    let stoppedAt = adapter.stop() ?? firstHost
+    let sealed = try fixture.controller.sealSegment(
+      receipt: try fixture.writer.sealSegmentReceipt(
+        finalSampleHostTime: max(stoppedAt, firstHost &+ AVAudioTime.hostTime(forSeconds: 0.02))))
+    XCTAssertTrue(sealed.segmentSealed)
+    let mediaURL = URL(fileURLWithPath: fixture.authorization.absolutePath)
+    let sealedMedia = try Data(contentsOf: mediaURL)
+    let saved = try XCTUnwrap(
+      fixture.controller.runtimeLibrarySnapshot().savedSessions.first { $0.sessionId == sessionId })
+    let library = try NativeTranscriptLibrary.open(managedRoot: fixture.root.path)
+    let model = await MainActor.run { TranscriptLibraryModel(library: library) }
+    await model.load(session: RuntimeSessionPresentation(native: saved))
+    let passage = try await MainActor.run {
+      try XCTUnwrap(model.segments.first { $0.effectiveText == "later brook" })
+    }
+    XCTAssertGreaterThan(passage.startNanoseconds, 0)
+    XCTAssertEqual(passage.finality, "draft")
+    XCTAssertFalse(passage.corrected)
+    XCTAssertEqual(passage.verbatimText, "later brook")
+    let spoken = ConversationControlLabels.passageAccessibility(
+      speaker: passage.speakerLabel,
+      text: passage.effectiveText,
+      finality: passage.finality,
+      corrected: passage.corrected,
+      isPlaying: false,
+      isCited: false)
+    XCTAssertTrue(spoken.hasSuffix(" Draft."))
+    XCTAssertFalse(spoken.contains("Corrected."))
+    XCTAssertFalse(spoken.contains(" Final."))
+    let stamp = await MainActor.run { TranscriptSection.timestamp(passage.startNanoseconds) }
+    XCTAssertEqual(
+      ConversationControlLabels.seekAccessibility(stamp: stamp, canSeek: true),
+      "Play from \(stamp)")
+
+    let timeline = try fixture.controller.playbackTimeline(sessionId: sessionId)
+    let fromStart = try TimelinePCMReader(segments: timeline, startNanoseconds: 0)
+    let sought = try TimelinePCMReader(
+      segments: timeline, startNanoseconds: passage.startNanoseconds)
+    XCTAssertEqual(sought.playbackStartNanoseconds, passage.startNanoseconds)
+    let head = try XCTUnwrap(fromStart.read(maximumFrames: 1))
+    let jumped = try XCTUnwrap(sought.read(maximumFrames: 1))
+    let headSample = try XCTUnwrap(head.floatChannelData?[0][0])
+    let jumpedSample = try XCTUnwrap(jumped.floatChannelData?[0][0])
+    XCTAssertNotEqual(headSample, jumpedSample)
+    fromStart.close()
+    sought.close()
+
+    let preparation = fixture.controller
+    let playback = await MainActor.run {
+      RecoveredSessionController(
+        recoveryFactory: { preparation },
+        player: RecoveredAudioPlayerFake(),
+        timelineProvider: { _ in try preparation.playbackTimeline(sessionId: sessionId) }
+      )
+    }
+    await MainActor.run {
+      playback.playSynchronized(
+        sessionId: sessionId, startNanoseconds: passage.startNanoseconds)
+    }
+    var opened: Int64?
+    var playbackError: String?
+    for _ in 0..<100 {
+      let observation = await MainActor.run {
+        (playback.timelinePlayer.lastOpenedStartNanoseconds, playback.errorMessage)
+      }
+      opened = observation.0
+      playbackError = observation.1
+      if opened != nil || playbackError != nil { break }
+      try await Task.sleep(nanoseconds: 20_000_000)
+    }
+    await MainActor.run { playback.stopPlayback() }
+    XCTAssertNil(playbackError)
+    XCTAssertEqual(opened, passage.startNanoseconds)
+    XCTAssertEqual(try Data(contentsOf: mediaURL), sealedMedia)
+    XCTAssertTrue(failures.snapshot().isEmpty)
+  }
+
   func testARejectedDraftDoesNotStopCaptureOrInventText() throws {
     let fixture = try openedMicrophone(title: "Rejected live draft")
     let backend = FakeMicrophoneBackend(inputFormat: fixture.format)
@@ -1184,6 +1304,90 @@ final class MicrophoneCaptureAdapterTests: XCTestCase {
     XCTAssertTrue(failures.snapshot().isEmpty)
     XCTAssertGreaterThanOrEqual(try capturedLength(fixture.authorization), 480)
     _ = adapter.stop()
+  }
+
+  /// A saved recording with no speech model has the same empty transcript,
+  /// search, and correction posture an untranscribed import uses. The source
+  /// default is the microphone's own label.
+  func testAnUntranscribedRecordingMatchesTheImportedReviewPosture() async throws {
+    let fixture = try openedMicrophone(title: "Untranscribed recording")
+    var timebase = mach_timebase_info_data_t()
+    XCTAssertEqual(mach_timebase_info(&timebase), KERN_SUCCESS)
+    try fixture.controller.anchorCaptureClock(
+      sessionId: fixture.authorization.sessionId,
+      hostAnchor: mach_absolute_time(),
+      numerator: timebase.numer,
+      denominator: timebase.denom)
+    let backend = FakeMicrophoneBackend(inputFormat: fixture.format)
+    let adapter = MicrophoneCaptureAdapter(
+      backend: backend,
+      writer: fixture.writer,
+      identity: MicrophoneCaptureIdentity(authorization: fixture.authorization)
+    )
+    adapter.installProvisionalDraftAdmission(
+      preparation: fixture.controller,
+      hypothesis: nil,
+      windowFrames: 480,
+      overlapFrames: 96
+    )
+    let failures = try startAndConfirm(
+      adapter: adapter, backend: backend, controller: fixture.controller, format: fixture.format)
+    backend.emit(try microphoneFrames(fixture.format, 384), hostTime: 20)
+    adapter.waitForAcceptedAudio()
+    adapter.waitForProvisionalDraftAdmission()
+    let stoppedAt = adapter.stop() ?? 20
+    let sealed = try fixture.controller.sealSegment(
+      receipt: try fixture.writer.sealSegmentReceipt(finalSampleHostTime: max(stoppedAt, 20)))
+    XCTAssertTrue(sealed.segmentSealed)
+    let sessionId = fixture.authorization.sessionId
+    let mediaURL = URL(fileURLWithPath: fixture.authorization.absolutePath)
+    let sealedMedia = try Data(contentsOf: mediaURL)
+    let saved = try XCTUnwrap(
+      fixture.controller.runtimeLibrarySnapshot().savedSessions.first { $0.sessionId == sessionId })
+    let library = try NativeTranscriptLibrary.open(managedRoot: fixture.root.path)
+    let model = await MainActor.run { TranscriptLibraryModel(library: library) }
+    await model.load(session: RuntimeSessionPresentation(native: saved))
+    let posture = await MainActor.run {
+      (
+        model.availability, model.availabilityText, model.speakerDiarizationText,
+        model.speakers.first?.label, model.segments.map(\.effectiveText), model.message
+      )
+    }
+    XCTAssertEqual(posture.0, .unavailable)
+    XCTAssertEqual(posture.1, "No transcript yet.")
+    XCTAssertEqual(posture.1, TranscriptLibraryModel.text(for: .unavailable))
+    XCTAssertEqual(
+      posture.2,
+      "Speakers follow the audio source. Voice diarization is unavailable without a calibrated model."
+    )
+    XCTAssertEqual(posture.3, "Local user")
+    XCTAssertEqual(posture.4, [])
+    XCTAssertNil(posture.5)
+    let decision = try library.prepareSpeakerDiarization(sessionId: sessionId)
+    XCTAssertEqual(decision.clusteringState, "unavailable")
+    XCTAssertEqual(decision.reason, "no calibrated diarization model")
+    XCTAssertEqual(decision.tracks.first?.labelOrigin, "source_default")
+    let hits = try library.search(query: "brook", sessionId: sessionId, limit: 20)
+    XCTAssertTrue(hits.isEmpty)
+    do {
+      _ = try library.correctSegment(
+        sessionId: sessionId, revisionId: "missing-revision", sequence: 0, text: "changed words")
+      XCTFail("a recording without a final transcript accepted a correction")
+    } catch {}
+    let trackId = try await MainActor.run { try XCTUnwrap(model.speakers.first?.trackId) }
+    let renamed = await model.renameSpeaker(trackId: trackId, label: " Dana ")
+    let cleared = await model.renameSpeaker(trackId: trackId, label: nil)
+    XCTAssertTrue(renamed)
+    XCTAssertTrue(cleared)
+    let restored = await MainActor.run { model.speakers.first?.label }
+    XCTAssertEqual(restored, "Local user")
+    let markdown = fixture.root.appendingPathComponent("Transcript.md")
+    let wroteTranscript = await model.export(format: .markdown, to: markdown)
+    let exportMessage = await MainActor.run { model.message }
+    XCTAssertTrue(wroteTranscript, exportMessage ?? "")
+    XCTAssertGreaterThan(try Data(contentsOf: markdown).count, 0)
+    XCTAssertEqual(try Data(contentsOf: mediaURL), sealedMedia)
+    XCTAssertTrue(failures.snapshot().isEmpty)
   }
 
   /// Silence stays in the capture file. A window that is only silence does not
@@ -1648,6 +1852,88 @@ final class MicrophoneCaptureAdapterTests: XCTestCase {
     XCTAssertTrue(failures.snapshot().isEmpty)
   }
 
+  /// Renaming updates the reviewed label. Clearing the name restores the
+  /// source default. The draft and the capture file stay put. Merge and split
+  /// are not available while clustering is unavailable.
+  func testRenamingASpeakerRestoresTheSourceDefaultWithoutChangingTheDraft() async throws {
+    let fixture = try openedMicrophone(title: "Speaker rename restore")
+    var timebase = mach_timebase_info_data_t()
+    XCTAssertEqual(mach_timebase_info(&timebase), KERN_SUCCESS)
+    try fixture.controller.anchorCaptureClock(
+      sessionId: fixture.authorization.sessionId,
+      hostAnchor: mach_absolute_time(),
+      numerator: timebase.numer,
+      denominator: timebase.denom)
+    let backend = FakeMicrophoneBackend(inputFormat: fixture.format)
+    let adapter = MicrophoneCaptureAdapter(
+      backend: backend,
+      writer: fixture.writer,
+      identity: MicrophoneCaptureIdentity(authorization: fixture.authorization)
+    )
+    adapter.installProvisionalDraftAdmission(
+      preparation: fixture.controller,
+      hypothesis: { _, _ in provisionalFixture("provisional meadow") },
+      windowFrames: 480,
+      overlapFrames: 96
+    )
+    let failures = try startAndConfirm(
+      adapter: adapter, backend: backend, controller: fixture.controller, format: fixture.format)
+    backend.emit(try microphoneFrames(fixture.format, 384), hostTime: 20)
+    adapter.waitForAcceptedAudio()
+    adapter.waitForProvisionalDraftAdmission()
+    let stoppedAt = adapter.stop() ?? 20
+    let sealed = try fixture.controller.sealSegment(
+      receipt: try fixture.writer.sealSegmentReceipt(finalSampleHostTime: max(stoppedAt, 20)))
+    XCTAssertTrue(sealed.segmentSealed)
+    let sessionId = fixture.authorization.sessionId
+    let mediaURL = URL(fileURLWithPath: fixture.authorization.absolutePath)
+    let sealedMedia = try Data(contentsOf: mediaURL)
+    let saved = try XCTUnwrap(
+      fixture.controller.runtimeLibrarySnapshot().savedSessions.first { $0.sessionId == sessionId })
+    let library = try NativeTranscriptLibrary.open(managedRoot: fixture.root.path)
+    let model = await MainActor.run { TranscriptLibraryModel(library: library) }
+    await model.load(session: RuntimeSessionPresentation(native: saved))
+    let speaker = try await MainActor.run { try XCTUnwrap(model.speakers.first) }
+    XCTAssertEqual(speaker.label, "Local user")
+    XCTAssertFalse(speaker.namedByUser)
+    let renamed = await model.renameSpeaker(trackId: speaker.trackId, label: " Dana ")
+    let named = await MainActor.run { model.speakers.first }
+    XCTAssertTrue(renamed)
+    XCTAssertEqual(named?.label, "Dana")
+    XCTAssertEqual(named?.namedByUser, true)
+    XCTAssertEqual(
+      try library.prepareSpeakerDiarization(sessionId: sessionId).tracks.first?.labelOrigin,
+      "human")
+    let restored = await model.renameSpeaker(trackId: speaker.trackId, label: nil)
+    let again = await MainActor.run {
+      (
+        model.speakers.first?.label, model.speakers.first?.namedByUser,
+        model.segments.map(\.effectiveText), model.segments.map(\.verbatimText),
+        model.availability
+      )
+    }
+    XCTAssertTrue(restored)
+    XCTAssertEqual(again.0, "Local user")
+    XCTAssertEqual(again.1, false)
+    XCTAssertEqual(again.2, ["provisional meadow"])
+    XCTAssertEqual(again.3, ["provisional meadow"])
+    XCTAssertEqual(again.4, .draft)
+    let decision = try library.prepareSpeakerDiarization(sessionId: sessionId)
+    XCTAssertEqual(decision.clusteringState, "unavailable")
+    XCTAssertEqual(decision.reason, "no calibrated diarization model")
+    XCTAssertEqual(decision.algorithmId, "topology-before-clustering-v1")
+    XCTAssertEqual(decision.tracks.first?.label, "Local user")
+    XCTAssertEqual(decision.tracks.first?.labelOrigin, "source_default")
+    let renamedAgain = await model.renameSpeaker(trackId: speaker.trackId, label: "Mina")
+    let clearedAgain = await model.renameSpeaker(trackId: speaker.trackId, label: nil)
+    XCTAssertTrue(renamedAgain)
+    XCTAssertTrue(clearedAgain)
+    let finalLabel = await MainActor.run { model.speakers.first?.label }
+    XCTAssertEqual(finalLabel, "Local user")
+    XCTAssertEqual(try Data(contentsOf: mediaURL), sealedMedia)
+    XCTAssertTrue(failures.snapshot().isEmpty)
+  }
+
   private func openedMicrophone(title: String) throws -> OpenedMicrophone {
     let root = FileManager.default.temporaryDirectory
       .appendingPathComponent("open-scribe-microphone-tests", isDirectory: true)
@@ -1744,6 +2030,21 @@ private struct OpenedMicrophone {
   let authorization: NativeMediaOpenAuthorization
   let writer: ManagedCAFWriter
   let format: AVAudioFormat
+}
+
+private final class RisingSamples {
+  private var next: Int = 1
+
+  func fill(_ format: AVAudioFormat, _ frames: AVAudioFrameCount) throws -> AVAudioPCMBuffer {
+    let buffer = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frames))
+    buffer.frameLength = frames
+    let samples = try XCTUnwrap(buffer.int16ChannelData?[0])
+    for frame in 0..<Int(frames) {
+      samples[frame] = Int16(next)
+      next += 1
+    }
+    return buffer
+  }
 }
 
 private func microphoneFrames(_ format: AVAudioFormat, _ frames: AVAudioFrameCount) throws

@@ -282,7 +282,8 @@ struct ConversationWorkspaceView: View {
         message: session.interruptionText
           ?? "Open Scribe preserved the audio it could verify. Review each source below.")
       if hasPreservedAudio {
-        Button("Review Preserved Audio", systemImage: "waveform", action: onReview)
+        Button(
+          ConversationControlLabels.reviewPreservedAudio, systemImage: "waveform", action: onReview)
       }
       if session.lifecycle == "interrupted" {
         if !hasPreservedAudio {
@@ -457,7 +458,7 @@ struct ConversationWorkspaceView: View {
       .controlSize(.large)
       .font(.headline)
       .disabled(!isEnabled)
-      .accessibilityLabel("\(action.title) conversation audio")
+      .accessibilityLabel(ConversationControlLabels.playConversationAudio(action))
   }
 
   private var sourceSection: some View {
@@ -531,7 +532,9 @@ private struct PlayableAudioRow: View {
         onTogglePlayback()
       }
       .disabled(!actionEnabled)
-      .accessibilityLabel("\(playbackAction.title) \(name), segment \(segmentReference)")
+      .accessibilityLabel(
+        ConversationControlLabels.recoveredSegment(
+          playbackAction, name: name, segment: segmentReference))
     }
     .padding(.vertical, ScribeSpacing.related)
     .accessibilityElement(children: .contain)
