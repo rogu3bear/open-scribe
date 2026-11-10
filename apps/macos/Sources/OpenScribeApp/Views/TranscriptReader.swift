@@ -73,6 +73,65 @@ private final class FindShortcutControl: NSView {
   }
 }
 
+/// The clear control stays in the tree. A hosted window can reveal it when a
+/// query exists without inserting a new SwiftUI view.
+private struct TranscriptFindClearMount: NSViewRepresentable {
+  let visible: Bool
+  let onClear: () -> Void
+
+  func makeNSView(context: Context) -> TranscriptFindClearControl {
+    let view = TranscriptFindClearControl()
+    view.bind(visible: visible, onClear: onClear)
+    return view
+  }
+
+  func updateNSView(_ view: TranscriptFindClearControl, context: Context) {
+    view.bind(visible: visible, onClear: onClear)
+  }
+}
+
+private final class TranscriptFindClearControl: NSView {
+  private let button: NSButton
+  private var onClear: (() -> Void)?
+
+  override init(frame frameRect: NSRect) {
+    let button = NSButton(title: "", target: nil, action: nil)
+    self.button = button
+    super.init(frame: frameRect)
+    let label = ConversationControlLabels.clearTranscriptSearch
+    button.isBordered = false
+    button.bezelStyle = .smallSquare
+    button.image = NSImage(systemSymbolName: "xmark.circle.fill", accessibilityDescription: label)
+    button.imagePosition = .imageOnly
+    button.contentTintColor = .secondaryLabelColor
+    button.setAccessibilityLabel(label)
+    button.setAccessibilityIdentifier(label)
+    button.target = self
+    button.action = #selector(clear)
+    button.translatesAutoresizingMaskIntoConstraints = false
+    addSubview(button)
+    NSLayoutConstraint.activate([
+      button.leadingAnchor.constraint(equalTo: leadingAnchor),
+      button.trailingAnchor.constraint(equalTo: trailingAnchor),
+      button.topAnchor.constraint(equalTo: topAnchor),
+      button.bottomAnchor.constraint(equalTo: bottomAnchor),
+    ])
+  }
+
+  required init?(coder: NSCoder) { nil }
+
+  func bind(visible: Bool, onClear: @escaping () -> Void) {
+    self.onClear = onClear
+    button.isHidden = !visible
+    button.isEnabled = visible
+  }
+
+  @objc private func clear() {
+    guard !button.isHidden, button.isEnabled else { return }
+    onClear?()
+  }
+}
+
 /// The transcript query. The field publishes its own edits; a SwiftUI binding
 /// does not see the field editor.
 private struct TranscriptFindFieldMount: NSViewRepresentable {
@@ -417,18 +476,12 @@ struct TranscriptReader: View {
           query = next
         }
         .frame(maxWidth: .infinity, minHeight: 22)
-        if !query.isEmpty {
-          Button {
-            query = ""
-            findClearGeneration += 1
-            findFocused = true
-          } label: {
-            Image(systemName: "xmark.circle.fill")
-          }
-          .buttonStyle(.borderless)
-          .foregroundStyle(.secondary)
-          .accessibilityLabel(ConversationControlLabels.clearTranscriptSearch)
+        TranscriptFindClearMount(visible: !query.isEmpty) {
+          query = ""
+          findClearGeneration += 1
+          findFocused = true
         }
+        .frame(width: query.isEmpty ? 0 : 22, height: 22)
       }
       .padding(10)
       .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 6))
