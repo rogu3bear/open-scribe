@@ -1135,6 +1135,192 @@ final class LaunchConfigurationTests: XCTestCase {
     XCTAssertFalse(kinds.contains("playable_media_recovered"), kinds.joined(separator: ","))
   }
 
+  /// The shipped verification app records both synthetic sources on a dedicated
+  /// APFS image. This test fills only that image, then releases the app. The
+  /// next CAF write fails, critical storage is journaled while the image is
+  /// still full, and a later launch keeps both source tracks.
+  func testStorageExhaustionLaunchJournalsTheFullVolumeAndRecoversBothSources() async throws {
+    let volume = try ExhaustionProofVolume()
+    defer { volume.close() }
+    let proof = volume.proof
+    let media = volume.mediaRoot
+    let suite = "OpenScribe.Proof.\(UUID().uuidString)"
+    defer { UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite) }
+    let normal = volume.host.appendingPathComponent("unused-production")
+    let resolved = try LaunchConfiguration.resolve(
+      arguments: [
+        "app", "--m1-injected-proof-root", proof.path,
+        "--m1-proof-media-root", media.path,
+        "--m1-injected-case", "storage-exhaustion",
+        "--verification-preferences", suite,
+      ],
+      environment: [:], normalRoot: normal)
+    XCTAssertEqual(resolved.mode, .synthetic)
+    XCTAssertEqual(resolved.action, .injected("storage-exhaustion"))
+
+    var child: Process?
+    defer {
+      if let child, child.isRunning {
+        kill(pid_t(child.processIdentifier), SIGKILL)
+        child.waitUntilExit()
+      }
+    }
+    let capture = try Self.launchVerificationApp(
+      arguments: [
+        "--m1-injected-proof-root", proof.path,
+        "--m1-proof-media-root", media.path,
+        "--m1-injected-case", "storage-exhaustion",
+        "--verification-preferences", suite,
+      ],
+      standardOutput: proof.appendingPathComponent("app-out.log"),
+      standardError: proof.appendingPathComponent("app-err.log"))
+    child = capture
+    let readyURL = proof.appendingPathComponent("injection-ready.json")
+    let ready = await Self.waitForFile(readyURL, seconds: 60, process: capture)
+    guard ready else {
+      XCTFail(Self.launchFailure("storage-exhaustion did not become ready to fill", proof: proof, process: capture))
+      return
+    }
+    let written = try volume.fillUntilNoSpaceRemains()
+    let fillLog = "ENOSPC_OBSERVED bytes_written=\(written) smallest_refused_bytes=4096\n"
+    try fillLog.write(
+      to: proof.appendingPathComponent("volume-fill.log"), atomically: true, encoding: .utf8)
+    let available = try RecorderStorage.availableBytes(at: media.path)
+    XCTAssertLessThan(available, 512 * 1024 * 1024)
+    FileManager.default.createFile(
+      atPath: proof.appendingPathComponent("injection-go").path, contents: Data())
+
+    let outcomeURL = proof.appendingPathComponent("outcome.json")
+    let finished = await Self.waitForFile(outcomeURL, seconds: 60, process: capture)
+    guard finished else {
+      XCTFail(Self.launchFailure("storage-exhaustion outcome was not written", proof: proof, process: capture))
+      return
+    }
+    let exited = await Self.waitUntil(seconds: 20) { capture.isRunning == false }
+    XCTAssertTrue(exited, Self.launchFailure("storage-exhaustion launch did not exit", proof: proof, process: capture))
+    capture.waitUntilExit()
+    child = nil
+    XCTAssertEqual(capture.terminationStatus, 0)
+    XCTAssertFalse(FileManager.default.fileExists(atPath: proof.appendingPathComponent("proof-error").path))
+
+    let outcomeData = try Data(contentsOf: outcomeURL)
+    let outcomeText = String(decoding: outcomeData, as: UTF8.self)
+    XCTAssertFalse(outcomeText.contains("AVAudioEngine+ScreenCaptureKit"))
+    XCTAssertFalse(outcomeText.contains("live-pause-resume"))
+    let outcome = try JSONSerialization.jsonObject(with: outcomeData) as? [String: Any]
+    XCTAssertEqual(outcome?["result"] as? String, "EXHAUSTION_OBSERVED_REQUIRES_RECOVERY")
+    XCTAssertEqual(outcome?["scenario"] as? String, "storage-exhaustion")
+    XCTAssertEqual((outcome?["write_failed"] as? NSNumber)?.boolValue, true)
+    XCTAssertEqual(outcome?["fallback"] as? String, "capture-stopped")
+    XCTAssertLessThan((outcome?["available_bytes"] as? NSNumber)?.uint64Value ?? UInt64.max, 512 * 1024 * 1024)
+    let phaseAtEvent = try XCTUnwrap(outcome?["phase_at_event"] as? String)
+    XCTAssertTrue(phaseAtEvent == "saved" || phaseAtEvent == "failed", phaseAtEvent)
+    let visibleMessage = try XCTUnwrap(outcome?["visible_message"] as? String)
+    XCTAssertTrue(
+      visibleMessage == "Recording stopped because storage reached its reserve. Existing audio was preserved."
+        || visibleMessage == "Recording stopped at the storage reserve. Existing audio is preserved.",
+      visibleMessage)
+    let sessionId = try XCTUnwrap(outcome?["session_id"] as? String)
+
+    let journalURL = media.appendingPathComponent("Sessions/\(sessionId)/recovery.jsonl")
+    let journalWhileFull = try Data(contentsOf: journalURL)
+    let fullRecords = try Self.journalRecords(journalWhileFull)
+    XCTAssertTrue(fullRecords.contains { $0["event_kind"] as? String == "recording_started" })
+    XCTAssertTrue(fullRecords.contains { $0["event_kind"] as? String == "marker_added" })
+    XCTAssertTrue(
+      fullRecords.contains {
+        $0["event_kind"] as? String == "storage_observed" && Self.payloadLevel($0) == "critical"
+      })
+    XCTAssertFalse(fullRecords.contains { $0["event_kind"] as? String == "playable_media_recovered" })
+    try FileManager.default.removeItem(at: volume.filler)
+    XCTAssertFalse(
+      FileManager.default.fileExists(atPath: media.appendingPathComponent(".capture-journal-reserve-v1").path))
+
+    let capturedAudio = try Self.cafPaths(under: media)
+    XCTAssertEqual(capturedAudio.count, 2)
+    let audioBeforeRecovery = try Dictionary(uniqueKeysWithValues: capturedAudio.map { path in
+      (path, try Self.fileDigest(path))
+    })
+    let preparation = try NativeRecordingPreparation.open(managedRoot: media.path)
+    let detail = try preparation.recorderDetail(sessionId: sessionId)
+    XCTAssertEqual(detail.storageLevel, "critical")
+    XCTAssertEqual(
+      detail.events.filter { $0.kind == "storage_observed" }.map(\.label).last, "critical")
+    XCTAssertEqual(
+      detail.events.last { $0.kind == "marker_added" }?.label, "Injected failure boundary")
+    let plan = try preparation.playbackTimeline(sessionId: sessionId)
+    XCTAssertEqual(Set(plan.map(\.trackId)).count, 2)
+    XCTAssertTrue(plan.allSatisfy { $0.sampleCount >= 48_000 })
+
+    let firstRecovery = try Self.launchVerificationApp(
+      arguments: [
+        "--m1-injected-recovery-root", proof.path,
+        "--m1-proof-media-root", media.path,
+      ],
+      standardOutput: proof.appendingPathComponent("recovery-out.log"),
+      standardError: proof.appendingPathComponent("recovery-err.log"))
+    child = firstRecovery
+    let recoveryURL = proof.appendingPathComponent("recovery.json")
+    let recovered = await Self.waitForFile(recoveryURL, seconds: 60, process: firstRecovery)
+    guard recovered else {
+      XCTFail(Self.launchFailure("exhaustion recovery did not report", proof: proof, process: firstRecovery))
+      return
+    }
+    firstRecovery.waitUntilExit()
+    child = nil
+    XCTAssertEqual(firstRecovery.terminationStatus, 0)
+    XCTAssertFalse(FileManager.default.fileExists(atPath: proof.appendingPathComponent("proof-error").path))
+    let firstReport = try Data(contentsOf: recoveryURL)
+    let report = try JSONSerialization.jsonObject(with: firstReport) as? [String: Any]
+    XCTAssertEqual(report?["result"] as? String, "INJECTED_RECOVERY_GREEN")
+    XCTAssertEqual(report?["session_id"] as? String, sessionId)
+    XCTAssertEqual(report?["lifecycle"] as? String, "ready_for_review")
+    XCTAssertEqual(report?["visible_lifecycle"] as? String, "ready_for_review")
+    XCTAssertGreaterThan((report?["rendered_frames"] as? NSNumber)?.intValue ?? 0, 0)
+    for (path, digest) in audioBeforeRecovery {
+      XCTAssertEqual(try Self.fileDigest(path), digest)
+    }
+    let journalAfterRecovery = SHA256.hash(data: try Data(contentsOf: journalURL))
+
+    let secondRecovery = try Self.launchVerificationApp(
+      arguments: [
+        "--m1-injected-recovery-root", proof.path,
+        "--m1-proof-media-root", media.path,
+      ],
+      standardOutput: proof.appendingPathComponent("recovery-second-out.log"),
+      standardError: proof.appendingPathComponent("recovery-second-err.log"))
+    child = secondRecovery
+    let sawSecond = await Self.waitUntil(seconds: 60) { secondRecovery.isRunning == false }
+    XCTAssertTrue(sawSecond, Self.launchFailure("second exhaustion recovery did not exit", proof: proof, process: secondRecovery))
+    secondRecovery.waitUntilExit()
+    child = nil
+    XCTAssertEqual(secondRecovery.terminationStatus, 0)
+    XCTAssertEqual(try Data(contentsOf: recoveryURL), firstReport)
+    XCTAssertEqual(SHA256.hash(data: try Data(contentsOf: journalURL)), journalAfterRecovery)
+    for (path, digest) in audioBeforeRecovery {
+      XCTAssertEqual(try Self.fileDigest(path), digest)
+    }
+    XCTAssertFalse(FileManager.default.fileExists(atPath: proof.appendingPathComponent("proof-error").path))
+  }
+
+  private static func journalRecords(_ data: Data) throws -> [[String: Any]] {
+    try String(decoding: data, as: UTF8.self).split(separator: "\n").map { line in
+      try XCTUnwrap(JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any])
+    }
+  }
+
+  private static func payloadLevel(_ record: [String: Any]) -> String? {
+    if let payload = record["payload"] as? [String: Any] {
+      return payload["level"] as? String
+    }
+    if let text = record["payload"] as? String,
+      let payload = try? JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any]
+    {
+      return payload["level"] as? String
+    }
+    return nil
+  }
+
   private static func launchVerificationApp(
     arguments: [String], standardOutput: URL, standardError: URL
   ) throws -> Process {
@@ -1216,5 +1402,131 @@ final class LaunchConfigurationTests: XCTestCase {
     let appError = (try? String(contentsOf: proof.appendingPathComponent("app-err.log"), encoding: .utf8)) ?? ""
     let recoveryError = (try? String(contentsOf: proof.appendingPathComponent("recovery-err.log"), encoding: .utf8)) ?? ""
     return "\(reason) running=\(process.isRunning) status=\(process.terminationStatus) proof_error=\(proofError) app_err=\(appError) recovery_err=\(recoveryError)"
+  }
+}
+
+/// A 1.5 GiB APFS image. Filling it cannot write the host volume because the
+/// mount is a different device, and the filler stops when that image is full.
+private final class ExhaustionProofVolume {
+  let host: URL
+  let proof: URL
+  let volume: URL
+  let mediaRoot: URL
+  let filler: URL
+  private let image: URL
+  private var mounted = false
+
+  init() throws {
+    host = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
+      .appendingPathComponent("open-scribe-storage-exhaustion-\(UUID().uuidString)", isDirectory: true)
+    proof = host.appendingPathComponent("proof", isDirectory: true)
+    volume = proof.appendingPathComponent("volume", isDirectory: true)
+    mediaRoot = volume.appendingPathComponent("media", isDirectory: true)
+    filler = volume.appendingPathComponent("owned-pressure-fill")
+    image = proof.appendingPathComponent("pressure.sparseimage")
+    try FileManager.default.createDirectory(at: volume, withIntermediateDirectories: true)
+    try Self.run(
+      "/usr/bin/hdiutil",
+      [
+        "create", "-size", "1536m", "-fs", "APFS", "-type", "SPARSE", "-volname",
+        "OpenScribeM1Proof",
+        proof.appendingPathComponent("pressure").path,
+      ])
+    try Self.run(
+      "/usr/bin/hdiutil",
+      ["attach", "-nobrowse", "-mountpoint", volume.path, image.path])
+    mounted = true
+    try FileManager.default.createDirectory(at: mediaRoot, withIntermediateDirectories: true)
+    try requireDifferentDevice()
+  }
+
+  func close() {
+    if mounted {
+      _ = try? Self.run("/usr/bin/hdiutil", ["detach", "-force", volume.path])
+      mounted = false
+    }
+    try? FileManager.default.removeItem(at: host)
+  }
+
+  func fillUntilNoSpaceRemains() throws -> Int {
+    try requireDifferentDevice()
+    FileManager.default.createFile(atPath: filler.path, contents: nil)
+    let handle = try FileHandle(forWritingTo: filler)
+    defer { try? handle.close() }
+    var written = 0
+    let limit = 2 * 1024 * 1024 * 1024
+    var sawNoSpace = false
+    for size in [1024 * 1024, 64 * 1024, 4096] {
+      let chunk = Data(repeating: 0xA5, count: size)
+      while written < limit {
+        do {
+          try handle.write(contentsOf: chunk)
+          written += size
+        } catch let error as NSError {
+          guard Self.isNoSpace(error) else { throw error }
+          sawNoSpace = true
+          break
+        }
+      }
+    }
+    guard sawNoSpace, written < limit else {
+      throw CocoaError(.fileWriteUnknown)
+    }
+    return written
+  }
+
+  private func requireDifferentDevice() throws {
+    let volumeDevice = try Self.deviceIdentifier(volume.path)
+    let hostDevice = try Self.deviceIdentifier(host.path)
+    guard volumeDevice != hostDevice else {
+      throw CocoaError(.fileWriteOutOfSpace)
+    }
+  }
+
+  private static func isNoSpace(_ error: NSError) -> Bool {
+    if error.domain == NSPOSIXErrorDomain && error.code == Int(ENOSPC) { return true }
+    if error.code == NSFileWriteOutOfSpaceError { return true }
+    if let underlying = error.userInfo[NSUnderlyingErrorKey] as? NSError {
+      return isNoSpace(underlying)
+    }
+    return false
+  }
+
+  private static func deviceIdentifier(_ path: String) throws -> Int32 {
+    let descriptor = Darwin.open(path, O_RDONLY)
+    guard descriptor >= 0 else {
+      throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .ENOENT)
+    }
+    defer { Darwin.close(descriptor) }
+    let info = UnsafeMutablePointer<Darwin.stat>.allocate(capacity: 1)
+    defer { info.deallocate() }
+    memset(info, 0, MemoryLayout<Darwin.stat>.size)
+    guard fstat(descriptor, info) == 0 else {
+      throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+    }
+    return info.pointee.st_dev
+  }
+
+  @discardableResult
+  private static func run(_ launchPath: String, _ arguments: [String]) throws -> String {
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: launchPath)
+    process.arguments = arguments
+    let output = Pipe()
+    let errors = Pipe()
+    process.standardOutput = output
+    process.standardError = errors
+    try process.run()
+    process.waitUntilExit()
+    let text =
+      String(data: output.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+    let errorText =
+      String(data: errors.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+    guard process.terminationStatus == 0 else {
+      throw CocoaError(
+        .fileWriteUnknown,
+        userInfo: [NSLocalizedDescriptionKey: errorText.isEmpty ? text : errorText])
+    }
+    return text
   }
 }
