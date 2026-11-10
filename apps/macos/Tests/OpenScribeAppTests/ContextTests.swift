@@ -66,10 +66,18 @@ private final class FrameScript: ContextFrameCapturing, @unchecked Sendable {
   var frames: [CGImage] = []
   var delay: UInt64 = 0
   private(set) var recognitions = 0
+  private var captures = 0
+
+  var captureCount: Int { lock.withLock { captures } }
+
+  func enqueue(_ images: [CGImage]) {
+    lock.withLock { frames.append(contentsOf: images) }
+  }
 
   func captureFrame(_ target: ContextCaptureTarget) async throws -> CGImage {
     if delay > 0 { try await Task.sleep(nanoseconds: delay) }
     return try lock.withLock {
+      captures += 1
       guard !frames.isEmpty else { throw ContextCaptureError.noFrame }
       return frames.removeFirst()
     }
@@ -852,6 +860,140 @@ final class ContextTests: XCTestCase {
     withExtendedLifetime(fixture.writer) {}
   }
 
+  /// While a display watch is paused, a screen-parameters notification does
+  /// not read another frame or store another event. The test clicks Pause
+  /// and does not call `pause` or `topologyChanged`.
+  func testHostedPausedContextIgnoresADisplayArrangementChange() async throws {
+    let fixture = try RecordingFixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let permission = ScreenPermissionStub()
+    permission.grant()
+    let script = FrameScript()
+    let quiet = frame([""], size: CGSize(width: 32, height: 32))
+    script.enqueue(Array(repeating: quiet, count: 30))
+    let gate = RecognitionGate()
+    var displays = RecordingFixture.displays
+    let model = ContextScopeModel(
+      binding: { fixture.binding }, frames: script,
+      recognize: { _ in gate.blocks() },
+      permissionCheck: { permission.current },
+      permissionRequest: { permission.current },
+      topology: { displays })
+    defer { model.overlay.hide() }
+    await model.refreshChoices()
+    model.selection = ContextSelection(mode: .watchDisplay, choiceId: "display-2")
+    XCTAssertTrue(model.authorize())
+    XCTAssertEqual(model.current?.condition, .active)
+    let scope = try XCTUnwrap(model.current)
+    let savedHost = mach_absolute_time()
+    let saved = try fixture.preparation.proposeContextEvent(
+      sessionId: fixture.sessionId,
+      proposal: NativeContextProposal(
+        scopeId: scope.scopeId, epoch: scope.epoch, reason: .userMarked,
+        startHostTime: savedHost, endHostTime: savedHost, observedAtMs: 0,
+        source: NativeContextSource(platformId: "2", name: "Studio Display", application: nil),
+        bounds: nil, reducerRevision: ContextReducer.revision,
+        visionRevision: ContextReducer.visionRevision, languages: ["en-US"],
+        blocks: [
+          NativeContextTextBlock(text: "Agenda", x: 0.1, y: 0.1, width: 0.3, height: 0.1)
+        ]))
+    guard case .accepted = saved else { return XCTFail("\(saved)") }
+
+    let view = ContextInspector(model: model).frame(width: 520, height: 280)
+    let host = NSHostingView(rootView: view)
+    host.sizingOptions = []
+    let window = NSWindow(
+      contentRect: NSRect(x: 0, y: 0, width: 520, height: 280),
+      styleMask: [.titled, .closable], backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    window.contentView = host
+    window.setContentSize(NSSize(width: 520, height: 280))
+    host.frame = window.contentLayoutRect
+    window.makeKeyAndOrderFront(nil)
+    window.orderFrontRegardless()
+    defer { window.close() }
+
+    let offered = await waitUntil(timeoutNanoseconds: 5_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      window.displayIfNeeded()
+      guard let button = self.button(titled: "Pause Context", in: host) else { return false }
+      return button.frame.width > 1 && button.frame.height > 1 && button.isEnabled
+    }
+    let pause = try XCTUnwrap(self.button(titled: "Pause Context", in: host))
+    XCTAssertTrue(offered && pause.isDescendant(of: host) && window.contentView === host)
+    pause.performClick(nil)
+    let paused = await waitUntil {
+      host.layoutSubtreeIfNeeded()
+      return model.current?.condition == .paused
+    }
+    XCTAssertTrue(paused)
+    XCTAssertEqual(model.current?.reason, "user")
+    try await Task.sleep(nanoseconds: 300_000_000)
+
+    let library = try NativeTranscriptLibrary.open(managedRoot: fixture.root.path)
+    let before = try library.contextEvents(sessionId: fixture.sessionId)
+    let idsBefore = before.map(\.eventId)
+    let capturesBefore = script.captureCount
+    XCTAssertEqual(before.map(\.text), ["Agenda"])
+    gate.openChangedScreen()
+    script.enqueue([frame(["Changed screen"], noise: 40, size: CGSize(width: 64, height: 64))])
+    displays[1] = ContextDisplay(
+      id: 2, name: "Studio Display",
+      frame: CGRect(x: 1800, y: -300, width: 2560, height: 1440),
+      scale: 2, rotation: 0, isMain: false)
+    NotificationCenter.default.post(
+      name: NSApplication.didChangeScreenParametersNotification, object: nil)
+    try await Task.sleep(nanoseconds: 1_200_000_000)
+
+    XCTAssertEqual(model.current?.condition, .paused)
+    XCTAssertEqual(model.current?.reason, "user")
+    XCTAssertNil(model.message)
+    XCTAssertEqual(script.captureCount, capturesBefore)
+    let events = try library.contextEvents(sessionId: fixture.sessionId)
+    XCTAssertEqual(events.map(\.eventId), idsBefore)
+    XCTAssertEqual(events.map(\.text), ["Agenda"])
+    XCTAssertTrue(events.allSatisfy { $0.retention == "no_pixels" })
+    let images = FileManager.default.enumerator(at: fixture.root, includingPropertiesForKeys: nil)?
+      .compactMap { $0 as? URL }
+      .filter {
+        ["png", "jpg", "jpeg", "heic", "tiff", "bmp", "gif"].contains($0.pathExtension.lowercased())
+      }
+    XCTAssertEqual(images ?? [], [])
+
+    model.refreshDetail()
+    window.close()
+    let review = ContextEventsSection(detail: model.detail, events: events)
+      .frame(width: 640, height: 420)
+    let reviewHost = NSHostingView(rootView: review)
+    reviewHost.sizingOptions = []
+    let reviewWindow = NSWindow(
+      contentRect: NSRect(x: 40, y: 40, width: 640, height: 420),
+      styleMask: [.titled, .closable], backing: .buffered, defer: false)
+    reviewWindow.isReleasedWhenClosed = false
+    reviewWindow.contentView = reviewHost
+    reviewWindow.setContentSize(NSSize(width: 640, height: 420))
+    reviewHost.frame = reviewWindow.contentLayoutRect
+    reviewWindow.makeKeyAndOrderFront(nil)
+    reviewWindow.orderFrontRegardless()
+    defer { reviewWindow.close() }
+    let saw = await waitUntil(timeoutNanoseconds: 5_000_000_000) {
+      reviewHost.layoutSubtreeIfNeeded()
+      reviewWindow.displayIfNeeded()
+      let text = self.visibleText(in: reviewHost)
+      return text.contains("Paused")
+        && text.contains(ContextScopeSummary.retention)
+        && text.contains("Agenda")
+    }
+    let visible = visibleText(in: reviewHost)
+    XCTAssertTrue(saw, visible)
+    XCTAssertTrue(visible.contains("Paused"), visible)
+    XCTAssertTrue(visible.contains(ContextScopeSummary.retention), visible)
+    XCTAssertTrue(visible.contains("Agenda"), visible)
+    XCTAssertFalse(visible.contains("Changed screen"), visible)
+    XCTAssertTrue(reviewWindow.contentView === reviewHost)
+    withExtendedLifetime(fixture.writer) {}
+  }
+
   private func button(titled title: String, in root: NSView) -> NSButton? {
     if let button = root as? NSButton,
       button.title == title || button.accessibilityLabel() == title
@@ -874,6 +1016,23 @@ final class ContextTests: XCTestCase {
     }
     return body()
   }
+
+  private func visibleText(in root: NSView) -> String {
+    var parts: [String] = []
+    func walk(_ view: NSView) {
+      if view.isHidden || view.isHiddenOrHasHiddenAncestor { return }
+      if view.frame.width < 1 || view.frame.height < 1 { return }
+      if let field = view as? NSTextField {
+        let plain = field.stringValue
+        parts.append(plain.isEmpty ? field.attributedStringValue.string : plain)
+      }
+      if let label = view.accessibilityLabel(), !label.isEmpty { parts.append(label) }
+      if let value = view.accessibilityValue() as? String, !value.isEmpty { parts.append(value) }
+      for subview in view.subviews { walk(subview) }
+    }
+    walk(root)
+    return parts.joined(separator: "\n")
+  }
 }
 
 private final class ProposalCounter: @unchecked Sendable {
@@ -881,6 +1040,22 @@ private final class ProposalCounter: @unchecked Sendable {
   private var value = 0
   var count: Int { lock.withLock { value } }
   func increment() { lock.withLock { value += 1 } }
+}
+
+/// Turns on the "changed screen" blocks only after the pause snapshot.
+private final class RecognitionGate: @unchecked Sendable {
+  private let lock = NSLock()
+  private var changed = false
+
+  func openChangedScreen() { lock.withLock { changed = true } }
+
+  func blocks() -> [NativeContextTextBlock] {
+    let changed = lock.withLock { self.changed }
+    guard changed else { return [] }
+    return [
+      NativeContextTextBlock(text: "Changed screen", x: 0.1, y: 0.1, width: 0.4, height: 0.1)
+    ]
+  }
 }
 
 /// Screen permission a test changes after handing its checks to the model.

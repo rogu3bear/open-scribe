@@ -391,18 +391,79 @@ struct ContextEventsSection: View {
 
   var body: some View {
     if let detail, Self.hasHistory(detail) {
-      LazyVStack(alignment: .leading, spacing: 10) {
+      VStack(alignment: .leading, spacing: 10) {
         Text("Screen context").font(.title3.weight(.semibold)).accessibilityAddTraits(.isHeader)
-        ForEach(Array(detail.scopes.enumerated()), id: \.offset) { _, scope in
-          Text("\(ContextScopeSummary.modeName(scope.request.mode)) — \(ContextScopeSummary.target(scope.request)): \(ContextScopeSummary.condition(scope))")
-            .font(.callout).foregroundStyle(.secondary)
-        }
-        Text(ContextScopeSummary.retention).font(.caption).foregroundStyle(.secondary)
-        ForEach(events, id: \.eventId) { event in
-          ContextEventRow(event: event, canSeek: canSeek, onSeek: onSeek)
+        ContextRetentionReadout(text: Self.savedContextText(detail))
+        LazyVStack(alignment: .leading, spacing: 10) {
+          ForEach(events, id: \.eventId) { event in
+            ContextEventRow(event: event, canSeek: canSeek, onSeek: onSeek)
+          }
         }
       }
     }
+  }
+
+  /// Scope condition and retention, without the recognized words. The field
+  /// is created on the first layout so a hosted review can read it.
+  static func savedContextText(_ detail: NativeContextDetail) -> String {
+    let scopes = detail.scopes.map { scope in
+      "\(ContextScopeSummary.modeName(scope.request.mode)) — \(ContextScopeSummary.target(scope.request)): \(ContextScopeSummary.condition(scope))"
+    }
+    return (scopes + [ContextScopeSummary.retention]).joined(separator: "\n")
+  }
+}
+
+private struct ContextRetentionReadout: NSViewRepresentable {
+  let text: String
+
+  func makeNSView(context: Context) -> ContextRetentionControl {
+    let view = ContextRetentionControl()
+    view.apply(text)
+    return view
+  }
+
+  func updateNSView(_ view: ContextRetentionControl, context: Context) {
+    view.apply(text)
+  }
+}
+
+private final class ContextRetentionControl: NSView {
+  private let field = NSTextField(wrappingLabelWithString: "")
+
+  override init(frame frameRect: NSRect) {
+    super.init(frame: frameRect)
+    field.font = .preferredFont(forTextStyle: .callout)
+    field.textColor = .secondaryLabelColor
+    field.setAccessibilityRole(.staticText)
+    field.setAccessibilityLabel("Saved context")
+    field.isSelectable = true
+    field.maximumNumberOfLines = 0
+    field.cell?.wraps = true
+    field.cell?.isScrollable = false
+    field.translatesAutoresizingMaskIntoConstraints = false
+    addSubview(field)
+    NSLayoutConstraint.activate([
+      field.leadingAnchor.constraint(equalTo: leadingAnchor),
+      field.trailingAnchor.constraint(equalTo: trailingAnchor),
+      field.topAnchor.constraint(equalTo: topAnchor),
+      field.bottomAnchor.constraint(equalTo: bottomAnchor),
+    ])
+  }
+
+  required init?(coder: NSCoder) { nil }
+
+  override var intrinsicContentSize: NSSize {
+    guard !field.isHidden else { return NSSize(width: NSView.noIntrinsicMetric, height: 0) }
+    field.preferredMaxLayoutWidth = 600
+    let height = max(field.intrinsicContentSize.height, 28)
+    return NSSize(width: NSView.noIntrinsicMetric, height: height)
+  }
+
+  func apply(_ text: String) {
+    field.stringValue = text
+    field.isHidden = text.isEmpty
+    field.preferredMaxLayoutWidth = 600
+    invalidateIntrinsicContentSize()
   }
 }
 
