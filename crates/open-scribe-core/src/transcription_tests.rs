@@ -445,6 +445,139 @@ fn failed_or_cancelled_transcription_keeps_playable_audio_and_a_distinct_run() {
 }
 
 #[test]
+fn invalid_finalize_result_keeps_playable_audio_and_a_distinct_run() {
+    let mut imported = imported(10);
+    let audio = std::fs::read(&imported.media).unwrap();
+    let before = digest(&imported.media);
+    let first_lease = imported
+        .store
+        .lease_imported_playback(&imported.session)
+        .unwrap();
+    assert_eq!(first_lease.byte_length(), audio.len() as u64);
+    assert_eq!(first_lease.digest_sha256(), hex_digest(&imported.media));
+
+    let input = imported
+        .store
+        .transcription_input(&imported.session, &imported.track)
+        .unwrap();
+    let identity = TranscriptionRunIdentity {
+        session_id: imported.session.clone(),
+        track_id: imported.track.clone(),
+        input_digest: input.input_digest.clone(),
+        engine: "burst-fixture".into(),
+        engine_version: "1".into(),
+        model_id: "fixture-a".into(),
+        model_sha256: "a".repeat(64),
+        options_digest: DecodeOptions::final_pass(Language::English).digest(),
+        reconciliation_version: RECONCILIATION_VERSION.to_owned(),
+    };
+    let plan: Vec<_> = plan_windows(&input)
+        .iter()
+        .map(|window| window.chunk)
+        .collect();
+    assert!(!plan.is_empty());
+    let handle = imported
+        .store
+        .begin_transcription_run(&identity, &plan)
+        .unwrap();
+    for chunk in &handle.chunks {
+        imported
+            .store
+            .complete_transcript_chunk(
+                &handle.run_id,
+                chunk.sequence,
+                "en",
+                r#"{"not":"a-hypothesis"}"#,
+            )
+            .unwrap();
+    }
+
+    let stopped = finalize_transcription_run(&mut imported.store, &handle.run_id);
+    let Err(TranscriptionError::RunEnded {
+        run_id,
+        failure: stopped_failure,
+    }) = stopped
+    else {
+        panic!("an unreadable hypothesis must end the run");
+    };
+    assert_eq!(stopped_failure, TranscriptionFailure::InvalidResult);
+    assert_eq!(run_id, handle.run_id);
+    assert_eq!(std::fs::read(&imported.media).unwrap(), audio);
+    let lease = imported
+        .store
+        .lease_imported_playback(&imported.session)
+        .unwrap();
+    assert_eq!(lease.byte_length(), audio.len() as u64);
+    assert_eq!(lease.digest_sha256(), hex_digest(&imported.media));
+    let library = crate::TranscriptLibrary::open(&imported.root).unwrap();
+    assert_eq!(
+        library.availability(&imported.session).unwrap(),
+        crate::TranscriptAvailability::Failed
+    );
+    assert!(library.document(&imported.session).unwrap().is_empty());
+    let runs = imported
+        .store
+        .transcription_runs(&imported.session)
+        .unwrap();
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0].run_id, run_id);
+    assert_eq!(runs[0].state, "failed");
+    assert_eq!(runs[0].failure_class.as_deref(), Some("invalid_result"));
+    assert_eq!(runs[0].model_id, "fixture-a");
+    assert!(
+        imported
+            .store
+            .transcript_revisions(&imported.session)
+            .unwrap()
+            .is_empty()
+    );
+    drop(library);
+
+    let retry = run(
+        &mut imported,
+        &mut BurstRecognizer::new(&"b".repeat(64)).with_model_id("fixture-b"),
+    )
+    .unwrap();
+    assert_ne!(retry.run_id, run_id);
+    let library = crate::TranscriptLibrary::open(&imported.root).unwrap();
+    assert_eq!(
+        library.availability(&imported.session).unwrap(),
+        crate::TranscriptAvailability::Final
+    );
+    let document = library.document(&imported.session).unwrap();
+    assert!(!document.is_empty());
+    assert!(document.iter().all(|segment| segment.finality == "final"));
+    let runs = imported
+        .store
+        .transcription_runs(&imported.session)
+        .unwrap();
+    let stopped_run = runs.iter().find(|run| run.run_id == run_id).unwrap();
+    assert_eq!(stopped_run.state, "failed");
+    assert_eq!(stopped_run.failure_class.as_deref(), Some("invalid_result"));
+    assert_eq!(stopped_run.model_id, "fixture-a");
+    let completed = runs.iter().find(|run| run.run_id == retry.run_id).unwrap();
+    assert_eq!(completed.state, "complete");
+    assert_eq!(completed.model_id, "fixture-b");
+    let revisions = imported
+        .store
+        .transcript_revisions(&imported.session)
+        .unwrap();
+    assert!(
+        revisions
+            .iter()
+            .any(|revision| revision.run_id == retry.run_id && revision.finality == "final")
+    );
+    assert!(revisions.iter().all(|revision| revision.run_id != run_id));
+    assert_eq!(digest(&imported.media), before);
+    let lease = imported
+        .store
+        .lease_imported_playback(&imported.session)
+        .unwrap();
+    assert_eq!(lease.byte_length(), audio.len() as u64);
+    assert_eq!(lease.digest_sha256(), hex_digest(&imported.media));
+}
+
+#[test]
 fn retry_restart_and_recovery_preserve_a_corrected_final_companion_track() {
     for boundary in ["retry", "restart", "capture-safety-recovery"] {
         let temp = TempDir::new().unwrap();
