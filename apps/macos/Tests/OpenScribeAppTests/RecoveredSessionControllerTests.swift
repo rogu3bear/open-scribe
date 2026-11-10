@@ -788,6 +788,221 @@ final class RecoveredSessionControllerTests: RecoveredSessionTestCase {
     withExtendedLifetime(preparation) {}
   }
 
+  /// A stored final is cited after import. Opening that evidence highlights the
+  /// loaded passage, and the imported player seeks to its audio interval.
+  /// Confirm, correct, and reject write a review. Leaving the claim unresolved
+  /// does not.
+  func testClaimEvidenceOnAStoredFinalSeeksHighlightsAndReturnsFocus() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "open-scribe-claim-evidence-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let package = root.appendingPathComponent("Stored.openscribe")
+    let export = await exportStoredFinalPackage(to: package)
+    XCTAssertEqual(export.status, 0, String(export.log.suffix(2_000)))
+    let packageMedia = try regularFiles(under: package.appendingPathComponent("media"))
+    XCTAssertEqual(packageMedia.count, 1)
+    let packageDigest = try digest(of: packageMedia[0])
+
+    let managed = root.appendingPathComponent("Library", isDirectory: true)
+    let library = try NativeTranscriptLibrary.open(managedRoot: managed.path)
+    let receipt = try library.importPortablePackage(packagePath: package.path)
+    let segments = try library.document(sessionId: receipt.sessionId)
+    let alpha = try XCTUnwrap(segments.first { $0.sequence == 0 })
+    let bravo = try XCTUnwrap(segments.first { $0.sequence == 1 })
+    XCTAssertEqual(alpha.finality, "final")
+    XCTAssertGreaterThan(alpha.startNanoseconds, 0)
+    XCTAssertGreaterThan(bravo.startNanoseconds, alpha.endNanoseconds)
+    let supporting = try library.citeTranscriptSegment(
+      sessionId: receipt.sessionId, revisionId: alpha.revisionId, sequence: alpha.sequence)
+    let contradicting = try library.citeTranscriptSegment(
+      sessionId: receipt.sessionId, revisionId: bravo.revisionId, sequence: bravo.sequence)
+    try library.insertDerivedClaim(
+      claimJson: citedClaimJSON(
+        sessionId: receipt.sessionId, supporting: supporting, contradicting: contradicting))
+
+    let preparation = try NativeRecordingPreparation.open(managedRoot: managed.path)
+    let native = try XCTUnwrap(
+      try preparation.runtimeLibrarySnapshot().savedSessions.first {
+        $0.sessionId == receipt.sessionId
+      })
+    let session = RuntimeSessionPresentation(native: native)
+    XCTAssertEqual(session.lifecycle, "ready_for_review")
+    XCTAssertFalse(session.hasCaptureTimeline)
+    XCTAssertEqual(session.playableMedia?.isPlayable, true)
+    let libraryMedia = try regularFiles(under: managed.appendingPathComponent("Sessions"))
+      .filter { $0.pathExtension == "caf" }
+    XCTAssertEqual(libraryMedia.count, 1)
+    XCTAssertEqual(try digest(of: libraryMedia[0]), packageDigest)
+
+    let model = TranscriptLibraryModel(managedRoot: managed)
+    await model.load(sessionId: receipt.sessionId)
+    XCTAssertNil(model.message)
+    XCTAssertEqual(model.availability, .final)
+    let claim = try XCTUnwrap(model.derivedClaims.first { $0.claimId == "claim-decision" })
+    XCTAssertEqual(claim.revisionId, "revision-a")
+    XCTAssertNil(claim.adjudication)
+    XCTAssertEqual(claim.supportingCount, 1)
+    XCTAssertEqual(claim.contradictingCount, 1)
+    XCTAssertEqual(claim.text, "The team agreed to ship the local recorder.")
+    let loadedAlpha = try XCTUnwrap(model.segments.first { $0.sequence == alpha.sequence })
+    let loadedBravo = try XCTUnwrap(model.segments.first { $0.sequence == bravo.sequence })
+    XCTAssertEqual(loadedAlpha.id, alpha.id)
+    XCTAssertEqual(loadedAlpha.startNanoseconds, alpha.startNanoseconds)
+    XCTAssertEqual(loadedBravo.id, bravo.id)
+
+    let supportingOpened = await model.openClaimEvidence(
+      claimId: claim.claimId, side: "supporting")
+    let supportingStart = try XCTUnwrap(supportingOpened)
+    XCTAssertEqual(supportingStart, alpha.startNanoseconds)
+    XCTAssertEqual(model.claimHighlightSegmentId, alpha.id)
+    XCTAssertTrue(model.claimEvidenceOpen)
+    XCTAssertEqual(model.focusedClaim?.claimId, claim.claimId)
+    XCTAssertEqual(model.focusedClaim?.revisionId, "revision-a")
+    XCTAssertEqual(model.focusedClaim?.text, claim.text)
+    XCTAssertNil(model.message)
+    let generation = model.claimFocusGeneration
+    model.returnToClaim()
+    XCTAssertFalse(model.claimEvidenceOpen)
+    XCTAssertNil(model.claimHighlightSegmentId)
+    XCTAssertEqual(model.focusedClaim?.claimId, claim.claimId)
+    XCTAssertEqual(model.claimFocusGeneration, generation + 1)
+
+    let contradictingOpened = await model.openClaimEvidence(
+      claimId: claim.claimId, side: "contradicting")
+    let contradictingStart = try XCTUnwrap(contradictingOpened)
+    XCTAssertEqual(contradictingStart, bravo.startNanoseconds)
+    XCTAssertEqual(model.claimHighlightSegmentId, bravo.id)
+    XCTAssertTrue(model.claimEvidenceOpen)
+    XCTAssertNil(model.message)
+    model.returnToClaim()
+    XCTAssertFalse(model.claimEvidenceOpen)
+    XCTAssertEqual(model.focusedClaim?.claimId, claim.claimId)
+
+    let player = RecoveredAudioPlayer(outputMode: .silent)
+    for start in [supportingStart, contradictingStart] {
+      let lease = try preparation.leaseImportedPlayback(sessionId: receipt.sessionId)
+      try await player.playImported(
+        receipt: lease.playbackPath(), retaining: lease, generation: UUID(),
+        startNanoseconds: start)
+      player.stop()
+      withExtendedLifetime(lease) {}
+    }
+    let head = try sample(
+      preparation: preparation, sessionId: receipt.sessionId, startNanoseconds: 0)
+    let atAlpha = try sample(
+      preparation: preparation, sessionId: receipt.sessionId,
+      startNanoseconds: supportingStart)
+    let atBravo = try sample(
+      preparation: preparation, sessionId: receipt.sessionId,
+      startNanoseconds: contradictingStart)
+    XCTAssertNotEqual(head, atAlpha)
+    XCTAssertNotEqual(atAlpha, atBravo)
+
+    let recorded = RecoveredAudioPlayerFake()
+    let controller = RecoveredSessionController(
+      recoveryFactory: { RecoveryPreparationFake() },
+      importedPlaybackLeaseProvider: { sessionId in
+        try preparation.leaseImportedPlayback(sessionId: sessionId)
+      },
+      player: recorded)
+    await seekImported(
+      controller: controller, player: recorded, session: session,
+      startNanoseconds: supportingStart)
+    await seekImported(
+      controller: controller, player: recorded, session: session,
+      startNanoseconds: contradictingStart)
+
+    let accepted = await model.adjudicateClaim(
+      claimId: claim.claimId, action: "accepted", text: nil)
+    XCTAssertTrue(accepted)
+    let acceptedClaim = try XCTUnwrap(
+      model.derivedClaims.first { $0.claimId == claim.claimId })
+    XCTAssertEqual(acceptedClaim.adjudication, "accepted")
+    XCTAssertEqual(acceptedClaim.text, claim.text)
+    XCTAssertNotEqual(acceptedClaim.revisionId, "revision-a")
+    let acceptedOpened = await model.openClaimEvidence(
+      claimId: claim.claimId, side: "supporting")
+    let acceptedStart = try XCTUnwrap(acceptedOpened)
+    XCTAssertEqual(acceptedStart, alpha.startNanoseconds)
+    XCTAssertEqual(model.claimHighlightSegmentId, alpha.id)
+    model.returnToClaim()
+
+    let correctedText = "The team deferred the remote recorder."
+    let corrected = await model.adjudicateClaim(
+      claimId: claim.claimId, action: "corrected", text: correctedText)
+    XCTAssertTrue(corrected)
+    XCTAssertEqual(model.derivedClaims.first?.text, correctedText)
+    XCTAssertEqual(model.derivedClaims.first?.adjudication, "corrected")
+    XCTAssertNotEqual(model.derivedClaims.first?.revisionId, acceptedClaim.revisionId)
+    let correctedOpened = await model.openClaimEvidence(
+      claimId: claim.claimId, side: "supporting")
+    let correctedStart = try XCTUnwrap(correctedOpened)
+    XCTAssertEqual(correctedStart, alpha.startNanoseconds)
+    XCTAssertEqual(model.claimHighlightSegmentId, alpha.id)
+    XCTAssertEqual(model.focusedClaim?.text, correctedText)
+    await seekImported(
+      controller: controller, player: recorded, session: session,
+      startNanoseconds: correctedStart)
+    model.returnToClaim()
+
+    let rejected = await model.adjudicateClaim(
+      claimId: claim.claimId, action: "rejected", text: nil)
+    XCTAssertTrue(rejected)
+    let rejectedClaim = try XCTUnwrap(
+      model.derivedClaims.first { $0.claimId == claim.claimId })
+    XCTAssertEqual(rejectedClaim.adjudication, "rejected")
+    XCTAssertEqual(rejectedClaim.text, correctedText)
+    XCTAssertNotEqual(rejectedClaim.revisionId, acceptedClaim.revisionId)
+    let leftUnresolved = await model.adjudicateClaim(
+      claimId: claim.claimId, action: "unresolved", text: nil)
+    XCTAssertFalse(leftUnresolved)
+    XCTAssertEqual(model.derivedClaims.first?.revisionId, rejectedClaim.revisionId)
+    XCTAssertEqual(model.derivedClaims.first?.text, correctedText)
+    XCTAssertEqual(model.derivedClaims.first?.adjudication, "rejected")
+    XCTAssertNil(model.message)
+
+    let stored = try library.document(sessionId: receipt.sessionId)
+    let storedAlpha = try XCTUnwrap(stored.first { $0.sequence == 0 })
+    let storedBravo = try XCTUnwrap(stored.first { $0.sequence == 1 })
+    XCTAssertEqual(storedAlpha.effectiveText, alpha.effectiveText)
+    XCTAssertEqual(storedAlpha.startNanoseconds, alpha.startNanoseconds)
+    XCTAssertFalse(storedAlpha.corrected)
+    XCTAssertEqual(storedBravo.effectiveText, bravo.effectiveText)
+    XCTAssertEqual(storedBravo.startNanoseconds, bravo.startNanoseconds)
+    XCTAssertEqual(try digest(of: libraryMedia[0]), packageDigest)
+    XCTAssertEqual(try digest(of: packageMedia[0]), packageDigest)
+    withExtendedLifetime((preparation, library, model)) {}
+  }
+
+  /// Imports have no capture timeline, so claim evidence seeks with
+  /// `play(_:startNanoseconds:)`.
+  private func seekImported(
+    controller: RecoveredSessionController, player: RecoveredAudioPlayerFake,
+    session: RuntimeSessionPresentation, startNanoseconds: Int64
+  ) async {
+    controller.play(session, startNanoseconds: startNanoseconds)
+    await assertEventually { controller.playingSessionId == session.sessionId }
+    XCTAssertNil(controller.errorMessage)
+    XCTAssertEqual(player.importedStartNanoseconds, startNanoseconds)
+    controller.stopPlayback()
+  }
+
+  private func citedClaimJSON(
+    sessionId: String, supporting: String, contradicting: String
+  ) -> String {
+    let session = Self.jsonString(sessionId)
+    let text = Self.jsonString("The team agreed to ship the local recorder.")
+    return
+      "{\"schema\":\"open-scribe.derived-claim/v1\",\"claim_id\":\"claim-decision\",\"revision_id\":\"revision-a\",\"session_id\":\(session),\"kind\":\"decision\",\"text\":\(text),\"status\":\"agreed\",\"supporting\":[\(supporting)],\"contradicting\":[\(contradicting)],\"producer\":\"model_run\"}"
+  }
+
+  private static func jsonString(_ value: String) -> String {
+    let escaped =
+      value.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
+    return "\"\(escaped)\""
+  }
+
   private func sample(
     preparation: NativeRecordingPreparation, sessionId: String, startNanoseconds: Int64
   ) throws -> Float {
