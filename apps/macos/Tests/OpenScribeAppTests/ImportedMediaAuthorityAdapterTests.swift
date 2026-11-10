@@ -156,6 +156,54 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
     XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: root.path).count, 1)
   }
 
+  func testUnsupportedTruncatedAndCorruptImportsAddNoConversation() async throws {
+    let root = FileManager.default.temporaryDirectory
+      .appendingPathComponent(
+        "open-scribe-import-reject-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let managedRoot = root.appendingPathComponent("Library", isDirectory: true)
+    let runtime = RuntimeLibraryStore(managedRoot: managedRoot)
+    let unsupportedMessage =
+      "This file is not supported. Choose a PCM CAF or a single-track AAC or Apple Lossless M4A. Nothing was added."
+    let unreadableAudioMessage =
+      "This file is not a supported PCM CAF or 48 kHz mono/stereo M4A. Nothing was added."
+    var corrupt = Data([0x63, 0x61, 0x66, 0x66, 0x00, 0x01, 0x00, 0x00])
+    corrupt.append(contentsOf: "desc".utf8)
+    corrupt.append(contentsOf: [0, 0, 0, 0, 0, 0, 0, 32])
+    corrupt.append(Data(count: 32))
+    let cases: [(String, Data, String)] = [
+      ("Meeting.wav", Data("RIFF....WAVE".utf8), unsupportedMessage),
+      (
+        "Cut Off.caf",
+        Data([0x63, 0x61, 0x66, 0x66, 0x00, 0x01, 0x00, 0x00]),
+        unreadableAudioMessage
+      ),
+      ("Damaged.caf", corrupt, unreadableAudioMessage),
+    ]
+
+    for (name, bytes, message) in cases {
+      let source = root.appendingPathComponent(name)
+      try bytes.write(to: source, options: .atomic)
+      let adapter = ImportedMediaAuthorityAdapter(
+        picker: { source },
+        startSecurityScope: { _ in true },
+        stopSecurityScope: { _ in },
+        importer: runtime.importManagedAudio
+      )
+      adapter.chooseAndImport()
+      await assertEventually { adapter.phase == .failed }
+      XCTAssertEqual(adapter.statusMessage, message, name)
+      XCTAssertNil(adapter.importedSessionId, name)
+      XCTAssertTrue(adapter.importedSessionIds.isEmpty, name)
+      XCTAssertEqual(try Data(contentsOf: source), bytes, name)
+      let snapshot = try NativeRecordingPreparation.open(managedRoot: managedRoot.path)
+        .runtimeLibrarySnapshot()
+      XCTAssertNil(snapshot.currentSession, name)
+      XCTAssertTrue(snapshot.savedSessions.isEmpty, name)
+    }
+  }
+
   func testCapturePriorityRejectsImportBeforePicker() {
     var picked = false
     let adapter = ImportedMediaAuthorityAdapter(
