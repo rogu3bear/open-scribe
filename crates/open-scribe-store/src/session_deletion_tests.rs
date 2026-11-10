@@ -3,6 +3,9 @@ use crate::transcripts::tests::{
     Fixture, complete_all, identity, imported_fixture, plan, sample, write_caf,
 };
 use crate::{ImportMediaRequest, SESSIONS_DIRECTORY};
+use open_scribe_evidence::{
+    AdjudicationAction, ClaimKind, ClaimProducer, ClaimStatus, DERIVED_CLAIM_SCHEMA, DerivedClaim,
+};
 use sha2::{Digest, Sha256};
 use std::path::Path;
 
@@ -21,6 +24,37 @@ fn session_tables(store: &SessionStore) -> Vec<String> {
         .unwrap()
         .collect::<Result<_, _>>()
         .unwrap()
+}
+
+fn insert_claim(fixture: &mut Fixture, revision: &str) {
+    let session = fixture.session.clone();
+    let cited = fixture
+        .store
+        .cite_transcript_segment(&session, revision, 0)
+        .unwrap();
+    let claim = DerivedClaim {
+        schema: DERIVED_CLAIM_SCHEMA.to_owned(),
+        claim_id: "claim-decision".into(),
+        revision_id: "revision-a".into(),
+        session_id: session.0.clone(),
+        kind: ClaimKind::Decision,
+        text: "The team agreed to ship the local recorder.".into(),
+        status: ClaimStatus::Agreed,
+        supporting: vec![cited],
+        contradicting: Vec::new(),
+        producer: ClaimProducer::ModelRun,
+        adjudication: None,
+    };
+    fixture.store.insert_derived_claim(&claim).unwrap();
+    let mut corrected = claim
+        .with_adjudication(
+            AdjudicationAction::Corrected,
+            "revision-b",
+            "adjudication-1",
+        )
+        .unwrap();
+    corrected.text = "The team deferred the remote recorder.".into();
+    fixture.store.insert_derived_claim(&corrected).unwrap();
 }
 
 fn reviewed_fixture() -> (Fixture, String) {
@@ -88,7 +122,7 @@ fn import_second(fixture: &mut Fixture) -> SessionId {
 
 #[test]
 fn deletion_states_its_scope_requires_trash_and_removes_every_owned_row() {
-    let (mut fixture, _) = reviewed_fixture();
+    let (mut fixture, revision) = reviewed_fixture();
     let session = fixture.session.clone();
     let kept = import_second(&mut fixture);
     let media_digest = digest(&fixture.media);
@@ -97,7 +131,22 @@ fn deletion_states_its_scope_requires_trash_and_removes_every_owned_row() {
     fs::create_dir_all(&exports).unwrap();
     fs::write(exports.join("notes.txt"), b"exported").unwrap();
     fixture.store.cancel_transcription(&session).unwrap();
+    insert_claim(&mut fixture, &revision);
+    fixture
+        .store
+        .record_speaker_diarization(
+            &session,
+            "topology-before-clustering-v1",
+            "unavailable",
+            "no calibrated diarization model",
+            &[crate::speaker_diarization::SpeakerDiarizationTrackInput {
+                track_id: fixture.track.clone(),
+                disposition: "unresolved".into(),
+            }],
+        )
+        .unwrap();
     assert_eq!(rows(&fixture.store, "transcription_intent", &session), 1);
+    assert_eq!(rows(&fixture.store, "derived_claim_revisions", &session), 2);
 
     let inventory = fixture.store.begin_session_deletion(&session).unwrap();
     assert_eq!(
@@ -115,6 +164,7 @@ fn deletion_states_its_scope_requires_trash_and_removes_every_owned_row() {
             context_events: 0,
             export_files: 1,
             export_bytes: 8,
+            derived_items: 1,
         }
     );
 
@@ -123,6 +173,7 @@ fn deletion_states_its_scope_requires_trash_and_removes_every_owned_row() {
         Err(StoreError::InvalidState(_))
     ));
     assert_eq!(rows(&fixture.store, "transcript_revisions", &session), 1);
+    assert_eq!(rows(&fixture.store, "derived_claim_revisions", &session), 2);
     assert_eq!(
         fixture
             .store

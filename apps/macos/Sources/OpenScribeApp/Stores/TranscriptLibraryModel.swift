@@ -871,6 +871,7 @@ enum SessionDeletionSummary {
       (inventory.markers, "marker"),
       (inventory.contextEvents, "screen context event"),
       (inventory.exportFiles, "file exported inside the conversation"),
+      (inventory.derivedItems, "derived item"),
     ] where value > 0 {
       removed.append(count(value, noun))
     }

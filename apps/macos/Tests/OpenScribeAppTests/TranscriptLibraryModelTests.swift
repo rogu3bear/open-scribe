@@ -1301,7 +1301,8 @@ private final class TranscriptTimingLibraryFake: NativeTranscriptLibrary, @unche
     return NativeSessionDeletionInventory(
       sessionId: sessionId, title: "Fixture", directoryPath: "/synthetic/\(sessionId)",
       mediaFiles: 1, mediaBytes: 100, transcriptRevisions: 1, humanCorrections: 0,
-      speakerNames: 0, markers: 0, contextEvents: 0, exportFiles: 0, exportBytes: 0)
+      speakerNames: 0, markers: 0, contextEvents: 0, exportFiles: 0, exportBytes: 0,
+      derivedItems: 0)
   }
 
   override func completeDeletion(sessionId: String, trashReference: String?) throws

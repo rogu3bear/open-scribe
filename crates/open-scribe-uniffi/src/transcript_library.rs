@@ -200,6 +200,7 @@ pub struct NativeSessionDeletionInventory {
     pub context_events: u32,
     pub export_files: u32,
     pub export_bytes: u64,
+    pub derived_items: u32,
 }
 
 /// One Final transcript rebuilt from retained chunks without a model.
@@ -655,6 +656,7 @@ impl NativeTranscriptLibrary {
             context_events: inventory.context_events,
             export_files: inventory.export_files,
             export_bytes: inventory.export_bytes,
+            derived_items: inventory.derived_items,
         })
     }
 

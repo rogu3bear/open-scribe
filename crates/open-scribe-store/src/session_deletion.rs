@@ -71,6 +71,8 @@ pub struct SessionDeletionInventory {
     pub context_events: u32,
     pub export_files: u32,
     pub export_bytes: u64,
+    /// Distinct derived claims. Revisions of one claim are one item.
+    pub derived_items: u32,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -155,6 +157,9 @@ impl SessionStore {
             context_events: count("SELECT COUNT(*) FROM context_events WHERE session_id = ?1")?,
             export_files,
             export_bytes,
+            derived_items: count(
+                "SELECT COUNT(DISTINCT claim_id) FROM derived_claim_revisions WHERE session_id = ?1",
+            )?,
             directory,
         };
         // Inventory failure must not leave an invisible pending deletion.
@@ -231,6 +236,9 @@ impl SessionStore {
             "DELETE FROM transcription_runs WHERE session_id = ?1",
             "DELETE FROM transcription_intent WHERE session_id = ?1",
             "DELETE FROM segments WHERE session_id = ?1",
+            // Diarization tracks reference media tracks without cascade.
+            "DELETE FROM speaker_diarization_tracks WHERE session_id = ?1",
+            "DELETE FROM speaker_diarization_runs WHERE session_id = ?1",
             "DELETE FROM tracks WHERE session_id = ?1",
             "DELETE FROM sources WHERE session_id = ?1",
             "DELETE FROM required_sources WHERE session_id = ?1",

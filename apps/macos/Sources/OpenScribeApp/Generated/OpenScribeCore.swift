@@ -7369,13 +7369,14 @@ public struct NativeSessionDeletionInventory: Equatable, Hashable {
   public let contextEvents: UInt32
   public let exportFiles: UInt32
   public let exportBytes: UInt64
+  public let derivedItems: UInt32
 
   // Default memberwise initializers are never public by default, so we
   // declare one manually.
   public init(
     sessionId: String, title: String, directoryPath: String, mediaFiles: UInt32, mediaBytes: UInt64,
     transcriptRevisions: UInt32, humanCorrections: UInt32, speakerNames: UInt32, markers: UInt32,
-    contextEvents: UInt32, exportFiles: UInt32, exportBytes: UInt64
+    contextEvents: UInt32, exportFiles: UInt32, exportBytes: UInt64, derivedItems: UInt32
   ) {
     self.sessionId = sessionId
     self.title = title
@@ -7389,6 +7390,7 @@ public struct NativeSessionDeletionInventory: Equatable, Hashable {
     self.contextEvents = contextEvents
     self.exportFiles = exportFiles
     self.exportBytes = exportBytes
+    self.derivedItems = derivedItems
   }
 
 }
@@ -7417,7 +7419,8 @@ public struct FfiConverterTypeNativeSessionDeletionInventory: FfiConverterRustBu
         markers: FfiConverterUInt32.read(from: &buf),
         contextEvents: FfiConverterUInt32.read(from: &buf),
         exportFiles: FfiConverterUInt32.read(from: &buf),
-        exportBytes: FfiConverterUInt64.read(from: &buf)
+        exportBytes: FfiConverterUInt64.read(from: &buf),
+        derivedItems: FfiConverterUInt32.read(from: &buf)
       )
   }
 
@@ -7434,6 +7437,7 @@ public struct FfiConverterTypeNativeSessionDeletionInventory: FfiConverterRustBu
     FfiConverterUInt32.write(value.contextEvents, into: &buf)
     FfiConverterUInt32.write(value.exportFiles, into: &buf)
     FfiConverterUInt64.write(value.exportBytes, into: &buf)
+    FfiConverterUInt32.write(value.derivedItems, into: &buf)
   }
 }
 

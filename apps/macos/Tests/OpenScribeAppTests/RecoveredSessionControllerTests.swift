@@ -1297,6 +1297,99 @@ final class RecoveredSessionControllerTests: RecoveredSessionTestCase {
     withExtendedLifetime(library) {}
   }
 
+  /// A stored final with a correction, one derived claim, and an in-session
+  /// export states that scope before anything is removed. Cancel leaves it.
+  /// Confirm moves the directory and drops the claim.
+  func testDeletionStatesTheDerivedItemBeforeTrash() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "open-scribe-deletion-derived-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let package = root.appendingPathComponent("Stored.openscribe")
+    let export = await exportStoredFinalPackage(to: package)
+    XCTAssertEqual(export.status, 0, String(export.log.suffix(2_000)))
+
+    let managed = root.appendingPathComponent("Library", isDirectory: true)
+    let library = try NativeTranscriptLibrary.open(managedRoot: managed.path)
+    let receipt = try library.importPortablePackage(packagePath: package.path)
+    let segments = try library.document(sessionId: receipt.sessionId)
+    let alpha = try XCTUnwrap(segments.first { $0.sequence == 0 })
+    let bravo = try XCTUnwrap(segments.first { $0.sequence == 1 })
+    let supporting = try library.citeTranscriptSegment(
+      sessionId: receipt.sessionId, revisionId: alpha.revisionId, sequence: alpha.sequence)
+    let contradicting = try library.citeTranscriptSegment(
+      sessionId: receipt.sessionId, revisionId: bravo.revisionId, sequence: bravo.sequence)
+    try library.insertDerivedClaim(
+      claimJson: citedClaimJSON(
+        sessionId: receipt.sessionId, supporting: supporting, contradicting: contradicting))
+    let sessionDirectory = managed.appendingPathComponent("Sessions", isDirectory: true)
+      .appendingPathComponent(receipt.sessionId, isDirectory: true)
+    let exports = sessionDirectory.appendingPathComponent("exports", isDirectory: true)
+    try FileManager.default.createDirectory(at: exports, withIntermediateDirectories: true)
+    let exportedNote = Data("exported".utf8)
+    try exportedNote.write(to: exports.appendingPathComponent("notes.txt"))
+    let media = try regularFiles(under: sessionDirectory).filter { $0.pathExtension == "caf" }
+    XCTAssertEqual(media.count, 1)
+    let mediaDigest = try digest(of: media[0])
+
+    let trash = root.appendingPathComponent("Trash", isDirectory: true)
+    let model = TranscriptLibraryModel(library: library) { directory in
+      try FileManager.default.createDirectory(at: trash, withIntermediateDirectories: true)
+      let destination = trash.appendingPathComponent(directory.lastPathComponent)
+      try FileManager.default.moveItem(at: directory, to: destination)
+      return destination
+    }
+    await model.load(sessionId: receipt.sessionId)
+    XCTAssertEqual(
+      model.derivedClaims.first?.text, "The team agreed to ship the local recorder.")
+
+    await model.requestDeletion(sessionId: receipt.sessionId)
+    let inventory = try XCTUnwrap(model.pendingDeletion)
+    XCTAssertEqual(inventory.derivedItems, 1)
+    XCTAssertGreaterThan(inventory.transcriptRevisions, 0)
+    XCTAssertGreaterThan(inventory.humanCorrections, 0)
+    XCTAssertEqual(inventory.exportFiles, 1)
+    XCTAssertEqual(inventory.exportBytes, 8)
+    XCTAssertGreaterThan(inventory.mediaFiles, 0)
+    let summary = SessionDeletionSummary.text(inventory)
+    XCTAssertTrue(summary.contains("1 derived item"))
+    XCTAssertTrue(summary.contains("correction"))
+    XCTAssertTrue(summary.contains("file exported inside the conversation"))
+    XCTAssertTrue(summary.contains("will be moved to Trash"))
+    XCTAssertTrue(summary.contains("Files you exported elsewhere"))
+    XCTAssertTrue(summary.contains("Time Machine or other backups"))
+    XCTAssertTrue(summary.contains("does not restore the deleted review database"))
+    XCTAssertEqual(try digest(of: media[0]), mediaDigest)
+    XCTAssertEqual(try Data(contentsOf: exports.appendingPathComponent("notes.txt")), exportedNote)
+
+    await model.cancelDeletion()
+    XCTAssertNil(model.pendingDeletion)
+    await model.load(sessionId: receipt.sessionId)
+    XCTAssertEqual(
+      model.derivedClaims.first?.text, "The team agreed to ship the local recorder.")
+    XCTAssertEqual(try digest(of: media[0]), mediaDigest)
+
+    await model.requestDeletion(sessionId: receipt.sessionId)
+    XCTAssertEqual(model.pendingDeletion?.derivedItems, 1)
+    let deleted = await model.confirmDeletion()
+    XCTAssertTrue(deleted, model.message ?? "deletion did not finish")
+    XCTAssertFalse(model.messageIsFailure, model.message ?? "deletion did not finish")
+    XCTAssertTrue(model.message?.contains("was moved to Trash") == true)
+    XCTAssertTrue(model.derivedClaims.isEmpty)
+    let preparation = try NativeRecordingPreparation.open(managedRoot: managed.path)
+    XCTAssertFalse(
+      try preparation.runtimeLibrarySnapshot().savedSessions.contains {
+        $0.sessionId == receipt.sessionId
+      })
+    XCTAssertFalse(FileManager.default.fileExists(atPath: media[0].path))
+    let trashedMedia = try regularFiles(under: trash).filter { $0.pathExtension == "caf" }
+    XCTAssertEqual(trashedMedia.count, 1)
+    XCTAssertEqual(try digest(of: trashedMedia[0]), mediaDigest)
+    let trashedNote = trash.appendingPathComponent(receipt.sessionId)
+      .appendingPathComponent("exports").appendingPathComponent("notes.txt")
+    XCTAssertEqual(try Data(contentsOf: trashedNote), exportedNote)
+  }
+
   /// Imports have no capture timeline, so claim evidence seeks with
   /// `play(_:startNanoseconds:)`.
   private func seekImported(
