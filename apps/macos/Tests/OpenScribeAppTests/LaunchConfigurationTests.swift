@@ -1,3 +1,4 @@
+@preconcurrency import AVFoundation
 import CryptoKit
 import Darwin
 import Foundation
@@ -899,6 +900,133 @@ final class LaunchConfigurationTests: XCTestCase {
       XCTAssertGreaterThan(finalFrames, priorFrames + 48_000)
     }
     XCTAssertEqual(try Self.cafPaths(under: media).count, 4)
+  }
+
+  /// The shipped verification app records both synthetic sources, observes a
+  /// storage warning, and keeps capturing. Stop then validates the stereo mix.
+  /// This launch does not open platform capture devices.
+  func testStorageWarningLaunchContinuesCaptureThenValidatesTheStereoMix() async throws {
+    let base = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
+      .appendingPathComponent("open-scribe-storage-warning-\(UUID().uuidString)", isDirectory: true)
+    let proof = base.appendingPathComponent("proof", isDirectory: true)
+    let media = proof.appendingPathComponent("media", isDirectory: true)
+    try FileManager.default.createDirectory(at: media, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: base) }
+    let normal = base.appendingPathComponent("unused-production")
+    let suite = "OpenScribe.Proof.\(UUID().uuidString)"
+    defer { UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite) }
+    let resolved = try LaunchConfiguration.resolve(
+      arguments: [
+        "app", "--m1-injected-proof-root", proof.path,
+        "--m1-proof-media-root", media.path,
+        "--m1-injected-case", "storage-warning",
+        "--verification-preferences", suite,
+      ],
+      environment: [:], normalRoot: normal)
+    XCTAssertEqual(resolved.mode, .synthetic)
+    XCTAssertEqual(resolved.action, .injected("storage-warning"))
+
+    var child: Process?
+    defer {
+      if let child, child.isRunning {
+        kill(pid_t(child.processIdentifier), SIGKILL)
+        child.waitUntilExit()
+      }
+    }
+    let capture = try Self.launchVerificationApp(
+      arguments: [
+        "--m1-injected-proof-root", proof.path,
+        "--m1-proof-media-root", media.path,
+        "--m1-injected-case", "storage-warning",
+        "--verification-preferences", suite,
+      ],
+      standardOutput: proof.appendingPathComponent("app-out.log"),
+      standardError: proof.appendingPathComponent("app-err.log"))
+    child = capture
+    let outcomeURL = proof.appendingPathComponent("outcome.json")
+    let finished = await Self.waitForFile(outcomeURL, seconds: 60, process: capture)
+    guard finished else {
+      XCTFail(Self.launchFailure("storage-warning outcome was not written", proof: proof, process: capture))
+      return
+    }
+    let exited = await Self.waitUntil(seconds: 20) { capture.isRunning == false }
+    XCTAssertTrue(exited, Self.launchFailure("storage-warning launch did not exit", proof: proof, process: capture))
+    capture.waitUntilExit()
+    child = nil
+    XCTAssertEqual(capture.terminationStatus, 0)
+    XCTAssertFalse(FileManager.default.fileExists(atPath: proof.appendingPathComponent("proof-error").path))
+
+    let outcomeData = try Data(contentsOf: outcomeURL)
+    let outcomeText = String(decoding: outcomeData, as: UTF8.self)
+    XCTAssertFalse(outcomeText.contains("AVAudioEngine+ScreenCaptureKit"))
+    XCTAssertFalse(outcomeText.contains("live-pause-resume"))
+    let outcome = try JSONSerialization.jsonObject(with: outcomeData) as? [String: Any]
+    XCTAssertEqual(outcome?["result"] as? String, "INJECTED_CASE_GREEN")
+    XCTAssertEqual(outcome?["scenario"] as? String, "storage-warning")
+    XCTAssertEqual(outcome?["phase_at_event"] as? String, "capturing")
+    XCTAssertEqual(outcome?["fallback"] as? String, "recording-with-storage-warning")
+    XCTAssertEqual(outcome?["lifecycle"] as? String, "ready_for_review")
+    XCTAssertEqual((outcome?["tracks"] as? NSNumber)?.intValue, 2)
+    XCTAssertGreaterThan((outcome?["rendered_frames"] as? NSNumber)?.intValue ?? 0, 0)
+    let visibleEvents = try XCTUnwrap(outcome?["visible_events"] as? [String])
+    XCTAssertTrue(visibleEvents.contains("storage_observed"))
+    XCTAssertTrue(visibleEvents.contains("marker_added"))
+    let sessionId = try XCTUnwrap(outcome?["session_id"] as? String)
+
+    let probe = try JSONSerialization.jsonObject(
+      with: Data(contentsOf: proof.appendingPathComponent("storage-probe.json"))) as? [String: Any]
+    XCTAssertEqual((probe?["available_bytes"] as? NSNumber)?.uint64Value, 768 * 1024 * 1024)
+
+    let preparation = try NativeRecordingPreparation.open(managedRoot: media.path)
+    let detail = try preparation.recorderDetail(sessionId: sessionId)
+    XCTAssertEqual(detail.lifecycle, "ready_for_review")
+    XCTAssertEqual(detail.storageLevel, "warning")
+    XCTAssertEqual(
+      detail.events.filter { $0.kind == "storage_observed" }.map(\.label),
+      ["normal", "warning"])
+    XCTAssertEqual(
+      detail.events.last { $0.kind == "marker_added" }?.label,
+      "Injected failure boundary")
+    let plan = try preparation.playbackTimeline(sessionId: sessionId)
+    let tracks = Set(plan.map(\.trackId))
+    XCTAssertEqual(tracks.count, 2)
+    for track in tracks {
+      XCTAssertEqual(plan.filter { $0.trackId == track }.map(\.sampleCount), [48_000])
+    }
+    let mix = try XCTUnwrap(try preparation.validatedMixdown(sessionId: sessionId))
+    XCTAssertEqual(mix.sessionId, sessionId)
+    XCTAssertEqual(mix.digestSha256.count, 64)
+    XCTAssertTrue(mix.digestSha256.allSatisfy { $0.isHexDigit && !$0.isUppercase })
+    XCTAssertFalse(mix.sourceDigestSha256.isEmpty)
+    XCTAssertGreaterThan(mix.byteLength, 32)
+    XCTAssertGreaterThan(mix.decodedFrameCount, 0)
+    let frameDifference =
+      mix.decodedFrameCount > mix.expectedFrameCount
+      ? mix.decodedFrameCount - mix.expectedFrameCount
+      : mix.expectedFrameCount - mix.decodedFrameCount
+    XCTAssertLessThanOrEqual(frameDifference, 1_024)
+    let sources = try Self.cafPaths(under: media)
+    XCTAssertEqual(sources.count, 2)
+    let mixURL =
+      media
+      .appendingPathComponent("Sessions", isDirectory: true)
+      .appendingPathComponent(sessionId, isDirectory: true)
+      .appendingPathComponent(mix.relativePath)
+    XCTAssertFalse(sources.contains(mixURL.path))
+    let attributes = try FileManager.default.attributesOfItem(atPath: mixURL.path)
+    XCTAssertEqual((attributes[.size] as? NSNumber)?.uint64Value, mix.byteLength)
+    let decoded = try AVAudioFile(forReading: mixURL)
+    XCTAssertEqual(decoded.fileFormat.channelCount, 2)
+    XCTAssertEqual(decoded.fileFormat.streamDescription.pointee.mFormatID, kAudioFormatMPEG4AAC)
+    XCTAssertGreaterThan(decoded.length, 0)
+    let journal = media.appendingPathComponent("Sessions/\(sessionId)/recovery.jsonl")
+    let kinds = try Self.journalKinds(journal)
+    XCTAssertTrue(kinds.contains("recording_started"), kinds.joined(separator: ","))
+    XCTAssertEqual(kinds.filter { $0 == "storage_observed" }.count, 2)
+    XCTAssertEqual(kinds.filter { $0 == "marker_added" }.count, 1)
+    XCTAssertEqual(kinds.filter { $0 == "segment_sealed" }.count, 2)
+    XCTAssertEqual(kinds.filter { $0 == "mixdown_validated" }.count, 1)
+    XCTAssertFalse(kinds.contains("playable_media_recovered"), kinds.joined(separator: ","))
   }
 
   private static func launchVerificationApp(
