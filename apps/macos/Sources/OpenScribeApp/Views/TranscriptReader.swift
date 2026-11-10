@@ -30,12 +30,6 @@ struct TranscriptReader: View {
     TranscriptTextScale.resolve(storedTranscriptTextScale)
   }
 
-  private var textScaleBinding: Binding<String> {
-    Binding(
-      get: { transcriptTextScale.rawValue },
-      set: { storedTranscriptTextScale = TranscriptTextScale.resolve($0).rawValue })
-  }
-
   private var speakerSegments: [NativeTranscriptSegment] {
     transcripts.segments.filter { segment in
       switch filter {
@@ -139,16 +133,10 @@ struct TranscriptReader: View {
           if isPlaybackActive { followControl }
         }
       }
-      Picker(TranscriptTextScale.controlLabel, selection: textScaleBinding) {
-        ForEach(TranscriptTextScale.allCases) { scale in
-          Text(scale.title).tag(scale.rawValue)
-        }
+      TranscriptTextScaleMount(rawValue: transcriptTextScale.rawValue) { selected in
+        storedTranscriptTextScale = TranscriptTextScale.resolve(selected).rawValue
       }
-      .pickerStyle(.menu)
-      .font(.caption)
-      .frame(maxWidth: 280, alignment: .leading)
-      .accessibilityLabel(TranscriptTextScale.controlLabel)
-      .accessibilityValue(transcriptTextScale.spokenValue)
+      .frame(maxWidth: 280, minHeight: 24, alignment: .leading)
     }
   }
 
@@ -321,6 +309,72 @@ final class CorrectionActionController: ObservableObject {
 
   func close() {
     segmentId = nil
+  }
+}
+
+/// The transcript text-size menu. It is created with the reader so a hosted
+/// window can change the size without a second SwiftUI control.
+private struct TranscriptTextScaleMount: NSViewRepresentable {
+  let rawValue: String
+  let onSelect: (String) -> Void
+
+  func makeNSView(context: Context) -> TranscriptTextScaleControl {
+    let view = TranscriptTextScaleControl()
+    view.bind(rawValue: rawValue, onSelect: onSelect)
+    return view
+  }
+
+  func updateNSView(_ view: TranscriptTextScaleControl, context: Context) {
+    view.bind(rawValue: rawValue, onSelect: onSelect)
+  }
+}
+
+private final class TranscriptTextScaleControl: NSView {
+  private let popup = NSPopUpButton()
+  private var onSelect: ((String) -> Void)?
+  private var rawValue = TranscriptTextScale.standard.rawValue
+
+  override init(frame frameRect: NSRect) {
+    super.init(frame: frameRect)
+    popup.target = self
+    popup.action = #selector(choose)
+    popup.setAccessibilityLabel(TranscriptTextScale.controlLabel)
+    for scale in TranscriptTextScale.allCases {
+      popup.addItem(withTitle: scale.title)
+      popup.lastItem?.representedObject = scale.rawValue
+    }
+    popup.translatesAutoresizingMaskIntoConstraints = false
+    addSubview(popup)
+    NSLayoutConstraint.activate([
+      popup.leadingAnchor.constraint(equalTo: leadingAnchor),
+      popup.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor),
+      popup.topAnchor.constraint(equalTo: topAnchor),
+      popup.bottomAnchor.constraint(equalTo: bottomAnchor),
+      popup.widthAnchor.constraint(greaterThanOrEqualToConstant: 180),
+    ])
+  }
+
+  required init?(coder: NSCoder) { nil }
+
+  override var intrinsicContentSize: NSSize {
+    NSSize(width: NSView.noIntrinsicMetric, height: 24)
+  }
+
+  func bind(rawValue: String, onSelect: @escaping (String) -> Void) {
+    self.onSelect = onSelect
+    let resolved = TranscriptTextScale.resolve(rawValue)
+    self.rawValue = resolved.rawValue
+    popup.selectItem(withTitle: resolved.title)
+    popup.setAccessibilityValue(resolved.spokenValue)
+  }
+
+  @objc private func choose() {
+    guard let raw = popup.selectedItem?.representedObject as? String else { return }
+    let resolved = TranscriptTextScale.resolve(raw)
+    guard resolved.rawValue != rawValue else { return }
+    rawValue = resolved.rawValue
+    popup.setAccessibilityValue(resolved.spokenValue)
+    onSelect?(resolved.rawValue)
   }
 }
 

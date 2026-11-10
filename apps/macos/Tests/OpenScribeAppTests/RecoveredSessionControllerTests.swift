@@ -1078,6 +1078,149 @@ final class RecoveredSessionControllerTests: RecoveredSessionTestCase {
     withExtendedLifetime((store, live, playback, player, window, host)) {}
   }
 
+  /// The transcript text-size menu is the shipped control. Choosing Largest
+  /// renders the same final passage taller and keeps its spoken name. The
+  /// test does not call `load` after the view is hosted and does not change
+  /// the passage text.
+  func testHostedTranscriptTextSizeRendersThePassageLarger() async throws {
+    let suite = "OpenScribe.Proof.TextSize.\(UUID().uuidString)"
+    let preferences = try XCTUnwrap(UserDefaults(suiteName: suite))
+    preferences.set(TranscriptTextScale.standard.rawValue, forKey: TranscriptTextScale.storageKey)
+    defer { preferences.removePersistentDomain(forName: suite) }
+
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "open-scribe-text-size-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let managed = root.appendingPathComponent("Library", isDirectory: true)
+    try FileManager.default.createDirectory(at: managed, withIntermediateDirectories: true)
+    let export = await exportMixedTranscriptLibrary(to: managed)
+    XCTAssertEqual(export.status, 0, String(export.log.suffix(2_000)))
+    let media = try regularFiles(under: managed.appendingPathComponent("Sessions"))
+      .filter { $0.pathExtension == "caf" }
+    XCTAssertEqual(media.count, 1)
+    let mediaDigest = try digest(of: media[0])
+
+    let model = TranscriptLibraryModel(managedRoot: managed)
+    let store = RuntimeLibraryStore(managedRoot: managed, refreshesImmediately: false)
+    store.refresh()
+    let listed = await waitUntil { !store.savedSessions.isEmpty }
+    XCTAssertTrue(listed, "saved=\(store.savedSessions.map(\.sessionId))")
+    let session = try XCTUnwrap(store.savedSessions.first)
+    XCTAssertEqual(session.lifecycle, "ready_for_review")
+    await model.load(sessionId: session.sessionId)
+    XCTAssertEqual(model.segments.count, 3)
+    let alpha = try XCTUnwrap(model.segments.first { $0.effectiveText == "alpha" })
+    let spoken = ConversationControlLabels.passageAccessibility(
+      speaker: alpha.speakerLabel, text: alpha.effectiveText, finality: alpha.finality,
+      corrected: alpha.corrected, isPlaying: false, isCited: false)
+    XCTAssertTrue(spoken.contains("alpha"))
+    XCTAssertTrue(spoken.contains("Final"))
+    let stamp = TranscriptSection.timestamp(alpha.startNanoseconds)
+    let playLabel = "Play from \(stamp), Final"
+
+    let navigation = MainWorkspaceNavigation()
+    navigation.select(session.sessionId)
+    let player = RecoveredAudioPlayerFake()
+    let playback = RecoveredSessionController(
+      recoveryFactory: { try NativeRecordingPreparation.open(managedRoot: managed.path) },
+      importedPlaybackLeaseProvider: { id in
+        try NativeRecordingPreparation.open(managedRoot: managed.path)
+          .leaseImportedPlayback(sessionId: id)
+      },
+      player: player)
+    let live = LiveMicrophoneRecordingController(managedRoot: managed)
+    let view = ContentView(
+      store: store,
+      importedMediaAuthority: ImportedMediaAuthorityAdapter(
+        startSecurityScope: { _ in true },
+        stopSecurityScope: { _ in },
+        importer: { _, _ in throw NativeStorageError.InvalidRequest }
+      ),
+      liveRecording: live,
+      recoveredSessions: playback,
+      transcripts: model,
+      speech: SpeechTranscriptionModel(managedRoot: managed),
+      scheduler: TranscriptionScheduler.inert(),
+      pressure: SystemPressureMonitor(libraryRoot: managed, samplesAutomatically: false),
+      context: ContextScopeModel(
+        binding: { nil },
+        frames: IdleClaimContextFrames(),
+        permissionCheck: { .denied },
+        permissionRequest: { .denied },
+        topology: { [] }
+      ),
+      navigation: navigation
+    ).defaultAppStorage(preferences)
+    let host = NSHostingView(rootView: view)
+    host.sizingOptions = []
+    let window = NSWindow(
+      contentRect: NSRect(x: 0, y: 0, width: 1100, height: 720),
+      styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    window.contentView = host
+    window.setContentSize(NSSize(width: 1100, height: 720))
+    host.frame = window.contentLayoutRect
+    window.makeKeyAndOrderFront(nil)
+    window.orderFrontRegardless()
+    defer { window.close() }
+
+    let shown = await waitUntil(timeoutNanoseconds: 8_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      window.displayIfNeeded()
+      return self.hostedPopup(labeled: TranscriptTextScale.controlLabel, in: host) != nil
+        && self.claimButton(labeled: playLabel, in: host) != nil
+    }
+    XCTAssertTrue(
+      shown && window.contentView === host,
+      "segments=\(model.segments.count) session=\(model.sessionId ?? "")\n\(self.hostedControlProbe(in: host))")
+    let popup = try XCTUnwrap(self.hostedPopup(labeled: TranscriptTextScale.controlLabel, in: host))
+    XCTAssertEqual(popup.titleOfSelectedItem, "Standard")
+    XCTAssertEqual(popup.accessibilityValue() as? String, TranscriptTextScale.standard.spokenValue)
+    XCTAssertTrue(popup.isDescendant(of: host))
+    let playAtStandard = try XCTUnwrap(self.claimButton(labeled: playLabel, in: host))
+    let standardRow = self.passageRowHeight(of: playAtStandard)
+    let largestIndex = popup.indexOfItem(withTitle: "Largest")
+    XCTAssertGreaterThanOrEqual(largestIndex, 0)
+    popup.selectItem(at: largestIndex)
+    XCTAssertEqual(popup.titleOfSelectedItem, "Largest")
+    XCTAssertTrue(popup.sendAction(popup.action, to: popup.target))
+
+    let grew = await waitUntil(timeoutNanoseconds: 5_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      window.displayIfNeeded()
+      guard popup.titleOfSelectedItem == "Largest",
+        let play = self.claimButton(labeled: playLabel, in: host)
+      else { return false }
+      return self.passageRowHeight(of: play) > standardRow + 1
+    }
+    let playAtLargest = self.claimButton(labeled: playLabel, in: host)
+    XCTAssertTrue(
+      grew,
+      "standardRow=\(standardRow) now=\(playAtLargest.map { self.passageRowHeight(of: $0) } ?? -1) selected=\(popup.titleOfSelectedItem ?? "") stored=\(preferences.string(forKey: TranscriptTextScale.storageKey) ?? "") ancestors=\(playAtLargest.map { self.ancestorHeights(of: $0) } ?? [])")
+    XCTAssertEqual(
+      preferences.string(forKey: TranscriptTextScale.storageKey),
+      TranscriptTextScale.largest.rawValue)
+    XCTAssertEqual(popup.accessibilityValue() as? String, TranscriptTextScale.largest.spokenValue)
+    let largestRow = self.passageRowHeight(of: try XCTUnwrap(playAtLargest))
+    XCTAssertGreaterThan(largestRow, standardRow)
+    XCTAssertTrue(window.makeFirstResponder(popup))
+    XCTAssertTrue(window.firstResponder === popup || popup.currentEditor() != nil)
+
+    let play = try XCTUnwrap(self.claimButton(labeled: playLabel, in: host))
+    XCTAssertTrue(play.isDescendant(of: host) && window.contentView === host)
+    play.performClick(nil)
+    await assertEventually {
+      player.importedStartNanoseconds == alpha.startNanoseconds
+        && playback.playingSessionId == session.sessionId
+    }
+    XCTAssertNil(playback.errorMessage)
+    playback.stopPlayback()
+    XCTAssertEqual(try digest(of: media[0]), mediaDigest)
+    XCTAssertEqual(model.segments.first { $0.id == alpha.id }?.effectiveText, "alpha")
+    withExtendedLifetime((store, live, playback, player, window, host)) {}
+  }
+
   /// Two restored conversations keep a final passage and a corrected passage.
   /// The library search the sidebar uses returns both, and each match opens
   /// at that passage's audio time.
@@ -2247,6 +2390,32 @@ final class RecoveredSessionControllerTests: RecoveredSessionTestCase {
     }
     walk(root)
     return matched
+  }
+
+  /// The passage row is the first ancestor taller than the timestamp button
+  /// and still shorter than the whole transcript column.
+  private func passageRowHeight(of button: NSButton) -> CGFloat {
+    var view = button.superview
+    var steps = 0
+    while let current = view, steps < 12 {
+      let height = current.frame.height
+      if height > button.frame.height + 4, height < 180 { return height }
+      view = current.superview
+      steps += 1
+    }
+    return button.frame.height
+  }
+
+  private func ancestorHeights(of button: NSButton) -> [CGFloat] {
+    var heights: [CGFloat] = [button.frame.height]
+    var view = button.superview
+    var steps = 0
+    while let current = view, steps < 8 {
+      heights.append(current.frame.height)
+      view = current.superview
+      steps += 1
+    }
+    return heights
   }
 
   private func hostedPopup(labeled label: String, in root: NSView) -> NSPopUpButton? {
