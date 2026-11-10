@@ -8,6 +8,11 @@ import XCTest
 /// sources supply PCM instead of requesting TCC or opening audio devices.
 @MainActor
 final class RecorderPauseResumeTests: XCTestCase {
+  private static func byteCount(_ path: String) throws -> UInt64 {
+    let size = try FileManager.default.attributesOfItem(atPath: path)[.size] as? NSNumber
+    return try XCTUnwrap(size).uint64Value
+  }
+
   func testRestoreFailureBeforeFirstSampleLeavesReconnectAvailable() async throws {
     for failure in [MicrophoneSourceHealthEvent.routeInterrupted, .writerFailed] {
       let device = MicrophoneDeviceIdentity(uniqueID: "selected-microphone", localizedName: "Mic")
@@ -832,6 +837,104 @@ final class RecorderPauseResumeTests: XCTestCase {
     XCTAssertEqual(
       detail.events.filter { $0.kind == "storage_observed" }.map(\.label),
       ["normal", "warning", "normal", "critical"])
+  }
+
+  /// A storage warning leaves capture running. Stop then runs the shipped mixdown.
+  /// The verified stereo file is added beside the source tracks, which stay intact.
+  func testStorageWarningThenStopKeepsSourcesAndValidatesTheStereoMix() async throws {
+    let harness = try PauseHarness()
+    defer { harness.removeFiles() }
+    harness.storage.set(4 * 1024 * 1024 * 1024)
+    await harness.controller.start()
+    try await harness.capture()
+    let microphone = try XCTUnwrap(harness.captures.microphones.last)
+    let system = try XCTUnwrap(harness.captures.systems.last)
+    let sessionId = microphone.writer.authorization.sessionId
+    let microphonePath = microphone.writer.authorization.absolutePath
+    let systemPath = system.writer.authorization.absolutePath
+
+    harness.storage.set(768 * 1024 * 1024)
+    await harness.controller.checkStorage()
+    XCTAssertEqual(harness.controller.phase, .capturing)
+    XCTAssertNil(harness.controller.errorMessage)
+    XCTAssertEqual(harness.controller.recorderDetail?.storageLevel, "warning")
+    let notice = try XCTUnwrap(harness.controller.storagePressureNotice)
+    XCTAssertTrue(notice.contains("Storage is low"))
+    XCTAssertTrue(notice.contains("Recording continues"))
+    let store = RuntimeLibraryStore(
+      snapshotProvider: {
+        NativeRuntimeLibrarySnapshot(currentSession: nil, savedSessions: [])
+      },
+      announce: { _ in },
+      startsPolling: false
+    )
+    let live = CompactLiveView(store: store, liveRecording: harness.controller)
+    XCTAssertEqual(live.storagePressureNotice, notice)
+
+    await harness.controller.stop()
+    XCTAssertEqual(harness.controller.phase, .saved)
+    XCTAssertNil(harness.controller.errorMessage)
+    XCTAssertNil(harness.controller.storagePressureNotice)
+    XCTAssertEqual(harness.controller.lastSavedSessionId, sessionId)
+    let microphoneBytes = try Self.byteCount(microphonePath)
+    let systemBytes = try Self.byteCount(systemPath)
+    XCTAssertGreaterThan(microphoneBytes, 0)
+    XCTAssertGreaterThan(systemBytes, 0)
+
+    var settled = false
+    for _ in 0..<1_000 {
+      let status = harness.controller.mixdownStatus
+      if status == "Recording saved with verified stereo mix"
+        || status == "Source tracks saved; stereo mix unavailable"
+      {
+        settled = true
+        break
+      }
+      try await Task.sleep(nanoseconds: 10_000_000)
+    }
+    XCTAssertTrue(settled, "mixdown did not finish: \(harness.controller.mixdownStatus ?? "nil")")
+    XCTAssertEqual(
+      harness.controller.mixdownStatus, "Recording saved with verified stereo mix")
+    XCTAssertEqual(harness.controller.statusText, "Recording saved with verified stereo mix")
+
+    let mix = try XCTUnwrap(try harness.preparation.validatedMixdown(sessionId: sessionId))
+    XCTAssertEqual(mix.sessionId, sessionId)
+    XCTAssertEqual(mix.digestSha256.count, 64)
+    XCTAssertTrue(mix.digestSha256.allSatisfy(\.isHexDigit))
+    XCTAssertFalse(mix.sourceDigestSha256.isEmpty)
+    XCTAssertGreaterThan(mix.byteLength, 32)
+    XCTAssertGreaterThan(mix.decodedFrameCount, 0)
+    let frameDifference =
+      mix.decodedFrameCount > mix.expectedFrameCount
+      ? mix.decodedFrameCount - mix.expectedFrameCount
+      : mix.expectedFrameCount - mix.decodedFrameCount
+    XCTAssertLessThanOrEqual(frameDifference, 1_024)
+    let mixURL =
+      harness.root
+      .appendingPathComponent("Sessions", isDirectory: true)
+      .appendingPathComponent(sessionId, isDirectory: true)
+      .appendingPathComponent(mix.relativePath)
+    XCTAssertNotEqual(mixURL.path, microphonePath)
+    XCTAssertNotEqual(mixURL.path, systemPath)
+    let decoded = try AVAudioFile(forReading: mixURL)
+    XCTAssertEqual(decoded.fileFormat.channelCount, 2)
+    XCTAssertEqual(decoded.fileFormat.streamDescription.pointee.mFormatID, kAudioFormatMPEG4AAC)
+    XCTAssertGreaterThan(decoded.length, 0)
+
+    XCTAssertEqual(try Self.byteCount(microphonePath), microphoneBytes)
+    XCTAssertEqual(try Self.byteCount(systemPath), systemBytes)
+    let reopened = try NativeRecordingPreparation.open(managedRoot: harness.root.path)
+    XCTAssertEqual(
+      try reopened.validatedMixdown(sessionId: sessionId)?.digestSha256, mix.digestSha256)
+    let plan = try reopened.playbackTimeline(sessionId: sessionId)
+    XCTAssertEqual(Set(plan.map(\.trackId)).count, 2)
+    XCTAssertTrue(plan.allSatisfy { $0.sampleCount > 0 })
+    let detail = try reopened.recorderDetail(sessionId: sessionId)
+    XCTAssertEqual(detail.lifecycle, "ready_for_review")
+    XCTAssertEqual(detail.storageLevel, "warning")
+    XCTAssertEqual(
+      detail.events.filter { $0.kind == "storage_observed" }.map(\.label),
+      ["normal", "warning"])
   }
 
   /// Add Marker uses the session clock. The saved recording still has the marker
