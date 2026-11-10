@@ -1828,6 +1828,123 @@ final class MicrophoneCaptureAdapterTests: XCTestCase {
     withExtendedLifetime(adapter) {}
   }
 
+  /// A saved capture already has a later draft on its timeline. The conversation
+  /// view's Play control opens that interval. The test does not call
+  /// `playSynchronized` or `load`.
+  @MainActor
+  func testHostedCaptureTimelineSeekOpensTheDraftInterval() async throws {
+    let fixture = try openedMicrophone(title: "Hosted draft seek")
+    var timebase = mach_timebase_info_data_t()
+    XCTAssertEqual(mach_timebase_info(&timebase), KERN_SUCCESS)
+    let anchor = mach_absolute_time()
+    try fixture.controller.anchorCaptureClock(
+      sessionId: fixture.authorization.sessionId,
+      hostAnchor: anchor,
+      numerator: timebase.numer,
+      denominator: timebase.denom)
+    let firstHost = anchor
+    let rising = RisingSamples()
+    let backend = FakeMicrophoneBackend(inputFormat: fixture.format)
+    let adapter = MicrophoneCaptureAdapter(
+      backend: backend,
+      writer: fixture.writer,
+      identity: MicrophoneCaptureIdentity(authorization: fixture.authorization)
+    )
+    adapter.installProvisionalDraftAdmission(
+      preparation: fixture.controller,
+      hypothesis: { start, _ in
+        provisionalFixture(start == 0 ? "early meadow" : "later brook")
+      },
+      windowFrames: 480,
+      overlapFrames: 96
+    )
+    let failures = try startAndConfirm(
+      adapter: adapter, backend: backend, controller: fixture.controller, format: fixture.format,
+      firstHostTime: firstHost)
+    let sessionId = fixture.authorization.sessionId
+    backend.emit(try rising.fill(fixture.format, 384), hostTime: firstHost &+ 1)
+    adapter.waitForAcceptedAudio()
+    adapter.waitForProvisionalDraftAdmission()
+    backend.emit(
+      try rising.fill(fixture.format, 384),
+      hostTime: firstHost &+ AVAudioTime.hostTime(forSeconds: 0.01))
+    adapter.waitForAcceptedAudio()
+    adapter.waitForProvisionalDraftAdmission()
+    let stoppedAt = adapter.stop() ?? firstHost
+    let sealed = try fixture.controller.sealSegment(
+      receipt: try fixture.writer.sealSegmentReceipt(
+        finalSampleHostTime: max(stoppedAt, firstHost &+ AVAudioTime.hostTime(forSeconds: 0.02))))
+    XCTAssertTrue(sealed.segmentSealed)
+    let mediaURL = URL(fileURLWithPath: fixture.authorization.absolutePath)
+    let sealedMedia = try Data(contentsOf: mediaURL)
+    let saved = try XCTUnwrap(
+      fixture.controller.runtimeLibrarySnapshot().savedSessions.first { $0.sessionId == sessionId })
+    let presentation = RuntimeSessionPresentation(native: saved)
+    XCTAssertEqual(presentation.lifecycle, "ready_for_review")
+    XCTAssertTrue(presentation.hasCaptureTimeline)
+    let preparation = fixture.controller
+    let playback = RecoveredSessionController(
+      recoveryFactory: { preparation },
+      player: RecoveredAudioPlayerFake(),
+      timelineProvider: { _ in try preparation.playbackTimeline(sessionId: sessionId) }
+    )
+    let transcripts = TranscriptLibraryModel(
+      library: try NativeTranscriptLibrary.open(managedRoot: fixture.root.path))
+    let store = RuntimeLibraryStore(managedRoot: fixture.root)
+    let workspace = ConversationWorkspaceView(
+      session: presentation,
+      store: store,
+      playbackController: playback,
+      transcripts: transcripts,
+      speech: SpeechTranscriptionModel(preview: []),
+      scheduler: TranscriptionScheduler.inert(),
+      reference: nil,
+      audioReviewRequest: nil,
+      canStartNewRecording: false,
+      newRecordingUnavailableReason: "A recording is already saved.",
+      onStartNewRecording: {},
+      loadRecorderEvents: { _ in [] }
+    )
+    let host = NSHostingView(rootView: workspace)
+    host.sizingOptions = []
+    let window = NSWindow(
+      contentRect: NSRect(x: 0, y: 0, width: 1100, height: 1400),
+      styleMask: [.titled, .closable], backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    window.contentView = host
+    window.setContentSize(NSSize(width: 1100, height: 1400))
+    host.frame = window.contentLayoutRect
+    window.makeKeyAndOrderFront(nil)
+    window.orderFrontRegardless()
+    defer { window.close() }
+    let shown = await waitUntil(timeoutNanoseconds: 5_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      window.displayIfNeeded()
+      return self.seekButton(containing: "Play from", in: host) != nil
+        && transcripts.segments.contains { $0.effectiveText == "later brook" }
+    }
+    let button = try XCTUnwrap(self.seekButton(containing: "Play from", in: host))
+    let passage = try XCTUnwrap(transcripts.segments.first { $0.effectiveText == "later brook" })
+    XCTAssertTrue(shown && window.contentView === host && button.isDescendant(of: host))
+    XCTAssertGreaterThan(passage.startNanoseconds, 0)
+    XCTAssertEqual(passage.finality, "draft")
+    XCTAssertTrue(button.accessibilityLabel()?.contains("Draft") == true)
+    button.performClick(nil)
+    let opened = await waitUntil(timeoutNanoseconds: 5_000_000_000) {
+      playback.timelinePlayer.lastOpenedStartNanoseconds == passage.startNanoseconds
+    }
+    XCTAssertTrue(opened, playback.errorMessage ?? "timeline did not open")
+    XCTAssertNil(playback.errorMessage)
+    XCTAssertEqual(playback.playingSessionId, sessionId)
+    XCTAssertEqual(try Data(contentsOf: mediaURL), sealedMedia)
+    XCTAssertTrue(failures.snapshot().isEmpty)
+    playback.stopPlayback()
+    withExtendedLifetime(store) {}
+    withExtendedLifetime(transcripts) {}
+    withExtendedLifetime(playback) {}
+    withExtendedLifetime(adapter) {}
+  }
+
   /// A saved draft stays readable when voice clustering cannot name the speaker.
   /// The user's source-speaker name leaves the words, the transcript run, and the capture file in place.
   func testManualSpeakerReviewKeepsTheReadableDraftWhenClusteringIsUnavailable() async throws {
@@ -2071,6 +2188,25 @@ final class MicrophoneCaptureAdapterTests: XCTestCase {
       """)
     XCTAssertEqual(try Data(contentsOf: mediaURL), sealedMedia)
     XCTAssertTrue(failures.snapshot().isEmpty)
+  }
+
+  @MainActor
+  private func seekButton(containing text: String, in root: NSView) -> NSButton? {
+    if let button = root as? NSButton, !(button is NSPopUpButton) {
+      let label = button.accessibilityLabel() ?? ""
+      let visible =
+        button.isHidden == false && button.isHiddenOrHasHiddenAncestor == false
+        && button.frame.width > 1 && button.frame.height > 1
+      if visible, button.title.localizedCaseInsensitiveContains(text)
+        || label.localizedCaseInsensitiveContains(text)
+      {
+        return button
+      }
+    }
+    for subview in root.subviews {
+      if let found = seekButton(containing: text, in: subview) { return found }
+    }
+    return nil
   }
 
   @MainActor
