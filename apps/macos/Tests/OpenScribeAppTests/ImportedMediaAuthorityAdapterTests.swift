@@ -1283,6 +1283,105 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
     withExtendedLifetime(preparation) {}
   }
 
+  /// Confirmation puts the dropped file on the same transcription entry a
+  /// recording uses. No speech model is installed, so that entry prepares the
+  /// compressed audio and stops without writing a transcript.
+  func testAConfirmedDropStopsTranscriptionWithoutASpeechModel() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "open-scribe-drop-transcribe-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let source = root.appendingPathComponent("Dropped memo.m4a")
+    do {
+      let file = try AVAudioFile(
+        forWriting: source,
+        settings: [
+          AVFormatIDKey: kAudioFormatAppleLossless,
+          AVSampleRateKey: 48_000.0,
+          AVNumberOfChannelsKey: 1,
+          AVEncoderBitDepthHintKey: 16,
+        ])
+      let buffer = try XCTUnwrap(
+        AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: 48_000))
+      buffer.frameLength = 48_000
+      let channel = try XCTUnwrap(buffer.floatChannelData?[0])
+      for frame in 0..<48_000 {
+        channel[frame] = frame < 24_000 ? 0.25 : -0.5
+      }
+      try file.write(from: buffer)
+    }
+    let original = try Data(contentsOf: source)
+    let importRoot = root.appendingPathComponent("Library", isDirectory: true)
+    try FileManager.default.createDirectory(at: importRoot, withIntermediateDirectories: false)
+    let store = RuntimeLibraryStore(managedRoot: importRoot, refreshesImmediately: false)
+    let adapter = ImportedMediaAuthorityAdapter(
+      startSecurityScope: { _ in true },
+      stopSecurityScope: { _ in },
+      importer: { title, url in
+        try store.importManagedAudio(title: title, sourceURL: url)
+      }
+    )
+    let preparation = try NativeRecordingPreparation.open(managedRoot: importRoot.path)
+    adapter.stageDroppedAudio([source])
+    XCTAssertEqual(adapter.phase, .idle)
+    XCTAssertTrue(try preparation.runtimeLibrarySnapshot().savedSessions.isEmpty)
+    XCTAssertEqual(try Data(contentsOf: source), original)
+
+    adapter.confirmPendingAudioImport()
+    await assertEventually { adapter.phase == .succeeded }
+    let sessionId = try XCTUnwrap(adapter.importedSessionId)
+    let native = try XCTUnwrap(
+      try preparation.runtimeLibrarySnapshot().savedSessions.first { $0.sessionId == sessionId })
+    let session = RuntimeSessionPresentation(native: native)
+    XCTAssertNil(session.transcriptionUnavailableReason)
+    XCTAssertEqual(session.transcript.state, .none)
+
+    let speech = SpeechTranscriptionModel(managedRoot: importRoot)
+    await speech.refreshAndWait()
+    XCTAssertEqual(
+      speech.models.map(\.modelId), ["whisper-small.en-q5_1", "whisper-small-q5_1"])
+    XCTAssertTrue(speech.models.allSatisfy { !$0.installed })
+    XCTAssertNil(speech.installedModel)
+    let library = try NativeTranscriptLibrary.open(managedRoot: importRoot.path)
+    let model = TranscriptLibraryModel(library: library)
+    await model.load(sessionId: sessionId)
+    XCTAssertEqual(model.availability, .unavailable)
+    XCTAssertTrue(
+      TranscriptSection.showsInstallSpeechModel(session: session, speech: speech))
+    XCTAssertEqual(
+      TranscriptSection.statusLine(session: session, transcripts: model, speech: speech),
+      TranscriptSection.speechModelUnavailableStatus)
+    let speechNative = try NativeSpeechModels.open(managedRoot: importRoot.path)
+    XCTAssertTrue(try speechNative.needsDecodedCompanion(sessionId: sessionId))
+    XCTAssertTrue(
+      try speechNative.needsDecodedCompanionForIntent(
+        sessionId: sessionId, intent: .resumeIncomplete))
+    let managedCopy = try XCTUnwrap(importedAudioFile(under: importRoot))
+    let managedBefore = try Data(contentsOf: managedCopy)
+
+    let transcribed = await speech.transcribe(sessionId: sessionId)
+    XCTAssertFalse(transcribed)
+    XCTAssertEqual(speech.message, "No verified speech model is installed.")
+    XCTAssertFalse(speech.messageIsFailure)
+    XCTAssertNil(speech.transcribingSessionId)
+    XCTAssertNil(speech.installedModel)
+    await model.load(sessionId: sessionId)
+    XCTAssertEqual(model.availability, .unavailable)
+    XCTAssertEqual(model.availabilityText, "No transcript yet.")
+    XCTAssertEqual(model.segments, [])
+    let after = try XCTUnwrap(
+      try preparation.runtimeLibrarySnapshot().savedSessions.first { $0.sessionId == sessionId })
+    let afterSession = RuntimeSessionPresentation(native: after)
+    XCTAssertEqual(afterSession.transcript.state, .none)
+    XCTAssertNil(afterSession.transcriptionUnavailableReason)
+    XCTAssertEqual(
+      TranscriptSection.statusLine(session: afterSession, transcripts: model, speech: speech),
+      TranscriptSection.speechModelUnavailableStatus)
+    XCTAssertEqual(try Data(contentsOf: managedCopy), managedBefore)
+    XCTAssertEqual(try Data(contentsOf: source), original)
+    withExtendedLifetime(preparation) {}
+  }
+
   private func importedAudioFile(under root: URL) throws -> URL? {
     let sessions = root.appendingPathComponent("Sessions")
     guard
