@@ -583,6 +583,134 @@ final class SpeechTranscriptionModelTests: XCTestCase {
     let text = transcripts.segments.map(\.effectiveText).joined(separator: " ").lowercased()
     XCTAssertTrue(text.contains("recording safe"), text)
   }
+
+  /// The installed speech model writes the transcript. The section shows that
+  /// run's engine, model revision, input, and evidence. The test does not
+  /// call `load` or `provenanceText`.
+  func testHostedReviewReadsTheInstalledModelRun() async throws {
+    let environment = ProcessInfo.processInfo.environment
+    guard let modelPath = environment["OPEN_SCRIBE_WHISPER_MODEL"],
+      let speechPath = environment["OPEN_SCRIBE_WHISPER_SPEECH_M4A"]
+    else {
+      return XCTFail("OPEN_SCRIBE_WHISPER_MODEL and OPEN_SCRIBE_WHISPER_SPEECH_M4A are required")
+    }
+    let root = temporaryRoot()
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let source = root.appendingPathComponent("Spoken.m4a")
+    try FileManager.default.copyItem(at: URL(fileURLWithPath: speechPath), to: source)
+    let original = try Data(contentsOf: source)
+    let modelURL = URL(fileURLWithPath: modelPath)
+    let modelBytes = try XCTUnwrap(modelURL.resourceValues(forKeys: [.fileSizeKey]).fileSize)
+    let managedRoot = root.appendingPathComponent("Library", isDirectory: true)
+    let evidence = try RuntimeLibraryStore(managedRoot: managedRoot)
+      .importManagedAudio(title: "Spoken", sourceURL: source)
+    let speech = SpeechTranscriptionModel(managedRoot: managedRoot)
+    await speech.refreshAndWait()
+    let record = try XCTUnwrap(speech.models.first { $0.modelId == "whisper-small.en-q5_1" })
+    let installed = await speech.install(record, from: modelURL)
+    XCTAssertTrue(installed, speech.message ?? "")
+    let installedModel = try XCTUnwrap(speech.installedModel)
+    let transcribed = await speech.transcribe(sessionId: evidence.sessionId)
+    XCTAssertTrue(transcribed, speech.message ?? "")
+
+    let preparation = try NativeRecordingPreparation.open(managedRoot: managedRoot.path)
+    let saved = try XCTUnwrap(
+      try preparation.runtimeLibrarySnapshot().savedSessions.first {
+        $0.sessionId == evidence.sessionId
+      })
+    let presentation = RuntimeSessionPresentation(native: saved)
+    XCTAssertNil(presentation.transcriptionUnavailableReason)
+    let library = try NativeTranscriptLibrary.open(managedRoot: managedRoot.path)
+    let inspected = try library.inspectProvenance(sessionId: evidence.sessionId)
+    let item = try XCTUnwrap(inspected.first)
+    let range = try XCTUnwrap(item.ranges.first)
+    XCTAssertEqual(item.engine, "whisper.cpp")
+    XCTAssertEqual(item.engineVersion, "1.8.3")
+    XCTAssertEqual(installedModel.engine, "\(item.engine) \(item.engineVersion)")
+    XCTAssertEqual(item.modelId, installedModel.modelId)
+    XCTAssertEqual(item.modelSha256, installedModel.sha256)
+    XCTAssertEqual(item.modelSha256.count, 64)
+    XCTAssertFalse(item.engine.isEmpty)
+    XCTAssertNotEqual(item.engine, "fixture-engine")
+    XCTAssertEqual(item.runState, "complete")
+    XCTAssertEqual(item.finality, "final")
+    XCTAssertFalse(item.inputDigest.isEmpty)
+
+    let model = TranscriptLibraryModel(library: library)
+    let section = TranscriptSection(
+      session: presentation,
+      transcripts: model,
+      speech: SpeechTranscriptionModel(preview: []),
+      scheduler: TranscriptionScheduler.inert(),
+      canSeek: false,
+      onSeek: { _ in }
+    ).frame(width: 720, height: 640)
+    let host = NSHostingView(rootView: section)
+    host.sizingOptions = []
+    let window = NSWindow(
+      contentRect: NSRect(x: 0, y: 0, width: 720, height: 640),
+      styleMask: [.titled, .closable], backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    window.contentView = host
+    window.setContentSize(NSSize(width: 720, height: 640))
+    host.frame = window.contentLayoutRect
+    window.makeKeyAndOrderFront(nil)
+    window.orderFrontRegardless()
+    defer { window.close() }
+
+    let shown = await waitUntil(timeoutNanoseconds: 15_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      window.displayIfNeeded()
+      guard let field = self.provenanceField(in: host) else { return false }
+      return !field.isHidden && field.frame.width > 1 && field.frame.height > 1
+        && field.stringValue.contains("does not claim")
+        && field.isDescendant(of: host)
+    }
+    let field = try XCTUnwrap(self.provenanceField(in: host))
+    XCTAssertTrue(shown && window.contentView === host && field.isDescendant(of: host))
+    let visible = field.stringValue
+    XCTAssertTrue(visible.contains("Engine \(item.engine) \(item.engineVersion)."), visible)
+    XCTAssertTrue(
+      visible.contains("Model \(item.modelId), revision \(item.modelSha256)."), visible)
+    XCTAssertTrue(visible.contains("Input \(item.inputDigest)."), visible)
+    XCTAssertTrue(visible.contains("Run \(item.runState)."), visible)
+    XCTAssertTrue(visible.contains("Finality \(item.finality)."), visible)
+    XCTAssertTrue(
+      visible.contains("Evidence \(range.startNanoseconds)-\(range.endNanoseconds) ns."), visible)
+    XCTAssertTrue(
+      visible.hasSuffix(
+        "Open Scribe does not claim that running this model again produces the same words."),
+      visible)
+    XCTAssertFalse(visible.localizedCaseInsensitiveContains("identical"))
+    XCTAssertFalse(visible.localizedCaseInsensitiveContains("deterministic"))
+    XCTAssertFalse(visible.localizedCaseInsensitiveContains("recording safe"))
+    XCTAssertEqual(try Data(contentsOf: source), original)
+    XCTAssertEqual(try modelURL.resourceValues(forKeys: [.fileSizeKey]).fileSize, modelBytes)
+    withExtendedLifetime(model) {}
+    withExtendedLifetime(speech) {}
+  }
+
+  private func waitUntil(
+    timeoutNanoseconds: UInt64 = 3_000_000_000, _ body: () -> Bool
+  ) async -> Bool {
+    let deadline = DispatchTime.now().uptimeNanoseconds + timeoutNanoseconds
+    while DispatchTime.now().uptimeNanoseconds < deadline {
+      if body() { return true }
+      try? await Task.sleep(nanoseconds: 50_000_000)
+    }
+    return body()
+  }
+
+  private func provenanceField(in root: NSView) -> NSTextField? {
+    if let field = root as? NSTextField, field.accessibilityLabel() == "Model provenance" {
+      return field
+    }
+    for subview in root.subviews {
+      if let found = provenanceField(in: subview) { return found }
+    }
+    return nil
+  }
 }
 
 /// Refuses every web request. The local journey must not reach `startLoading`.
