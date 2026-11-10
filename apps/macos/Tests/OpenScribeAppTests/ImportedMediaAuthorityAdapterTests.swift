@@ -204,6 +204,44 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
     }
   }
 
+  func testSymlinkedImportAddsNoConversationAndLeavesTheTarget() async throws {
+    let root = FileManager.default.temporaryDirectory
+      .appendingPathComponent(
+        "open-scribe-import-symlink-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let target = root.appendingPathComponent("Interview.caf")
+    let bytes = Data("caff-target".utf8)
+    try bytes.write(to: target, options: .atomic)
+    let link = root.appendingPathComponent("Linked.caf")
+    try FileManager.default.createSymbolicLink(at: link, withDestinationURL: target)
+    let managedRoot = root.appendingPathComponent("Library", isDirectory: true)
+    let runtime = RuntimeLibraryStore(managedRoot: managedRoot)
+    let adapter = ImportedMediaAuthorityAdapter(
+      picker: { link },
+      startSecurityScope: { _ in true },
+      stopSecurityScope: { _ in },
+      importer: runtime.importManagedAudio
+    )
+
+    adapter.chooseAndImport()
+    await assertEventually { adapter.phase == .failed }
+
+    XCTAssertEqual(
+      adapter.statusMessage,
+      "The selected audio could not be read safely. Nothing was added."
+    )
+    XCTAssertNil(adapter.importedSessionId)
+    XCTAssertTrue(adapter.importedSessionIds.isEmpty)
+    XCTAssertEqual(try Data(contentsOf: target), bytes)
+    XCTAssertEqual(
+      try link.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink, true)
+    let snapshot = try NativeRecordingPreparation.open(managedRoot: managedRoot.path)
+      .runtimeLibrarySnapshot()
+    XCTAssertNil(snapshot.currentSession)
+    XCTAssertTrue(snapshot.savedSessions.isEmpty)
+  }
+
   func testCapturePriorityRejectsImportBeforePicker() {
     var picked = false
     let adapter = ImportedMediaAuthorityAdapter(

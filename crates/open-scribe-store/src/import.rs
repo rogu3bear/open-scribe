@@ -426,6 +426,7 @@ impl SessionStore {
                 ));
             }
             revalidate_import_source(&source)?;
+            revalidate_import_path(&request.source_path, &source)?;
             interrupt_import_if(failure, ImportFailurePoint::ManagedCopyComplete)?;
 
             let payload = json!({
@@ -1764,6 +1765,25 @@ fn revalidate_import_source(source: &ValidatedImportSource) -> Result<(), StoreE
         source.inode,
         source.byte_length,
     )
+}
+
+/// The open descriptor can still name the file that was removed from the
+/// selected path. Admission also requires that path to be the same regular file.
+fn revalidate_import_path(path: &Path, source: &ValidatedImportSource) -> Result<(), StoreError> {
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|_| StoreError::IntegrityMismatch("import source changed during admission"))?;
+    let same_file = metadata.is_file()
+        && !metadata.file_type().is_symlink()
+        && metadata.len() == source.byte_length
+        && std::os::unix::fs::MetadataExt::dev(&metadata) == source.device
+        && std::os::unix::fs::MetadataExt::ino(&metadata) == source.inode;
+    if same_file {
+        Ok(())
+    } else {
+        Err(StoreError::IntegrityMismatch(
+            "import source changed during admission",
+        ))
+    }
 }
 
 fn revalidate_stat(

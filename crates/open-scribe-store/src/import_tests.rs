@@ -67,6 +67,67 @@ fn compressed_import_is_byte_preserving_and_reopens_with_a_streaming_lease() {
 }
 
 #[test]
+fn a_symlinked_import_adds_no_conversation_and_leaves_the_target() {
+    let temp = TempDir::new().unwrap();
+    let target = temp.path().join("interview.caf");
+    write_recoverable_caf(&target, 960);
+    let original = fs::read(&target).unwrap();
+    let link = temp.path().join("link.caf");
+    symlink(&target, &link).unwrap();
+    let mut store = SessionStore::open(temp.path().join("Open Scribe")).unwrap();
+    let error = store
+        .import_recoverable_caf(ImportMediaRequest {
+            title: "Interview".into(),
+            source_path: link.clone(),
+        })
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        StoreError::InvalidRequest("import source must be a regular file, not a symlink")
+    ));
+    let snapshot = store.runtime_library_snapshot().unwrap();
+    assert!(snapshot.current_session.is_none());
+    assert!(snapshot.saved_sessions.is_empty());
+    assert_eq!(fs::read(&target).unwrap(), original);
+    assert!(
+        fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+}
+
+#[test]
+fn a_source_replaced_during_validation_adds_no_conversation() {
+    let temp = TempDir::new().unwrap();
+    let source_path = temp.path().join("interview.caf");
+    write_recoverable_caf(&source_path, 960);
+    let replacement_path = temp.path().join("replacement.caf");
+    fs::write(&replacement_path, b"replaced-audio").unwrap();
+    let replacement = fs::read(&replacement_path).unwrap();
+    let mut store = SessionStore::open(temp.path().join("Open Scribe")).unwrap();
+    let race_source = source_path.clone();
+    let race_replacement = replacement_path.clone();
+    *store.media_validation_hook.borrow_mut() = Some(Box::new(move || {
+        fs::rename(&race_replacement, &race_source).unwrap();
+    }));
+    let error = store
+        .import_recoverable_caf(ImportMediaRequest {
+            title: "Interview".into(),
+            source_path: source_path.clone(),
+        })
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        StoreError::IntegrityMismatch("import source changed during admission")
+    ));
+    let snapshot = store.runtime_library_snapshot().unwrap();
+    assert!(snapshot.current_session.is_none());
+    assert!(snapshot.saved_sessions.is_empty());
+    assert_eq!(fs::read(&source_path).unwrap(), replacement);
+}
+
+#[test]
 fn compressed_import_rejects_source_drift_before_creating_library_rows() {
     let temp = TempDir::new().unwrap();
     let source = temp.path().join("source.m4a");
