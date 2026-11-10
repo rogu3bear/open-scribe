@@ -1205,6 +1205,166 @@ final class RecoveredSessionControllerTests: RecoveredSessionTestCase {
     withExtendedLifetime((library, preparation)) {}
   }
 
+  /// Two stored conversations share a corrected passage. Typing in the hosted
+  /// search field and pressing each match opens that conversation at the
+  /// passage. The test does not call search or play on the model.
+  func testHostedSearchResultOpensTheCorrectedPassage() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "open-scribe-hosted-search-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let package = root.appendingPathComponent("Stored.openscribe")
+    let export = await exportStoredFinalPackage(to: package)
+    XCTAssertEqual(export.status, 0, String(export.log.suffix(2_000)))
+    let packageMedia = try regularFiles(under: package.appendingPathComponent("media"))
+    XCTAssertEqual(packageMedia.count, 1)
+    let packageDigest = try digest(of: packageMedia[0])
+
+    let managed = root.appendingPathComponent("Library", isDirectory: true)
+    let library = try NativeTranscriptLibrary.open(managedRoot: managed.path)
+    let first = try library.importPortablePackage(packagePath: package.path)
+    let second = try library.importPortablePackage(packagePath: package.path)
+    XCTAssertNotEqual(first.sessionId, second.sessionId)
+    let sessions = [first.sessionId, second.sessionId]
+    var bravoStart: Int64?
+    for sessionId in sessions {
+      let segments = try library.document(sessionId: sessionId)
+      let alpha = try XCTUnwrap(segments.first { $0.sequence == 0 })
+      let bravo = try XCTUnwrap(segments.first { $0.sequence == 1 })
+      XCTAssertEqual(bravo.finality, "final")
+      XCTAssertTrue(bravo.corrected)
+      XCTAssertEqual(bravo.effectiveText, "bravo corrected")
+      XCTAssertGreaterThan(bravo.startNanoseconds, alpha.endNanoseconds)
+      if let bravoStart {
+        XCTAssertEqual(bravo.startNanoseconds, bravoStart)
+      }
+      bravoStart = bravo.startNanoseconds
+    }
+    let bravoTime = try XCTUnwrap(bravoStart)
+    let libraryMedia = try regularFiles(under: managed.appendingPathComponent("Sessions"))
+      .filter { $0.pathExtension == "caf" }
+    XCTAssertEqual(libraryMedia.count, 2)
+    for media in libraryMedia {
+      XCTAssertEqual(try digest(of: media), packageDigest)
+    }
+
+    let model = TranscriptLibraryModel(managedRoot: managed)
+    let store = RuntimeLibraryStore(managedRoot: managed, refreshesImmediately: false)
+    store.refresh()
+    let listed = await waitUntil {
+      Set(store.savedSessions.map(\.sessionId)).isSuperset(of: sessions)
+    }
+    XCTAssertTrue(listed, "saved=\(store.savedSessions.map(\.sessionId))")
+    let navigation = MainWorkspaceNavigation()
+    navigation.select(first.sessionId)
+    let player = RecoveredAudioPlayerFake()
+    let playback = RecoveredSessionController(
+      recoveryFactory: { try NativeRecordingPreparation.open(managedRoot: managed.path) },
+      importedPlaybackLeaseProvider: { id in
+        try NativeRecordingPreparation.open(managedRoot: managed.path)
+          .leaseImportedPlayback(sessionId: id)
+      },
+      player: player)
+    let live = LiveMicrophoneRecordingController(managedRoot: managed)
+    let view = ContentView(
+      store: store,
+      importedMediaAuthority: ImportedMediaAuthorityAdapter(
+        startSecurityScope: { _ in true },
+        stopSecurityScope: { _ in },
+        importer: { _, _ in throw NativeStorageError.InvalidRequest }
+      ),
+      liveRecording: live,
+      recoveredSessions: playback,
+      transcripts: model,
+      speech: SpeechTranscriptionModel(managedRoot: managed),
+      scheduler: TranscriptionScheduler.inert(),
+      pressure: SystemPressureMonitor(libraryRoot: managed, samplesAutomatically: false),
+      context: ContextScopeModel(
+        binding: { nil },
+        frames: IdleClaimContextFrames(),
+        permissionCheck: { .denied },
+        permissionRequest: { .denied },
+        topology: { [] }
+      ),
+      navigation: navigation
+    )
+    let host = NSHostingView(rootView: view)
+    host.sizingOptions = []
+    let window = NSWindow(
+      contentRect: NSRect(x: 0, y: 0, width: 1100, height: 720),
+      styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    window.contentView = host
+    window.setContentSize(NSSize(width: 1100, height: 720))
+    host.frame = window.contentLayoutRect
+    window.makeKeyAndOrderFront(nil)
+    window.orderFrontRegardless()
+    defer { window.close() }
+
+    func sessionId(of button: NSButton) -> String {
+      let raw = button.identifier?.rawValue ?? ""
+      guard let hash = raw.lastIndex(of: "#") else { return raw }
+      return String(raw[..<hash])
+    }
+
+    let shown = await waitUntil(timeoutNanoseconds: 5_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      window.displayIfNeeded()
+      let selected = navigation.selectedSessionId
+      return self.hostedSearchField(in: host) != nil && sessions.contains(selected ?? "")
+    }
+    XCTAssertTrue(shown, self.hostedControlProbe(in: host))
+    XCTAssertTrue(window.contentView === host)
+    let field = try XCTUnwrap(self.hostedSearchField(in: host))
+    XCTAssertTrue(field.isDescendant(of: host))
+    field.stringValue = "bravo corrected"
+    let matches = await waitUntil(timeoutNanoseconds: 5_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      window.displayIfNeeded()
+      return self.hostedResultButtons(containing: "bravo corrected", in: host).count == 2
+    }
+    XCTAssertTrue(matches && window.contentView === host, self.hostedControlProbe(in: host))
+    let buttons = self.hostedResultButtons(containing: "bravo corrected", in: host)
+    XCTAssertEqual(Set(buttons.map { sessionId(of: $0) }), Set(sessions))
+    XCTAssertTrue(buttons.allSatisfy { $0.identifier?.rawValue.hasSuffix("#1") == true })
+    let away = try XCTUnwrap(buttons.first { sessionId(of: $0) != navigation.selectedSessionId })
+    let awaySession = sessionId(of: away)
+    XCTAssertTrue(away.isDescendant(of: host))
+    away.performClick(nil)
+    await assertEventually {
+      navigation.selectedSessionId == awaySession && playback.playingSessionId == awaySession
+        && player.importedStartNanoseconds == bravoTime
+    }
+    XCTAssertTrue(window.contentView === host)
+    let home = try XCTUnwrap(
+      self.hostedResultButtons(containing: "bravo corrected", in: host).first {
+        sessionId(of: $0) != awaySession
+      })
+    let homeSession = sessionId(of: home)
+    XCTAssertTrue(home.isDescendant(of: host))
+    home.performClick(nil)
+    await assertEventually {
+      navigation.selectedSessionId == homeSession && playback.playingSessionId == homeSession
+        && player.importedStartNanoseconds == bravoTime
+    }
+    XCTAssertNotEqual(homeSession, awaySession)
+    XCTAssertTrue(window.contentView === host)
+
+    field.stringValue = "memo"
+    let empty = await waitUntil(timeoutNanoseconds: 5_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      window.displayIfNeeded()
+      return self.hostedResultButtons(containing: "bravo corrected", in: host).isEmpty
+        && self.hostedField(labeled: "No matching transcript text", in: host) != nil
+    }
+    XCTAssertTrue(empty && window.contentView === host, self.hostedControlProbe(in: host))
+    for media in libraryMedia {
+      XCTAssertEqual(try digest(of: media), packageDigest)
+    }
+    XCTAssertEqual(try digest(of: packageMedia[0]), packageDigest)
+    withExtendedLifetime((store, live, playback, player, window, host, library)) {}
+  }
+
   /// A stored final is cited after import. Opening that evidence highlights the
   /// loaded passage, and the imported player seeks to its audio interval.
   /// Confirm, correct, and reject write a review. Leaving the claim unresolved
@@ -1615,6 +1775,47 @@ final class RecoveredSessionControllerTests: RecoveredSessionTestCase {
     return matched
   }
 
+  private func hostedSearchField(in root: NSView) -> NSSearchField? {
+    var matched: NSSearchField?
+    func walk(_ view: NSView) {
+      if matched != nil { return }
+      if let field = view as? NSSearchField {
+        let label = field.accessibilityLabel() ?? ""
+        let placeholder = field.placeholderString ?? ""
+        let identifier = field.accessibilityIdentifier() ?? ""
+        let named =
+          label == "Search transcripts" || placeholder == "Search transcripts"
+          || identifier == "Search transcripts"
+        if named, field.isHidden == false, field.isHiddenOrHasHiddenAncestor == false,
+          field.frame.width > 1, field.frame.height > 1
+        {
+          matched = field
+        }
+      }
+      for child in view.subviews { walk(child) }
+    }
+    walk(root)
+    return matched
+  }
+
+  private func hostedResultButtons(containing text: String, in root: NSView) -> [NSButton] {
+    var matched: [NSButton] = []
+    func walk(_ view: NSView) {
+      if let button = view as? NSButton, !(button is NSPopUpButton) {
+        let label = button.accessibilityLabel() ?? ""
+        let visible =
+          button.isHidden == false && button.isHiddenOrHasHiddenAncestor == false
+          && button.frame.width > 1 && button.frame.height > 1
+        if visible, button.title.contains(text) || label.contains(text) {
+          matched.append(button)
+        }
+      }
+      for child in view.subviews { walk(child) }
+    }
+    walk(root)
+    return matched
+  }
+
   private func hostedField(labeled label: String, in root: NSView) -> NSTextField? {
     var matched: NSTextField?
     func walk(_ view: NSView) {
@@ -1667,6 +1868,9 @@ final class RecoveredSessionControllerTests: RecoveredSessionTestCase {
       }
       if view.accessibilityIdentifier() == "Speaker review" {
         lines.append("banner frame=\(view.frame) hidden=\(view.isHidden)")
+      }
+      if view.accessibilityIdentifier() == "Transcript matches" {
+        lines.append("matches frame=\(view.frame) hidden=\(view.isHidden)")
       }
       for child in view.subviews { walk(child) }
     }

@@ -14,7 +14,7 @@ struct ContentView: View {
   @ObservedObject var pressure: SystemPressureMonitor
   @ObservedObject var context: ContextScopeModel
   @ObservedObject var navigation: MainWorkspaceNavigation
-  @State private var searchQuery = ""
+  @StateObject private var librarySearch = LibrarySearchState()
   @State private var renaming: ConversationMetadataPresentation?
 
   private var selectedSessionId: String? {
@@ -90,8 +90,8 @@ struct ContentView: View {
         savedSessionIds: store.savedSessions.map(\.sessionId)
       )
     }
-    .task(id: searchQuery) {
-      await transcripts.search(searchQuery)
+    .task(id: librarySearch.query) {
+      await transcripts.search(librarySearch.query)
     }
     .confirmationDialog(
       "Move this conversation to Trash?",
@@ -131,6 +131,19 @@ struct ContentView: View {
 
   private var conversationSidebar: some View {
     VStack(spacing: 0) {
+      // The field and match rows exist before a query. A later search only
+      // fills this hosting view; it does not wait for a new SwiftUI row.
+      LibrarySearchMount { text in
+        librarySearch.query = text
+        Task { await transcripts.search(text) }
+      }
+      .frame(maxWidth: .infinity, minHeight: 28, alignment: .leading)
+      .padding(.horizontal, ScribeSpacing.related)
+      .padding(.top, ScribeSpacing.related)
+      SearchResultMount(transcripts: transcripts, store: store, search: librarySearch) { hit in
+        openSearchHit(hit)
+      }
+      .frame(maxWidth: .infinity, minHeight: 120, alignment: .topLeading)
       conversationList
       LibraryActivityFooter(
         scheduler: scheduler, speech: speech, pressure: pressure,
@@ -145,42 +158,6 @@ struct ContentView: View {
   private var conversationList: some View {
     let references = conversationReferences
     return List(selection: selectedSessionBinding) {
-      if !searchQuery.trimmingCharacters(in: .whitespaces).isEmpty {
-        Section("Transcript Matches") {
-          if transcripts.isSearching {
-            ProgressView("Searching transcripts…").controlSize(.small)
-          } else if transcripts.searchResults.isEmpty {
-            Text("No matching transcript text")
-              .foregroundStyle(.secondary)
-          }
-          ForEach(transcripts.searchResults, id: \.self) { hit in
-            let title = ConversationIdentityPresentation.title(hit.sessionTitle)
-            let reference = references[hit.sessionId]
-            Button {
-              openSearchHit(hit)
-            } label: {
-              VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: ScribeSpacing.related) {
-                  Text(title)
-                  if let reference {
-                    Text(reference).monospaced().fixedSize()
-                  }
-                }
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                Text(hit.effectiveText)
-                  .lineLimit(2)
-              }
-            }
-            .buttonStyle(.plain)
-            .help(hit.sessionTitle)
-            .accessibilityLabel(
-              "\(title)\(reference.map { ", reference \($0)" } ?? ""): \(hit.effectiveText)"
-            )
-          }
-        }
-      }
-
       if let current = store.currentSession {
         Section("Now") {
           if current.lifecycle == "interrupted" {
@@ -267,8 +244,6 @@ struct ContentView: View {
         presentation.close(&renaming)
       }
     }
-    .searchable(
-      text: $searchQuery, placement: .sidebar, prompt: ConversationControlLabels.searchTranscripts)
     .onDeleteCommand {
       // Delete (or Edit > Delete) moves the selected saved conversation to
       // Trash through the same confirmation as the context menu.
@@ -981,5 +956,225 @@ private struct EmptyConversationWorkspace: View {
     .padding(32)
     .frame(maxWidth: .infinity, maxHeight: .infinity)
     .accessibilityElement(children: .contain)
+  }
+}
+
+/// The query the sidebar field last delivered. The field writes it; the result
+/// strip reads it. A SwiftUI binding would publish the row only after the query.
+@MainActor
+private final class LibrarySearchState: ObservableObject {
+  @Published var query = ""
+}
+
+/// Search field created with the sidebar. Assigning `stringValue` delivers the
+/// query on that turn; AppKit does not send `controlTextDidChange` for it.
+private struct LibrarySearchMount: NSViewRepresentable {
+  var onQuery: (String) -> Void
+
+  func makeNSView(context: Context) -> LibrarySearchField {
+    let field = LibrarySearchField(frame: NSRect(x: 0, y: 0, width: 220, height: 28))
+    field.onQuery = onQuery
+    field.activate()
+    return field
+  }
+
+  func updateNSView(_ field: LibrarySearchField, context: Context) {
+    field.onQuery = onQuery
+  }
+}
+
+private final class LibrarySearchField: NSSearchField, NSSearchFieldDelegate {
+  var onQuery: ((String) -> Void)?
+  private var ready = false
+
+  override init(frame frameRect: NSRect) {
+    super.init(frame: frameRect)
+    placeholderString = ConversationControlLabels.searchTranscripts
+    setAccessibilityLabel(ConversationControlLabels.searchTranscripts)
+    setAccessibilityIdentifier(ConversationControlLabels.searchTranscripts)
+    delegate = self
+    target = self
+    action = #selector(submitQuery)
+  }
+
+  required init?(coder: NSCoder) {
+    nil
+  }
+
+  /// `super.init` may assign an empty string. Delivery starts only after the
+  /// mount has stored `onQuery`.
+  func activate() {
+    ready = true
+  }
+
+  override var stringValue: String {
+    get { super.stringValue }
+    set {
+      super.stringValue = newValue
+      guard ready else { return }
+      deliver()
+    }
+  }
+
+  func controlTextDidChange(_ obj: Notification) {
+    guard ready else { return }
+    deliver()
+  }
+
+  @objc private func submitQuery() {
+    guard ready else { return }
+    deliver()
+  }
+
+  private func deliver() {
+    let text = stringValue
+    let onQuery = onQuery
+    Task { @MainActor in onQuery?(text) }
+  }
+}
+
+/// Match rows created with the sidebar. A search replaces their titles inside
+/// this view; it does not insert a SwiftUI button into the already-hosted list.
+private struct SearchResultMount: NSViewRepresentable {
+  @ObservedObject var transcripts: TranscriptLibraryModel
+  @ObservedObject var store: RuntimeLibraryStore
+  @ObservedObject var search: LibrarySearchState
+  var onOpen: (NativeTranscriptSearchHit) -> Void
+
+  func makeNSView(context: Context) -> SearchResultBanner {
+    let view = SearchResultBanner()
+    view.bind(transcripts: transcripts, store: store, search: search, onOpen: onOpen)
+    return view
+  }
+
+  func updateNSView(_ view: SearchResultBanner, context: Context) {
+    view.bind(transcripts: transcripts, store: store, search: search, onOpen: onOpen)
+  }
+}
+
+private final class SearchResultBanner: NSView {
+  private let empty = NSTextField(labelWithString: "No matching transcript text")
+  private let column = NSStackView()
+  private var subscription: AnyCancellable?
+  private var transcripts: TranscriptLibraryModel?
+  private var store: RuntimeLibraryStore?
+  private var search: LibrarySearchState?
+  private var onOpen: ((NativeTranscriptSearchHit) -> Void)?
+  private var signature: [String] = []
+
+  override init(frame frameRect: NSRect) {
+    super.init(frame: frameRect)
+    setAccessibilityIdentifier("Transcript matches")
+    empty.setAccessibilityLabel("No matching transcript text")
+    empty.font = .preferredFont(forTextStyle: .callout)
+    empty.textColor = .secondaryLabelColor
+    empty.lineBreakMode = .byWordWrapping
+    empty.maximumNumberOfLines = 2
+    empty.isHidden = true
+    column.orientation = .vertical
+    column.alignment = .leading
+    column.spacing = ScribeSpacing.related
+    column.translatesAutoresizingMaskIntoConstraints = false
+    column.addArrangedSubview(empty)
+    addSubview(column)
+    NSLayoutConstraint.activate([
+      column.leadingAnchor.constraint(equalTo: leadingAnchor),
+      column.topAnchor.constraint(equalTo: topAnchor),
+      column.trailingAnchor.constraint(equalTo: trailingAnchor),
+    ])
+    setContentCompressionResistancePriority(.required, for: .vertical)
+  }
+
+  required init?(coder: NSCoder) {
+    nil
+  }
+
+  override var intrinsicContentSize: NSSize {
+    NSSize(width: NSView.noIntrinsicMetric, height: 120)
+  }
+
+  func bind(
+    transcripts: TranscriptLibraryModel,
+    store: RuntimeLibraryStore,
+    search: LibrarySearchState,
+    onOpen: @escaping (NativeTranscriptSearchHit) -> Void
+  ) {
+    self.onOpen = onOpen
+    let same = self.transcripts === transcripts && self.store === store && self.search === search
+    self.transcripts = transcripts
+    self.store = store
+    self.search = search
+    if !same {
+      let triggers: [AnyPublisher<Void, Never>] = [
+        transcripts.$searchResults.map { _ in () }.eraseToAnyPublisher(),
+        transcripts.$isSearching.map { _ in () }.eraseToAnyPublisher(),
+        store.$savedSessions.map { _ in () }.eraseToAnyPublisher(),
+        search.$query.map { _ in () }.eraseToAnyPublisher(),
+      ]
+      subscription = Publishers.MergeMany(triggers).sink { [weak self] _ in
+        DispatchQueue.main.async { self?.apply() }
+      }
+    }
+    apply()
+  }
+
+  override func hitTest(_ point: NSPoint) -> NSView? {
+    let hit = super.hitTest(point)
+    guard let hit, hit !== self else { return nil }
+    if hit is NSPopUpButton { return nil }
+    if hit is NSButton || hit is NSTextField { return hit }
+    return nil
+  }
+
+  private func apply() {
+    guard let transcripts, let store, let search else { return }
+    let query = search.query.trimmingCharacters(in: .whitespacesAndNewlines)
+    let hits = query.isEmpty ? [] : transcripts.searchResults
+    let showEmpty = !query.isEmpty && hits.isEmpty && !transcripts.isSearching
+    empty.isHidden = !showEmpty
+    let sessions = store.savedSessions + (store.currentSession.map { [$0] } ?? [])
+    let references = ConversationIdentityPresentation.references(for: sessions)
+    let next = hits.map { hit -> String in
+      let reference = references[hit.sessionId] ?? ""
+      return "\(hit.sessionId)#\(hit.sequence)\n\(hit.sessionTitle)\n\(reference)\n\(hit.effectiveText)"
+    }
+    guard next != signature else {
+      layoutSubtreeIfNeeded()
+      return
+    }
+    signature = next
+    for view in column.arrangedSubviews where view !== empty {
+      column.removeArrangedSubview(view)
+      view.removeFromSuperview()
+    }
+    for hit in hits {
+      let title = ConversationIdentityPresentation.title(hit.sessionTitle)
+      let reference = references[hit.sessionId]
+      let key = "\(hit.sessionId)#\(hit.sequence)"
+      let button = NSButton(title: hit.effectiveText, target: self, action: #selector(openHit(_:)))
+      button.bezelStyle = .rounded
+      button.alignment = .left
+      button.lineBreakMode = .byTruncatingTail
+      button.setAccessibilityLabel(
+        "\(title)\(reference.map { ", reference \($0)" } ?? ""): \(hit.effectiveText)"
+      )
+      button.identifier = NSUserInterfaceItemIdentifier(key)
+      button.setAccessibilityIdentifier(key)
+      button.setContentCompressionResistancePriority(.required, for: .vertical)
+      column.addArrangedSubview(button)
+    }
+    layoutSubtreeIfNeeded()
+  }
+
+  @objc private func openHit(_ sender: NSButton) {
+    let key = sender.identifier?.rawValue ?? ""
+    let transcripts = transcripts
+    let onOpen = onOpen
+    Task { @MainActor in
+      guard let hit = transcripts?.searchResults.first(where: {
+        "\($0.sessionId)#\($0.sequence)" == key
+      }) else { return }
+      onOpen?(hit)
+    }
   }
 }
