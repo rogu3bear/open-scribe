@@ -466,3 +466,101 @@ fn library_merge_and_split_keep_passage_history_without_clustering() {
     );
     assert_eq!(file_sha256(&prepared.media), prepared.digest_sha256);
 }
+
+fn fixture_sample(frame: u64) -> i16 {
+    ((frame % 997) as i16 - 498) * 31
+}
+
+#[test]
+fn library_loads_a_stored_final_and_a_stored_correction_at_its_audio_interval() {
+    let prepared = prepared_transcript();
+    let session = prepared.session.clone();
+    let root = prepared.root.clone();
+    let mut library = TranscriptLibrary::open(&root).unwrap();
+    assert!(matches!(
+        library.availability(&session).unwrap(),
+        crate::TranscriptAvailability::Final
+    ));
+    let loaded = library.document(&session).unwrap();
+    assert!(loaded.iter().all(|segment| {
+        segment.finality == "final"
+            && !segment.corrected
+            && segment.effective_text == segment.verbatim_text
+    }));
+    let alpha = loaded.iter().find(|segment| segment.sequence == 0).unwrap();
+    let bravo = loaded.iter().find(|segment| segment.sequence == 1).unwrap();
+    assert_eq!(alpha.revision_id, prepared.revision);
+    assert_eq!(bravo.revision_id, prepared.revision);
+    assert_eq!(alpha.verbatim_text, "alpha");
+    assert_eq!(bravo.verbatim_text, "bravo");
+    assert!(alpha.start_nanoseconds < alpha.end_nanoseconds);
+    assert!(bravo.start_nanoseconds > alpha.end_nanoseconds);
+    let alpha_start = alpha.start_nanoseconds;
+    let alpha_end = alpha.end_nanoseconds;
+    let bravo_start = bravo.start_nanoseconds;
+    let bravo_end = bravo.end_nanoseconds;
+    let found = library.search("bravo", Some(&session), 10).unwrap();
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].start_nanoseconds, bravo_start);
+    assert_eq!(found[0].end_nanoseconds, bravo_end);
+    assert_eq!(found[0].effective_text, "bravo");
+    library
+        .correct_segment(&session, &prepared.revision, 1, Some("  bravo corrected  "))
+        .unwrap();
+    assert!(
+        library
+            .correct_segment(&session, &prepared.revision, 1, Some("   "))
+            .is_err()
+    );
+    drop(library);
+
+    let reopened = TranscriptLibrary::open(&root).unwrap();
+    let corrected = reopened.document(&session).unwrap();
+    let alpha = corrected
+        .iter()
+        .find(|segment| segment.sequence == 0)
+        .unwrap();
+    let bravo = corrected
+        .iter()
+        .find(|segment| segment.sequence == 1)
+        .unwrap();
+    assert_eq!(alpha.finality, "final");
+    assert!(!alpha.corrected);
+    assert_eq!(alpha.verbatim_text, "alpha");
+    assert_eq!(alpha.effective_text, "alpha");
+    assert_eq!(alpha.start_nanoseconds, alpha_start);
+    assert_eq!(alpha.end_nanoseconds, alpha_end);
+    assert_eq!(bravo.finality, "final");
+    assert!(bravo.corrected);
+    assert_eq!(bravo.verbatim_text, "bravo");
+    assert_eq!(bravo.effective_text, "bravo corrected");
+    assert_eq!(bravo.start_nanoseconds, bravo_start);
+    assert_eq!(bravo.end_nanoseconds, bravo_end);
+    let found = reopened
+        .search("bravo corrected", Some(&session), 10)
+        .unwrap();
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].start_nanoseconds, bravo_start);
+    assert_eq!(found[0].end_nanoseconds, bravo_end);
+    assert_eq!(found[0].effective_text, "bravo corrected");
+    drop(reopened);
+
+    let store = SessionStore::open(&root).unwrap();
+    let track = store.transcription_tracks(&session).unwrap().remove(0);
+    let input = store.transcription_input(&session, &track).unwrap();
+    let reader = store.open_transcription_input(&input).unwrap();
+    let frames = input.spans[0].frames;
+    let rate = 48_000_u64;
+    let alpha_frame = u64::try_from(alpha_start).unwrap() * rate / 1_000_000_000;
+    let bravo_frame = u64::try_from(bravo_start).unwrap() * rate / 1_000_000_000;
+    assert!(alpha_frame > 0 && bravo_frame > alpha_frame && bravo_frame < frames);
+    let head = reader.read_frames(0, 0, 1).unwrap();
+    let alpha_audio = reader.read_frames(0, alpha_frame, alpha_frame + 1).unwrap();
+    let bravo_audio = reader.read_frames(0, bravo_frame, bravo_frame + 1).unwrap();
+    assert_eq!(head, vec![fixture_sample(0)]);
+    assert_eq!(alpha_audio, vec![fixture_sample(alpha_frame)]);
+    assert_eq!(bravo_audio, vec![fixture_sample(bravo_frame)]);
+    assert_ne!(head, alpha_audio);
+    assert_ne!(alpha_audio, bravo_audio);
+    assert_eq!(file_sha256(&prepared.media), prepared.digest_sha256);
+}
