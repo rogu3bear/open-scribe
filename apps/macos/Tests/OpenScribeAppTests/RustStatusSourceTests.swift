@@ -34,4 +34,25 @@ final class RustStatusSourceTests: XCTestCase {
     XCTAssertEqual(insight?.terminology, "Derived insight")
     XCTAssertEqual(insight?.publicLabel, "Unavailable")
   }
+
+  /// Settings renders these rows. The words come from the shared maturity label.
+  func testSettingsReleaseRowsUseTheSharedExclusionLabels() {
+    let release = ReleaseCapabilityClaims.load()
+    XCTAssertEqual(release.noPublicRelease, "No public release is available.")
+    XCTAssertEqual(release.capabilities.count, 8)
+    var seen: Set<String> = []
+    for claim in release.capabilities {
+      XCTAssertTrue(seen.insert(claim.id).inserted, claim.id)
+      XCTAssertFalse(claim.terminology.isEmpty)
+      switch claim.maturity {
+      case "Fixture":
+        XCTAssertEqual(claim.publicLabel, "Development fixture — not available to users")
+      case "Unavailable":
+        XCTAssertEqual(claim.publicLabel, "Unavailable")
+      default:
+        XCTFail("unexpected maturity \(claim.maturity) for \(claim.id)")
+      }
+      XCTAssertNotEqual(claim.publicLabel, "Available")
+    }
+  }
 }

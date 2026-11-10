@@ -2,7 +2,9 @@
 
 #![forbid(unsafe_code)]
 
+mod capability;
 mod work;
+pub use capability::public_capability_label;
 pub use work::{
     AttemptState, DocumentAvailability, ModelReadiness, TranscriptionIntent, WorkHold,
     WorkObservations, WorkOutcome,

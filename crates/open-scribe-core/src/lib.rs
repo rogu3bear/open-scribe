@@ -722,11 +722,7 @@ pub struct CapabilityClaim {
 /// proved the capability. Every other value stays visibly excluded.
 #[must_use]
 pub fn public_capability_label(maturity: &str) -> &'static str {
-    match maturity {
-        "Available" => "Available",
-        "Fixture" => "Development fixture — not available to users",
-        _ => "Unavailable",
-    }
+    open_scribe_types::public_capability_label(maturity)
 }
 
 /// Reads the embedded registry. A manifest that cannot be read yields no
@@ -810,6 +806,18 @@ mod tests {
         }));
         assert!(capabilities.iter().any(|capability| {
             capability["id"] == "optional-intelligence" && capability["maturity"] == "Unavailable"
+        }));
+    }
+
+    #[test]
+    fn runtime_registry_matches_the_website_claim_manifest() {
+        let website = include_str!("../../../docs/capabilities/manifest.v1.json");
+        assert_eq!(website, RUNTIME_CAPABILITY_MANIFEST_JSON);
+        let claims = capability_claims();
+        assert_eq!(claims.len(), 8);
+        assert!(claims.iter().all(|claim| {
+            claim.public_label == public_capability_label(&claim.maturity)
+                && claim.public_label != "Available"
         }));
     }
 

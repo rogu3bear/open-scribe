@@ -158,12 +158,11 @@ fn capability_rows() -> Vec<(String, &'static str)> {
                 .iter()
                 .filter_map(|capability| {
                     let terminology = capability["terminology"].as_str()?;
-                    let maturity = match capability["maturity"].as_str()? {
-                        "Available" => "Available",
-                        "Fixture" => "Development fixture — not available to users",
-                        _ => "Unavailable",
-                    };
-                    Some((terminology.to_owned(), maturity))
+                    let maturity = capability["maturity"].as_str()?;
+                    Some((
+                        terminology.to_owned(),
+                        open_scribe_types::public_capability_label(maturity),
+                    ))
                 })
                 .collect()
         })
@@ -362,6 +361,36 @@ pub fn render_ssr_snapshot_at(path: &str) -> String {
                 .await
         })
     })
+}
+
+#[cfg(test)]
+mod capability_equality {
+    #[test]
+    fn website_rows_equal_the_runtime_registry() {
+        let website = include_str!("../../docs/capabilities/manifest.v1.json");
+        let runtime = include_str!("../../crates/open-scribe-core/runtime-capabilities.v1.json");
+        assert_eq!(website, runtime);
+        let manifest: serde_json::Value = serde_json::from_str(runtime).expect("registry json");
+        let expected = manifest["capabilities"]
+            .as_array()
+            .expect("capabilities")
+            .iter()
+            .map(|capability| {
+                let terminology = capability["terminology"]
+                    .as_str()
+                    .expect("terminology")
+                    .to_owned();
+                let maturity = capability["maturity"].as_str().expect("maturity");
+                (
+                    terminology,
+                    open_scribe_types::public_capability_label(maturity),
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(super::capability_rows(), expected);
+        assert_eq!(expected.len(), 8);
+        assert!(expected.iter().all(|(_, label)| *label != "Available"));
+    }
 }
 
 #[cfg(all(test, feature = "ssr"))]
