@@ -1496,6 +1496,103 @@ final class LaunchConfigurationTests: XCTestCase {
     XCTAssertEqual(try Self.cafPaths(under: media).count, 2)
   }
 
+  /// The shipped verification app records the microphone and one selected
+  /// application. That application stream stops. The microphone keeps
+  /// recording, and Stop leaves both tracks reviewable.
+  func testApplicationLossLaunchKeepsTheMicrophoneAndSealsTheApplication() async throws {
+    let base = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
+      .appendingPathComponent("open-scribe-application-loss-\(UUID().uuidString)", isDirectory: true)
+    let proof = base.appendingPathComponent("proof", isDirectory: true)
+    let media = proof.appendingPathComponent("media", isDirectory: true)
+    try FileManager.default.createDirectory(at: media, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: base) }
+    let normal = base.appendingPathComponent("unused-production")
+    let suite = "OpenScribe.Proof.\(UUID().uuidString)"
+    defer { UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite) }
+    let resolved = try LaunchConfiguration.resolve(
+      arguments: [
+        "app", "--m1-injected-proof-root", proof.path,
+        "--m1-proof-media-root", media.path,
+        "--m1-injected-case", "application-loss",
+        "--verification-preferences", suite,
+      ],
+      environment: [:], normalRoot: normal)
+    XCTAssertEqual(resolved.mode, .synthetic)
+    XCTAssertEqual(resolved.action, .injected("application-loss"))
+
+    var child: Process?
+    defer {
+      if let child, child.isRunning {
+        kill(pid_t(child.processIdentifier), SIGKILL)
+        child.waitUntilExit()
+      }
+    }
+    let capture = try Self.launchVerificationApp(
+      arguments: [
+        "--m1-injected-proof-root", proof.path,
+        "--m1-proof-media-root", media.path,
+        "--m1-injected-case", "application-loss",
+        "--verification-preferences", suite,
+      ],
+      standardOutput: proof.appendingPathComponent("app-out.log"),
+      standardError: proof.appendingPathComponent("app-err.log"))
+    child = capture
+    let outcomeURL = proof.appendingPathComponent("outcome.json")
+    let finished = await Self.waitForFile(outcomeURL, seconds: 60, process: capture)
+    guard finished else {
+      XCTFail(Self.launchFailure("application-loss outcome was not written", proof: proof, process: capture))
+      return
+    }
+    let exited = await Self.waitUntil(seconds: 20) { capture.isRunning == false }
+    XCTAssertTrue(exited, Self.launchFailure("application-loss launch did not exit", proof: proof, process: capture))
+    capture.waitUntilExit()
+    child = nil
+    XCTAssertEqual(capture.terminationStatus, 0)
+    XCTAssertFalse(FileManager.default.fileExists(atPath: proof.appendingPathComponent("proof-error").path))
+
+    let outcomeData = try Data(contentsOf: outcomeURL)
+    let outcomeText = String(decoding: outcomeData, as: UTF8.self)
+    XCTAssertFalse(outcomeText.contains("AVAudioEngine+ScreenCaptureKit"))
+    XCTAssertFalse(outcomeText.contains("live-pause-resume"))
+    let outcome = try JSONSerialization.jsonObject(with: outcomeData) as? [String: Any]
+    XCTAssertEqual(outcome?["result"] as? String, "INJECTED_CASE_GREEN")
+    XCTAssertEqual(outcome?["scenario"] as? String, "application-loss")
+    XCTAssertEqual(outcome?["phase_at_event"] as? String, "capturing")
+    XCTAssertEqual(outcome?["fallback"] as? String, "recording-remaining-source")
+    XCTAssertEqual(
+      outcome?["visible_message"] as? String,
+      "Selected application audio stopped. Remaining audio is still recording. streamStopped")
+    XCTAssertEqual(outcome?["visible_lifecycle"] as? String, "recording")
+    XCTAssertEqual(outcome?["lifecycle"] as? String, "ready_for_review")
+    XCTAssertEqual((outcome?["tracks"] as? NSNumber)?.intValue, 2)
+    XCTAssertGreaterThan((outcome?["rendered_frames"] as? NSNumber)?.intValue ?? 0, 0)
+    let visibleEvents = try XCTUnwrap(outcome?["visible_events"] as? [String])
+    XCTAssertTrue(visibleEvents.contains("source_failed"))
+    XCTAssertTrue(visibleEvents.contains("marker_added"))
+    let sessionId = try XCTUnwrap(outcome?["session_id"] as? String)
+
+    let preparation = try NativeRecordingPreparation.open(managedRoot: media.path)
+    let detail = try preparation.recorderDetail(sessionId: sessionId)
+    XCTAssertEqual(detail.lifecycle, "ready_for_review")
+    XCTAssertEqual(
+      detail.events.last { $0.kind == "source_failed" }?.label, "Injected application")
+    XCTAssertEqual(
+      detail.events.last { $0.kind == "marker_added" }?.label, "Injected failure boundary")
+    let plan = try preparation.playbackTimeline(sessionId: sessionId)
+    var totals: [String: UInt64] = [:]
+    for segment in plan {
+      totals[segment.trackId, default: 0] += segment.sampleCount
+    }
+    XCTAssertEqual(Set(totals.values), [48_000, 96_000])
+    let journal = media.appendingPathComponent("Sessions/\(sessionId)/recovery.jsonl")
+    let kinds = try Self.journalKinds(journal)
+    XCTAssertTrue(kinds.contains("recording_started"), kinds.joined(separator: ","))
+    XCTAssertTrue(kinds.contains("marker_added"), kinds.joined(separator: ","))
+    XCTAssertTrue(kinds.contains("source_failed"), kinds.joined(separator: ","))
+    XCTAssertFalse(kinds.contains("playable_media_recovered"), kinds.joined(separator: ","))
+    XCTAssertEqual(try Self.cafPaths(under: media).count, 2)
+  }
+
   private static func journalRecords(_ data: Data) throws -> [[String: Any]] {
     try String(decoding: data, as: UTF8.self).split(separator: "\n").map { line in
       try XCTUnwrap(JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any])
