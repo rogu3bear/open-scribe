@@ -975,6 +975,201 @@ final class RecoveredSessionControllerTests: RecoveredSessionTestCase {
     withExtendedLifetime((preparation, library, model)) {}
   }
 
+  /// An imported stored final, including its stored correction, receives named
+  /// people. Merge, split, rename, and restoring the source name keep the
+  /// earlier assignments and leave the audio and transcript text unchanged.
+  func testNamedSpeakersMergeAndSplitOnAStoredFinalAndKeepTheCorrection() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "open-scribe-speaker-merge-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let package = root.appendingPathComponent("Stored.openscribe")
+    let export = await exportStoredFinalPackage(to: package)
+    XCTAssertEqual(export.status, 0, String(export.log.suffix(2_000)))
+    let packageMedia = try regularFiles(under: package.appendingPathComponent("media"))
+    XCTAssertEqual(packageMedia.count, 1)
+    let packageDigest = try digest(of: packageMedia[0])
+
+    let managed = root.appendingPathComponent("Library", isDirectory: true)
+    let library = try NativeTranscriptLibrary.open(managedRoot: managed.path)
+    let receipt = try library.importPortablePackage(packagePath: package.path)
+    let stored = try library.document(sessionId: receipt.sessionId)
+    let alpha = try XCTUnwrap(stored.first { $0.sequence == 0 })
+    let bravo = try XCTUnwrap(stored.first { $0.sequence == 1 })
+    XCTAssertEqual(alpha.finality, "final")
+    XCTAssertFalse(alpha.corrected)
+    XCTAssertEqual(bravo.finality, "final")
+    XCTAssertTrue(bravo.corrected)
+    XCTAssertNotEqual(bravo.effectiveText, bravo.verbatimText)
+    XCTAssertGreaterThan(bravo.startNanoseconds, alpha.endNanoseconds)
+    XCTAssertEqual(alpha.speakerLabel, "Unknown speaker")
+    XCTAssertEqual(bravo.speakerLabel, "Unknown speaker")
+    XCTAssertNil(alpha.namedSpeakerId)
+    XCTAssertNil(bravo.namedSpeakerId)
+    let libraryMedia = try regularFiles(under: managed.appendingPathComponent("Sessions"))
+      .filter { $0.pathExtension == "caf" }
+    XCTAssertEqual(libraryMedia.count, 1)
+    XCTAssertEqual(try digest(of: libraryMedia[0]), packageDigest)
+    let before = try library.prepareSpeakerDiarization(sessionId: receipt.sessionId)
+    XCTAssertEqual(before.algorithmId, "topology-before-clustering-v1")
+    XCTAssertEqual(before.clusteringState, "unavailable")
+    XCTAssertEqual(before.reason, "no calibrated diarization model")
+
+    let model = TranscriptLibraryModel(managedRoot: managed)
+    await model.load(sessionId: receipt.sessionId)
+    XCTAssertNil(model.message)
+    XCTAssertEqual(
+      model.speakerDiarizationText,
+      "Speakers follow the audio source. Voice diarization is unavailable without a calibrated model."
+    )
+    let loadedAlpha = try XCTUnwrap(model.segments.first { $0.sequence == alpha.sequence })
+    let loadedBravo = try XCTUnwrap(model.segments.first { $0.sequence == bravo.sequence })
+    let namedDana = await model.assignSpeaker(
+      sessionId: receipt.sessionId, segment: loadedAlpha, assignment: .new(label: "Dana"))
+    XCTAssertTrue(namedDana, model.message ?? "")
+    let namedMorgan = await model.assignSpeaker(
+      sessionId: receipt.sessionId, segment: loadedBravo, assignment: .new(label: "Morgan"))
+    XCTAssertTrue(namedMorgan, model.message ?? "")
+    let dana = try XCTUnwrap(model.namedSpeakers.first { $0.label == "Dana" })
+    let morgan = try XCTUnwrap(model.namedSpeakers.first { $0.label == "Morgan" })
+    XCTAssertEqual(dana.selectedTurns, 1)
+    XCTAssertEqual(morgan.selectedTurns, 1)
+    let assignedAlpha = try XCTUnwrap(model.segments.first { $0.sequence == alpha.sequence })
+    let assignedBravo = try XCTUnwrap(model.segments.first { $0.sequence == bravo.sequence })
+    XCTAssertEqual(assignedAlpha.speakerLabel, "Dana")
+    XCTAssertEqual(assignedAlpha.namedSpeakerId, dana.id)
+    XCTAssertEqual(assignedBravo.speakerLabel, "Morgan")
+    XCTAssertEqual(assignedBravo.namedSpeakerId, morgan.id)
+    XCTAssertEqual(assignedAlpha.effectiveText, alpha.effectiveText)
+    XCTAssertEqual(assignedBravo.verbatimText, bravo.verbatimText)
+    XCTAssertEqual(assignedBravo.effectiveText, bravo.effectiveText)
+    XCTAssertTrue(assignedBravo.corrected)
+
+    let merged = await model.mergeNamedSpeakers(
+      sessionId: receipt.sessionId, keepId: dana.id, absorbId: morgan.id)
+    XCTAssertTrue(merged, model.message ?? "")
+    XCTAssertEqual(
+      try library.mergeNamedSpeakers(
+        sessionId: receipt.sessionId, keepId: dana.id, absorbId: morgan.id),
+      0)
+    XCTAssertEqual(model.segments.map(\.speakerLabel), ["Dana", "Dana"])
+    XCTAssertEqual(model.namedSpeakers.first { $0.id == dana.id }?.selectedTurns, 2)
+    XCTAssertEqual(model.namedSpeakers.first { $0.id == morgan.id }?.selectedTurns, 0)
+    let mergedHistory = try XCTUnwrap(
+      model.namedSpeakerTurnHistory.first { $0.sequence == bravo.sequence })
+    XCTAssertEqual(mergedHistory.sourceDefaultLabel, "Unknown speaker")
+    XCTAssertEqual(mergedHistory.revisions.map(\.label), ["Morgan", "Dana"])
+    XCTAssertEqual(mergedHistory.revisions.map(\.origin), [.human, .human])
+    XCTAssertEqual(
+      TranscriptLibraryModel.namedSpeakerTurnHistoryText(for: mergedHistory),
+      """
+      Source default: Unknown speaker
+      Morgan, named by you
+      Dana, named by you
+      """)
+
+    let renamed = await model.renameNamedSpeaker(
+      sessionId: receipt.sessionId, speakerId: dana.id, label: "D. Morgan")
+    XCTAssertTrue(renamed, model.message ?? "")
+    XCTAssertEqual(model.segments.map(\.speakerLabel), ["D. Morgan", "D. Morgan"])
+    let renamedHistory = try XCTUnwrap(
+      model.namedSpeakerTurnHistory.first { $0.sequence == bravo.sequence })
+    XCTAssertEqual(renamedHistory.revisions.map(\.label), ["Morgan", "Dana"])
+
+    let turns = [assignedAlpha, assignedBravo].map {
+      NativeNamedSpeakerTurn(revisionId: $0.revisionId, sequence: $0.sequence)
+    }
+    XCTAssertThrowsError(
+      try library.splitNamedSpeaker(
+        sessionId: receipt.sessionId, speakerId: dana.id, turns: [], label: "Mina")
+    ) { error in
+      XCTAssertEqual(error as? NativeStorageError, .InvalidRequest)
+    }
+    XCTAssertThrowsError(
+      try library.splitNamedSpeaker(
+        sessionId: receipt.sessionId, speakerId: dana.id, turns: turns, label: "Noah")
+    ) { error in
+      XCTAssertEqual(error as? NativeStorageError, .InvalidRequest)
+    }
+    let currentBravo = try XCTUnwrap(model.segments.first { $0.sequence == bravo.sequence })
+    let split = await model.splitNamedSpeaker(
+      sessionId: receipt.sessionId, speakerId: dana.id, segment: currentBravo, label: "Mina")
+    XCTAssertTrue(split, model.message ?? "")
+    let splitAlpha = try XCTUnwrap(model.segments.first { $0.sequence == alpha.sequence })
+    let splitBravo = try XCTUnwrap(model.segments.first { $0.sequence == bravo.sequence })
+    XCTAssertEqual(splitAlpha.speakerLabel, "D. Morgan")
+    XCTAssertEqual(splitAlpha.namedSpeakerId, dana.id)
+    XCTAssertEqual(splitBravo.speakerLabel, "Mina")
+    XCTAssertNotEqual(splitBravo.namedSpeakerId, dana.id)
+    XCTAssertEqual(splitAlpha.effectiveText, alpha.effectiveText)
+    XCTAssertEqual(splitAlpha.startNanoseconds, alpha.startNanoseconds)
+    XCTAssertEqual(splitBravo.verbatimText, bravo.verbatimText)
+    XCTAssertEqual(splitBravo.effectiveText, bravo.effectiveText)
+    XCTAssertTrue(splitBravo.corrected)
+    XCTAssertEqual(splitBravo.startNanoseconds, bravo.startNanoseconds)
+    let grown = try XCTUnwrap(
+      model.namedSpeakerTurnHistory.first { $0.sequence == bravo.sequence })
+    XCTAssertEqual(grown.revisions.map(\.label), ["Morgan", "Dana", "Mina"])
+    XCTAssertEqual(
+      TranscriptLibraryModel.namedSpeakerTurnHistoryText(for: grown),
+      """
+      Source default: Unknown speaker
+      Morgan, named by you
+      Dana, named by you
+      Mina, named by you
+      """)
+    XCTAssertEqual(model.namedSpeakers.first { $0.id == dana.id }?.selectedTurns, 1)
+    XCTAssertEqual(model.namedSpeakers.first { $0.id == morgan.id }?.selectedTurns, 0)
+    XCTAssertEqual(model.namedSpeakers.first { $0.label == "Mina" }?.selectedTurns, 1)
+
+    let restored = await model.assignSpeaker(
+      sessionId: receipt.sessionId, segment: splitAlpha, assignment: .source)
+    XCTAssertTrue(restored, model.message ?? "")
+    let restoredAlpha = try XCTUnwrap(model.segments.first { $0.sequence == alpha.sequence })
+    let restoredBravo = try XCTUnwrap(model.segments.first { $0.sequence == bravo.sequence })
+    XCTAssertEqual(restoredAlpha.speakerLabel, "Unknown speaker")
+    XCTAssertNil(restoredAlpha.namedSpeakerId)
+    XCTAssertEqual(restoredBravo.speakerLabel, "Mina")
+    XCTAssertEqual(restoredBravo.effectiveText, bravo.effectiveText)
+    let restoredHistory = try XCTUnwrap(
+      model.namedSpeakerTurnHistory.first { $0.sequence == alpha.sequence })
+    XCTAssertEqual(restoredHistory.revisions.map(\.label), ["Dana", "Unknown speaker"])
+    XCTAssertEqual(restoredHistory.revisions.map(\.origin), [.human, .sourceDefault])
+    XCTAssertEqual(
+      TranscriptLibraryModel.namedSpeakerTurnHistoryText(for: restoredHistory),
+      """
+      Source default: Unknown speaker
+      Dana, named by you
+      Unknown speaker, source name
+      """)
+    let bravoHistory = try XCTUnwrap(
+      model.namedSpeakerTurnHistory.first { $0.sequence == bravo.sequence })
+    XCTAssertEqual(bravoHistory.revisions.map(\.label), ["Morgan", "Dana", "Mina"])
+
+    let reread = try library.document(sessionId: receipt.sessionId)
+    let rereadAlpha = try XCTUnwrap(reread.first { $0.sequence == alpha.sequence })
+    let rereadBravo = try XCTUnwrap(reread.first { $0.sequence == bravo.sequence })
+    XCTAssertEqual(rereadAlpha.speakerLabel, "Unknown speaker")
+    XCTAssertEqual(rereadAlpha.verbatimText, alpha.verbatimText)
+    XCTAssertEqual(rereadBravo.speakerLabel, "Mina")
+    XCTAssertEqual(rereadBravo.verbatimText, bravo.verbatimText)
+    XCTAssertEqual(rereadBravo.effectiveText, bravo.effectiveText)
+    XCTAssertTrue(rereadBravo.corrected)
+    let tracks = try library.speakers(sessionId: receipt.sessionId)
+    XCTAssertEqual(tracks.map(\.label), ["Unknown speaker"])
+    XCTAssertEqual(tracks.map(\.namedByUser), [false])
+    let after = try library.prepareSpeakerDiarization(sessionId: receipt.sessionId)
+    XCTAssertFalse(after.inserted)
+    XCTAssertEqual(after.runId, before.runId)
+    XCTAssertEqual(after.algorithmId, before.algorithmId)
+    XCTAssertEqual(after.clusteringState, "unavailable")
+    XCTAssertEqual(after.reason, before.reason)
+    XCTAssertEqual(try digest(of: libraryMedia[0]), packageDigest)
+    XCTAssertEqual(try digest(of: packageMedia[0]), packageDigest)
+    XCTAssertNil(model.message)
+    withExtendedLifetime(library) {}
+  }
+
   /// Imports have no capture timeline, so claim evidence seeks with
   /// `play(_:startNanoseconds:)`.
   private func seekImported(
