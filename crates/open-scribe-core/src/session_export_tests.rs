@@ -1,3 +1,4 @@
+use crate::TRANSCRIPT_V1_SCHEMA_JSON;
 use crate::session_export::{
     PORTABLE_V1_SCHEMA_JSON, SESSION_MANIFEST_V1_SCHEMA_JSON, SessionExportError,
     export_source_media, export_track_wav, export_validated_mix, render_session_manifest,
@@ -6,6 +7,11 @@ use crate::session_export::{
 use crate::transcribe_track;
 use crate::transcription::tests::{BurstRecognizer, Imported, imported};
 use open_scribe_asr::{DecodeOptions, Language};
+use open_scribe_evidence::{
+    ClaimKind, ClaimProducer, ClaimStatus, DERIVED_CLAIM_SCHEMA, DerivedClaim, EvidenceRef,
+    ResolutionState,
+};
+use open_scribe_store::ClaimEvidenceSide;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::fs;
@@ -298,6 +304,170 @@ fn portable_v1_refuses_active_turn_names_without_replacing_an_existing_package()
         .unwrap();
     write_portable_package(&fixture.store, &fixture.session, &package).unwrap();
     verify_portable_package(&package).unwrap();
+}
+
+#[test]
+fn portable_export_keeps_evidence_apart_from_interpretation_and_names_the_local_source() {
+    let mut fixture = transcribed(30);
+    let session = fixture.session.clone();
+    let source_before = fs::read(&fixture.media).unwrap();
+    let document = fixture.store.transcript_document(&session).unwrap();
+    let cited_segment = document[0].clone();
+    fixture
+        .store
+        .correct_transcript_segment(
+            &session,
+            &cited_segment.revision_id,
+            cited_segment.sequence,
+            Some("Reviewed meadow"),
+        )
+        .unwrap();
+    fixture
+        .store
+        .rename_speaker(&session, &fixture.track, Some("Dana"))
+        .unwrap();
+    let cited = fixture
+        .store
+        .cite_transcript_segment(&session, &cited_segment.revision_id, cited_segment.sequence)
+        .unwrap();
+    let claim_text = "The team agreed to keep the local recording.";
+    fixture
+        .store
+        .insert_derived_claim(&DerivedClaim {
+            schema: DERIVED_CLAIM_SCHEMA.to_owned(),
+            claim_id: "claim-decision".into(),
+            revision_id: "revision-a".into(),
+            session_id: session.0.clone(),
+            kind: ClaimKind::Decision,
+            text: claim_text.into(),
+            status: ClaimStatus::Agreed,
+            supporting: vec![cited.clone()],
+            contradicting: Vec::new(),
+            producer: ClaimProducer::ModelRun,
+            adjudication: None,
+        })
+        .unwrap();
+
+    let input = fixture
+        .store
+        .transcription_input(&session, &fixture.track)
+        .unwrap();
+    let stored = fixture.store.transcript_document(&session).unwrap();
+    let package = fixture.root.parent().unwrap().join("Reviewed.openscribe");
+    let summary = write_portable_package(&fixture.store, &session, &package).unwrap();
+    assert!(summary.files >= 3);
+    verify_portable_package(&package).unwrap();
+    assert_eq!(fs::read(&fixture.media).unwrap(), source_before);
+
+    let manifest: Value =
+        serde_json::from_slice(&fs::read(package.join("manifest.json")).unwrap()).unwrap();
+    let session_json: Value =
+        serde_json::from_slice(&fs::read(package.join("session.json")).unwrap()).unwrap();
+    let transcript: Value =
+        serde_json::from_slice(&fs::read(package.join("transcript.json")).unwrap()).unwrap();
+    validate(
+        &serde_json::from_str(PORTABLE_V1_SCHEMA_JSON).unwrap(),
+        &manifest,
+        "portable",
+    );
+    validate(
+        &serde_json::from_str(SESSION_MANIFEST_V1_SCHEMA_JSON).unwrap(),
+        &session_json,
+        "session",
+    );
+    validate(
+        &serde_json::from_str(TRANSCRIPT_V1_SCHEMA_JSON).unwrap(),
+        &transcript,
+        "transcript",
+    );
+
+    let packaged_media = manifest["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|file| file["role"] == "source_media")
+        .unwrap();
+    let packaged = fs::read(package.join(packaged_media["path"].as_str().unwrap())).unwrap();
+    assert_eq!(packaged, source_before);
+    assert_eq!(packaged_media["byte_length"], source_before.len() as u64);
+    assert_eq!(packaged_media["sha256"], hex(&Sha256::digest(&packaged)));
+    let media_row = &session_json["tracks"][0]["segments"][0];
+    assert_eq!(media_row["sha256"], packaged_media["sha256"]);
+    assert_eq!(media_row["byte_length"], packaged.len() as u64);
+    assert_eq!(session_json["tracks"][0]["speaker"]["label"], "Dana");
+    assert_eq!(session_json["tracks"][0]["speaker"]["named_by_user"], true);
+    assert!(session_json["markers"].as_array().unwrap().is_empty());
+    assert!(!session_json.to_string().contains(claim_text));
+
+    assert_eq!(transcript["tracks"][0]["input_digest"], input.input_digest);
+    assert_eq!(
+        transcript["tracks"][0]["revision"]["input_digest"],
+        input.input_digest
+    );
+    assert!(
+        input
+            .spans
+            .iter()
+            .flat_map(|span| &span.segments)
+            .any(|segment| segment.digest_sha256 == media_row["sha256"].as_str().unwrap())
+    );
+    let duration = session_json["duration_ns"].as_i64().unwrap();
+    assert_eq!(transcript["duration_ns"], duration);
+    let exported_segments = transcript["segments"].as_array().unwrap();
+    assert_eq!(exported_segments.len(), stored.len());
+    for (exported, segment) in exported_segments.iter().zip(&stored) {
+        assert_eq!(exported["start_ns"], segment.start_nanoseconds);
+        assert_eq!(exported["end_ns"], segment.end_nanoseconds);
+        assert!(segment.start_nanoseconds >= media_row["start_ns"].as_i64().unwrap());
+        assert!(segment.end_nanoseconds <= duration);
+        assert_eq!(
+            exported["verbatim_text"].as_str(),
+            Some(segment.verbatim_text.as_str())
+        );
+        assert_eq!(
+            exported["effective_text"].as_str(),
+            Some(segment.effective_text.as_str())
+        );
+        assert!(!segment.verbatim_text.contains(claim_text));
+        assert!(!segment.effective_text.contains(claim_text));
+        let reference = EvidenceRef::parse(&exported["evidence_ref"].to_string()).unwrap();
+        assert_eq!(reference.start_ns, segment.start_nanoseconds);
+        assert!(reference.end_ns > reference.start_ns);
+        assert_eq!(reference.content_digest, segment.verbatim_sha256);
+        let verbatim_digest = hex(&Sha256::digest(segment.verbatim_text.as_bytes()));
+        assert_eq!(reference.content_digest, verbatim_digest);
+        if segment.corrected {
+            assert_ne!(segment.effective_text, segment.verbatim_text);
+            assert_eq!(exported["correction"]["origin"], "human");
+            assert_ne!(
+                reference.content_digest,
+                hex(&Sha256::digest(segment.effective_text.as_bytes()))
+            );
+        }
+    }
+    let reviewed = exported_segments
+        .iter()
+        .find(|segment| segment["sequence"] == i64::from(cited_segment.sequence))
+        .unwrap();
+    assert_eq!(reviewed["verbatim_text"], "burst");
+    assert_eq!(reviewed["effective_text"], "Reviewed meadow");
+    assert_eq!(reviewed["speaker"]["label"], "Dana");
+    assert_eq!(reviewed["speaker"]["origin"], "human");
+    assert!(!transcript.to_string().contains(claim_text));
+
+    let navigation = fixture
+        .store
+        .navigate_derived_claim(&session, "claim-decision")
+        .unwrap();
+    assert_eq!(navigation.text, claim_text);
+    assert_eq!(navigation.targets.len(), 1);
+    let target = &navigation.targets[0];
+    assert_eq!(target.side, ClaimEvidenceSide::Supporting);
+    assert_eq!(target.state, ResolutionState::Available);
+    assert_eq!(target.text.as_deref(), Some("burst"));
+    assert_eq!(target.start_ns, reviewed["start_ns"].as_i64().unwrap());
+    assert_eq!(target.record_id, cited.record_id);
+    assert_eq!(fs::read(&fixture.media).unwrap(), source_before);
 }
 
 fn copy_tree(from: &std::path::Path, to: &std::path::Path) {
