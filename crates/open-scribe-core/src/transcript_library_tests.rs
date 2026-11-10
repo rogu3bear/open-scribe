@@ -19,8 +19,8 @@ use sha2::{Digest, Sha256};
 use tempfile::TempDir;
 
 use crate::{
-    ClaimEvidenceSide, ResolutionState, SpeakerDiarizationTrackInput, SpeakerLabelOrigin,
-    StoreError, TranscriptLibrary, TranscriptSpeakerAssignment,
+    ClaimEvidenceSide, NamedSpeakerTurn, ResolutionState, SpeakerDiarizationTrackInput,
+    SpeakerLabelOrigin, StoreError, TranscriptLibrary, TranscriptSpeakerAssignment,
 };
 
 const SECOND: i64 = 1_000_000_000;
@@ -333,5 +333,136 @@ fn imported_review_keeps_unknown_speakers_when_diarization_is_uncalibrated() {
     let third = library.prepare_speaker_diarization(session).unwrap();
     assert!(!third.inserted);
     assert_eq!(third.run_id, first.run_id);
+    assert_eq!(file_sha256(&prepared.media), prepared.digest_sha256);
+}
+
+#[test]
+fn library_merge_and_split_keep_passage_history_without_clustering() {
+    let prepared = prepared_transcript();
+    let mut library = TranscriptLibrary::open(&prepared.root).unwrap();
+    let session = &prepared.session;
+    let before = library.prepare_speaker_diarization(session).unwrap();
+    assert_eq!(before.algorithm_id, "topology-before-clustering-v1");
+    assert_eq!(before.clustering_state, "unavailable");
+    assert_eq!(before.reason, "no calibrated diarization model");
+    let dana = library
+        .assign_speaker(
+            session,
+            &prepared.revision,
+            0,
+            &TranscriptSpeakerAssignment::New("Dana".into()),
+        )
+        .unwrap()
+        .unwrap();
+    let morgan = library
+        .assign_speaker(
+            session,
+            &prepared.revision,
+            1,
+            &TranscriptSpeakerAssignment::New("Morgan".into()),
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        library
+            .merge_named_speakers(session, &dana, &morgan)
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        library
+            .merge_named_speakers(session, &dana, &morgan)
+            .unwrap(),
+        0
+    );
+    let merged = library.document(session).unwrap();
+    assert_eq!(merged[0].verbatim_text, "alpha");
+    assert_eq!(merged[1].verbatim_text, "bravo");
+    assert_eq!(merged[0].effective_text, "alpha");
+    assert_eq!(merged[1].effective_text, "bravo");
+    assert!(merged.iter().all(|segment| segment.speaker_label == "Dana"));
+    let people = library.named_speakers(session).unwrap();
+    assert_eq!(
+        people
+            .iter()
+            .map(|person| (person.label.as_str(), person.selected_turns))
+            .collect::<Vec<_>>(),
+        [("Dana", 2), ("Morgan", 0)]
+    );
+    let history = library.named_speaker_turn_history(session).unwrap();
+    let second = history.iter().find(|turn| turn.sequence == 1).unwrap();
+    assert_eq!(second.source_default_label, "Unknown speaker");
+    assert_eq!(
+        second
+            .revisions
+            .iter()
+            .map(|revision| revision.label.as_str())
+            .collect::<Vec<_>>(),
+        ["Morgan", "Dana"]
+    );
+    let mina = library
+        .split_named_speaker(
+            session,
+            &dana,
+            &[NamedSpeakerTurn {
+                revision_id: prepared.revision.clone(),
+                sequence: 1,
+            }],
+            "Mina",
+        )
+        .unwrap();
+    let split = library.document(session).unwrap();
+    assert_eq!(split[0].speaker_label, "Dana");
+    assert_eq!(split[0].named_speaker_id.as_deref(), Some(dana.as_str()));
+    assert_eq!(split[1].speaker_label, "Mina");
+    assert_eq!(split[1].named_speaker_id.as_deref(), Some(mina.as_str()));
+    assert_eq!(split[0].verbatim_text, "alpha");
+    assert_eq!(split[1].verbatim_text, "bravo");
+    let grown = library.named_speaker_turn_history(session).unwrap();
+    assert_eq!(
+        grown
+            .iter()
+            .find(|turn| turn.sequence == 1)
+            .unwrap()
+            .revisions
+            .iter()
+            .map(|revision| revision.label.as_str())
+            .collect::<Vec<_>>(),
+        ["Morgan", "Dana", "Mina"]
+    );
+    assert!(
+        library
+            .split_named_speaker(
+                session,
+                &dana,
+                &[
+                    NamedSpeakerTurn {
+                        revision_id: prepared.revision.clone(),
+                        sequence: 0,
+                    },
+                    NamedSpeakerTurn {
+                        revision_id: prepared.revision.clone(),
+                        sequence: 1,
+                    },
+                ],
+                "Noah",
+            )
+            .is_err()
+    );
+    let after = library.prepare_speaker_diarization(session).unwrap();
+    assert!(!after.inserted);
+    assert_eq!(after.run_id, before.run_id);
+    assert_eq!(after.algorithm_id, "topology-before-clustering-v1");
+    assert_eq!(after.clustering_state, "unavailable");
+    assert_eq!(after.reason, "no calibrated diarization model");
+    assert_eq!(after.tracks, before.tracks);
+    assert_eq!(
+        library.speakers(session).unwrap()[0].label,
+        "Unknown speaker"
+    );
+    assert_eq!(
+        library.speakers(session).unwrap()[0].origin,
+        SpeakerLabelOrigin::SourceDefault
+    );
     assert_eq!(file_sha256(&prepared.media), prepared.digest_sha256);
 }

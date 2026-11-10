@@ -2063,6 +2063,18 @@ public protocol NativeTranscriptLibraryProtocol: AnyObject, Sendable {
    */
   func inspectProvenance(sessionId: String) throws -> [NativeTranscriptProvenance]
 
+  /**
+   * Moves every selected passage of `absorb_id` onto `keep_id`. Both
+   * people remain. A second identical call returns zero.
+   */
+  func mergeNamedSpeakers(sessionId: String, keepId: String, absorbId: String) throws -> UInt32
+
+  /**
+   * Oldest-first assignments for each selected passage. The source name
+   * is always present. A later rename does not rewrite an earlier line.
+   */
+  func namedSpeakerTurnHistory(sessionId: String) throws -> [NativeNamedSpeakerTurnHistory]
+
   func namedSpeakers(sessionId: String) throws -> [NativeNamedTranscriptSpeaker]
 
   /**
@@ -2101,6 +2113,14 @@ public protocol NativeTranscriptLibraryProtocol: AnyObject, Sendable {
   func speakerLabelHistory(sessionId: String) throws -> [NativeSpeakerLabelHistory]
 
   func speakers(sessionId: String) throws -> [NativeSessionSpeaker]
+
+  /**
+   * Moves the named passages to a new person and leaves at least one
+   * selected passage with the original person.
+   */
+  func splitNamedSpeaker(
+    sessionId: String, speakerId: String, turns: [NativeNamedSpeakerTurn], label: String
+  ) throws -> String
 
 }
 open class NativeTranscriptLibrary: NativeTranscriptLibraryProtocol, @unchecked Sendable {
@@ -2551,6 +2571,39 @@ open class NativeTranscriptLibrary: NativeTranscriptLibraryProtocol, @unchecked 
       })
   }
 
+  /**
+   * Moves every selected passage of `absorb_id` onto `keep_id`. Both
+   * people remain. A second identical call returns zero.
+   */
+  open func mergeNamedSpeakers(sessionId: String, keepId: String, absorbId: String) throws -> UInt32
+  {
+    return try FfiConverterUInt32.lift(
+      try rustCallWithError(FfiConverterTypeNativeStorageError_lift) {
+        uniffiCallStatus in
+        uniffi_open_scribe_uniffi_fn_method_nativetranscriptlibrary_merge_named_speakers(
+          self.uniffiCloneHandle(),
+          FfiConverterString.lower(sessionId),
+          FfiConverterString.lower(keepId),
+          FfiConverterString.lower(absorbId), uniffiCallStatus
+        )
+      })
+  }
+
+  /**
+   * Oldest-first assignments for each selected passage. The source name
+   * is always present. A later rename does not rewrite an earlier line.
+   */
+  open func namedSpeakerTurnHistory(sessionId: String) throws -> [NativeNamedSpeakerTurnHistory] {
+    return try FfiConverterSequenceTypeNativeNamedSpeakerTurnHistory.lift(
+      try rustCallWithError(FfiConverterTypeNativeStorageError_lift) {
+        uniffiCallStatus in
+        uniffi_open_scribe_uniffi_fn_method_nativetranscriptlibrary_named_speaker_turn_history(
+          self.uniffiCloneHandle(),
+          FfiConverterString.lower(sessionId), uniffiCallStatus
+        )
+      })
+  }
+
   open func namedSpeakers(sessionId: String) throws -> [NativeNamedTranscriptSpeaker] {
     return try FfiConverterSequenceTypeNativeNamedTranscriptSpeaker.lift(
       try rustCallWithError(FfiConverterTypeNativeStorageError_lift) {
@@ -2674,6 +2727,26 @@ open class NativeTranscriptLibrary: NativeTranscriptLibraryProtocol, @unchecked 
         uniffi_open_scribe_uniffi_fn_method_nativetranscriptlibrary_speakers(
           self.uniffiCloneHandle(),
           FfiConverterString.lower(sessionId), uniffiCallStatus
+        )
+      })
+  }
+
+  /**
+   * Moves the named passages to a new person and leaves at least one
+   * selected passage with the original person.
+   */
+  open func splitNamedSpeaker(
+    sessionId: String, speakerId: String, turns: [NativeNamedSpeakerTurn], label: String
+  ) throws -> String {
+    return try FfiConverterString.lift(
+      try rustCallWithError(FfiConverterTypeNativeStorageError_lift) {
+        uniffiCallStatus in
+        uniffi_open_scribe_uniffi_fn_method_nativetranscriptlibrary_split_named_speaker(
+          self.uniffiCloneHandle(),
+          FfiConverterString.lower(sessionId),
+          FfiConverterString.lower(speakerId),
+          FfiConverterSequenceTypeNativeNamedSpeakerTurn.lower(turns),
+          FfiConverterString.lower(label), uniffiCallStatus
         )
       })
   }
@@ -5258,6 +5331,200 @@ public func FfiConverterTypeNativeModelDownloadPlan_lower(_ value: NativeModelDo
   -> RustBuffer
 {
   return FfiConverterTypeNativeModelDownloadPlan.lower(value)
+}
+
+/// One selected passage a person can merge or split.
+public struct NativeNamedSpeakerTurn: Equatable, Hashable {
+  public let revisionId: String
+  public let sequence: UInt32
+
+  // Default memberwise initializers are never public by default, so we
+  // declare one manually.
+  public init(revisionId: String, sequence: UInt32) {
+    self.revisionId = revisionId
+    self.sequence = sequence
+  }
+
+}
+
+#if compiler(>=6)
+  extension NativeNamedSpeakerTurn: Sendable {}
+#endif
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeNativeNamedSpeakerTurn: FfiConverterRustBuffer {
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws
+    -> NativeNamedSpeakerTurn
+  {
+    return
+      try NativeNamedSpeakerTurn(
+        revisionId: FfiConverterString.read(from: &buf),
+        sequence: FfiConverterUInt32.read(from: &buf)
+      )
+  }
+
+  public static func write(_ value: NativeNamedSpeakerTurn, into buf: inout [UInt8]) {
+    FfiConverterString.write(value.revisionId, into: &buf)
+    FfiConverterUInt32.write(value.sequence, into: &buf)
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeNamedSpeakerTurn_lift(_ buf: RustBuffer) throws
+  -> NativeNamedSpeakerTurn
+{
+  return try FfiConverterTypeNativeNamedSpeakerTurn.lift(buf)
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeNamedSpeakerTurn_lower(_ value: NativeNamedSpeakerTurn)
+  -> RustBuffer
+{
+  return FfiConverterTypeNativeNamedSpeakerTurn.lower(value)
+}
+
+/// Source name plus every stored assignment for one selected passage,
+/// oldest first. A passage nobody has named has an empty `revisions` list.
+public struct NativeNamedSpeakerTurnHistory: Equatable, Hashable {
+  public let revisionId: String
+  public let sequence: UInt32
+  public let trackId: String
+  public let sourceDefaultLabel: String
+  public let revisions: [NativeNamedSpeakerTurnRevision]
+
+  // Default memberwise initializers are never public by default, so we
+  // declare one manually.
+  public init(
+    revisionId: String, sequence: UInt32, trackId: String, sourceDefaultLabel: String,
+    revisions: [NativeNamedSpeakerTurnRevision]
+  ) {
+    self.revisionId = revisionId
+    self.sequence = sequence
+    self.trackId = trackId
+    self.sourceDefaultLabel = sourceDefaultLabel
+    self.revisions = revisions
+  }
+
+}
+
+#if compiler(>=6)
+  extension NativeNamedSpeakerTurnHistory: Sendable {}
+#endif
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeNativeNamedSpeakerTurnHistory: FfiConverterRustBuffer {
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws
+    -> NativeNamedSpeakerTurnHistory
+  {
+    return
+      try NativeNamedSpeakerTurnHistory(
+        revisionId: FfiConverterString.read(from: &buf),
+        sequence: FfiConverterUInt32.read(from: &buf),
+        trackId: FfiConverterString.read(from: &buf),
+        sourceDefaultLabel: FfiConverterString.read(from: &buf),
+        revisions: FfiConverterSequenceTypeNativeNamedSpeakerTurnRevision.read(from: &buf)
+      )
+  }
+
+  public static func write(_ value: NativeNamedSpeakerTurnHistory, into buf: inout [UInt8]) {
+    FfiConverterString.write(value.revisionId, into: &buf)
+    FfiConverterUInt32.write(value.sequence, into: &buf)
+    FfiConverterString.write(value.trackId, into: &buf)
+    FfiConverterString.write(value.sourceDefaultLabel, into: &buf)
+    FfiConverterSequenceTypeNativeNamedSpeakerTurnRevision.write(value.revisions, into: &buf)
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeNamedSpeakerTurnHistory_lift(_ buf: RustBuffer) throws
+  -> NativeNamedSpeakerTurnHistory
+{
+  return try FfiConverterTypeNativeNamedSpeakerTurnHistory.lift(buf)
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeNamedSpeakerTurnHistory_lower(
+  _ value: NativeNamedSpeakerTurnHistory
+) -> RustBuffer {
+  return FfiConverterTypeNativeNamedSpeakerTurnHistory.lower(value)
+}
+
+/// One stored assignment. A null speaker is the source name.
+public struct NativeNamedSpeakerTurnRevision: Equatable, Hashable {
+  public let label: String
+  public let origin: NativeSpeakerLabelOrigin
+  public let speakerId: String?
+  public let createdAtMs: Int64
+
+  // Default memberwise initializers are never public by default, so we
+  // declare one manually.
+  public init(
+    label: String, origin: NativeSpeakerLabelOrigin, speakerId: String?, createdAtMs: Int64
+  ) {
+    self.label = label
+    self.origin = origin
+    self.speakerId = speakerId
+    self.createdAtMs = createdAtMs
+  }
+
+}
+
+#if compiler(>=6)
+  extension NativeNamedSpeakerTurnRevision: Sendable {}
+#endif
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeNativeNamedSpeakerTurnRevision: FfiConverterRustBuffer {
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws
+    -> NativeNamedSpeakerTurnRevision
+  {
+    return
+      try NativeNamedSpeakerTurnRevision(
+        label: FfiConverterString.read(from: &buf),
+        origin: FfiConverterTypeNativeSpeakerLabelOrigin.read(from: &buf),
+        speakerId: FfiConverterOptionString.read(from: &buf),
+        createdAtMs: FfiConverterInt64.read(from: &buf)
+      )
+  }
+
+  public static func write(_ value: NativeNamedSpeakerTurnRevision, into buf: inout [UInt8]) {
+    FfiConverterString.write(value.label, into: &buf)
+    FfiConverterTypeNativeSpeakerLabelOrigin.write(value.origin, into: &buf)
+    FfiConverterOptionString.write(value.speakerId, into: &buf)
+    FfiConverterInt64.write(value.createdAtMs, into: &buf)
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeNamedSpeakerTurnRevision_lift(_ buf: RustBuffer) throws
+  -> NativeNamedSpeakerTurnRevision
+{
+  return try FfiConverterTypeNativeNamedSpeakerTurnRevision.lift(buf)
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeNamedSpeakerTurnRevision_lower(
+  _ value: NativeNamedSpeakerTurnRevision
+) -> RustBuffer {
+  return FfiConverterTypeNativeNamedSpeakerTurnRevision.lower(value)
 }
 
 public struct NativeNamedTranscriptSpeaker: Equatable, Hashable {
@@ -13022,6 +13289,87 @@ private struct FfiConverterSequenceTypeNativeDisplayTopology: FfiConverterRustBu
 #if swift(>=5.8)
   @_documentation(visibility: private)
 #endif
+private struct FfiConverterSequenceTypeNativeNamedSpeakerTurn: FfiConverterRustBuffer {
+  typealias SwiftType = [NativeNamedSpeakerTurn]
+
+  public static func write(_ value: [NativeNamedSpeakerTurn], into buf: inout [UInt8]) {
+    let len = Int32(value.count)
+    writeInt(&buf, len)
+    for item in value {
+      FfiConverterTypeNativeNamedSpeakerTurn.write(item, into: &buf)
+    }
+  }
+
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws
+    -> [NativeNamedSpeakerTurn]
+  {
+    let len: Int32 = try readInt(&buf)
+    var seq = [NativeNamedSpeakerTurn]()
+    seq.reserveCapacity(Int(len))
+    for _ in 0..<len {
+      seq.append(try FfiConverterTypeNativeNamedSpeakerTurn.read(from: &buf))
+    }
+    return seq
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+private struct FfiConverterSequenceTypeNativeNamedSpeakerTurnHistory: FfiConverterRustBuffer {
+  typealias SwiftType = [NativeNamedSpeakerTurnHistory]
+
+  public static func write(_ value: [NativeNamedSpeakerTurnHistory], into buf: inout [UInt8]) {
+    let len = Int32(value.count)
+    writeInt(&buf, len)
+    for item in value {
+      FfiConverterTypeNativeNamedSpeakerTurnHistory.write(item, into: &buf)
+    }
+  }
+
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws
+    -> [NativeNamedSpeakerTurnHistory]
+  {
+    let len: Int32 = try readInt(&buf)
+    var seq = [NativeNamedSpeakerTurnHistory]()
+    seq.reserveCapacity(Int(len))
+    for _ in 0..<len {
+      seq.append(try FfiConverterTypeNativeNamedSpeakerTurnHistory.read(from: &buf))
+    }
+    return seq
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+private struct FfiConverterSequenceTypeNativeNamedSpeakerTurnRevision: FfiConverterRustBuffer {
+  typealias SwiftType = [NativeNamedSpeakerTurnRevision]
+
+  public static func write(_ value: [NativeNamedSpeakerTurnRevision], into buf: inout [UInt8]) {
+    let len = Int32(value.count)
+    writeInt(&buf, len)
+    for item in value {
+      FfiConverterTypeNativeNamedSpeakerTurnRevision.write(item, into: &buf)
+    }
+  }
+
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws
+    -> [NativeNamedSpeakerTurnRevision]
+  {
+    let len: Int32 = try readInt(&buf)
+    var seq = [NativeNamedSpeakerTurnRevision]()
+    seq.reserveCapacity(Int(len))
+    for _ in 0..<len {
+      seq.append(try FfiConverterTypeNativeNamedSpeakerTurnRevision.read(from: &buf))
+    }
+    return seq
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
 private struct FfiConverterSequenceTypeNativeNamedTranscriptSpeaker: FfiConverterRustBuffer {
   typealias SwiftType = [NativeNamedTranscriptSpeaker]
 
@@ -14242,6 +14590,16 @@ private let initializationResult: InitializationResult = {
   {
     return InitializationResult.apiChecksumMismatch
   }
+  if uniffi_open_scribe_uniffi_checksum_method_nativetranscriptlibrary_merge_named_speakers()
+    != 41497
+  {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_open_scribe_uniffi_checksum_method_nativetranscriptlibrary_named_speaker_turn_history()
+    != 57282
+  {
+    return InitializationResult.apiChecksumMismatch
+  }
   if uniffi_open_scribe_uniffi_checksum_method_nativetranscriptlibrary_named_speakers() != 51817 {
     return InitializationResult.apiChecksumMismatch
   }
@@ -14275,6 +14633,11 @@ private let initializationResult: InitializationResult = {
     return InitializationResult.apiChecksumMismatch
   }
   if uniffi_open_scribe_uniffi_checksum_method_nativetranscriptlibrary_speakers() != 62351 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_open_scribe_uniffi_checksum_method_nativetranscriptlibrary_split_named_speaker()
+    != 18233
+  {
     return InitializationResult.apiChecksumMismatch
   }
   if uniffi_open_scribe_uniffi_checksum_method_nativeworkcoordinator_admit() != 6138 {

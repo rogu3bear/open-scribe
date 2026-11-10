@@ -1,12 +1,13 @@
 //! Human-confirmed people and turn attribution over immutable transcript
-//! revisions. Source topology still labels unassigned turns. Nothing here
+//! revisions. Source topology still labels unassigned turns. Merge and split
+//! reassign selected turns and keep every earlier assignment. Nothing here
 //! infers a person's identity, clusters voices, or changes recorded audio.
 
-use super::transcript_review::require_reviewable_session;
+use super::transcript_review::{default_speaker_label, require_reviewable_session};
 use super::{SessionStore, StoreError, wall_time_milliseconds};
 use open_scribe_types::SessionId;
 use rusqlite::{OptionalExtension, Transaction, params};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use uuid::Uuid;
 
 pub(super) const SPEAKER_REVIEW_MIGRATION: i64 = 15;
@@ -24,6 +25,34 @@ pub struct NamedTranscriptSpeaker {
 pub(super) struct TurnSpeaker {
     pub id: String,
     pub label: String,
+}
+
+/// One selected turn a person can merge or split. The revision and sequence
+/// identify that exact passage.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NamedSpeakerTurn {
+    pub revision_id: String,
+    pub sequence: u32,
+}
+
+/// One stored assignment of a selected turn. A null speaker is the source name.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NamedSpeakerTurnRevision {
+    pub label: String,
+    pub origin: super::SpeakerLabelOrigin,
+    pub speaker_id: Option<String>,
+    pub created_at_ms: i64,
+}
+
+/// The source-derived name plus every stored assignment for one selected turn,
+/// oldest first. A turn nobody has named has an empty `revisions` list.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NamedSpeakerTurnHistory {
+    pub revision_id: String,
+    pub sequence: u32,
+    pub track_id: String,
+    pub source_default_label: String,
+    pub revisions: Vec<NamedSpeakerTurnRevision>,
 }
 
 type TurnSpeakers = BTreeMap<(String, u32), TurnSpeaker>;
@@ -375,6 +404,294 @@ impl SessionStore {
             })?
             .collect::<Result<_, _>>()
             .map_err(StoreError::from)
+    }
+
+    /// Moves every currently selected turn of `absorb_id` onto `keep_id`.
+    /// Both people remain. Repeated merges insert nothing and return zero.
+    /// Audio, verbatim text, source-track labels, and clustering are untouched.
+    pub fn merge_named_speakers(
+        &mut self,
+        session: &SessionId,
+        keep_id: &str,
+        absorb_id: &str,
+    ) -> Result<u32, StoreError> {
+        if keep_id == absorb_id {
+            return Err(StoreError::InvalidRequest(
+                "a speaker cannot merge into themself",
+            ));
+        }
+        let _writer = self.write_guard()?;
+        let tx = self.connection.transaction()?;
+        require_reviewable_session(&tx, &session.0)?;
+        for id in [keep_id, absorb_id] {
+            let owned: bool = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM transcript_named_speakers
+                 WHERE id = ?1 AND session_id = ?2)",
+                params![id, session.0],
+                |row| row.get(0),
+            )?;
+            if !owned {
+                return Err(StoreError::InvalidRequest(
+                    "speaker not found in this conversation",
+                ));
+            }
+        }
+        let turns = {
+            let mut statement = tx.prepare(
+                "SELECT segments.revision_id, segments.sequence
+                 FROM transcript_selections AS selections
+                 JOIN transcript_revisions AS revisions ON revisions.id = selections.revision_id
+                 JOIN transcript_segments AS segments
+                   ON segments.revision_id = selections.revision_id
+                 JOIN transcript_turn_speakers AS turns ON turns.rowid = (
+                    SELECT latest.rowid FROM transcript_turn_speakers AS latest
+                    WHERE latest.session_id = selections.session_id
+                      AND latest.revision_id = segments.revision_id
+                      AND latest.sequence = segments.sequence
+                    ORDER BY latest.rowid DESC LIMIT 1)
+                 WHERE selections.session_id = ?1
+                   AND revisions.finality = 'final'
+                   AND turns.speaker_id = ?2
+                 ORDER BY segments.revision_id, segments.sequence",
+            )?;
+            statement
+                .query_map(params![session.0, absorb_id], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, u32>(1)?))
+                })?
+                .collect::<Result<Vec<_>, _>>()?
+        };
+        for (revision_id, sequence) in &turns {
+            tx.execute(
+                "INSERT INTO transcript_turn_speakers(
+                    id, session_id, revision_id, sequence, speaker_id, created_at_ms)
+                 VALUES(?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    Uuid::now_v7().to_string(),
+                    session.0,
+                    revision_id,
+                    sequence,
+                    keep_id,
+                    wall_time_milliseconds()
+                ],
+            )?;
+        }
+        tx.commit()?;
+        u32::try_from(turns.len()).map_err(|_| StoreError::InvalidRequest("too many passages"))
+    }
+
+    /// Gives a strict subset of one person's selected turns to a new person.
+    /// At least one selected turn stays. Prior assignment rows stay in place.
+    pub fn split_named_speaker(
+        &mut self,
+        session: &SessionId,
+        speaker_id: &str,
+        turns: &[NamedSpeakerTurn],
+        label: &str,
+    ) -> Result<String, StoreError> {
+        if turns.is_empty() {
+            return Err(StoreError::InvalidRequest(
+                "a split needs at least one passage",
+            ));
+        }
+        let label = checked_name(label)?;
+        let mut seen = BTreeSet::new();
+        for turn in turns {
+            if !seen.insert((turn.revision_id.clone(), turn.sequence)) {
+                return Err(StoreError::InvalidRequest(
+                    "a split lists the same passage twice",
+                ));
+            }
+        }
+        let _writer = self.write_guard()?;
+        let tx = self.connection.transaction()?;
+        require_reviewable_session(&tx, &session.0)?;
+        let owned: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM transcript_named_speakers
+             WHERE id = ?1 AND session_id = ?2)",
+            params![speaker_id, session.0],
+            |row| row.get(0),
+        )?;
+        if !owned {
+            return Err(StoreError::InvalidRequest(
+                "speaker not found in this conversation",
+            ));
+        }
+        for turn in turns {
+            let belongs: bool = tx.query_row(
+                "SELECT EXISTS(
+                    SELECT 1
+                    FROM transcript_selections AS selections
+                    JOIN transcript_revisions AS revisions
+                      ON revisions.id = selections.revision_id
+                    JOIN transcript_segments AS segments
+                      ON segments.revision_id = selections.revision_id
+                     AND segments.revision_id = ?2
+                     AND segments.sequence = ?3
+                    JOIN transcript_turn_speakers AS turns ON turns.rowid = (
+                        SELECT latest.rowid FROM transcript_turn_speakers AS latest
+                        WHERE latest.session_id = selections.session_id
+                          AND latest.revision_id = segments.revision_id
+                          AND latest.sequence = segments.sequence
+                        ORDER BY latest.rowid DESC LIMIT 1)
+                    WHERE selections.session_id = ?1
+                      AND revisions.finality = 'final'
+                      AND turns.speaker_id = ?4)",
+                params![session.0, turn.revision_id, turn.sequence, speaker_id],
+                |row| row.get(0),
+            )?;
+            if !belongs {
+                return Err(StoreError::InvalidRequest(
+                    "the passage is not a selected turn of this person",
+                ));
+            }
+        }
+        let selected_turns: i64 = tx.query_row(
+            "SELECT COUNT(*)
+             FROM transcript_selections AS selections
+             JOIN transcript_revisions AS revisions ON revisions.id = selections.revision_id
+             JOIN transcript_segments AS segments
+               ON segments.revision_id = selections.revision_id
+             JOIN transcript_turn_speakers AS turns ON turns.rowid = (
+                SELECT latest.rowid FROM transcript_turn_speakers AS latest
+                WHERE latest.session_id = selections.session_id
+                  AND latest.revision_id = segments.revision_id
+                  AND latest.sequence = segments.sequence
+                ORDER BY latest.rowid DESC LIMIT 1)
+             WHERE selections.session_id = ?1
+               AND revisions.finality = 'final'
+               AND turns.speaker_id = ?2",
+            params![session.0, speaker_id],
+            |row| row.get(0),
+        )?;
+        if i64::try_from(turns.len()).unwrap_or(i64::MAX) >= selected_turns {
+            return Err(StoreError::InvalidRequest(
+                "a split must leave one passage with this person",
+            ));
+        }
+        let id = Uuid::now_v7().to_string();
+        let now = wall_time_milliseconds();
+        tx.execute(
+            "INSERT INTO transcript_named_speakers(id, session_id, created_at_ms)
+             VALUES(?1, ?2, ?3)",
+            params![id, session.0, now],
+        )?;
+        tx.execute(
+            "INSERT INTO transcript_speaker_names(
+                id, speaker_id, label, search_label, created_at_ms)
+             VALUES(?1, ?2, ?3, ?4, ?5)",
+            params![
+                Uuid::now_v7().to_string(),
+                id,
+                label,
+                label.to_lowercase(),
+                now
+            ],
+        )?;
+        for turn in turns {
+            tx.execute(
+                "INSERT INTO transcript_turn_speakers(
+                    id, session_id, revision_id, sequence, speaker_id, created_at_ms)
+                 VALUES(?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    Uuid::now_v7().to_string(),
+                    session.0,
+                    turn.revision_id,
+                    turn.sequence,
+                    id,
+                    wall_time_milliseconds()
+                ],
+            )?;
+        }
+        tx.commit()?;
+        Ok(id)
+    }
+
+    /// Selected final passages, oldest assignment first. `source_default_label`
+    /// comes from the source kind even when nobody has named the passage.
+    /// A stored null speaker is one revision of that source name. A name is
+    /// the one in effect at the assignment, so a later rename does not
+    /// rewrite the line. A passage with no stored assignment has an empty
+    /// `revisions` list.
+    pub fn named_speaker_turn_history(
+        &self,
+        session: &SessionId,
+    ) -> Result<Vec<NamedSpeakerTurnHistory>, StoreError> {
+        let mut statement = self.connection.prepare(
+            "SELECT segments.revision_id, segments.sequence, revisions.track_id, sources.kind,
+                    turns.speaker_id, turns.created_at_ms, names.label
+             FROM transcript_selections AS selections
+             JOIN transcript_revisions AS revisions ON revisions.id = selections.revision_id
+             JOIN transcript_segments AS segments
+               ON segments.revision_id = selections.revision_id
+             JOIN tracks ON tracks.id = revisions.track_id
+             JOIN sources ON sources.id = tracks.source_id
+             LEFT JOIN transcript_turn_speakers AS turns
+               ON turns.session_id = selections.session_id
+              AND turns.revision_id = segments.revision_id
+              AND turns.sequence = segments.sequence
+             LEFT JOIN transcript_speaker_names AS names ON names.rowid = (
+                SELECT candidate.rowid FROM transcript_speaker_names AS candidate
+                WHERE candidate.speaker_id = turns.speaker_id
+                  AND candidate.created_at_ms <= turns.created_at_ms
+                ORDER BY candidate.created_at_ms DESC, candidate.rowid DESC
+                LIMIT 1)
+             WHERE selections.session_id = ?1 AND revisions.finality = 'final'
+             ORDER BY segments.start_ns, revisions.track_id, segments.sequence,
+                      turns.created_at_ms, turns.rowid",
+        )?;
+        let rows = statement
+            .query_map([&session.0], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, u32>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                    row.get::<_, Option<i64>>(5)?,
+                    row.get::<_, Option<String>>(6)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut histories: Vec<NamedSpeakerTurnHistory> = Vec::new();
+        for (revision_id, sequence, track_id, source_kind, speaker_id, created_at_ms, label) in rows
+        {
+            let same_turn = histories.last().is_some_and(|history| {
+                history.revision_id == revision_id && history.sequence == sequence
+            });
+            if !same_turn {
+                histories.push(NamedSpeakerTurnHistory {
+                    revision_id,
+                    sequence,
+                    track_id,
+                    source_default_label: default_speaker_label(&source_kind).to_owned(),
+                    revisions: Vec::new(),
+                });
+            }
+            let Some(created_at_ms) = created_at_ms else {
+                continue;
+            };
+            let Some(history) = histories.last_mut() else {
+                continue;
+            };
+            let revision = match speaker_id {
+                Some(speaker_id) => NamedSpeakerTurnRevision {
+                    label: label.ok_or(StoreError::IntegrityMismatch(
+                        "named speaker assignment has no name at that time",
+                    ))?,
+                    origin: super::SpeakerLabelOrigin::Human,
+                    speaker_id: Some(speaker_id),
+                    created_at_ms,
+                },
+                None => NamedSpeakerTurnRevision {
+                    label: history.source_default_label.clone(),
+                    origin: super::SpeakerLabelOrigin::SourceDefault,
+                    speaker_id: None,
+                    created_at_ms,
+                },
+            };
+            history.revisions.push(revision);
+        }
+        Ok(histories)
     }
 }
 

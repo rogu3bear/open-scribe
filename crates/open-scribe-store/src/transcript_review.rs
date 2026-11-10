@@ -598,7 +598,7 @@ pub(super) fn require_reviewable_session(
     }
 }
 
-pub(super) fn default_speaker_label(source_kind: &str) -> &'static str {
+pub(crate) fn default_speaker_label(source_kind: &str) -> &'static str {
     match source_kind {
         "microphone" => "Local user",
         "application_audio" => "Remote participants",

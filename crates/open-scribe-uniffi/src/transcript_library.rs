@@ -4,8 +4,8 @@
 
 use super::*;
 use open_scribe_core::{
-    SpeakerLabelOrigin, TranscriptAvailability, TranscriptExportError, TranscriptExportFormat,
-    TranscriptLibrary,
+    NamedSpeakerTurn, SpeakerLabelOrigin, TranscriptAvailability, TranscriptExportError,
+    TranscriptExportFormat, TranscriptLibrary,
 };
 use open_scribe_types::SessionId;
 use std::path::Path;
@@ -109,6 +109,33 @@ pub struct NativeSpeakerLabelHistory {
     pub source_kind: String,
     pub source_default_label: String,
     pub revisions: Vec<NativeSpeakerLabelRevision>,
+}
+
+/// One selected passage a person can merge or split.
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct NativeNamedSpeakerTurn {
+    pub revision_id: String,
+    pub sequence: u32,
+}
+
+/// One stored assignment. A null speaker is the source name.
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct NativeNamedSpeakerTurnRevision {
+    pub label: String,
+    pub origin: NativeSpeakerLabelOrigin,
+    pub speaker_id: Option<String>,
+    pub created_at_ms: i64,
+}
+
+/// Source name plus every stored assignment for one selected passage,
+/// oldest first. A passage nobody has named has an empty `revisions` list.
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct NativeNamedSpeakerTurnHistory {
+    pub revision_id: String,
+    pub sequence: u32,
+    pub track_id: String,
+    pub source_default_label: String,
+    pub revisions: Vec<NativeNamedSpeakerTurnRevision>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
@@ -459,6 +486,76 @@ impl NativeTranscriptLibrary {
         self.library()?
             .rename_named_speaker(&SessionId(session_id), &speaker_id, &label)
             .map_err(map_storage_error)
+    }
+
+    /// Moves every selected passage of `absorb_id` onto `keep_id`. Both
+    /// people remain. A second identical call returns zero.
+    pub fn merge_named_speakers(
+        &self,
+        session_id: String,
+        keep_id: String,
+        absorb_id: String,
+    ) -> Result<u32, NativeStorageError> {
+        self.library()?
+            .merge_named_speakers(&SessionId(session_id), &keep_id, &absorb_id)
+            .map_err(map_storage_error)
+    }
+
+    /// Moves the named passages to a new person and leaves at least one
+    /// selected passage with the original person.
+    pub fn split_named_speaker(
+        &self,
+        session_id: String,
+        speaker_id: String,
+        turns: Vec<NativeNamedSpeakerTurn>,
+        label: String,
+    ) -> Result<String, NativeStorageError> {
+        let turns = turns
+            .into_iter()
+            .map(|turn| NamedSpeakerTurn {
+                revision_id: turn.revision_id,
+                sequence: turn.sequence,
+            })
+            .collect::<Vec<_>>();
+        self.library()?
+            .split_named_speaker(&SessionId(session_id), &speaker_id, &turns, &label)
+            .map_err(map_storage_error)
+    }
+
+    /// Oldest-first assignments for each selected passage. The source name
+    /// is always present. A later rename does not rewrite an earlier line.
+    pub fn named_speaker_turn_history(
+        &self,
+        session_id: String,
+    ) -> Result<Vec<NativeNamedSpeakerTurnHistory>, NativeStorageError> {
+        let histories = self
+            .library()?
+            .named_speaker_turn_history(&SessionId(session_id))
+            .map_err(map_storage_error)?;
+        Ok(histories
+            .into_iter()
+            .map(|history| NativeNamedSpeakerTurnHistory {
+                revision_id: history.revision_id,
+                sequence: history.sequence,
+                track_id: history.track_id,
+                source_default_label: history.source_default_label,
+                revisions: history
+                    .revisions
+                    .into_iter()
+                    .map(|revision| NativeNamedSpeakerTurnRevision {
+                        label: revision.label,
+                        origin: match revision.origin {
+                            SpeakerLabelOrigin::SourceDefault => {
+                                NativeSpeakerLabelOrigin::SourceDefault
+                            }
+                            SpeakerLabelOrigin::Human => NativeSpeakerLabelOrigin::Human,
+                        },
+                        speaker_id: revision.speaker_id,
+                        created_at_ms: revision.created_at_ms,
+                    })
+                    .collect(),
+            })
+            .collect())
     }
 
     /// Rebuilds Final transcripts from chunks earlier runs retained but could

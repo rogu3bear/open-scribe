@@ -94,7 +94,10 @@ pub use transcript_review::{
 };
 mod transcript_selection;
 mod transcript_speakers;
-pub use transcript_speakers::{NamedTranscriptSpeaker, TranscriptSpeakerAssignment};
+pub use transcript_speakers::{
+    NamedSpeakerTurn, NamedSpeakerTurnHistory, NamedSpeakerTurnRevision, NamedTranscriptSpeaker,
+    TranscriptSpeakerAssignment,
+};
 mod speaker_diarization;
 pub use speaker_diarization::{
     SpeakerDiarization, SpeakerDiarizationTrack, SpeakerDiarizationTrackInput,

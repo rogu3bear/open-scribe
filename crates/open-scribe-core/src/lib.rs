@@ -107,7 +107,8 @@ pub use open_scribe_store::{
     SourceFailureRequest, StoreError, TimelineSegment, ValidatedMixdown, import_policy,
 };
 pub use open_scribe_store::{
-    LiveDraftWindow, NamedTranscriptSpeaker, SelectedRevisionProvenance, SessionDeletionInventory,
+    LiveDraftWindow, NamedSpeakerTurn, NamedSpeakerTurnHistory, NamedSpeakerTurnRevision,
+    NamedTranscriptSpeaker, SelectedRevisionProvenance, SessionDeletionInventory,
     SessionDeletionReceipt, SessionSpeaker, SpeakerDiarization, SpeakerDiarizationTrack,
     SpeakerDiarizationTrackInput, SpeakerLabelHistory, SpeakerLabelOrigin, SpeakerLabelRevision,
     TranscriptDocumentSegment, TranscriptExportContext, TranscriptProvenance,

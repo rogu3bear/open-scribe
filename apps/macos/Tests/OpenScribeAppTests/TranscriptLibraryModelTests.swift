@@ -147,6 +147,45 @@ final class TranscriptLibraryModelTests: XCTestCase {
     XCTAssertTrue(model.searchResults.isEmpty)
   }
 
+  func testMergeAndSplitCallTheLibraryAndKeepAssignmentHistoryWords() async {
+    let library = TranscriptTimingLibraryFake()
+    let model = TranscriptLibraryModel(library: library)
+    await model.load(session: session("valid", calibrated: false, sources: []))
+    let merged = await model.mergeNamedSpeakers(
+      sessionId: "valid", keepId: "dana", absorbId: "morgan")
+    XCTAssertTrue(merged)
+    XCTAssertEqual(library.mergedKeep, "dana")
+    XCTAssertEqual(library.mergedAbsorb, "morgan")
+    guard let segment = model.segments.first else {
+      XCTFail("The loaded transcript has no passage")
+      return
+    }
+    let split = await model.splitNamedSpeaker(
+      sessionId: "valid", speakerId: "dana", segment: segment, label: "Mina")
+    XCTAssertTrue(split)
+    XCTAssertEqual(library.splitSpeakerId, "dana")
+    XCTAssertEqual(library.splitSequence, 0)
+    XCTAssertEqual(library.splitLabel, "Mina")
+    let history = NativeNamedSpeakerTurnHistory(
+      revisionId: "fixture", sequence: 1, trackId: "track", sourceDefaultLabel: "Unknown speaker",
+      revisions: [
+        NativeNamedSpeakerTurnRevision(
+          label: "Morgan", origin: .human, speakerId: "morgan", createdAtMs: 1),
+        NativeNamedSpeakerTurnRevision(
+          label: "Dana", origin: .human, speakerId: "dana", createdAtMs: 2),
+        NativeNamedSpeakerTurnRevision(
+          label: "Unknown speaker", origin: .sourceDefault, speakerId: nil, createdAtMs: 3),
+      ])
+    XCTAssertEqual(
+      TranscriptLibraryModel.namedSpeakerTurnHistoryText(for: history),
+      """
+      Source default: Unknown speaker
+      Morgan, named by you
+      Dana, named by you
+      Unknown speaker, source name
+      """)
+  }
+
   func testSpeakerCompletionRefreshesTheLatestQueryWithoutChangingANewerDocument() async {
     let checkpoint = MetadataCheckpoint()
     defer { checkpoint.release.signal() }
@@ -1168,6 +1207,19 @@ private final class TranscriptTimingLibraryFake: NativeTranscriptLibrary, @unche
     []
   }
 
+  override func namedSpeakerTurnHistory(sessionId: String) throws -> [NativeNamedSpeakerTurnHistory]
+  {
+    []
+  }
+
+  var mergedKeep: String? { lock.withLock { storedMerge?.0 } }
+  var mergedAbsorb: String? { lock.withLock { storedMerge?.1 } }
+  var splitSpeakerId: String? { lock.withLock { storedSplit?.0 } }
+  var splitSequence: UInt32? { lock.withLock { storedSplit?.1 } }
+  var splitLabel: String? { lock.withLock { storedSplit?.2 } }
+  private var storedMerge: (String, String)?
+  private var storedSplit: (String, UInt32, String)?
+
   override func prepareSpeakerDiarization(sessionId: String) throws -> NativeSpeakerDiarization {
     NativeSpeakerDiarization(
       runId: "fixture-run", algorithmId: "topology-before-clustering-v1",
@@ -1294,6 +1346,20 @@ private final class TranscriptTimingLibraryFake: NativeTranscriptLibrary, @unche
   ) throws -> String? {
     lock.withLock { reviewedName = nil }
     return nil
+  }
+
+  override func mergeNamedSpeakers(sessionId: String, keepId: String, absorbId: String) throws
+    -> UInt32
+  {
+    lock.withLock { storedMerge = (keepId, absorbId) }
+    return 1
+  }
+
+  override func splitNamedSpeaker(
+    sessionId: String, speakerId: String, turns: [NativeNamedSpeakerTurn], label: String
+  ) throws -> String {
+    lock.withLock { storedSplit = (speakerId, turns.first?.sequence ?? 999, label) }
+    return "mina"
   }
 
   override func search(query: String, sessionId: String?, limit: UInt32) throws

@@ -18,6 +18,8 @@ struct TranscriptSpeakerReview: View {
   let onClose: () -> Void
   @State private var selected: String
   @State private var name: String
+  @State private var mergeTarget = ""
+  @State private var splitName = ""
   @State private var isSaving = false
 
   init(
@@ -44,9 +46,15 @@ struct TranscriptSpeakerReview: View {
 
   private var needsName: Bool { !isPassage || selected == "new" }
   private var trimmedName: String { name.trimmingCharacters(in: .whitespacesAndNewlines) }
-  private var validName: Bool {
-    !trimmedName.isEmpty && trimmedName.utf8.count <= 128
-      && !trimmedName.unicodeScalars.contains { $0.properties.generalCategory == .control }
+  private var trimmedSplitName: String {
+    splitName.trimmingCharacters(in: .whitespacesAndNewlines)
+  }
+  private var validName: Bool { Self.acceptable(trimmedName) }
+  private var validSplitName: Bool { Self.acceptable(trimmedSplitName) }
+
+  private static func acceptable(_ label: String) -> Bool {
+    !label.isEmpty && label.utf8.count <= 128
+      && !label.unicodeScalars.contains { $0.properties.generalCategory == .control }
   }
 
   var body: some View {
@@ -61,6 +69,33 @@ struct TranscriptSpeakerReview: View {
         Text("Your choice applies to this passage. Other voices keep their own names.")
           .font(.caption)
           .foregroundStyle(.secondary)
+        if let history = transcripts.namedSpeakerTurnHistory.first(where: {
+          $0.revisionId == segment.revisionId && $0.sequence == segment.sequence
+        }) {
+          Text("Assignment history")
+            .font(.caption.weight(.semibold))
+          Text(TranscriptLibraryModel.namedSpeakerTurnHistoryText(for: history))
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .textSelection(.enabled)
+        }
+        if let speakerId = segment.namedSpeakerId,
+          let person = transcripts.namedSpeakers.first(where: { $0.id == speakerId }),
+          person.selectedTurns > 1
+        {
+          Text(
+            "Split moves only this passage to a new person. The other passages stay, and earlier names remain in the history."
+          )
+          .font(.caption)
+          .foregroundStyle(.secondary)
+          TextField("Name for the split passage", text: $splitName)
+            .textFieldStyle(.roundedBorder)
+            .accessibilityLabel("Name for the split passage")
+          Button("Split this passage") { split(segment: segment, speakerId: speakerId) }
+            .disabled(
+              isSaving || transcripts.isEditing || !validSplitName
+                || transcripts.sessionId != presentation.sessionId)
+        }
         Picker("Speaker", selection: $selected) {
           Text("Add a person…").tag("new")
           ForEach(transcripts.namedSpeakers, id: \.id) { person in
@@ -69,10 +104,29 @@ struct TranscriptSpeakerReview: View {
           Text("Use audio source label").tag("source")
         }
         .pickerStyle(.menu)
-      } else {
+      } else if case .person(let person) = presentation.subject {
         Text("This updates the name on this person's assigned passages in this conversation.")
           .font(.callout)
           .foregroundStyle(.secondary)
+        let others = transcripts.namedSpeakers.filter { $0.id != person.id }
+        if !others.isEmpty {
+          Text(
+            "Merge moves this person's selected passages onto the other person. Both names stay in the history."
+          )
+          .font(.caption)
+          .foregroundStyle(.secondary)
+          Picker("Merge into", selection: $mergeTarget) {
+            Text("Choose a person").tag("")
+            ForEach(others, id: \.id) { other in
+              Text(other.label).tag(other.id)
+            }
+          }
+          .pickerStyle(.menu)
+          Button("Merge") { merge(absorbId: person.id) }
+            .disabled(
+              isSaving || transcripts.isEditing || mergeTarget.isEmpty
+                || transcripts.sessionId != presentation.sessionId)
+        }
       }
       if needsName {
         TextField("Name", text: $name)
@@ -134,6 +188,34 @@ struct TranscriptSpeakerReview: View {
         saved = await transcripts.assignSpeaker(
           sessionId: presentation.sessionId, segment: segment, assignment: assignment)
       }
+      isSaving = false
+      if saved { onClose() }
+    }
+  }
+
+  private func merge(absorbId: String) {
+    guard !isSaving, !mergeTarget.isEmpty, transcripts.sessionId == presentation.sessionId else {
+      return
+    }
+    isSaving = true
+    let keepId = mergeTarget
+    Task {
+      let saved = await transcripts.mergeNamedSpeakers(
+        sessionId: presentation.sessionId, keepId: keepId, absorbId: absorbId)
+      isSaving = false
+      if saved { onClose() }
+    }
+  }
+
+  private func split(segment: NativeTranscriptSegment, speakerId: String) {
+    guard !isSaving, validSplitName, transcripts.sessionId == presentation.sessionId else {
+      return
+    }
+    isSaving = true
+    let label = trimmedSplitName
+    Task {
+      let saved = await transcripts.splitNamedSpeaker(
+        sessionId: presentation.sessionId, speakerId: speakerId, segment: segment, label: label)
       isSaving = false
       if saved { onClose() }
     }

@@ -1,4 +1,5 @@
 use super::*;
+use crate::SpeakerLabelOrigin;
 use crate::transcripts::tests::{Fixture, complete_all, identity, imported_fixture, plan};
 
 fn conversation() -> (Fixture, String) {
@@ -401,4 +402,251 @@ fn confirmed_deletion_removes_named_people_and_their_name_history() {
         )
         .unwrap();
     assert_eq!(tombstone, "deleted");
+}
+
+fn advance_clock() {
+    let start = crate::wall_time_milliseconds();
+    while crate::wall_time_milliseconds() == start {
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+}
+
+fn turn_labels(history: &[NamedSpeakerTurnHistory], sequence: u32) -> (String, Vec<String>) {
+    let turn = history
+        .iter()
+        .find(|turn| turn.sequence == sequence)
+        .unwrap();
+    (
+        turn.source_default_label.clone(),
+        turn.revisions
+            .iter()
+            .map(|revision| revision.label.clone())
+            .collect(),
+    )
+}
+
+#[test]
+fn merge_and_split_keep_each_named_assignment_and_the_source_default() {
+    let (mut fixture, revision) = conversation();
+    let audio = std::fs::read(&fixture.media).unwrap();
+    let verbatim = fixture
+        .store
+        .transcript_revision_segments(&revision)
+        .unwrap();
+    let unnamed = fixture
+        .store
+        .named_speaker_turn_history(&fixture.session)
+        .unwrap();
+    assert_eq!(unnamed.len(), 2);
+    assert!(unnamed.iter().all(|turn| {
+        turn.revisions.is_empty() && turn.source_default_label == "Unknown speaker"
+    }));
+    let dana = named(&mut fixture, &revision, 0, "Dana");
+    let morgan = named(&mut fixture, &revision, 1, "Morgan");
+    assert_eq!(
+        fixture
+            .store
+            .merge_named_speakers(&fixture.session, &dana, &dana)
+            .unwrap_err()
+            .to_string(),
+        "invalid request: a speaker cannot merge into themself"
+    );
+    assert_eq!(
+        fixture
+            .store
+            .merge_named_speakers(&fixture.session, &dana, &morgan)
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        fixture
+            .store
+            .merge_named_speakers(&fixture.session, &dana, &morgan)
+            .unwrap(),
+        0
+    );
+    let merged = fixture.store.transcript_document(&fixture.session).unwrap();
+    assert!(merged.iter().all(|segment| segment.speaker_label == "Dana"));
+    assert_eq!(merged[1].named_speaker_id.as_deref(), Some(dana.as_str()));
+    let people = fixture
+        .store
+        .named_transcript_speakers(&fixture.session)
+        .unwrap();
+    assert_eq!(
+        people
+            .iter()
+            .map(|person| (person.label.as_str(), person.selected_turns))
+            .collect::<Vec<_>>(),
+        [("Dana", 2), ("Morgan", 0)]
+    );
+    let history = fixture
+        .store
+        .named_speaker_turn_history(&fixture.session)
+        .unwrap();
+    assert_eq!(
+        turn_labels(&history, 1),
+        (
+            "Unknown speaker".into(),
+            vec!["Morgan".into(), "Dana".into()]
+        )
+    );
+    assert_eq!(
+        history
+            .iter()
+            .find(|turn| turn.sequence == 1)
+            .unwrap()
+            .revisions
+            .iter()
+            .map(|revision| revision.origin)
+            .collect::<Vec<_>>(),
+        [SpeakerLabelOrigin::Human, SpeakerLabelOrigin::Human]
+    );
+    advance_clock();
+    fixture
+        .store
+        .rename_transcript_speaker(&fixture.session, &dana, "D. Morgan")
+        .unwrap();
+    let renamed = fixture
+        .store
+        .named_speaker_turn_history(&fixture.session)
+        .unwrap();
+    assert_eq!(
+        turn_labels(&renamed, 1),
+        (
+            "Unknown speaker".into(),
+            vec!["Morgan".into(), "Dana".into()]
+        )
+    );
+    assert_eq!(
+        fixture.store.transcript_document(&fixture.session).unwrap()[1].speaker_label,
+        "D. Morgan"
+    );
+    assert_eq!(
+        fixture
+            .store
+            .split_named_speaker(&fixture.session, &dana, &[], "Mina")
+            .unwrap_err()
+            .to_string(),
+        "invalid request: a split needs at least one passage"
+    );
+    let both = [
+        NamedSpeakerTurn {
+            revision_id: revision.clone(),
+            sequence: 0,
+        },
+        NamedSpeakerTurn {
+            revision_id: revision.clone(),
+            sequence: 1,
+        },
+    ];
+    assert_eq!(
+        fixture
+            .store
+            .split_named_speaker(&fixture.session, &dana, &both, "Mina")
+            .unwrap_err()
+            .to_string(),
+        "invalid request: a split must leave one passage with this person"
+    );
+    let mina = fixture
+        .store
+        .split_named_speaker(
+            &fixture.session,
+            &dana,
+            &[NamedSpeakerTurn {
+                revision_id: revision.clone(),
+                sequence: 1,
+            }],
+            "Mina",
+        )
+        .unwrap();
+    assert_ne!(mina, dana);
+    let split = fixture.store.transcript_document(&fixture.session).unwrap();
+    assert_eq!(split[0].speaker_label, "D. Morgan");
+    assert_eq!(split[0].named_speaker_id.as_deref(), Some(dana.as_str()));
+    assert_eq!(split[1].speaker_label, "Mina");
+    assert_eq!(split[1].named_speaker_id.as_deref(), Some(mina.as_str()));
+    assert_eq!(split[0].verbatim_text, "First voice");
+    assert_eq!(split[1].verbatim_text, "Second voice");
+    let after = fixture
+        .store
+        .named_speaker_turn_history(&fixture.session)
+        .unwrap();
+    assert_eq!(
+        turn_labels(&after, 1),
+        (
+            "Unknown speaker".into(),
+            vec!["Morgan".into(), "Dana".into(), "Mina".into()]
+        )
+    );
+    let counts = fixture
+        .store
+        .named_transcript_speakers(&fixture.session)
+        .unwrap();
+    assert_eq!(
+        counts
+            .iter()
+            .map(|person| (person.id.as_str(), person.selected_turns))
+            .collect::<Vec<_>>(),
+        [(dana.as_str(), 1), (mina.as_str(), 1), (morgan.as_str(), 0)]
+    );
+    assert_eq!(
+        fixture
+            .store
+            .split_named_speaker(
+                &fixture.session,
+                &dana,
+                &[NamedSpeakerTurn {
+                    revision_id: revision.clone(),
+                    sequence: 0,
+                }],
+                "Noah",
+            )
+            .unwrap_err()
+            .to_string(),
+        "invalid request: a split must leave one passage with this person"
+    );
+    fixture
+        .store
+        .assign_transcript_speaker(
+            &fixture.session,
+            &revision,
+            0,
+            &TranscriptSpeakerAssignment::Source,
+        )
+        .unwrap();
+    let restored = fixture
+        .store
+        .named_speaker_turn_history(&fixture.session)
+        .unwrap();
+    let first = restored.iter().find(|turn| turn.sequence == 0).unwrap();
+    assert_eq!(first.revisions.last().unwrap().label, "Unknown speaker");
+    assert_eq!(
+        first.revisions.last().unwrap().origin,
+        SpeakerLabelOrigin::SourceDefault
+    );
+    assert!(
+        first
+            .revisions
+            .iter()
+            .any(|revision| revision.label == "Dana")
+    );
+    assert_eq!(
+        fixture.store.session_speakers(&fixture.session).unwrap()[0].label,
+        "Unknown speaker"
+    );
+    assert_eq!(
+        fixture
+            .store
+            .transcript_revision_segments(&revision)
+            .unwrap(),
+        verbatim
+    );
+    assert_eq!(std::fs::read(&fixture.media).unwrap(), audio);
+    assert!(
+        fixture
+            .store
+            .connection
+            .execute("UPDATE transcript_turn_speakers SET id = 'rewritten'", [])
+            .is_err()
+    );
 }

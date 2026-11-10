@@ -19,10 +19,11 @@ use open_scribe_diarize::disposition_for_source_kind;
 use open_scribe_evidence::{AdjudicationAction, DerivedClaim, EvidenceRef};
 use open_scribe_store::{
     ClaimNavigation, ContextDetail, ContextEventRecord, ConversationReviewMetadata,
-    NamedTranscriptSpeaker, ResolvedEvidence, SessionDeletionInventory, SessionDeletionReceipt,
-    SessionSpeaker, SessionStore, SpeakerDiarization, SpeakerDiarizationTrackInput,
-    SpeakerLabelHistory, StoreError, TranscriptDocumentSegment, TranscriptProvenance,
-    TranscriptSearchHit, TranscriptSpeakerAssignment,
+    NamedSpeakerTurn, NamedSpeakerTurnHistory, NamedTranscriptSpeaker, ResolvedEvidence,
+    SessionDeletionInventory, SessionDeletionReceipt, SessionSpeaker, SessionStore,
+    SpeakerDiarization, SpeakerDiarizationTrackInput, SpeakerLabelHistory, StoreError,
+    TranscriptDocumentSegment, TranscriptProvenance, TranscriptSearchHit,
+    TranscriptSpeakerAssignment,
 };
 use open_scribe_types::SessionId;
 use std::path::Path;
@@ -154,6 +155,37 @@ impl TranscriptLibrary {
     ) -> Result<(), StoreError> {
         self.store
             .rename_transcript_speaker(session, speaker_id, label)
+    }
+
+    /// Moves the absorbed person's selected turns onto the kept person.
+    /// Both identities remain. A repeated call returns zero.
+    pub fn merge_named_speakers(
+        &mut self,
+        session: &SessionId,
+        keep_id: &str,
+        absorb_id: &str,
+    ) -> Result<u32, StoreError> {
+        self.store.merge_named_speakers(session, keep_id, absorb_id)
+    }
+
+    /// Moves a strict subset of one person's selected turns to a new person.
+    pub fn split_named_speaker(
+        &mut self,
+        session: &SessionId,
+        speaker_id: &str,
+        turns: &[NamedSpeakerTurn],
+        label: &str,
+    ) -> Result<String, StoreError> {
+        self.store
+            .split_named_speaker(session, speaker_id, turns, label)
+    }
+
+    /// Oldest-first assignments for each selected passage, plus the source name.
+    pub fn named_speaker_turn_history(
+        &self,
+        session: &SessionId,
+    ) -> Result<Vec<NamedSpeakerTurnHistory>, StoreError> {
+        self.store.named_speaker_turn_history(session)
     }
 
     /// The scope receipts, declared metadata, and accepted-event count, read-only.

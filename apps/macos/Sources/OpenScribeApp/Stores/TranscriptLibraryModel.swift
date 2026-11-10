@@ -16,6 +16,8 @@ final class TranscriptLibraryModel: ObservableObject {
   /// Source-derived name plus every stored rename, oldest first.
   @Published private(set) var speakerLabelHistory: [NativeSpeakerLabelHistory] = []
   @Published private(set) var namedSpeakers: [NativeNamedTranscriptSpeaker] = []
+  /// Source name plus every stored assignment for each selected passage.
+  @Published private(set) var namedSpeakerTurnHistory: [NativeNamedSpeakerTurnHistory] = []
   @Published private(set) var reviewMetadata: NativeConversationReviewMetadata?
   @Published private(set) var searchResults: [NativeTranscriptSearchHit] = []
   @Published private(set) var pendingDeletion: NativeSessionDeletionInventory?
@@ -217,6 +219,7 @@ final class TranscriptLibraryModel: ObservableObject {
       speakers = snapshot.speakers
       speakerLabelHistory = snapshot.speakerLabelHistory
       namedSpeakers = snapshot.namedSpeakers
+      namedSpeakerTurnHistory = snapshot.namedSpeakerTurnHistory
       speakerDiarizationText = snapshot.speakerDiarizationText
       provenance = snapshot.provenance
       provenanceText = Self.provenanceText(for: snapshot.provenance)
@@ -285,6 +288,29 @@ final class TranscriptLibraryModel: ObservableObject {
   func renameNamedSpeaker(sessionId: String, speakerId: String, label: String) async -> Bool {
     await performSpeakerReview(sessionId: sessionId, action: "rename this person") { library in
       try library.renameNamedSpeaker(sessionId: sessionId, speakerId: speakerId, label: label)
+    }
+  }
+
+  /// Moves the absorbed person's selected passages onto the kept person.
+  /// Both people remain, and earlier assignments stay in the history.
+  func mergeNamedSpeakers(sessionId: String, keepId: String, absorbId: String) async -> Bool {
+    await performSpeakerReview(sessionId: sessionId, action: "merge these people") { library in
+      _ = try library.mergeNamedSpeakers(
+        sessionId: sessionId, keepId: keepId, absorbId: absorbId)
+    }
+  }
+
+  /// Gives this one passage to a new person. The caller leaves the other
+  /// selected passages with the original person.
+  func splitNamedSpeaker(
+    sessionId: String, speakerId: String, segment: NativeTranscriptSegment, label: String
+  ) async -> Bool {
+    await performSpeakerReview(sessionId: sessionId, action: "split this passage") { library in
+      _ = try library.splitNamedSpeaker(
+        sessionId: sessionId, speakerId: speakerId,
+        turns: [
+          NativeNamedSpeakerTurn(revisionId: segment.revisionId, sequence: segment.sequence)
+        ], label: label)
     }
   }
 
@@ -740,6 +766,7 @@ final class TranscriptLibraryModel: ObservableObject {
     speakers = []
     speakerLabelHistory = []
     namedSpeakers = []
+    namedSpeakerTurnHistory = []
     speakerDiarizationText = nil
     provenance = []
     provenanceText = nil
@@ -772,6 +799,23 @@ final class TranscriptLibraryModel: ObservableObject {
   /// Each stored rename follows, oldest first, and says whether a person
   /// chose it or the source name was restored.
   nonisolated static func speakerLabelHistoryText(for history: NativeSpeakerLabelHistory) -> String
+  {
+    var lines = ["Source default: \(history.sourceDefaultLabel)"]
+    for revision in history.revisions {
+      let origin =
+        switch revision.origin {
+        case .sourceDefault: "source name"
+        case .human: "named by you"
+        }
+      lines.append("\(revision.label), \(origin)")
+    }
+    return lines.joined(separator: "\n")
+  }
+
+  /// Words for one passage. The source default stays on its own line.
+  /// Each stored assignment follows, oldest first.
+  nonisolated static func namedSpeakerTurnHistoryText(for history: NativeNamedSpeakerTurnHistory)
+    -> String
   {
     var lines = ["Source default: \(history.sourceDefaultLabel)"]
     for revision in history.revisions {
@@ -853,6 +897,7 @@ private struct TranscriptDocumentSnapshot: Sendable {
   let speakers: [NativeSessionSpeaker]
   let speakerLabelHistory: [NativeSpeakerLabelHistory]
   let namedSpeakers: [NativeNamedTranscriptSpeaker]
+  let namedSpeakerTurnHistory: [NativeNamedSpeakerTurnHistory]
   let metadata: NativeConversationReviewMetadata?
   let audioOptions: NativeAudioExportOptions?
   let context: NativeContextDetail?
@@ -876,6 +921,10 @@ private struct TranscriptDocumentSnapshot: Sendable {
       isUntimed
       ? (try? library.namedSpeakers(sessionId: sessionId)) ?? []
       : try library.namedSpeakers(sessionId: sessionId)
+    namedSpeakerTurnHistory =
+      isUntimed
+      ? (try? library.namedSpeakerTurnHistory(sessionId: sessionId)) ?? []
+      : try library.namedSpeakerTurnHistory(sessionId: sessionId)
     metadata =
       isUntimed
       ? try? library.reviewMetadata(sessionId: sessionId)
