@@ -34,6 +34,13 @@ struct PreparedTranscript {
     media: PathBuf,
 }
 
+struct BuiltTranscript {
+    session: SessionId,
+    revision: String,
+    digest_sha256: String,
+    media: PathBuf,
+}
+
 fn write_caf(path: &Path, frames: u64) {
     let mut file = File::create(path).unwrap();
     file.write_all(b"caff\0\x01\0\0").unwrap();
@@ -84,10 +91,22 @@ fn segment(chunk: &TranscriptChunk, offset: i64, text: &str) -> RevisionSegmentI
 /// The store is dropped before the library opens the same root.
 fn prepared_transcript() -> PreparedTranscript {
     let temp = TempDir::new().unwrap();
-    let source = temp.path().join("source.caf");
-    write_caf(&source, 144_000);
     let root = temp.path().join("Open Scribe");
-    let mut store = SessionStore::open(&root).unwrap();
+    let built = build_prepared_transcript(temp.path(), &root);
+    PreparedTranscript {
+        _temp: temp,
+        root,
+        session: built.session,
+        revision: built.revision,
+        digest_sha256: built.digest_sha256,
+        media: built.media,
+    }
+}
+
+fn build_prepared_transcript(scratch: &Path, root: &Path) -> BuiltTranscript {
+    let source = scratch.join("source.caf");
+    write_caf(&source, 144_000);
+    let mut store = SessionStore::open(root).unwrap();
     let evidence = store
         .import_recoverable_caf(ImportMediaRequest {
             title: "Library claim fixture".into(),
@@ -146,9 +165,7 @@ fn prepared_transcript() -> PreparedTranscript {
     let digest_sha256 = evidence.digest_sha256;
     let session = evidence.session_id;
     drop(store);
-    PreparedTranscript {
-        _temp: temp,
-        root,
+    BuiltTranscript {
         session,
         revision,
         digest_sha256,
@@ -672,4 +689,141 @@ fn stored_final_exports_a_package_the_player_can_import() {
     );
     assert_eq!(file_sha256(&prepared.media), prepared.digest_sha256);
     assert_eq!(digests_under(&destination.join("media")), packaged);
+}
+
+/// A selected final, a human correction, and a later provisional passage stay
+/// one readable document. Search still returns only the selected final text.
+/// `OPEN_SCRIBE_MIXED_TRANSCRIPT_LIBRARY` is the managed root the macOS player
+/// opens. The audio stays where the import recorded it; a later copy would
+/// break the playback lease. Portable packages omit drafts.
+#[test]
+fn a_provisional_passage_stays_beside_a_final_and_a_correction() {
+    let scratch = TempDir::new().unwrap();
+    let root = match std::env::var("OPEN_SCRIBE_MIXED_TRANSCRIPT_LIBRARY") {
+        Ok(path) if !path.is_empty() => PathBuf::from(path),
+        _ => scratch.path().join("Open Scribe"),
+    };
+    let prepared = build_prepared_transcript(scratch.path(), &root);
+    let mut library = TranscriptLibrary::open(&root).unwrap();
+    library
+        .correct_segment(
+            &prepared.session,
+            &prepared.revision,
+            1,
+            Some("bravo corrected"),
+        )
+        .unwrap();
+    drop(library);
+
+    let mut store = SessionStore::open(&root).unwrap();
+    let track = store
+        .transcription_tracks(&prepared.session)
+        .unwrap()
+        .remove(0);
+    let input = store
+        .transcription_input(&prepared.session, &track)
+        .unwrap();
+    let identity = TranscriptionRunIdentity {
+        session_id: prepared.session.clone(),
+        track_id: track,
+        input_digest: input.input_digest,
+        engine: "fixture-engine".into(),
+        engine_version: "1".into(),
+        model_id: "fixture-model".into(),
+        model_sha256: "a".repeat(64),
+        options_digest: "options-draft".into(),
+        reconciliation_version: "overlap-midpoint-v1".into(),
+    };
+    let draft_start = 2_650_000_000;
+    let draft_end = 2_850_000_000;
+    let run = store
+        .begin_transcription_run(
+            &identity,
+            &[PlannedTranscriptChunk {
+                span_index: 0,
+                start_nanoseconds: 2_600_000_000,
+                end_nanoseconds: 2_900_000_000,
+            }],
+        )
+        .unwrap();
+    store
+        .complete_transcript_chunk(&run.run_id, 0, "en", &hypothesis("provisional cedar"))
+        .unwrap();
+    let draft_revision = store
+        .commit_draft_transcript_revision(
+            &run.run_id,
+            &[RevisionSegmentInput {
+                start_nanoseconds: draft_start,
+                end_nanoseconds: draft_end,
+                text: "provisional cedar".into(),
+                mean_probability: Some(0.8),
+                no_speech_probability: None,
+                chunk_identity: run.chunks[0].identity.clone(),
+            }],
+            "{}",
+            "[]",
+        )
+        .unwrap();
+    assert!(
+        store
+            .select_transcript_revision(&prepared.session, &identity.track_id, &draft_revision)
+            .is_err()
+    );
+    drop(store);
+
+    let library = TranscriptLibrary::open(&root).unwrap();
+    assert!(matches!(
+        library.availability(&prepared.session).unwrap(),
+        crate::TranscriptAvailability::Draft
+    ));
+    let loaded = library.document(&prepared.session).unwrap();
+    assert_eq!(loaded.len(), 3);
+    let alpha = loaded
+        .iter()
+        .find(|segment| segment.sequence == 0 && segment.finality == "final")
+        .unwrap();
+    let bravo = loaded.iter().find(|segment| segment.sequence == 1).unwrap();
+    let cedar = loaded
+        .iter()
+        .find(|segment| segment.finality == "draft")
+        .unwrap();
+    assert!(!alpha.corrected);
+    assert_eq!(alpha.effective_text, "alpha");
+    assert_eq!(alpha.verbatim_text, "alpha");
+    assert_eq!(bravo.finality, "final");
+    assert!(bravo.corrected);
+    assert_eq!(bravo.verbatim_text, "bravo");
+    assert_eq!(bravo.effective_text, "bravo corrected");
+    assert_eq!(cedar.effective_text, "provisional cedar");
+    assert_eq!(cedar.verbatim_text, "provisional cedar");
+    assert!(!cedar.corrected);
+    assert_eq!(cedar.start_nanoseconds, draft_start);
+    assert_eq!(cedar.end_nanoseconds, draft_end);
+    assert!(bravo.start_nanoseconds > alpha.end_nanoseconds);
+    assert!(cedar.start_nanoseconds > bravo.end_nanoseconds);
+    assert!(
+        library
+            .search("provisional cedar", Some(&prepared.session), 10)
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        library
+            .search("cedar", Some(&prepared.session), 10)
+            .unwrap()
+            .is_empty()
+    );
+    let alpha_hit = library
+        .search("alpha", Some(&prepared.session), 10)
+        .unwrap();
+    assert_eq!(alpha_hit.len(), 1);
+    assert_eq!(alpha_hit[0].start_nanoseconds, alpha.start_nanoseconds);
+    assert_eq!(alpha_hit[0].effective_text, "alpha");
+    let bravo_hit = library
+        .search("bravo corrected", Some(&prepared.session), 10)
+        .unwrap();
+    assert_eq!(bravo_hit.len(), 1);
+    assert_eq!(bravo_hit[0].start_nanoseconds, bravo.start_nanoseconds);
+    assert_eq!(bravo_hit[0].end_nanoseconds, bravo.end_nanoseconds);
+    assert_eq!(file_sha256(&prepared.media), prepared.digest_sha256);
 }

@@ -788,6 +788,146 @@ final class RecoveredSessionControllerTests: RecoveredSessionTestCase {
     withExtendedLifetime(preparation) {}
   }
 
+  /// One conversation keeps a provisional passage beside a final passage and a
+  /// user correction. Search opens the final and the correction. The timestamp
+  /// control seeks the provisional interval. A hosted transcript row is not clicked.
+  func testOneConversationSeeksProvisionalFinalAndCorrectedIntervals() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "open-scribe-mixed-transcript-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let managed = root.appendingPathComponent("Library", isDirectory: true)
+    try FileManager.default.createDirectory(at: managed, withIntermediateDirectories: true)
+    let export = await exportMixedTranscriptLibrary(to: managed)
+    XCTAssertEqual(export.status, 0, String(export.log.suffix(2_000)))
+
+    let library = try NativeTranscriptLibrary.open(managedRoot: managed.path)
+    let preparation = try NativeRecordingPreparation.open(managedRoot: managed.path)
+    let native = try XCTUnwrap(
+      try preparation.runtimeLibrarySnapshot().savedSessions.first)
+    let session = RuntimeSessionPresentation(native: native)
+    XCTAssertEqual(native.title, "Library claim fixture")
+    XCTAssertFalse(session.hasCaptureTimeline)
+    XCTAssertEqual(session.playableMedia?.isPlayable, true)
+    XCTAssertEqual(try library.availability(sessionId: session.sessionId), .draft)
+
+    let model = TranscriptLibraryModel(library: library)
+    await model.load(sessionId: session.sessionId)
+    XCTAssertEqual(model.availability, .draft)
+    XCTAssertEqual(
+      model.availabilityText, "Draft — a Final transcript does not cover every range yet")
+    XCTAssertEqual(model.segments.count, 3)
+    let alpha = try XCTUnwrap(model.segments.first { $0.effectiveText == "alpha" })
+    let bravo = try XCTUnwrap(model.segments.first { $0.effectiveText == "bravo corrected" })
+    let cedar = try XCTUnwrap(model.segments.first { $0.effectiveText == "provisional cedar" })
+    XCTAssertEqual(alpha.finality, "final")
+    XCTAssertFalse(alpha.corrected)
+    XCTAssertEqual(alpha.effectiveText, alpha.verbatimText)
+    XCTAssertEqual(bravo.finality, "final")
+    XCTAssertTrue(bravo.corrected)
+    XCTAssertEqual(bravo.verbatimText, "bravo")
+    XCTAssertNotEqual(bravo.effectiveText, bravo.verbatimText)
+    XCTAssertEqual(cedar.finality, "draft")
+    XCTAssertFalse(cedar.corrected)
+    XCTAssertEqual(cedar.verbatimText, "provisional cedar")
+    XCTAssertGreaterThan(bravo.startNanoseconds, alpha.endNanoseconds)
+    XCTAssertGreaterThan(cedar.startNanoseconds, bravo.endNanoseconds)
+    let alphaSpoken = ConversationControlLabels.passageAccessibility(
+      speaker: alpha.speakerLabel, text: alpha.effectiveText, finality: alpha.finality,
+      corrected: alpha.corrected, isPlaying: false, isCited: false)
+    let bravoSpoken = ConversationControlLabels.passageAccessibility(
+      speaker: bravo.speakerLabel, text: bravo.effectiveText, finality: bravo.finality,
+      corrected: bravo.corrected, isPlaying: false, isCited: false)
+    let cedarSpoken = ConversationControlLabels.passageAccessibility(
+      speaker: cedar.speakerLabel, text: cedar.effectiveText, finality: cedar.finality,
+      corrected: cedar.corrected, isPlaying: false, isCited: false)
+    XCTAssertTrue(alphaSpoken.contains(alpha.effectiveText))
+    XCTAssertTrue(alphaSpoken.contains(" Final."))
+    XCTAssertFalse(alphaSpoken.contains("Draft"))
+    XCTAssertFalse(alphaSpoken.contains("Corrected"))
+    XCTAssertTrue(bravoSpoken.contains(bravo.effectiveText))
+    XCTAssertTrue(bravoSpoken.contains(" Corrected."))
+    XCTAssertFalse(bravoSpoken.contains("Draft"))
+    XCTAssertFalse(bravoSpoken.contains("Final"))
+    XCTAssertTrue(cedarSpoken.contains(cedar.effectiveText))
+    XCTAssertTrue(cedarSpoken.hasSuffix(" Draft."))
+    XCTAssertFalse(cedarSpoken.contains("Final"))
+    XCTAssertFalse(cedarSpoken.contains("Corrected"))
+    for passage in [alpha, bravo, cedar] {
+      let stamp = TranscriptSection.timestamp(passage.startNanoseconds)
+      XCTAssertEqual(
+        ConversationControlLabels.seekAccessibility(stamp: stamp, canSeek: true),
+        "Play from \(stamp)")
+    }
+
+    await model.search("provisional cedar")
+    XCTAssertTrue(model.searchResults.isEmpty)
+    XCTAssertNil(model.message)
+    await model.search("cedar")
+    XCTAssertTrue(model.searchResults.isEmpty)
+    await model.search("alpha")
+    XCTAssertEqual(model.searchResults.count, 1)
+    let alphaHit = try XCTUnwrap(model.searchResults.first)
+    XCTAssertEqual(alphaHit.sessionId, session.sessionId)
+    XCTAssertEqual(alphaHit.startNanoseconds, alpha.startNanoseconds)
+    XCTAssertEqual(alphaHit.endNanoseconds, alpha.endNanoseconds)
+    XCTAssertEqual(alphaHit.effectiveText, "alpha")
+    await model.search("bravo corrected")
+    XCTAssertEqual(model.searchResults.count, 1)
+    let bravoHit = try XCTUnwrap(model.searchResults.first)
+    XCTAssertEqual(bravoHit.sessionId, session.sessionId)
+    XCTAssertEqual(bravoHit.startNanoseconds, bravo.startNanoseconds)
+    XCTAssertEqual(bravoHit.endNanoseconds, bravo.endNanoseconds)
+    XCTAssertEqual(bravoHit.effectiveText, "bravo corrected")
+
+    let media = try regularFiles(under: managed.appendingPathComponent("Sessions"))
+      .filter { $0.pathExtension == "caf" }
+    XCTAssertEqual(media.count, 1)
+    let mediaDigest = try digest(of: media[0])
+    let head = try sample(
+      preparation: preparation, sessionId: session.sessionId, startNanoseconds: 0)
+    let atAlpha = try sample(
+      preparation: preparation, sessionId: session.sessionId,
+      startNanoseconds: alpha.startNanoseconds)
+    let atBravo = try sample(
+      preparation: preparation, sessionId: session.sessionId,
+      startNanoseconds: bravo.startNanoseconds)
+    let atCedar = try sample(
+      preparation: preparation, sessionId: session.sessionId,
+      startNanoseconds: cedar.startNanoseconds)
+    XCTAssertNotEqual(head, atAlpha)
+    XCTAssertNotEqual(atAlpha, atBravo)
+    XCTAssertNotEqual(atBravo, atCedar)
+    XCTAssertEqual(try digest(of: media[0]), mediaDigest)
+
+    let recorded = RecoveredAudioPlayerFake()
+    let controller = RecoveredSessionController(
+      recoveryFactory: { RecoveryPreparationFake() },
+      importedPlaybackLeaseProvider: { sessionId in
+        try preparation.leaseImportedPlayback(sessionId: sessionId)
+      },
+      player: recorded)
+    controller.playTranscriptSearchHit(alphaHit, in: session)
+    await assertEventually { controller.playingSessionId == session.sessionId }
+    XCTAssertNil(controller.errorMessage)
+    XCTAssertEqual(recorded.importedStartNanoseconds, alphaHit.startNanoseconds)
+    controller.stopPlayback()
+    controller.playTranscriptSearchHit(bravoHit, in: session)
+    await assertEventually { controller.playingSessionId == session.sessionId }
+    XCTAssertNil(controller.errorMessage)
+    XCTAssertEqual(recorded.importedStartNanoseconds, bravoHit.startNanoseconds)
+    XCTAssertGreaterThan(bravoHit.startNanoseconds, alphaHit.startNanoseconds)
+    controller.stopPlayback()
+    controller.play(session, startNanoseconds: cedar.startNanoseconds)
+    await assertEventually { controller.playingSessionId == session.sessionId }
+    XCTAssertNil(controller.errorMessage)
+    XCTAssertEqual(recorded.importedStartNanoseconds, cedar.startNanoseconds)
+    XCTAssertGreaterThan(cedar.startNanoseconds, bravoHit.endNanoseconds)
+    controller.stopPlayback()
+    XCTAssertEqual(try digest(of: media[0]), mediaDigest)
+    withExtendedLifetime((library, preparation)) {}
+  }
+
   /// Two restored conversations keep a final passage and a corrected passage.
   /// The library search the sidebar uses returns both, and each match opens
   /// at that passage's audio time.
@@ -1481,6 +1621,49 @@ final class RecoveredSessionControllerTests: RecoveredSessionTestCase {
           environment["PATH"] = "\(cargoBin):\(path)"
         }
         environment["OPEN_SCRIBE_STORED_FINAL_PACKAGE"] = packagePath
+        process.environment = environment
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = pipe
+        do {
+          try process.run()
+        } catch {
+          continuation.resume(returning: (-1, "\(error)"))
+          return
+        }
+        process.waitUntilExit()
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        continuation.resume(
+          returning: (process.terminationStatus, String(decoding: data, as: UTF8.self)))
+      }
+    }
+  }
+
+  private func exportMixedTranscriptLibrary(to managedRoot: URL) async -> (status: Int32, log: String) {
+    let libraryPath = managedRoot.path
+    let cargo = cargoExecutable()
+    let repo = repositoryRoot()
+    return await withCheckedContinuation { continuation in
+      DispatchQueue.global(qos: .userInitiated).async {
+        guard let cargo, let repo else {
+          continuation.resume(returning: (-1, "cargo or the workspace root is unavailable"))
+          return
+        }
+        let process = Process()
+        process.currentDirectoryURL = repo
+        process.executableURL = URL(fileURLWithPath: cargo)
+        process.arguments = [
+          "test", "--locked", "--offline", "-p", "open-scribe-core", "--lib",
+          "a_provisional_passage_stays_beside_a_final_and_a_correction", "--", "--exact",
+          "transcript_library_tests::a_provisional_passage_stays_beside_a_final_and_a_correction",
+        ]
+        var environment = ProcessInfo.processInfo.environment
+        let cargoBin = (cargo as NSString).deletingLastPathComponent
+        let path = environment["PATH"] ?? ""
+        if !path.split(separator: ":").contains(Substring(cargoBin)) {
+          environment["PATH"] = "\(cargoBin):\(path)"
+        }
+        environment["OPEN_SCRIBE_MIXED_TRANSCRIPT_LIBRARY"] = libraryPath
         process.environment = environment
         let pipe = Pipe()
         process.standardOutput = pipe
