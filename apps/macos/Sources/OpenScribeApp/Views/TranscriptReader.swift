@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 private enum TranscriptPersonFilter: Hashable {
@@ -204,7 +205,9 @@ struct TranscriptReader: View {
     let activeIds =
       position.flatMap { $0.sessionId == sessionId ? $0.nanoseconds : nil }
       .map { index.activeTurnIds(at: $0) } ?? []
-    return LazyVStack(alignment: .leading, spacing: ScribeSpacing.compact) {
+    // Every passage control is created with the document. A later update does
+    // not mount a control that was absent from this hosting view's first layout.
+    return VStack(alignment: .leading, spacing: ScribeSpacing.compact) {
       if segments.isEmpty {
         Text(
           query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -240,13 +243,15 @@ struct TranscriptReader: View {
       corrected: segment.corrected, isPlaying: isPlaying, isCited: isCited, query: query,
       scale: transcriptTextScale)
     return HStack(alignment: .firstTextBaseline, spacing: ScribeSpacing.compact) {
-      Button(stamp) { onSeek(segment.startNanoseconds) }
-        .buttonStyle(.link)
-        .font(.caption.monospacedDigit())
-        .frame(minWidth: 48, alignment: .leading)
-        .disabled(!canSeek)
-        .accessibilityLabel(
-          ConversationControlLabels.seekAccessibility(stamp: stamp, canSeek: canSeek))
+      PassageSeekMount(
+        stamp: stamp,
+        canSeek: canSeek,
+        startNanoseconds: segment.startNanoseconds,
+        stateWord: Self.passageStateWord(
+          finality: segment.finality, corrected: segment.corrected),
+        onSeek: onSeek
+      )
+      .frame(minWidth: 48, alignment: .leading)
       VStack(alignment: .leading, spacing: ScribeSpacing.tight) {
         HStack(spacing: ScribeSpacing.related) {
           if isDraft {
@@ -259,12 +264,6 @@ struct TranscriptReader: View {
               .accessibilityLabel(
                 ConversationControlLabels.nameSpeakerAccessibility(
                   stamp: stamp, label: segment.speakerLabel))
-          }
-          if isDraft {
-            Text("Draft")
-              .font(.caption)
-              .foregroundStyle(.secondary)
-              .accessibilityLabel(ConversationControlLabels.draftState)
           }
           if isPlaying {
             Label("Playing", systemImage: "speaker.wave.2.fill")
@@ -322,10 +321,104 @@ struct TranscriptReader: View {
     .accessibilityElement(children: .contain)
   }
 
+  static func passageStateWord(finality: String, corrected: Bool) -> String {
+    if finality == "draft" { return ConversationControlLabels.draftState }
+    if corrected { return "Corrected" }
+    if finality == "final" { return "Final" }
+    return finality
+  }
+
   private func namePassage(_ segment: NativeTranscriptSegment) {
     followsPlayback = false
     transcripts.dismissMessage()
     speakerReview = TranscriptSpeakerPresentation(sessionId: sessionId, subject: .passage(segment))
   }
 
+}
+
+/// The timestamp beside one passage. It is created with that passage so a
+/// click seeks this hosting view without waiting for a later SwiftUI pass.
+private struct PassageSeekMount: NSViewRepresentable {
+  let stamp: String
+  let canSeek: Bool
+  let startNanoseconds: Int64
+  let stateWord: String
+  let onSeek: (Int64) -> Void
+
+  func makeNSView(context: Context) -> PassageSeekControl {
+    let view = PassageSeekControl()
+    view.bind(
+      stamp: stamp, canSeek: canSeek, startNanoseconds: startNanoseconds,
+      stateWord: stateWord, onSeek: onSeek)
+    return view
+  }
+
+  func updateNSView(_ view: PassageSeekControl, context: Context) {
+    view.bind(
+      stamp: stamp, canSeek: canSeek, startNanoseconds: startNanoseconds,
+      stateWord: stateWord, onSeek: onSeek)
+  }
+}
+
+private final class PassageSeekControl: NSView {
+  private let button = NSButton(title: "", target: nil, action: nil)
+  private let stateField = NSTextField(labelWithString: "")
+  private var startNanoseconds: Int64 = 0
+  private var onSeek: (@MainActor (Int64) -> Void)?
+
+  override init(frame frameRect: NSRect) {
+    super.init(frame: frameRect)
+    button.bezelStyle = .inline
+    button.isBordered = false
+    button.font = .monospacedDigitSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular)
+    button.target = self
+    button.action = #selector(seek)
+    stateField.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+    stateField.textColor = .secondaryLabelColor
+    let row = NSStackView(views: [button, stateField])
+    row.orientation = .horizontal
+    row.alignment = .centerY
+    row.spacing = ScribeSpacing.compact
+    row.translatesAutoresizingMaskIntoConstraints = false
+    addSubview(row)
+    NSLayoutConstraint.activate([
+      row.leadingAnchor.constraint(equalTo: leadingAnchor),
+      row.trailingAnchor.constraint(equalTo: trailingAnchor),
+      row.topAnchor.constraint(equalTo: topAnchor),
+      row.bottomAnchor.constraint(equalTo: bottomAnchor),
+      button.widthAnchor.constraint(greaterThanOrEqualToConstant: 48),
+      button.heightAnchor.constraint(greaterThanOrEqualToConstant: 16),
+    ])
+  }
+
+  required init?(coder: NSCoder) {
+    nil
+  }
+
+  override var intrinsicContentSize: NSSize {
+    NSSize(width: NSView.noIntrinsicMetric, height: 18)
+  }
+
+  func bind(
+    stamp: String,
+    canSeek: Bool,
+    startNanoseconds: Int64,
+    stateWord: String,
+    onSeek: @escaping @MainActor (Int64) -> Void
+  ) {
+    self.startNanoseconds = startNanoseconds
+    self.onSeek = onSeek
+    button.title = stamp
+    button.isEnabled = canSeek
+    let seek = ConversationControlLabels.seekAccessibility(stamp: stamp, canSeek: canSeek)
+    button.setAccessibilityLabel(canSeek ? "\(seek), \(stateWord)" : seek)
+    stateField.stringValue = stateWord
+    stateField.setAccessibilityLabel(stateWord)
+  }
+
+  @objc private func seek() {
+    let start = startNanoseconds
+    let onSeek = onSeek
+    Task { @MainActor in onSeek?(start) }
+  }
 }

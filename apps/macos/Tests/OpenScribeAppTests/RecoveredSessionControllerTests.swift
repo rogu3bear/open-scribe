@@ -936,6 +936,148 @@ final class RecoveredSessionControllerTests: RecoveredSessionTestCase {
     withExtendedLifetime((library, preparation)) {}
   }
 
+  /// The hosted transcript's own timestamp buttons seek a final passage, a
+  /// corrected passage, and a draft. The test does not call `play` or
+  /// `playTranscriptSearchHit`.
+  func testHostedTranscriptTimestampsSeekFinalCorrectedAndDraftPassages() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "open-scribe-hosted-transcript-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let managed = root.appendingPathComponent("Library", isDirectory: true)
+    try FileManager.default.createDirectory(at: managed, withIntermediateDirectories: true)
+    let export = await exportMixedTranscriptLibrary(to: managed)
+    XCTAssertEqual(export.status, 0, String(export.log.suffix(2_000)))
+    let media = try regularFiles(under: managed.appendingPathComponent("Sessions"))
+      .filter { $0.pathExtension == "caf" }
+    XCTAssertEqual(media.count, 1)
+    let mediaDigest = try digest(of: media[0])
+
+    let model = TranscriptLibraryModel(managedRoot: managed)
+    let store = RuntimeLibraryStore(managedRoot: managed, refreshesImmediately: false)
+    store.refresh()
+    let listed = await waitUntil { !store.savedSessions.isEmpty }
+    XCTAssertTrue(listed, "saved=\(store.savedSessions.map(\.sessionId))")
+    let session = try XCTUnwrap(store.savedSessions.first)
+    XCTAssertEqual(session.lifecycle, "ready_for_review")
+    XCTAssertEqual(session.playableMedia?.isPlayable, true)
+    XCTAssertFalse(session.hasCaptureTimeline)
+    await model.load(sessionId: session.sessionId)
+    let alpha = try XCTUnwrap(model.segments.first { $0.effectiveText == "alpha" })
+    let bravo = try XCTUnwrap(model.segments.first { $0.effectiveText == "bravo corrected" })
+    let cedar = try XCTUnwrap(model.segments.first { $0.effectiveText == "provisional cedar" })
+    XCTAssertEqual(
+      TranscriptReader.passageStateWord(finality: alpha.finality, corrected: alpha.corrected),
+      "Final")
+    XCTAssertEqual(
+      TranscriptReader.passageStateWord(finality: bravo.finality, corrected: bravo.corrected),
+      "Corrected")
+    XCTAssertEqual(
+      TranscriptReader.passageStateWord(finality: cedar.finality, corrected: cedar.corrected),
+      "Draft")
+    let alphaStamp = TranscriptSection.timestamp(alpha.startNanoseconds)
+    let bravoStamp = TranscriptSection.timestamp(bravo.startNanoseconds)
+    let cedarStamp = TranscriptSection.timestamp(cedar.startNanoseconds)
+    let alphaLabel = "Play from \(alphaStamp), Final"
+    let bravoLabel = "Play from \(bravoStamp), Corrected"
+    let cedarLabel = "Play from \(cedarStamp), Draft"
+    XCTAssertNotEqual(alpha.startNanoseconds, bravo.startNanoseconds)
+    XCTAssertNotEqual(bravo.startNanoseconds, cedar.startNanoseconds)
+    XCTAssertNotEqual(alphaLabel, bravoLabel)
+    XCTAssertNotEqual(bravoLabel, cedarLabel)
+
+    let navigation = MainWorkspaceNavigation()
+    navigation.select(session.sessionId)
+    let player = RecoveredAudioPlayerFake()
+    let playback = RecoveredSessionController(
+      recoveryFactory: { try NativeRecordingPreparation.open(managedRoot: managed.path) },
+      importedPlaybackLeaseProvider: { id in
+        try NativeRecordingPreparation.open(managedRoot: managed.path)
+          .leaseImportedPlayback(sessionId: id)
+      },
+      player: player)
+    let live = LiveMicrophoneRecordingController(managedRoot: managed)
+    let view = ContentView(
+      store: store,
+      importedMediaAuthority: ImportedMediaAuthorityAdapter(
+        startSecurityScope: { _ in true },
+        stopSecurityScope: { _ in },
+        importer: { _, _ in throw NativeStorageError.InvalidRequest }
+      ),
+      liveRecording: live,
+      recoveredSessions: playback,
+      transcripts: model,
+      speech: SpeechTranscriptionModel(managedRoot: managed),
+      scheduler: TranscriptionScheduler.inert(),
+      pressure: SystemPressureMonitor(libraryRoot: managed, samplesAutomatically: false),
+      context: ContextScopeModel(
+        binding: { nil },
+        frames: IdleClaimContextFrames(),
+        permissionCheck: { .denied },
+        permissionRequest: { .denied },
+        topology: { [] }
+      ),
+      navigation: navigation
+    )
+    let host = NSHostingView(rootView: view)
+    host.sizingOptions = []
+    let window = NSWindow(
+      contentRect: NSRect(x: 0, y: 0, width: 1100, height: 720),
+      styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    window.contentView = host
+    window.setContentSize(NSSize(width: 1100, height: 720))
+    host.frame = window.contentLayoutRect
+    window.makeKeyAndOrderFront(nil)
+    window.orderFrontRegardless()
+    defer { window.close() }
+
+    let shown = await waitUntil(timeoutNanoseconds: 5_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      window.displayIfNeeded()
+      return self.claimButton(labeled: alphaLabel, in: host) != nil
+        && self.claimButton(labeled: bravoLabel, in: host) != nil
+        && self.claimButton(labeled: cedarLabel, in: host) != nil
+        && self.passageStateField(labeled: "Final", in: host) != nil
+        && self.passageStateField(labeled: "Corrected", in: host) != nil
+        && self.passageStateField(labeled: "Draft", in: host) != nil
+    }
+    XCTAssertTrue(
+      shown && window.contentView === host,
+      "bounds=\(host.bounds) segments=\(model.segments.count) buttons=\(self.claimButtonProbe(in: host))"
+    )
+    let alphaButton = try XCTUnwrap(self.claimButton(labeled: alphaLabel, in: host))
+    XCTAssertTrue(alphaButton.isDescendant(of: host))
+    alphaButton.performClick(nil)
+    await assertEventually {
+      player.importedStartNanoseconds == alpha.startNanoseconds
+        && playback.playingSessionId == session.sessionId
+    }
+    XCTAssertNil(playback.errorMessage)
+    playback.stopPlayback()
+
+    let bravoButton = try XCTUnwrap(self.claimButton(labeled: bravoLabel, in: host))
+    XCTAssertTrue(bravoButton.isDescendant(of: host) && window.contentView === host)
+    bravoButton.performClick(nil)
+    await assertEventually {
+      player.importedStartNanoseconds == bravo.startNanoseconds
+        && playback.playingSessionId == session.sessionId
+    }
+    playback.stopPlayback()
+
+    let cedarButton = try XCTUnwrap(self.claimButton(labeled: cedarLabel, in: host))
+    XCTAssertTrue(cedarButton.isDescendant(of: host) && window.contentView === host)
+    cedarButton.performClick(nil)
+    await assertEventually {
+      player.importedStartNanoseconds == cedar.startNanoseconds
+        && playback.playingSessionId == session.sessionId
+    }
+    XCTAssertNil(playback.errorMessage)
+    XCTAssertTrue(window.contentView === host)
+    XCTAssertEqual(try digest(of: media[0]), mediaDigest)
+    withExtendedLifetime((store, live, playback, player, window, host)) {}
+  }
+
   /// Two restored conversations keep a final passage and a corrected passage.
   /// The library search the sidebar uses returns both, and each match opens
   /// at that passage's audio time.
@@ -1431,6 +1573,26 @@ final class RecoveredSessionControllerTests: RecoveredSessionTestCase {
         button.frame.height > 1
       {
         matched = button
+      }
+      for child in view.subviews { walk(child) }
+    }
+    walk(root)
+    return matched
+  }
+
+  private func passageStateField(labeled label: String, in root: NSView) -> NSTextField? {
+    var matched: NSTextField?
+    func walk(_ view: NSView) {
+      if matched != nil { return }
+      if let field = view as? NSTextField,
+        field.accessibilityLabel() == label,
+        field.stringValue == label,
+        field.isHidden == false,
+        field.isHiddenOrHasHiddenAncestor == false,
+        field.frame.width > 1,
+        field.frame.height > 1
+      {
+        matched = field
       }
       for child in view.subviews { walk(child) }
     }
