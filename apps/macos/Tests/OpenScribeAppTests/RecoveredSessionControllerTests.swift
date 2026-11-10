@@ -1,11 +1,19 @@
 @preconcurrency import AVFoundation
+import AppKit
 import AudioToolbox
 import CryptoKit
 import Darwin
 import Foundation
+import SwiftUI
 import XCTest
 
 @testable import OpenScribeApp
+
+private struct IdleClaimContextFrames: ContextFrameCapturing {
+  func captureFrame(_ target: ContextCaptureTarget) async throws -> CGImage {
+    throw CancellationError()
+  }
+}
 
 @MainActor
 final class RecoveredSessionControllerTests: RecoveredSessionTestCase {
@@ -1240,6 +1248,226 @@ final class RecoveredSessionControllerTests: RecoveredSessionTestCase {
     XCTAssertEqual(try digest(of: libraryMedia[0]), packageDigest)
     XCTAssertEqual(try digest(of: packageMedia[0]), packageDigest)
     withExtendedLifetime((preparation, library, model)) {}
+  }
+
+  /// The hosted claim row's own buttons open evidence, return, and review the
+  /// claim. The test does not call `openClaimEvidence`, `returnToClaim`, or
+  /// `adjudicateClaim`.
+  func testHostedClaimButtonsSeekHighlightReturnAndAdjudicate() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "open-scribe-claim-buttons-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let package = root.appendingPathComponent("Stored.openscribe")
+    let export = await exportStoredFinalPackage(to: package)
+    XCTAssertEqual(export.status, 0, String(export.log.suffix(2_000)))
+    let packageMedia = try regularFiles(under: package.appendingPathComponent("media"))
+    XCTAssertEqual(packageMedia.count, 1)
+    let packageDigest = try digest(of: packageMedia[0])
+
+    let managed = root.appendingPathComponent("Library", isDirectory: true)
+    let library = try NativeTranscriptLibrary.open(managedRoot: managed.path)
+    let receipt = try library.importPortablePackage(packagePath: package.path)
+    let segments = try library.document(sessionId: receipt.sessionId)
+    let alpha = try XCTUnwrap(segments.first { $0.sequence == 0 })
+    let bravo = try XCTUnwrap(segments.first { $0.sequence == 1 })
+    let supporting = try library.citeTranscriptSegment(
+      sessionId: receipt.sessionId, revisionId: alpha.revisionId, sequence: alpha.sequence)
+    let contradicting = try library.citeTranscriptSegment(
+      sessionId: receipt.sessionId, revisionId: bravo.revisionId, sequence: bravo.sequence)
+    try library.insertDerivedClaim(
+      claimJson: citedClaimJSON(
+        sessionId: receipt.sessionId, supporting: supporting, contradicting: contradicting))
+    let model = TranscriptLibraryModel(managedRoot: managed)
+    await model.load(sessionId: receipt.sessionId)
+    let claim = try XCTUnwrap(model.derivedClaims.first { $0.claimId == "claim-decision" })
+    XCTAssertNil(claim.adjudication)
+    XCTAssertEqual(claim.supportingCount, 1)
+    XCTAssertEqual(claim.contradictingCount, 1)
+
+    let store = RuntimeLibraryStore(managedRoot: managed, refreshesImmediately: false)
+    store.refresh()
+    let listed = await waitUntil {
+      store.savedSessions.contains { $0.sessionId == receipt.sessionId }
+    }
+    XCTAssertTrue(listed, "saved=\(store.savedSessions.map(\.sessionId))")
+    let navigation = MainWorkspaceNavigation()
+    navigation.select(receipt.sessionId)
+    let player = RecoveredAudioPlayerFake()
+    let playback = RecoveredSessionController(
+      recoveryFactory: { try NativeRecordingPreparation.open(managedRoot: managed.path) },
+      importedPlaybackLeaseProvider: { id in
+        try NativeRecordingPreparation.open(managedRoot: managed.path)
+          .leaseImportedPlayback(sessionId: id)
+      },
+      player: player)
+    let live = LiveMicrophoneRecordingController(managedRoot: managed)
+    let view = ContentView(
+      store: store,
+      importedMediaAuthority: ImportedMediaAuthorityAdapter(
+        startSecurityScope: { _ in true },
+        stopSecurityScope: { _ in },
+        importer: { _, _ in throw NativeStorageError.InvalidRequest }
+      ),
+      liveRecording: live,
+      recoveredSessions: playback,
+      transcripts: model,
+      speech: SpeechTranscriptionModel(managedRoot: managed),
+      scheduler: TranscriptionScheduler.inert(),
+      pressure: SystemPressureMonitor(libraryRoot: managed, samplesAutomatically: false),
+      context: ContextScopeModel(
+        binding: { nil },
+        frames: IdleClaimContextFrames(),
+        permissionCheck: { .denied },
+        permissionRequest: { .denied },
+        topology: { [] }
+      ),
+      navigation: navigation
+    )
+    let host = NSHostingView(rootView: view)
+    host.sizingOptions = []
+    let window = NSWindow(
+      contentRect: NSRect(x: 0, y: 0, width: 1100, height: 720),
+      styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    window.contentView = host
+    window.setContentSize(NSSize(width: 1100, height: 720))
+    host.frame = window.contentLayoutRect
+    window.makeKeyAndOrderFront(nil)
+    window.orderFrontRegardless()
+    defer { window.close() }
+
+    let shown = await waitUntil(timeoutNanoseconds: 5_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      window.displayIfNeeded()
+      return self.claimButton(labeled: "Supporting evidence, 1", in: host) != nil
+    }
+    let supportButton = self.claimButton(labeled: "Supporting evidence, 1", in: host)
+    XCTAssertTrue(
+      shown && supportButton != nil && window.contentView === host,
+      "bounds=\(host.bounds) claims=\(model.derivedClaims.count) buttons=\(self.claimButtonProbe(in: host))"
+    )
+    let support = try XCTUnwrap(supportButton)
+    XCTAssertTrue(support.isDescendant(of: host))
+    XCTAssertNil(self.claimButton(labeled: "Return to claim", in: host))
+    let generation = model.claimFocusGeneration
+    support.performClick(nil)
+    await assertEventually {
+      model.claimEvidenceOpen && model.claimHighlightSegmentId == alpha.id
+        && player.importedStartNanoseconds == alpha.startNanoseconds
+        && playback.playingSessionId == receipt.sessionId
+    }
+    XCTAssertEqual(model.focusedClaim?.claimId, claim.claimId)
+    XCTAssertEqual(model.focusedClaim?.text, claim.text)
+    XCTAssertNil(playback.errorMessage)
+    let returned = await waitUntil(timeoutNanoseconds: 5_000_000_000) {
+      self.claimButton(labeled: "Return to claim", in: host) != nil
+    }
+    let returnButton = try XCTUnwrap(self.claimButton(labeled: "Return to claim", in: host))
+    XCTAssertTrue(returned && returnButton.isDescendant(of: host) && window.contentView === host)
+    returnButton.performClick(nil)
+    await assertEventually { !model.claimEvidenceOpen && model.claimHighlightSegmentId == nil }
+    XCTAssertEqual(model.focusedClaim?.claimId, claim.claimId)
+    XCTAssertEqual(model.claimFocusGeneration, generation + 1)
+    XCTAssertNil(self.claimButton(labeled: "Return to claim", in: host))
+
+    let contradict = try XCTUnwrap(self.claimButton(labeled: "Contradicting evidence, 1", in: host))
+    XCTAssertTrue(contradict.isDescendant(of: host))
+    contradict.performClick(nil)
+    await assertEventually {
+      model.claimHighlightSegmentId == bravo.id
+        && player.importedStartNanoseconds == bravo.startNanoseconds
+    }
+    let returnAgain = try XCTUnwrap(self.claimButton(labeled: "Return to claim", in: host))
+    returnAgain.performClick(nil)
+    await assertEventually { !model.claimEvidenceOpen }
+
+    let confirm = try XCTUnwrap(self.claimButton(labeled: "Confirm claim", in: host))
+    confirm.performClick(nil)
+    await assertEventually {
+      model.derivedClaims.first { $0.claimId == claim.claimId }?.adjudication == "accepted"
+    }
+    let accepted = try XCTUnwrap(model.derivedClaims.first { $0.claimId == claim.claimId })
+    XCTAssertEqual(accepted.text, claim.text)
+    XCTAssertNotEqual(accepted.revisionId, "revision-a")
+
+    let field = try XCTUnwrap(self.claimCorrectionField(in: host))
+    let correctedText = "The team deferred the remote recorder."
+    field.stringValue = correctedText
+    let correct = try XCTUnwrap(self.claimButton(labeled: "Correct claim", in: host))
+    correct.performClick(nil)
+    await assertEventually {
+      model.derivedClaims.first { $0.claimId == claim.claimId }?.text == correctedText
+        && model.derivedClaims.first { $0.claimId == claim.claimId }?.adjudication == "corrected"
+    }
+    XCTAssertNotEqual(
+      model.derivedClaims.first { $0.claimId == claim.claimId }?.revisionId, accepted.revisionId)
+
+    let reject = try XCTUnwrap(self.claimButton(labeled: "Reject claim", in: host))
+    reject.performClick(nil)
+    await assertEventually {
+      model.derivedClaims.first { $0.claimId == claim.claimId }?.adjudication == "rejected"
+    }
+    let rejected = try XCTUnwrap(model.derivedClaims.first { $0.claimId == claim.claimId })
+    XCTAssertEqual(rejected.text, correctedText)
+    XCTAssertTrue(window.contentView === host)
+    let libraryMedia = try regularFiles(under: managed.appendingPathComponent("Sessions"))
+      .filter { $0.pathExtension == "caf" }
+    XCTAssertEqual(libraryMedia.count, 1)
+    XCTAssertEqual(try digest(of: libraryMedia[0]), packageDigest)
+    XCTAssertEqual(try digest(of: packageMedia[0]), packageDigest)
+    withExtendedLifetime((store, live, playback, player, window, host)) {}
+  }
+
+  private func claimButton(labeled label: String, in root: NSView) -> NSButton? {
+    var matched: NSButton?
+    func walk(_ view: NSView) {
+      if matched != nil { return }
+      if let button = view as? NSButton,
+        button.accessibilityLabel() == label,
+        button.isHidden == false,
+        button.isHiddenOrHasHiddenAncestor == false,
+        button.frame.width > 1,
+        button.frame.height > 1
+      {
+        matched = button
+      }
+      for child in view.subviews { walk(child) }
+    }
+    walk(root)
+    return matched
+  }
+
+  private func claimCorrectionField(in root: NSView) -> NSTextField? {
+    var matched: NSTextField?
+    func walk(_ view: NSView) {
+      if matched != nil { return }
+      if let field = view as? NSTextField, field.accessibilityLabel() == "Corrected claim text",
+        field.isHidden == false
+      {
+        matched = field
+      }
+      for child in view.subviews { walk(child) }
+    }
+    walk(root)
+    return matched
+  }
+
+  private func claimButtonProbe(in root: NSView) -> [String] {
+    var lines: [String] = []
+    func walk(_ view: NSView) {
+      if let button = view as? NSButton {
+        lines.append(
+          "\(button.title) label=\(button.accessibilityLabel() ?? "") frame=\(button.frame) hidden=\(button.isHidden)"
+        )
+      }
+      if view.accessibilityIdentifier() == "Claim actions" {
+        lines.append("banner frame=\(view.frame) hidden=\(view.isHidden)")
+      }
+      for child in view.subviews { walk(child) }
+    }
+    walk(root)
+    return lines
   }
 
   /// An imported stored final, including its stored correction, receives named

@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -637,52 +638,21 @@ struct ClaimReviewSection: View {
   }
 
   private func claimRow(_ claim: DerivedClaimSummary) -> some View {
-    let returning =
-      transcripts.claimEvidenceOpen && transcripts.focusedClaim?.claimId == claim.claimId
-    return VStack(alignment: .leading, spacing: ScribeSpacing.compact) {
+    VStack(alignment: .leading, spacing: ScribeSpacing.compact) {
       Text(claim.text)
         .fixedSize(horizontal: false, vertical: true)
         .textSelection(.enabled)
         .accessibilityLabel(spokenSummary(claim))
-      ViewThatFits(in: .horizontal) {
-        HStack(spacing: ScribeSpacing.related) { actions(claim, returning: returning) }
-        VStack(alignment: .leading, spacing: ScribeSpacing.compact) {
-          actions(claim, returning: returning)
-        }
-      }
-      ClaimAdjudicationControls(transcripts: transcripts, claim: claim)
+      ClaimActionMount(
+        transcripts: transcripts,
+        claimId: claim.claimId,
+        canSeek: canSeek,
+        onSeek: onSeek
+      )
+      .frame(maxWidth: .infinity, minHeight: 120, alignment: .topLeading)
     }
     .padding(.vertical, ScribeSpacing.tight)
     .accessibilityElement(children: .contain)
-  }
-
-  @ViewBuilder private func actions(_ claim: DerivedClaimSummary, returning: Bool) -> some View {
-    if claim.supportingCount > 0 {
-      Button("Supporting evidence") {
-        open(claim.claimId, side: "supporting")
-      }
-      .disabled(!canSeek)
-      .accessibilityLabel("Supporting evidence, \(claim.supportingCount)")
-    }
-    if claim.contradictingCount > 0 {
-      Button("Contradicting evidence") {
-        open(claim.claimId, side: "contradicting")
-      }
-      .disabled(!canSeek)
-      .accessibilityLabel("Contradicting evidence, \(claim.contradictingCount)")
-    }
-    if returning {
-      Button("Return to claim") { transcripts.returnToClaim() }
-        .accessibilityLabel("Return to claim")
-    }
-  }
-
-  private func open(_ claimId: String, side: String) {
-    Task {
-      if let start = await transcripts.openClaimEvidence(claimId: claimId, side: side) {
-        onSeek(start)
-      }
-    }
   }
 
   private func spokenSummary(_ claim: DerivedClaimSummary) -> String {
@@ -704,53 +674,182 @@ struct ClaimReviewSection: View {
   }
 }
 
-/// Confirm, correct, or reject one claim. Doing none of these leaves it unresolved.
-private struct ClaimAdjudicationControls: View {
+/// Evidence and review controls for one claim. They are created with the claim
+/// row. Return stays hidden until evidence is open, then this view shows it
+/// without waiting for a later SwiftUI pass.
+private struct ClaimActionMount: NSViewRepresentable {
   @ObservedObject var transcripts: TranscriptLibraryModel
-  let claim: DerivedClaimSummary
-  @State private var correction: String
-  @State private var busy = false
+  let claimId: String
+  let canSeek: Bool
+  let onSeek: (Int64) -> Void
 
-  init(transcripts: TranscriptLibraryModel, claim: DerivedClaimSummary) {
-    self.transcripts = transcripts
-    self.claim = claim
-    _correction = State(initialValue: claim.text)
+  func makeNSView(context: Context) -> ClaimActionBanner {
+    let view = ClaimActionBanner()
+    view.bind(transcripts: transcripts, claimId: claimId, canSeek: canSeek, onSeek: onSeek)
+    return view
   }
 
-  var body: some View {
-    VStack(alignment: .leading, spacing: ScribeSpacing.compact) {
-      TextField("Correct this claim", text: $correction)
-        .textFieldStyle(.roundedBorder)
-        .disabled(busy)
-        .accessibilityLabel("Corrected claim text")
-      ViewThatFits(in: .horizontal) {
-        HStack(spacing: ScribeSpacing.related) { reviewActions }
-        VStack(alignment: .leading, spacing: ScribeSpacing.compact) { reviewActions }
+  func updateNSView(_ view: ClaimActionBanner, context: Context) {
+    view.bind(transcripts: transcripts, claimId: claimId, canSeek: canSeek, onSeek: onSeek)
+  }
+}
+
+private final class ClaimActionBanner: NSView {
+  private let supporting = NSButton(title: "Supporting evidence", target: nil, action: nil)
+  private let contradicting = NSButton(title: "Contradicting evidence", target: nil, action: nil)
+  private let returnButton = NSButton(title: "Return to claim", target: nil, action: nil)
+  private let confirmButton = NSButton(title: "Confirm", target: nil, action: nil)
+  private let correctButton = NSButton(title: "Correct", target: nil, action: nil)
+  private let rejectButton = NSButton(title: "Reject", target: nil, action: nil)
+  private let correctionField = NSTextField(string: "")
+  private var subscription: AnyCancellable?
+  private var transcripts: TranscriptLibraryModel?
+  private var claimId = ""
+  private var canSeek = false
+  private var onSeek: (@MainActor (Int64) -> Void)?
+  private var appliedClaimText: String?
+
+  override init(frame frameRect: NSRect) {
+    super.init(frame: frameRect)
+    setAccessibilityIdentifier("Claim actions")
+    correctionField.placeholderString = "Correct this claim"
+    correctionField.setAccessibilityLabel("Corrected claim text")
+    correctionField.lineBreakMode = .byTruncatingTail
+    returnButton.setAccessibilityLabel("Return to claim")
+    confirmButton.setAccessibilityLabel("Confirm claim")
+    correctButton.setAccessibilityLabel("Correct claim")
+    rejectButton.setAccessibilityLabel("Reject claim")
+    let buttons = [
+      supporting, contradicting, returnButton, confirmButton, correctButton, rejectButton,
+    ]
+    for button in buttons {
+      button.bezelStyle = .rounded
+      button.target = self
+    }
+    supporting.action = #selector(openSupporting)
+    contradicting.action = #selector(openContradicting)
+    returnButton.action = #selector(returnToClaim)
+    confirmButton.action = #selector(confirmClaim)
+    correctButton.action = #selector(correctClaim)
+    rejectButton.action = #selector(rejectClaim)
+    let evidence = NSStackView(views: [supporting, contradicting, returnButton])
+    evidence.orientation = .horizontal
+    evidence.alignment = .centerY
+    evidence.spacing = ScribeSpacing.related
+    let review = NSStackView(views: [confirmButton, correctButton, rejectButton])
+    review.orientation = .horizontal
+    review.alignment = .centerY
+    review.spacing = ScribeSpacing.related
+    let column = NSStackView(views: [evidence, correctionField, review])
+    column.orientation = .vertical
+    column.alignment = .leading
+    column.spacing = ScribeSpacing.compact
+    column.translatesAutoresizingMaskIntoConstraints = false
+    correctionField.translatesAutoresizingMaskIntoConstraints = false
+    correctionField.widthAnchor.constraint(greaterThanOrEqualToConstant: 280).isActive = true
+    addSubview(column)
+    NSLayoutConstraint.activate([
+      column.leadingAnchor.constraint(equalTo: leadingAnchor),
+      column.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor),
+      column.topAnchor.constraint(equalTo: topAnchor),
+      column.bottomAnchor.constraint(lessThanOrEqualTo: bottomAnchor),
+    ])
+    apply()
+  }
+
+  required init?(coder: NSCoder) {
+    nil
+  }
+
+  override var intrinsicContentSize: NSSize {
+    NSSize(width: NSView.noIntrinsicMetric, height: 120)
+  }
+
+  func bind(
+    transcripts: TranscriptLibraryModel,
+    claimId: String,
+    canSeek: Bool,
+    onSeek: @escaping @MainActor (Int64) -> Void
+  ) {
+    self.canSeek = canSeek
+    self.onSeek = onSeek
+    let same = self.transcripts === transcripts && self.claimId == claimId
+    self.transcripts = transcripts
+    self.claimId = claimId
+    if !same {
+      subscription = Publishers.Merge3(
+        transcripts.$claimEvidenceOpen.map { _ in () },
+        transcripts.$focusedClaim.map { _ in () },
+        transcripts.$derivedClaims.map { _ in () }
+      ).sink { [weak self] _ in
+        DispatchQueue.main.async { self?.apply() }
       }
     }
-    .onChange(of: claim.text) { updated in
-      correction = updated
+    DispatchQueue.main.async { [weak self] in self?.apply() }
+  }
+
+  private func apply() {
+    guard let transcripts,
+      let claim = transcripts.derivedClaims.first(where: { $0.claimId == claimId })
+    else {
+      isHidden = true
+      return
+    }
+    isHidden = false
+    let returning =
+      transcripts.claimEvidenceOpen && transcripts.focusedClaim?.claimId == claim.claimId
+    supporting.isHidden = claim.supportingCount == 0
+    supporting.isEnabled = canSeek
+    supporting.setAccessibilityLabel("Supporting evidence, \(claim.supportingCount)")
+    contradicting.isHidden = claim.contradictingCount == 0
+    contradicting.isEnabled = canSeek
+    contradicting.setAccessibilityLabel("Contradicting evidence, \(claim.contradictingCount)")
+    returnButton.isHidden = !returning
+    if correctionField.currentEditor() == nil, appliedClaimText != claim.text {
+      correctionField.stringValue = claim.text
+      appliedClaimText = claim.text
+    }
+    let trimmed = correctionField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+    confirmButton.isEnabled = true
+    correctButton.isEnabled = !trimmed.isEmpty
+    rejectButton.isEnabled = true
+    layoutSubtreeIfNeeded()
+  }
+
+  @objc private func openSupporting() { openEvidence("supporting") }
+  @objc private func openContradicting() { openEvidence("contradicting") }
+
+  private func openEvidence(_ side: String) {
+    let transcripts = transcripts
+    let claimId = claimId
+    let onSeek = onSeek
+    Task { @MainActor in
+      if let start = await transcripts?.openClaimEvidence(claimId: claimId, side: side) {
+        onSeek?(start)
+      }
     }
   }
 
-  @ViewBuilder private var reviewActions: some View {
-    Button("Confirm") { submit("accepted", text: nil) }
-      .disabled(busy)
-      .accessibilityLabel("Confirm claim")
-    Button("Correct") { submit("corrected", text: correction) }
-      .disabled(busy || correction.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-      .accessibilityLabel("Correct claim")
-    Button("Reject") { submit("rejected", text: nil) }
-      .disabled(busy)
-      .accessibilityLabel("Reject claim")
+  @objc private func returnToClaim() {
+    let transcripts = transcripts
+    Task { @MainActor in transcripts?.returnToClaim() }
   }
 
-  private func submit(_ action: String, text: String?) {
-    let claimId = claim.claimId
-    busy = true
-    Task {
-      _ = await transcripts.adjudicateClaim(claimId: claimId, action: action, text: text)
-      busy = false
+  @objc private func confirmClaim() { review("accepted", text: nil) }
+  @objc private func rejectClaim() { review("rejected", text: nil) }
+
+  @objc private func correctClaim() {
+    review("corrected", text: correctionField.stringValue)
+  }
+
+  private func review(_ action: String, text: String?) {
+    let transcripts = transcripts
+    let claimId = claimId
+    confirmButton.isEnabled = false
+    correctButton.isEnabled = false
+    rejectButton.isEnabled = false
+    Task { @MainActor in
+      _ = await transcripts?.adjudicateClaim(claimId: claimId, action: action, text: text)
     }
   }
 }
