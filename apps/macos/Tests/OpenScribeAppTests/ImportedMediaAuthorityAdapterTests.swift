@@ -1994,6 +1994,151 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
     withExtendedLifetime(drag) {}
   }
 
+  /// A file dropped on the hosted library imports when the banner button is pressed.
+  /// The original stays where it is.
+  func testAHostedDropConfirmedFromTheBannerImportsAndLeavesTheOriginal() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "open-scribe-drop-confirm-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let source = root.appendingPathComponent("Banner confirm.m4a")
+    do {
+      let file = try AVAudioFile(
+        forWriting: source,
+        settings: [
+          AVFormatIDKey: kAudioFormatAppleLossless,
+          AVSampleRateKey: 48_000.0,
+          AVNumberOfChannelsKey: 1,
+          AVEncoderBitDepthHintKey: 16,
+        ])
+      let buffer = try XCTUnwrap(
+        AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: 48_000))
+      buffer.frameLength = 48_000
+      let channel = try XCTUnwrap(buffer.floatChannelData?[0])
+      for frame in 0..<48_000 {
+        channel[frame] = frame < 24_000 ? 0.25 : -0.5
+      }
+      try file.write(from: buffer)
+    }
+    let original = try Data(contentsOf: source)
+    let importRoot = root.appendingPathComponent("Library", isDirectory: true)
+    try FileManager.default.createDirectory(at: importRoot, withIntermediateDirectories: false)
+    let store = RuntimeLibraryStore(managedRoot: importRoot, refreshesImmediately: false)
+    let adapter = ImportedMediaAuthorityAdapter(
+      startSecurityScope: { _ in true },
+      stopSecurityScope: { _ in },
+      importer: { title, url in
+        try store.importManagedAudio(title: title, sourceURL: url)
+      }
+    )
+    let live = LiveMicrophoneRecordingController(managedRoot: importRoot)
+    let recovery = RecoveredSessionController(managedRoot: importRoot)
+    let view = ContentView(
+      store: store,
+      importedMediaAuthority: adapter,
+      liveRecording: live,
+      recoveredSessions: recovery,
+      transcripts: TranscriptLibraryModel(managedRoot: importRoot),
+      speech: SpeechTranscriptionModel(managedRoot: importRoot),
+      scheduler: TranscriptionScheduler.inert(),
+      pressure: SystemPressureMonitor(libraryRoot: importRoot, samplesAutomatically: false),
+      context: ContextScopeModel(
+        binding: { nil },
+        frames: IdleContextFrames(),
+        permissionCheck: { .denied },
+        permissionRequest: { .denied },
+        topology: { [] }
+      ),
+      navigation: MainWorkspaceNavigation()
+    )
+    let host = NSHostingView(rootView: view)
+    let window = NSWindow(
+      contentRect: NSRect(x: 0, y: 0, width: 1100, height: 720),
+      styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    window.contentView = host
+    window.setContentSize(NSSize(width: 1100, height: 720))
+    host.frame = window.contentLayoutRect
+    if #available(macOS 14, *) {
+      NSApplication.shared.activate()
+    }
+    window.makeKeyAndOrderFront(nil)
+    window.orderFrontRegardless()
+    defer { window.close() }
+    let shown = await waitUntil(timeoutNanoseconds: 5_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      window.displayIfNeeded()
+      return dropDestination(in: host) != nil
+    }
+    let destination = try XCTUnwrap(dropDestination(in: host))
+    XCTAssertTrue(shown, "class=\(type(of: destination))")
+    let location = destination.convert(
+      NSPoint(x: destination.bounds.midX, y: destination.bounds.midY), to: nil)
+    let drag = AudioFileDrag(fileURL: source, window: window, location: location)
+    defer { drag.draggingPasteboard.releaseGlobally() }
+    let entered = destinationDragOperation("draggingEntered:", on: destination, info: drag)
+    let updated = destinationDragOperation("draggingUpdated:", on: destination, info: drag)
+    let prepared = destinationDragAccepted("prepareForDragOperation:", on: destination, info: drag)
+    let performed = destinationDragAccepted("performDragOperation:", on: destination, info: drag)
+    destinationDragEnded("concludeDragOperation:", on: destination, info: drag)
+    destinationDragEnded("draggingEnded:", on: destination, info: drag)
+    XCTAssertTrue(
+      prepared && performed,
+      "class=\(type(of: destination)) entered=\(entered) updated=\(updated) prepared=\(prepared) performed=\(performed) classes=\(drag.requestedClasses)"
+    )
+    let staged = await waitUntil {
+      adapter.pendingAudioImport?.urls == [source]
+    }
+    XCTAssertTrue(
+      staged,
+      "performed=\(performed) classes=\(drag.requestedClasses) phase=\(adapter.phase) message=\(adapter.statusMessage ?? "nil")"
+    )
+    XCTAssertEqual(adapter.phase, .idle)
+    XCTAssertTrue(store.savedSessions.isEmpty)
+    // This runner draws a hosting view's first body and does not rebuild it
+    // after the drop. A new window of the same library reads the pending import.
+    let bannerHost = NSHostingView(rootView: view)
+    let bannerWindow = NSWindow(
+      contentRect: NSRect(x: 0, y: 0, width: 1100, height: 720),
+      styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+    bannerWindow.isReleasedWhenClosed = false
+    bannerWindow.contentView = bannerHost
+    bannerWindow.setContentSize(NSSize(width: 1100, height: 720))
+    bannerHost.frame = bannerWindow.contentLayoutRect
+    bannerWindow.makeKeyAndOrderFront(nil)
+    bannerWindow.orderFrontRegardless()
+    defer { bannerWindow.close() }
+    let banner = await waitUntil(timeoutNanoseconds: 5_000_000_000) {
+      bannerHost.layoutSubtreeIfNeeded()
+      bannerWindow.displayIfNeeded()
+      return settledBannerConfirmProxy(in: bannerHost) != nil
+    }
+    let proxy = settledBannerConfirmProxy(in: bannerHost)
+    XCTAssertTrue(
+      banner && proxy != nil,
+      "key=\(window.isKeyWindow) pending=\(String(describing: adapter.pendingAudioImport?.urls)) proxies=\(focusProxyProbe(in: bannerHost))"
+    )
+    let button = try XCTUnwrap(proxy)
+    XCTAssertTrue(button.window === bannerWindow)
+    bannerHost.layoutSubtreeIfNeeded()
+    bannerWindow.displayIfNeeded()
+    click(button)
+    let imported = await waitUntil { adapter.phase == .succeeded }
+    XCTAssertTrue(
+      imported,
+      "phase=\(adapter.phase) frame=\(button.frame) pending=\(String(describing: adapter.pendingAudioImport))"
+    )
+    XCTAssertNil(adapter.pendingAudioImport)
+    XCTAssertNotNil(adapter.importedSessionId)
+    XCTAssertEqual(try Data(contentsOf: source), original)
+    withExtendedLifetime(store) {}
+    withExtendedLifetime(live) {}
+    withExtendedLifetime(recovery) {}
+    withExtendedLifetime(window) {}
+    withExtendedLifetime(bannerWindow) {}
+    withExtendedLifetime(drag) {}
+  }
+
   private func dropDestination(in root: NSView) -> NSView? {
     var matched: NSView?
     func walk(_ view: NSView) {
@@ -2071,6 +2216,17 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
       }
     }
     return leftBannerConfirmProxy(in: root)
+  }
+
+  /// The banner's Import button is the left of the two wide focus proxies at the
+  /// top of the detail column once layout has given them a positive origin.
+  private func settledBannerConfirmProxy(in root: NSView) -> NSView? {
+    let banner = focusProxies(in: root).filter { proxy in
+      let frame = proxy.frame
+      return frame.minY >= 0 && frame.minY < 40 && frame.height <= 26 && frame.width >= 40
+    }
+    guard banner.count == 2 else { return nil }
+    return banner.min { $0.frame.minX < $1.frame.minX }
   }
 
   /// The banner's Import button is the left of the two focus proxies at the top
