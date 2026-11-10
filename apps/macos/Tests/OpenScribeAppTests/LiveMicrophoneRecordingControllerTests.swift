@@ -1513,10 +1513,14 @@ final class LiveMicrophoneRecordingControllerTests: XCTestCase {
     await controller.start()
 
     XCTAssertEqual(controller.phase, .failed)
+    XCTAssertNotEqual(controller.phase, .capturing)
     XCTAssertEqual(controller.failureCode, "permission-denied")
+    XCTAssertEqual(
+      controller.errorMessage,
+      "Microphone access is denied. Enable it in System Settings.")
+    XCTAssertEqual(controller.statusText, "Conversation capture failed")
     XCTAssertTrue(controller.canStart)
     XCTAssertEqual(preparationCalls.value, 0)
-    XCTAssertTrue(controller.errorMessage?.contains("denied") == true)
 
     permission.currentState = .authorized
     await controller.start()

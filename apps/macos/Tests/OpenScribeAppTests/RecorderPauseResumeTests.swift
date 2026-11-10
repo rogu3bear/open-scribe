@@ -1494,6 +1494,125 @@ final class RecorderPauseResumeTests: XCTestCase {
     XCTAssertEqual(try Self.byteCount(systemPath), systemBytes)
   }
 
+  /// A denied microphone permission never opens a recording. The message names
+  /// the microphone and System Settings, and a later grant can start capture.
+  func testDeniedMicrophonePermissionNamesTheBlockAndAllowsRetry() async throws {
+    let harness = try PauseHarness()
+    defer { harness.removeFiles() }
+    harness.permission.currentState = .denied
+
+    await harness.controller.start()
+
+    XCTAssertEqual(harness.controller.phase, .failed)
+    XCTAssertFalse(harness.controller.isCapturing)
+    XCTAssertEqual(harness.controller.failureCode, "permission-denied")
+    XCTAssertEqual(
+      harness.controller.errorMessage,
+      "Microphone access is denied. Enable it in System Settings.")
+    XCTAssertEqual(harness.controller.statusText, "Conversation capture failed")
+    XCTAssertFalse(harness.controller.statusText.hasPrefix("Recording "))
+    XCTAssertTrue(harness.controller.canStart)
+    XCTAssertEqual(harness.captures.microphones.count, 0)
+    XCTAssertEqual(harness.captures.systems.count, 0)
+    XCTAssertNil(try harness.preparation.runtimeLibrarySnapshot().currentSession)
+
+    harness.permission.currentState = .authorized
+    await harness.controller.start()
+    try await harness.capture()
+    XCTAssertEqual(harness.controller.phase, .capturing)
+    XCTAssertNil(harness.controller.errorMessage)
+    XCTAssertNil(harness.controller.failureCode)
+    XCTAssertEqual(harness.controller.statusText, "Recording microphone + system audio")
+    await harness.controller.stop()
+    XCTAssertEqual(harness.controller.phase, .saved, harness.controller.errorMessage ?? "")
+  }
+
+  /// Screen-capture permission loss during recording names Mac system audio,
+  /// keeps the microphone, and does not open a replacement source.
+  func testSystemAudioPermissionWithdrawalNamesTheSourceAndKeepsTheMicrophone() async throws {
+    let harness = try PauseHarness()
+    defer { harness.removeFiles() }
+    await harness.controller.start()
+    try await harness.capture()
+    let microphone = try XCTUnwrap(harness.captures.microphones.last)
+    let system = try XCTUnwrap(harness.captures.systems.last)
+    let sessionId = microphone.writer.authorization.sessionId
+    let microphonePath = microphone.writer.authorization.absolutePath
+    let systemPath = system.writer.authorization.absolutePath
+    XCTAssertGreaterThan(try Self.byteCount(microphonePath), 0)
+    XCTAssertGreaterThan(try Self.byteCount(systemPath), 0)
+    XCTAssertEqual(harness.controller.captureSelection.kind, .systemAudio)
+
+    system.fail(.permissionDenied)
+    await settle()
+
+    XCTAssertEqual(harness.controller.phase, .capturing)
+    XCTAssertEqual(
+      harness.controller.errorMessage,
+      "Mac system audio permission was withdrawn. Remaining audio is still recording.")
+    XCTAssertEqual(harness.controller.statusText, "Recording continues with remaining audio")
+    XCTAssertEqual(harness.controller.failureCode, "system-audio-permissionDenied")
+    XCTAssertFalse(harness.controller.showsReconnect)
+    XCTAssertFalse(harness.controller.isMicrophoneRetired)
+    XCTAssertEqual(harness.controller.captureSelection.kind, .systemAudio)
+    XCTAssertEqual(system.stopCount, 1)
+    XCTAssertEqual(microphone.stopCount, 0)
+    XCTAssertEqual(harness.captures.systems.count, 1)
+    XCTAssertEqual(harness.captures.microphones.count, 1)
+    let loss = try XCTUnwrap(
+      try harness.preparation.recorderDetail(sessionId: sessionId).events.first {
+        $0.kind == "source_failed"
+      })
+    XCTAssertEqual(loss.label, "Mac system audio")
+    XCTAssertGreaterThan(loss.sessionNanoseconds, 0)
+    let systemBytes = try Self.byteCount(systemPath)
+    XCTAssertEqual(
+      try harness.preparation.recorderDetail(sessionId: sessionId).lifecycle, "recording")
+
+    harness.clock.advance(seconds: 1)
+    try microphone.emit(frames: 48_000, hostTime: harness.clock.now, value: 4096)
+    let lossAfterMoreMicrophone = try XCTUnwrap(
+      try harness.preparation.recorderDetail(sessionId: sessionId).events.first {
+        $0.kind == "source_failed"
+      })
+    XCTAssertEqual(lossAfterMoreMicrophone.sessionNanoseconds, loss.sessionNanoseconds)
+    XCTAssertEqual(lossAfterMoreMicrophone.label, loss.label)
+    XCTAssertEqual(try Self.byteCount(systemPath), systemBytes)
+    XCTAssertEqual(harness.controller.phase, .capturing)
+    XCTAssertEqual(microphone.stopCount, 0)
+    XCTAssertEqual(harness.captures.systems.count, 1)
+
+    await harness.controller.stop()
+    XCTAssertEqual(harness.controller.phase, .saved, harness.controller.errorMessage ?? "")
+    XCTAssertEqual(try Self.byteCount(systemPath), systemBytes)
+
+    let reopened = try NativeRecordingPreparation.open(managedRoot: harness.root.path)
+    _ = try reopened.recoverPlayableSessions()
+    let detail = try reopened.recorderDetail(sessionId: sessionId)
+    XCTAssertEqual(detail.lifecycle, "ready_for_review")
+    let savedLoss = try XCTUnwrap(detail.events.first { $0.kind == "source_failed" })
+    XCTAssertEqual(savedLoss.label, "Mac system audio")
+    XCTAssertEqual(savedLoss.sessionNanoseconds, loss.sessionNanoseconds)
+    let journalURL = harness.root.appendingPathComponent("Sessions/\(sessionId)/recovery.jsonl")
+    let records = try String(contentsOf: journalURL, encoding: .utf8).split(separator: "\n").map {
+      try XCTUnwrap(JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any])
+    }
+    let failures = records.filter { $0["event_kind"] as? String == "source_failed" }
+    XCTAssertEqual(failures.count, 1)
+    let payload = try XCTUnwrap(failures.first?["payload"] as? [String: Any])
+    XCTAssertEqual(payload["reason"] as? String, "permission_revoked")
+    XCTAssertEqual(payload["source_kind"] as? String, "system_audio")
+    let plan = try reopened.playbackTimeline(sessionId: sessionId)
+    let covered = { (track: String) -> UInt64 in
+      plan.filter { $0.trackId == track }.reduce(UInt64(0)) { $0 + $1.sampleCount }
+    }
+    XCTAssertGreaterThan(
+      covered(microphone.writer.authorization.trackId),
+      covered(system.writer.authorization.trackId))
+    XCTAssertGreaterThan(covered(system.writer.authorization.trackId), 0)
+    XCTAssertEqual(try Self.byteCount(systemPath), systemBytes)
+  }
+
   /// Add Marker uses the session clock. The saved recording still has the marker
   /// and its source tracks.
   func testAddMarkerStaysOnTheSessionClockAfterTheRecordingIsSaved() async throws {
