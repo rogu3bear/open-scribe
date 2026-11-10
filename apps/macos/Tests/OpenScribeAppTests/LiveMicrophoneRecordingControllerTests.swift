@@ -1003,6 +1003,55 @@ final class LiveMicrophoneRecordingControllerTests: XCTestCase {
     XCTAssertEqual(preparation.interruptionReasons, [.stopWithoutDurableSample])
   }
 
+  func testDelayedRequiredSourceStaysOutOfRecordingAndKeepsTheWrittenSample() async throws {
+    let preparation = RecordingPreparationFake(requiredSources: [.microphone, .systemAudio])
+    let writers = SegmentWriterMap()
+    let microphone = MicrophoneCaptureFake()
+    let systemAudio = SystemAudioCaptureFake()
+    systemAudio.lastHostTime = nil
+    let controller = LiveMicrophoneRecordingController(
+      permission: AuthorizedMicrophonePermission(),
+      preparationFactory: { preparation },
+      writerFactory: { authorization in
+        let writer = SegmentWriterFake(authorization: authorization)
+        writers.store(writer)
+        return writer
+      },
+      captureFactory: { _ in microphone },
+      requiredSources: [.microphone, .systemAudio],
+      systemCaptureFactory: { _ in systemAudio }
+    )
+
+    await controller.start()
+    let microphoneWriter = try XCTUnwrap(writers.writer(for: .microphone))
+    let writtenPath = microphoneWriter.authorization.absolutePath
+    microphone.emitFirstSample(
+      try microphoneWriter.firstSampleReceipt(hostTime: 42_000, frameCount: 480)
+    )
+    for _ in 0..<20 where !preparation.acceptedFirstSample {
+      await Task.yield()
+    }
+
+    XCTAssertTrue(preparation.acceptedFirstSample)
+    XCTAssertEqual(controller.phase, .starting)
+    XCTAssertEqual(preparation.recordingConfirmCount, 0)
+
+    await controller.stop()
+
+    XCTAssertEqual(controller.phase, .failed)
+    XCTAssertEqual(controller.failureCode, "no-durable-sample")
+    XCTAssertEqual(
+      controller.errorMessage,
+      "A required source produced no durable sample. Recovery state was preserved."
+    )
+    XCTAssertEqual(preparation.recordingConfirmCount, 0)
+    XCTAssertEqual(preparation.sealedSegmentCount, 0)
+    XCTAssertEqual(preparation.interruptionReasons, [.stopWithoutDurableSample])
+    XCTAssertEqual(microphoneWriter.authorization.absolutePath, writtenPath)
+    XCTAssertEqual(microphone.stopCount, 1)
+    XCTAssertEqual(systemAudio.stopCount, 1)
+  }
+
   func testSystemAudioStopFailureInterruptsPostRecordingSessionAndSealsNothing() async throws {
     let preparation = RecordingPreparationFake(requiredSources: [.microphone, .systemAudio])
     let writers = SegmentWriterMap()

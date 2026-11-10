@@ -1033,6 +1033,180 @@ fn interrupted_first_sample_is_durable_discoverable_and_media_preserving() {
 }
 
 #[test]
+fn delayed_required_source_refuses_recording_and_keeps_written_media() {
+    let temp = TempDir::new().unwrap();
+    let root = temp.path().join("Open Scribe");
+    let session_id;
+    let microphone_path;
+    let system_path;
+    let microphone_bytes;
+    let system_bytes;
+    {
+        let mut store = SessionStore::open(&root).unwrap();
+        let prepared = store
+            .prepare_session_with_required_sources(
+                request(),
+                vec![MediaSourceKind::Microphone, MediaSourceKind::SystemAudio],
+            )
+            .unwrap();
+        session_id = prepared.session_id.clone();
+        let microphone = store
+            .authorize_media_open(AuthorizeMediaOpenRequest {
+                session_id: session_id.clone(),
+                source_kind: MediaSourceKind::Microphone,
+                source_display_name: "Mac microphone".to_owned(),
+            })
+            .unwrap();
+        let microphone_initial = write_test_caf(&microphone);
+        store
+            .accept_media_open(media_receipt(&microphone, microphone_initial))
+            .unwrap();
+        let system = store
+            .authorize_media_open(AuthorizeMediaOpenRequest {
+                session_id: session_id.clone(),
+                source_kind: MediaSourceKind::SystemAudio,
+                source_display_name: "Mac system audio".to_owned(),
+            })
+            .unwrap();
+        let system_initial = write_test_caf(&system);
+        store
+            .accept_media_open(media_receipt(&system, system_initial))
+            .unwrap();
+        let observed = append_first_sample(&microphone);
+        let first = store
+            .accept_first_sample(first_sample_receipt(&microphone, observed))
+            .unwrap();
+        assert!(first.first_sample_durable);
+        assert!(!first.recording_started);
+        assert_eq!(
+            store
+                .connection
+                .query_row(
+                    "SELECT lifecycle FROM sessions WHERE id = ?1",
+                    [&session_id.0],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap(),
+            "preparing"
+        );
+        let refused = store.confirm_recording(session_id.clone()).unwrap_err();
+        assert!(matches!(
+            refused,
+            StoreError::InvalidState("not every required source has durable first-sample evidence")
+        ));
+        assert_eq!(
+            store
+                .connection
+                .query_row(
+                    "SELECT COUNT(*) FROM session_events
+                     WHERE session_id = ?1 AND event_kind = 'first_sample_captured'",
+                    [&session_id.0],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            1
+        );
+        microphone_path = microphone.absolute_path;
+        system_path = system.absolute_path;
+        microphone_bytes = fs::read(&microphone_path).unwrap();
+        system_bytes = fs::read(&system_path).unwrap();
+        assert!(microphone_bytes.len() > system_bytes.len());
+
+        let evidence = store
+            .interrupt_session(InterruptSessionRequest {
+                session_id: session_id.clone(),
+                reason: SessionInterruptionReason::StopWithoutDurableSample,
+            })
+            .unwrap();
+        assert!(evidence.journal_durable);
+        assert!(evidence.session_interrupted);
+        assert!(!evidence.recording_started);
+        assert_eq!(fs::read(&microphone_path).unwrap(), microphone_bytes);
+        assert_eq!(fs::read(&system_path).unwrap(), system_bytes);
+        assert_eq!(
+            store
+                .connection
+                .query_row(
+                    "SELECT COUNT(*) FROM session_events
+                     WHERE session_id = ?1 AND event_kind = 'recording_started'",
+                    [&session_id.0],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            0
+        );
+    }
+
+    let mut reopened = SessionStore::open(&root).unwrap();
+    assert_eq!(fs::read(&microphone_path).unwrap(), microphone_bytes);
+    assert_eq!(fs::read(&system_path).unwrap(), system_bytes);
+    let current = reopened
+        .runtime_library_snapshot()
+        .unwrap()
+        .current_session
+        .unwrap();
+    assert_eq!(current.session_id, session_id);
+    assert_eq!(current.lifecycle, "interrupted");
+    assert_eq!(
+        current.interruption_reason,
+        Some(SessionInterruptionReason::StopWithoutDurableSample)
+    );
+    assert_eq!(
+        segment_lifecycle(&reopened, &session_id, "microphone"),
+        "capturing"
+    );
+    assert_eq!(
+        segment_lifecycle(&reopened, &session_id, "system_audio"),
+        "open"
+    );
+    let finding = reopened.recover_preparations().unwrap().remove(0);
+    assert_eq!(finding.session_id, session_id);
+    assert_eq!(
+        finding.disposition,
+        RecoveryDisposition::InterruptedMediaOpen
+    );
+    let recovered = reopened.recover_library().unwrap();
+    assert!(
+        recovered
+            .findings
+            .iter()
+            .any(|item| item.session_id == session_id)
+    );
+    assert_eq!(
+        segment_lifecycle(&reopened, &session_id, "microphone"),
+        "capturing"
+    );
+    assert_eq!(fs::read(&microphone_path).unwrap(), microphone_bytes);
+    assert_eq!(fs::read(&system_path).unwrap(), system_bytes);
+    assert_eq!(
+        reopened
+            .connection
+            .query_row(
+                "SELECT COUNT(*) FROM session_events
+                 WHERE session_id = ?1 AND event_kind = 'recording_started'",
+                [&session_id.0],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+        0
+    );
+}
+
+fn segment_lifecycle(store: &SessionStore, session: &SessionId, kind: &str) -> String {
+    store
+        .connection
+        .query_row(
+            "SELECT segments.lifecycle FROM segments
+             JOIN tracks ON tracks.id = segments.track_id AND tracks.session_id = segments.session_id
+             JOIN sources ON sources.id = tracks.source_id AND sources.session_id = tracks.session_id
+             WHERE segments.session_id = ?1 AND sources.kind = ?2",
+            rusqlite::params![session.0, kind],
+            |row| row.get(0),
+        )
+        .unwrap()
+}
+
+#[test]
 fn interruption_replay_is_idempotent_and_rejects_a_changed_reason() {
     let temp = TempDir::new().unwrap();
     let mut store = open_store(&temp);
