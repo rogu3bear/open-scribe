@@ -788,8 +788,14 @@ final class LiveMicrophoneRecordingControllerTests: XCTestCase {
     }
 
     XCTAssertEqual(controller.phase, .capturing)
+    XCTAssertEqual(
+      controller.errorMessage,
+      "Mac system audio stopped. Remaining audio is still recording. writerFailed"
+    )
+    XCTAssertEqual(controller.statusText, "Recording continues with remaining audio")
     XCTAssertEqual(controller.failureCode, "system-audio-writerFailed")
     XCTAssertEqual(preparation.failedSources, [.systemAudio])
+    XCTAssertEqual(preparation.sourceFailureReasons, [.captureFailed])
     XCTAssertTrue(preparation.interruptionReasons.isEmpty)
     XCTAssertEqual(preparation.sealedSegmentCount, 1)
     XCTAssertEqual(microphone.stopCount, 0)
