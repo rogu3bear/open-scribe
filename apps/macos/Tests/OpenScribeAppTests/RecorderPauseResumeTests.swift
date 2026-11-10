@@ -1862,6 +1862,63 @@ final class RecorderPauseResumeTests: XCTestCase {
     return ReopenedLibrary(preparation: preparation, store: store)
   }
 
+  /// An idle menu with permission already available has one Record control.
+  /// Starting it prepares both selected sources and keeps their names visible.
+  func testIdleMenuStartBeginsPreparationWithBothSourcesVisible() async throws {
+    let harness = try PauseHarness()
+    defer { harness.removeFiles() }
+    XCTAssertEqual(harness.controller.phase, .idle)
+    XCTAssertEqual(harness.permission.currentState, .authorized)
+    XCTAssertTrue(harness.controller.canStart)
+    XCTAssertFalse(harness.controller.canStop)
+    XCTAssertTrue(
+      MainWorkspaceActions.canRecord(
+        liveCanStart: harness.controller.canStart, importIsBusy: false))
+    XCTAssertEqual(
+      harness.controller.readinessText, "Ready to record microphone + system audio")
+    XCTAssertEqual(
+      harness.controller.sourceSelectionPresentation.summary, "Microphone + Mac system audio")
+    XCTAssertEqual(
+      MenuBarContent.recordTitle(
+        lifecycle: nil, summary: harness.controller.sourceSelectionPresentation.summary),
+      "Record — Microphone + Mac system audio")
+    let idleMenu = MenuBarLabel.presentation(
+      session: nil,
+      snapshotStale: false,
+      livePhase: harness.controller.phase,
+      liveStatus: harness.controller.statusText)
+    XCTAssertEqual(idleMenu.text, "Open Scribe")
+    XCTAssertEqual(idleMenu.accessibilityText, "Ready to record microphone + system audio")
+    XCTAssertFalse(idleMenu.accessibilityText.hasPrefix("Recording"))
+
+    await harness.controller.start()
+    await settle()
+
+    XCTAssertEqual(harness.permission.requestCount, 1)
+    XCTAssertNil(harness.controller.errorMessage)
+    XCTAssertEqual(harness.controller.phase, .starting, harness.controller.errorMessage ?? "")
+    XCTAssertEqual(harness.controller.statusText, "Starting microphone + system audio…")
+    XCTAssertEqual(
+      harness.controller.sourceSelectionPresentation.summary, "Microphone + Mac system audio")
+    XCTAssertFalse(harness.controller.canStart)
+    XCTAssertTrue(harness.controller.canStop)
+    let current = try XCTUnwrap(harness.preparation.runtimeLibrarySnapshot().currentSession)
+    XCTAssertEqual(current.lifecycle, "preparing")
+    let session = RuntimeSessionPresentation(native: current)
+    XCTAssertEqual(session.sources.map(\.name), ["Mac microphone", "Mac system audio"])
+    XCTAssertEqual(session.sources.map(\.stateText), ["Ready", "Ready"])
+    let preparingMenu = MenuBarLabel.presentation(
+      session: session,
+      snapshotStale: false,
+      livePhase: harness.controller.phase,
+      liveStatus: harness.controller.statusText)
+    XCTAssertEqual(preparingMenu.text, "Preparing durable recording…")
+    XCTAssertFalse(preparingMenu.text.hasPrefix("Recording"))
+    XCTAssertFalse(preparingMenu.accessibilityText.hasPrefix("Recording"))
+    XCTAssertEqual(harness.captures.microphones.count, 1)
+    XCTAssertEqual(harness.captures.systems.count, 1)
+  }
+
   /// Recording stays unclaimed until both required sources have durable media.
   /// The microphone's file remains, and the later system sample is what enters
   /// Recording.

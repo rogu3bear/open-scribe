@@ -7,8 +7,10 @@ import XCTest
 @MainActor
 final class PausePermission: MicrophonePermissionProviding {
   var currentState: MicrophonePermissionState = .authorized
+  private(set) var requestCount = 0
   var requestGate: PauseStartGate?
   func request() async -> MicrophonePermissionState {
+    requestCount += 1
     if let requestGate { await requestGate.wait() }
     return currentState
   }

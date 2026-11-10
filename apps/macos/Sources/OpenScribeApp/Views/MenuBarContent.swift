@@ -78,8 +78,9 @@ struct MenuBarContent: View {
     }
     if liveRecording.canStart {
       Button(
-        store.currentSession?.lifecycle == "interrupted"
-          ? "Start New Recording" : "Record — \(liveRecording.sourceSelectionPresentation.summary)"
+        Self.recordTitle(
+          lifecycle: store.currentSession?.lifecycle,
+          summary: liveRecording.sourceSelectionPresentation.summary)
       ) {
         Task {
           await liveRecording.start()
@@ -160,6 +161,12 @@ struct MenuBarContent: View {
       liveCanStart: liveRecording.canStart,
       importIsBusy: importedMediaAuthority.isBusy
     )
+  }
+
+  /// The one capture action in an idle menu. An interrupted session offers a
+  /// new recording; every other idle menu names the selected sources.
+  static func recordTitle(lifecycle: String?, summary: String) -> String {
+    lifecycle == "interrupted" ? "Start New Recording" : "Record — \(summary)"
   }
 
   static func statusSymbol(for session: RuntimeSessionPresentation) -> String {
