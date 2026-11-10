@@ -994,6 +994,186 @@ final class ContextTests: XCTestCase {
     withExtendedLifetime(fixture.writer) {}
   }
 
+  /// While context is off, and again after Revoke, a screen-parameters
+  /// notification does not read a frame or store an event. The test clicks
+  /// Revoke and does not call `revoke` or `topologyChanged`.
+  func testHostedOffAndRevokedContextIgnoreADisplayArrangementChange() async throws {
+    let fixture = try RecordingFixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let permission = ScreenPermissionStub()
+    permission.grant()
+    let script = FrameScript()
+    let quiet = frame([""], size: CGSize(width: 32, height: 32))
+    script.enqueue(Array(repeating: quiet, count: 30))
+    let gate = RecognitionGate()
+    var displays = RecordingFixture.displays
+    let model = ContextScopeModel(
+      binding: { fixture.binding }, frames: script,
+      recognize: { _ in gate.blocks() },
+      permissionCheck: { permission.current },
+      permissionRequest: { permission.current },
+      topology: { displays })
+    defer { model.overlay.hide() }
+    let library = try NativeTranscriptLibrary.open(managedRoot: fixture.root.path)
+
+    let off = mount(
+      ContextInspector(model: model).frame(width: 520, height: 180),
+      size: NSSize(width: 520, height: 180))
+    defer { off.window.close() }
+    let offShown = await waitUntil(timeoutNanoseconds: 5_000_000_000) {
+      off.host.layoutSubtreeIfNeeded()
+      off.window.displayIfNeeded()
+      return self.visibleText(in: off.host).contains(ContextScopeSummary.off)
+    }
+    let offText = visibleText(in: off.host)
+    XCTAssertTrue(offShown, offText)
+    XCTAssertNil(model.current)
+    XCTAssertEqual(script.captureCount, 0)
+    XCTAssertEqual(try library.contextEvents(sessionId: fixture.sessionId).map(\.eventId), [])
+    displays[1] = ContextDisplay(
+      id: 2, name: "Studio Display",
+      frame: CGRect(x: 1800, y: -300, width: 2560, height: 1440),
+      scale: 2, rotation: 0, isMain: false)
+    script.enqueue([frame(["Changed screen"], noise: 20, size: CGSize(width: 64, height: 64))])
+    NotificationCenter.default.post(
+      name: NSApplication.didChangeScreenParametersNotification, object: nil)
+    try await Task.sleep(nanoseconds: 1_200_000_000)
+    XCTAssertNil(model.current)
+    XCTAssertEqual(script.captureCount, 0)
+    XCTAssertEqual(try library.contextEvents(sessionId: fixture.sessionId).map(\.text), [])
+    let offAfter = visibleText(in: off.host)
+    XCTAssertTrue(offAfter.contains(ContextScopeSummary.off), offAfter)
+    XCTAssertFalse(offAfter.contains("Changed screen"), offAfter)
+    XCTAssertTrue(off.window.contentView === off.host)
+    off.window.close()
+
+    await model.refreshChoices()
+    model.selection = ContextSelection(mode: .watchDisplay, choiceId: "display-2")
+    XCTAssertTrue(model.authorize())
+    let scope = try XCTUnwrap(model.current)
+    XCTAssertEqual(scope.condition, .active)
+    let savedHost = mach_absolute_time()
+    let saved = try fixture.preparation.proposeContextEvent(
+      sessionId: fixture.sessionId,
+      proposal: NativeContextProposal(
+        scopeId: scope.scopeId, epoch: scope.epoch, reason: .userMarked,
+        startHostTime: savedHost, endHostTime: savedHost, observedAtMs: 0,
+        source: NativeContextSource(platformId: "2", name: "Studio Display", application: nil),
+        bounds: nil, reducerRevision: ContextReducer.revision,
+        visionRevision: ContextReducer.visionRevision, languages: ["en-US"],
+        blocks: [
+          NativeContextTextBlock(text: "Agenda", x: 0.1, y: 0.1, width: 0.3, height: 0.1)
+        ]))
+    guard case .accepted = saved else { return XCTFail("\(saved)") }
+
+    let live = mount(
+      ContextInspector(model: model).frame(width: 520, height: 280),
+      size: NSSize(width: 520, height: 280))
+    defer { live.window.close() }
+    let offered = await waitUntil(timeoutNanoseconds: 5_000_000_000) {
+      live.host.layoutSubtreeIfNeeded()
+      live.window.displayIfNeeded()
+      guard let button = self.button(titled: "Revoke", in: live.host) else { return false }
+      return button.frame.width > 1 && button.frame.height > 1 && button.isEnabled
+    }
+    let revoke = try XCTUnwrap(self.button(titled: "Revoke", in: live.host))
+    XCTAssertTrue(offered && revoke.isDescendant(of: live.host) && live.window.contentView === live.host)
+    let sampled = await waitUntil(timeoutNanoseconds: 3_000_000_000) {
+      model.current?.condition == .active && script.captureCount > 0
+    }
+    XCTAssertTrue(sampled)
+    revoke.performClick(nil)
+    let revoked = await waitUntil {
+      live.host.layoutSubtreeIfNeeded()
+      return model.current?.condition == .revoked
+    }
+    XCTAssertTrue(revoked)
+    try await Task.sleep(nanoseconds: 300_000_000)
+
+    let before = try library.contextEvents(sessionId: fixture.sessionId)
+    let idsBefore = before.map(\.eventId)
+    let capturesBefore = script.captureCount
+    XCTAssertEqual(before.map(\.text), ["Agenda"])
+    XCTAssertGreaterThan(capturesBefore, 0)
+    gate.openChangedScreen()
+    script.enqueue([frame(["Changed screen"], noise: 90, size: CGSize(width: 64, height: 64))])
+    displays[1] = ContextDisplay(
+      id: 2, name: "Studio Display",
+      frame: CGRect(x: 2400, y: -300, width: 2560, height: 1440),
+      scale: 2, rotation: 0, isMain: false)
+    NotificationCenter.default.post(
+      name: NSApplication.didChangeScreenParametersNotification, object: nil)
+    try await Task.sleep(nanoseconds: 1_200_000_000)
+
+    XCTAssertEqual(model.current?.condition, .revoked)
+    XCTAssertNotEqual(model.current?.reason, "topology_changed")
+    XCTAssertNil(model.message)
+    XCTAssertEqual(script.captureCount, capturesBefore)
+    let events = try library.contextEvents(sessionId: fixture.sessionId)
+    XCTAssertEqual(events.map(\.eventId), idsBefore)
+    XCTAssertEqual(events.map(\.text), ["Agenda"])
+    XCTAssertTrue(events.allSatisfy { $0.retention == "no_pixels" })
+    let images = FileManager.default.enumerator(at: fixture.root, includingPropertiesForKeys: nil)?
+      .compactMap { $0 as? URL }
+      .filter {
+        ["png", "jpg", "jpeg", "heic", "tiff", "bmp", "gif"].contains($0.pathExtension.lowercased())
+      }
+    XCTAssertEqual(images ?? [], [])
+    live.window.close()
+
+    let status = mount(
+      ContextInspector(model: model).frame(width: 520, height: 180),
+      size: NSSize(width: 520, height: 180))
+    defer { status.window.close() }
+    let stopped = await waitUntil(timeoutNanoseconds: 5_000_000_000) {
+      status.host.layoutSubtreeIfNeeded()
+      status.window.displayIfNeeded()
+      return self.visibleText(in: status.host).contains("Stopped")
+    }
+    let statusText = visibleText(in: status.host)
+    XCTAssertTrue(stopped, statusText)
+    XCTAssertTrue(statusText.contains("Stopped"), statusText)
+    XCTAssertFalse(statusText.contains("Changed screen"), statusText)
+    XCTAssertTrue(status.window.contentView === status.host)
+
+    model.refreshDetail()
+    let review = mount(
+      ContextEventsSection(detail: model.detail, events: events).frame(width: 640, height: 420),
+      size: NSSize(width: 640, height: 420))
+    defer { review.window.close() }
+    let saw = await waitUntil(timeoutNanoseconds: 5_000_000_000) {
+      review.host.layoutSubtreeIfNeeded()
+      review.window.displayIfNeeded()
+      let text = self.visibleText(in: review.host)
+      return text.contains("Stopped")
+        && text.contains(ContextScopeSummary.retention)
+        && text.contains("Agenda")
+    }
+    let visible = visibleText(in: review.host)
+    XCTAssertTrue(saw, visible)
+    XCTAssertTrue(visible.contains("Stopped"), visible)
+    XCTAssertTrue(visible.contains(ContextScopeSummary.retention), visible)
+    XCTAssertTrue(visible.contains("Agenda"), visible)
+    XCTAssertFalse(visible.contains("Changed screen"), visible)
+    XCTAssertTrue(review.window.contentView === review.host)
+    withExtendedLifetime(fixture.writer) {}
+  }
+
+  private func mount<V: View>(_ view: V, size: NSSize) -> (window: NSWindow, host: NSHostingView<V>) {
+    let host = NSHostingView(rootView: view)
+    host.sizingOptions = []
+    let window = NSWindow(
+      contentRect: NSRect(origin: .zero, size: size),
+      styleMask: [.titled, .closable], backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    window.contentView = host
+    window.setContentSize(size)
+    host.frame = window.contentLayoutRect
+    window.makeKeyAndOrderFront(nil)
+    window.orderFrontRegardless()
+    return (window, host)
+  }
+
   private func button(titled title: String, in root: NSView) -> NSButton? {
     if let button = root as? NSButton,
       button.title == title || button.accessibilityLabel() == title

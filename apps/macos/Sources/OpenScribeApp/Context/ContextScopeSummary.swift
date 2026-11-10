@@ -61,6 +61,8 @@ enum ContextScopeSummary {
 
   static let retention = "No screen images are kept. Only recognized text is saved."
 
+  static let off = "Context is off. Open Scribe is not reading the screen."
+
   static func exclusions(_ exclusions: [String]) -> String {
     let names: [String: String] = [
       "open_scribe": "Open Scribe", "dock": "the Dock", "menu_bar": "the menu bar",

@@ -24,11 +24,9 @@ struct ContextInspector: View {
           .frame(maxWidth: .infinity, minHeight: 28, alignment: .leading)
         Button("Narrow Scope…") { showsPreflight = true }
       } else {
-        if let scope = model.current {
-          Text(ContextScopeSummary.condition(scope)).foregroundStyle(.secondary)
-        } else {
-          Text("Context is off. Open Scribe is not reading the screen.").foregroundStyle(.secondary)
-        }
+        ContextRetentionReadout(
+          label: "Context status",
+          text: model.current.map { ContextScopeSummary.condition($0) } ?? ContextScopeSummary.off)
         Button("Add Screen Context…") { showsPreflight = true }
           .disabled(!model.canAuthorize)
       }
@@ -393,7 +391,7 @@ struct ContextEventsSection: View {
     if let detail, Self.hasHistory(detail) {
       VStack(alignment: .leading, spacing: 10) {
         Text("Screen context").font(.title3.weight(.semibold)).accessibilityAddTraits(.isHeader)
-        ContextRetentionReadout(text: Self.savedContextText(detail))
+        ContextRetentionReadout(label: "Saved context", text: Self.savedContextText(detail))
         LazyVStack(alignment: .leading, spacing: 10) {
           ForEach(events, id: \.eventId) { event in
             ContextEventRow(event: event, canSeek: canSeek, onSeek: onSeek)
@@ -414,16 +412,17 @@ struct ContextEventsSection: View {
 }
 
 private struct ContextRetentionReadout: NSViewRepresentable {
+  let label: String
   let text: String
 
   func makeNSView(context: Context) -> ContextRetentionControl {
     let view = ContextRetentionControl()
-    view.apply(text)
+    view.apply(label: label, text: text)
     return view
   }
 
   func updateNSView(_ view: ContextRetentionControl, context: Context) {
-    view.apply(text)
+    view.apply(label: label, text: text)
   }
 }
 
@@ -435,7 +434,6 @@ private final class ContextRetentionControl: NSView {
     field.font = .preferredFont(forTextStyle: .callout)
     field.textColor = .secondaryLabelColor
     field.setAccessibilityRole(.staticText)
-    field.setAccessibilityLabel("Saved context")
     field.isSelectable = true
     field.maximumNumberOfLines = 0
     field.cell?.wraps = true
@@ -459,8 +457,9 @@ private final class ContextRetentionControl: NSView {
     return NSSize(width: NSView.noIntrinsicMetric, height: height)
   }
 
-  func apply(_ text: String) {
+  func apply(label: String, text: String) {
     field.stringValue = text
+    field.setAccessibilityLabel(label)
     field.isHidden = text.isEmpty
     field.preferredMaxLayoutWidth = 600
     invalidateIntrinsicContentSize()
