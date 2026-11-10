@@ -107,7 +107,7 @@ local processing with an installed, verified speech model. **Set Up Transcriptio
 opens model setup when one is needed. Queue and failure messages explain
 whether processing is waiting, incomplete, cancelled, or failed.
 
-**Transcription → Reprocess All Tracks** requests replacement processing.
+**Reprocess All Tracks** requests replacement processing.
 Earlier revisions and corrections remain in history. Review changes can
 prevent a background replacement from becoming selected automatically. Use
 this action to request new processing, not to save an ordinary correction.

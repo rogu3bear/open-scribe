@@ -23,7 +23,6 @@ struct TranscriptSection: View {
   @State private var draftLabel = ""
   @State private var renameRequest = UUID()
   @State private var showingModels = false
-  @State private var showingReprocessConfirmation = false
 
   /// The reader is part of the document only after this model is bound to
   /// this session and has passages. The view task performs that binding.
@@ -93,6 +92,12 @@ struct TranscriptSection: View {
       if !showingModels, session.transcriptionUnavailableReason == nil {
         outcomeNote
       }
+      if session.transcript.documentAvailability == .final
+        || session.transcript.replacementResumable
+      {
+        ReprocessMount(sessionId: session.sessionId, scheduler: scheduler)
+          .frame(maxWidth: .infinity, minHeight: 96, alignment: .topLeading)
+      }
       if Self.showsReader(session: session, transcripts: transcripts) {
         TranscriptReader(
           sessionId: session.sessionId, transcripts: transcripts, canSeek: canSeek,
@@ -126,15 +131,6 @@ struct TranscriptSection: View {
     .sheet(isPresented: $showingModels) {
       SpeechModelSheet(speech: speech) { showingModels = false }
     }
-    .confirmationDialog("Reprocess all audio tracks?", isPresented: $showingReprocessConfirmation) {
-      Button("Reprocess All Tracks") {
-        scheduler.request(sessionId: session.sessionId, intent: .reprocessAll)
-      }
-    } message: {
-      Text(
-        "This creates replacement revisions, reusing compatible saved recognition when available. A replacement becomes selected only if its review selection and edits have not changed since this request. Earlier revisions and their corrections remain in history."
-      )
-    }
   }
 
   var showsTranscriptionControls: Bool {
@@ -163,15 +159,10 @@ struct TranscriptSection: View {
           scheduler.request(sessionId: session.sessionId, intent: .reconcileRetained)
         }
       }
-      if session.transcript.documentAvailability == .final
-        || session.transcript.replacementResumable
-      {
-        if session.transcript.replacementResumable {
-          Button("Resume Replacement") {
-            scheduler.resumeReplacement(sessionId: session.sessionId)
-          }
+      if session.transcript.replacementResumable {
+        Button("Resume Replacement") {
+          scheduler.resumeReplacement(sessionId: session.sessionId)
         }
-        Button("Reprocess All Tracks…") { showingReprocessConfirmation = true }
       }
     }
   }
@@ -640,6 +631,136 @@ struct ClaimReviewSection: View {
     }
     parts.append(claim.text)
     return parts.joined(separator: ". ")
+  }
+}
+
+/// Replacement processing for a transcript that is already final. The request
+/// and its confirmation are AppKit controls so the hosted window can read and
+/// click them. One control starts the replacement; the menu does not repeat it.
+private struct ReprocessMount: NSViewRepresentable {
+  let sessionId: String
+  @ObservedObject var scheduler: TranscriptionScheduler
+
+  func makeNSView(context: Context) -> ReprocessControl {
+    let view = ReprocessControl()
+    view.bind(sessionId: sessionId, scheduler: scheduler)
+    return view
+  }
+
+  func updateNSView(_ view: ReprocessControl, context: Context) {
+    view.bind(sessionId: sessionId, scheduler: scheduler)
+  }
+}
+
+private final class ReprocessControl: NSView {
+  static let requestLabel = "Reprocess All Tracks…"
+  static let confirmLabel = "Reprocess All Tracks"
+  static let explanation =
+    "This creates replacement revisions, reusing compatible saved recognition when available. A replacement becomes selected only if its review selection and edits have not changed since this request. Earlier revisions and their corrections remain in history."
+
+  private let requestButton = NSButton(title: ReprocessControl.requestLabel, target: nil, action: nil)
+  private let explanationField = NSTextField(wrappingLabelWithString: "")
+  private let confirmButton = NSButton(title: ReprocessControl.confirmLabel, target: nil, action: nil)
+  private let cancelButton = NSButton(title: "Cancel", target: nil, action: nil)
+  private var subscription: AnyCancellable?
+  private var sessionId: String?
+  private var scheduler: TranscriptionScheduler?
+  private var showingConfirmation = false
+
+  override init(frame frameRect: NSRect) {
+    super.init(frame: frameRect)
+    setAccessibilityIdentifier("Reprocess transcript")
+    requestButton.bezelStyle = .rounded
+    requestButton.setAccessibilityLabel(Self.requestLabel)
+    requestButton.target = self
+    requestButton.action = #selector(ask)
+    explanationField.stringValue = Self.explanation
+    explanationField.font = .preferredFont(forTextStyle: .callout)
+    explanationField.textColor = .secondaryLabelColor
+    explanationField.maximumNumberOfLines = 4
+    explanationField.lineBreakMode = .byWordWrapping
+    explanationField.setAccessibilityLabel("Replacement revisions")
+    confirmButton.bezelStyle = .rounded
+    confirmButton.setAccessibilityLabel(Self.confirmLabel)
+    confirmButton.target = self
+    confirmButton.action = #selector(confirm)
+    cancelButton.bezelStyle = .rounded
+    cancelButton.setAccessibilityLabel("Cancel reprocess")
+    cancelButton.target = self
+    cancelButton.action = #selector(cancel)
+    let actions = NSStackView(views: [confirmButton, cancelButton])
+    actions.orientation = .horizontal
+    actions.alignment = .centerY
+    actions.spacing = ScribeSpacing.related
+    let column = NSStackView(views: [requestButton, explanationField, actions])
+    column.orientation = .vertical
+    column.alignment = .leading
+    column.spacing = ScribeSpacing.compact
+    column.translatesAutoresizingMaskIntoConstraints = false
+    explanationField.translatesAutoresizingMaskIntoConstraints = false
+    explanationField.widthAnchor.constraint(lessThanOrEqualToConstant: 640).isActive = true
+    addSubview(column)
+    NSLayoutConstraint.activate([
+      column.leadingAnchor.constraint(equalTo: leadingAnchor),
+      column.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor),
+      column.topAnchor.constraint(equalTo: topAnchor),
+      column.bottomAnchor.constraint(lessThanOrEqualTo: bottomAnchor),
+    ])
+    apply()
+  }
+
+  required init?(coder: NSCoder) { nil }
+
+  override var intrinsicContentSize: NSSize {
+    NSSize(width: NSView.noIntrinsicMetric, height: showingConfirmation ? 96 : 32)
+  }
+
+  func bind(sessionId: String, scheduler: TranscriptionScheduler) {
+    let same = self.sessionId == sessionId && self.scheduler === scheduler
+    self.sessionId = sessionId
+    self.scheduler = scheduler
+    if !same {
+      subscription = scheduler.objectWillChange.sink { [weak self] _ in
+        DispatchQueue.main.async { self?.apply() }
+      }
+    }
+    apply()
+  }
+
+  private func apply() {
+    let busy = isBusy
+    requestButton.isHidden = showingConfirmation
+    requestButton.isEnabled = !busy
+    explanationField.isHidden = !showingConfirmation
+    confirmButton.isHidden = !showingConfirmation
+    cancelButton.isHidden = !showingConfirmation
+    confirmButton.isEnabled = showingConfirmation && !busy
+    invalidateIntrinsicContentSize()
+  }
+
+  private var isBusy: Bool {
+    guard let sessionId, let scheduler else { return false }
+    if scheduler.runningSessionId == sessionId { return true }
+    if case .queued = scheduler.state(for: sessionId) { return true }
+    return false
+  }
+
+  @objc private func ask() {
+    guard !isBusy else { return }
+    showingConfirmation = true
+    apply()
+  }
+
+  @objc private func cancel() {
+    showingConfirmation = false
+    apply()
+  }
+
+  @objc private func confirm() {
+    guard let sessionId, let scheduler, !isBusy else { return }
+    showingConfirmation = false
+    apply()
+    scheduler.request(sessionId: sessionId, intent: .reprocessAll)
   }
 }
 

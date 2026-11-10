@@ -691,6 +691,292 @@ final class SpeechTranscriptionModelTests: XCTestCase {
     withExtendedLifetime(speech) {}
   }
 
+  /// A final transcript is already selected. The hosted reprocess button asks,
+  /// then starts a replacement. The original revision text and the source audio
+  /// stay in place while that replacement is created.
+  func testHostedReprocessKeepsTheSelectedTranscriptAndTheSourceAudio() async throws {
+    let environment = ProcessInfo.processInfo.environment
+    guard let modelPath = environment["OPEN_SCRIBE_WHISPER_MODEL"],
+      let speechPath = environment["OPEN_SCRIBE_WHISPER_SPEECH_M4A"]
+    else {
+      throw XCTSkip("Set OPEN_SCRIBE_WHISPER_MODEL and OPEN_SCRIBE_WHISPER_SPEECH_M4A.")
+    }
+    let root = temporaryRoot()
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let source = root.appendingPathComponent("Spoken.m4a")
+    try FileManager.default.copyItem(at: URL(fileURLWithPath: speechPath), to: source)
+    let original = try Data(contentsOf: source)
+    let managedRoot = root.appendingPathComponent("Library", isDirectory: true)
+    let recovery = RecoveredSessionController(
+      recoveryFactory: {
+        try NativeRecordingPreparation.open(managedRoot: managedRoot.path)
+      },
+      importedPlaybackLeaseProvider: { sessionId in
+        try NativeRecordingPreparation.open(managedRoot: managedRoot.path)
+          .leaseImportedPlayback(sessionId: sessionId)
+      },
+      player: RecoveredAudioPlayerFake()
+    )
+    let live = LiveMicrophoneRecordingController(managedRoot: managedRoot)
+    live.isLaunchRecoveryPending = { !recovery.captureSafetyComplete }
+    let store = RuntimeLibraryStore(
+      managedRoot: managedRoot, isLaunchRecoveryPending: { !recovery.captureSafetyComplete })
+    let speech = SpeechTranscriptionModel(managedRoot: managedRoot)
+    let pressure = SystemPressureMonitor(libraryRoot: managedRoot, samplesAutomatically: false)
+    let defaults = UserDefaults(suiteName: "OpenScribe.Proof.Reprocess.\(UUID().uuidString)")!
+    let scheduler = TranscriptionScheduler(
+      managedRoot: managedRoot, speech: speech, store: store, liveRecording: live,
+      recovery: recovery, pressure: pressure, defaults: defaults)
+    recovery.recoverOnLaunch()
+    await recovery.waitForLaunchRecovery()
+    XCTAssertTrue(recovery.captureSafetyComplete)
+    await speech.refreshAndWait()
+    let evidence = try store.importManagedAudio(title: "Spoken", sourceURL: source)
+    let sessionId = evidence.sessionId
+    let record = try XCTUnwrap(speech.models.first { $0.modelId == "whisper-small.en-q5_1" })
+    let installed = await speech.install(record, from: URL(fileURLWithPath: modelPath))
+    XCTAssertTrue(installed, speech.message ?? "")
+    let transcribed = await waitUntil(timeoutNanoseconds: 180_000_000_000) {
+      store.refresh()
+      guard let session = store.savedSessions.first(where: { $0.sessionId == sessionId }) else {
+        return false
+      }
+      return session.transcript.documentAvailability == .final
+        && session.transcript.selectedRevisionIds.isEmpty == false
+        && scheduler.runningSessionId == nil
+        && scheduler.queue.isEmpty
+    }
+    XCTAssertTrue(
+      transcribed,
+      "state=\(String(describing: scheduler.state(for: sessionId))) hold=\(String(describing: scheduler.hold)) message=\(speech.message ?? "")"
+    )
+    store.refresh()
+    let session = try XCTUnwrap(store.savedSessions.first { $0.sessionId == sessionId })
+    let mediaBefore = try audioFiles(under: managedRoot)
+    XCTAssertFalse(mediaBefore.isEmpty)
+    let before = try storedRevisions(managedRoot: managedRoot, sessionId: sessionId)
+    let selected = try XCTUnwrap(
+      before.first { $0.selected },
+      "session=\(sessionId) revisions=\(before) snapshot=\(session.transcript.selectedRevisionIds)"
+    )
+    XCTAssertFalse(selected.text.isEmpty, before.map(\.text).joined(separator: " | "))
+    let beforeIds = Set(before.map(\.id))
+    let section = TranscriptSection(
+      session: session, transcripts: TranscriptLibraryModel(managedRoot: managedRoot),
+      speech: speech, scheduler: scheduler, canSeek: false, onSeek: { _ in }
+    ).frame(width: 720, height: 900)
+    let host = NSHostingView(rootView: section)
+    host.sizingOptions = []
+    let window = NSWindow(
+      contentRect: NSRect(x: 0, y: 0, width: 720, height: 900),
+      styleMask: [.titled, .closable], backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    window.contentView = host
+    window.setContentSize(NSSize(width: 720, height: 900))
+    host.frame = window.contentLayoutRect
+    window.makeKeyAndOrderFront(nil)
+    window.orderFrontRegardless()
+    defer { window.close() }
+    let asked = await waitUntil(timeoutNanoseconds: 15_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      window.displayIfNeeded()
+      return self.hostedButton(labeled: "Reprocess All Tracks…", in: host) != nil
+    }
+    XCTAssertTrue(asked && window.contentView === host, self.buttonProbe(in: host))
+    let request = try XCTUnwrap(self.hostedButton(labeled: "Reprocess All Tracks…", in: host))
+    XCTAssertTrue(request.isDescendant(of: host))
+    request.performClick(nil)
+    let confirmed = await waitUntil(timeoutNanoseconds: 5_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      guard let field = self.hostedField(labeled: "Replacement revisions", in: host),
+        let confirm = self.hostedButton(labeled: "Reprocess All Tracks", in: host)
+      else { return false }
+      return field.stringValue.contains(
+        "Earlier revisions and their corrections remain in history.")
+        && confirm.isEnabled
+    }
+    XCTAssertTrue(confirmed && window.contentView === host, self.buttonProbe(in: host))
+    let stillSelected = try storedRevisions(managedRoot: managedRoot, sessionId: sessionId)
+    XCTAssertEqual(stillSelected, before)
+    XCTAssertEqual(try Data(contentsOf: source), original)
+    let confirm = try XCTUnwrap(self.hostedButton(labeled: "Reprocess All Tracks", in: host))
+    XCTAssertTrue(confirm.isDescendant(of: host))
+    confirm.performClick(nil)
+    var originalMissing = false
+    let replaced = await waitUntil(timeoutNanoseconds: 180_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      guard let rows = try? self.storedRevisions(managedRoot: managedRoot, sessionId: sessionId)
+      else { return false }
+      if rows.contains(where: { $0.id == selected.id && $0.text == selected.text }) == false {
+        originalMissing = true
+      }
+      let ids = Set(rows.map(\.id))
+      return ids.isSuperset(of: beforeIds) && ids.count > beforeIds.count
+        && scheduler.runningSessionId == nil
+        && scheduler.queue.isEmpty
+    }
+    XCTAssertFalse(originalMissing)
+    XCTAssertTrue(
+      replaced,
+      "state=\(String(describing: scheduler.state(for: sessionId))) hold=\(String(describing: scheduler.hold)) message=\(speech.message ?? "") rows=\(String(describing: try? storedRevisions(managedRoot: managedRoot, sessionId: sessionId)))"
+    )
+    let after = try storedRevisions(managedRoot: managedRoot, sessionId: sessionId)
+    let kept = try XCTUnwrap(after.first { $0.id == selected.id })
+    XCTAssertEqual(kept.text, selected.text)
+    XCTAssertGreaterThan(Set(after.map(\.id)).subtracting(beforeIds).count, 0)
+    XCTAssertEqual(try audioFiles(under: managedRoot), mediaBefore)
+    XCTAssertEqual(try Data(contentsOf: source), original)
+    let library = try NativeTranscriptLibrary.open(managedRoot: managedRoot.path)
+    let document = try library.document(sessionId: sessionId)
+    XCTAssertFalse(document.isEmpty)
+    withExtendedLifetime(scheduler) {}
+    withExtendedLifetime(speech) {}
+  }
+
+  private func audioFiles(under root: URL) throws -> [String: Data] {
+    var files: [String: Data] = [:]
+    let sessions = root.appendingPathComponent("Sessions")
+    guard let enumerator = FileManager.default.enumerator(
+      at: sessions, includingPropertiesForKeys: [.isRegularFileKey])
+    else { return files }
+    for case let url as URL in enumerator {
+      guard ["m4a", "caf", "wav", "aac"].contains(url.pathExtension.lowercased()) else { continue }
+      let values = try url.resourceValues(forKeys: [.isRegularFileKey])
+      guard values.isRegularFile == true else { continue }
+      let base = sessions.standardizedFileURL.path
+      let full = url.standardizedFileURL.path
+      let prefix = base.hasSuffix("/") ? base : base + "/"
+      guard full.hasPrefix(prefix) else { continue }
+      files[String(full.dropFirst(prefix.count))] = try Data(contentsOf: url)
+    }
+    return files
+  }
+
+  private struct StoredRevision: Equatable {
+    let id: String
+    let selected: Bool
+    let text: String
+  }
+
+  private func storedRevisions(managedRoot: URL, sessionId: String) throws -> [StoredRevision] {
+    let allowed = CharacterSet(charactersIn: "0123456789abcdefABCDEF-")
+    guard sessionId.count == 36, sessionId.unicodeScalars.allSatisfy(allowed.contains) else {
+      throw CocoaError(.fileReadInvalidFileName)
+    }
+    let database = managedRoot.appendingPathComponent("Library.sqlite3")
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/usr/bin/sqlite3")
+    process.arguments = [
+      "-cmd", ".timeout 2000",
+      database.path,
+      """
+      SELECT revisions.id || '|' || \
+      EXISTS(SELECT 1 FROM transcript_selections WHERE revision_id = revisions.id) || '|' || \
+      ifnull(segments.sequence, -1) || '|' || \
+      hex(ifnull(segments.text, ''))
+      FROM transcript_revisions AS revisions
+      LEFT JOIN transcript_segments AS segments ON segments.revision_id = revisions.id
+      WHERE revisions.session_id = '\(sessionId)'
+      ORDER BY revisions.created_at_ms, revisions.id, segments.sequence;
+      """,
+    ]
+    let output = Pipe()
+    let errors = Pipe()
+    process.standardOutput = output
+    process.standardError = errors
+    try process.run()
+    process.waitUntilExit()
+    let text = String(data: output.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+    guard process.terminationStatus == 0 else {
+      let detail = String(data: errors.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+      throw NSError(
+        domain: "OpenScribeTest", code: 1,
+        userInfo: [NSLocalizedDescriptionKey: "revision query failed: \(detail.prefix(400))"])
+    }
+    var grouped: [String: (selected: Bool, parts: [(Int, String)])] = [:]
+    var order: [String] = []
+    for line in text.split(separator: "\n", omittingEmptySubsequences: true) {
+      let fields = line.split(separator: "|", omittingEmptySubsequences: false).map(String.init)
+      guard fields.count == 4, let sequence = Int(fields[2]), let segment = decodeHex(fields[3])
+      else { continue }
+      if grouped[fields[0]] == nil { order.append(fields[0]) }
+      var entry = grouped[fields[0]] ?? (fields[1] == "1", [])
+      entry.selected = fields[1] == "1"
+      if sequence >= 0 { entry.parts.append((sequence, segment)) }
+      grouped[fields[0]] = entry
+    }
+    if order.isEmpty, text.isEmpty == false {
+      throw NSError(
+        domain: "OpenScribeTest", code: 1,
+        userInfo: [NSLocalizedDescriptionKey: "unparsed revisions: \(text.prefix(400))"])
+    }
+    return order.map { id in
+      let entry = grouped[id] ?? (false, [])
+      let joined = entry.parts.sorted { $0.0 < $1.0 }.map(\.1).joined(separator: " ")
+      return StoredRevision(id: id, selected: entry.selected, text: joined)
+    }
+  }
+
+  private func decodeHex(_ hex: String) -> String? {
+    guard hex.count.isMultiple(of: 2) else { return nil }
+    var data = Data(capacity: hex.count / 2)
+    var index = hex.startIndex
+    while index < hex.endIndex {
+      let next = hex.index(index, offsetBy: 2)
+      guard let byte = UInt8(hex[index..<next], radix: 16) else { return nil }
+      data.append(byte)
+      index = next
+    }
+    return String(data: data, encoding: .utf8)
+  }
+
+  private func hostedButton(labeled label: String, in root: NSView) -> NSButton? {
+    if let button = root as? NSButton, !(button is NSPopUpButton),
+      button.accessibilityLabel() == label,
+      button.isHidden == false,
+      button.isHiddenOrHasHiddenAncestor == false,
+      button.frame.width > 1,
+      button.frame.height > 1
+    {
+      return button
+    }
+    for subview in root.subviews {
+      if let found = hostedButton(labeled: label, in: subview) { return found }
+    }
+    return nil
+  }
+
+  private func hostedField(labeled label: String, in root: NSView) -> NSTextField? {
+    if let field = root as? NSTextField,
+      field.accessibilityLabel() == label,
+      field.isHidden == false,
+      field.isHiddenOrHasHiddenAncestor == false,
+      field.frame.width > 1,
+      field.frame.height > 1
+    {
+      return field
+    }
+    for subview in root.subviews {
+      if let found = hostedField(labeled: label, in: subview) { return found }
+    }
+    return nil
+  }
+
+  private func buttonProbe(in root: NSView) -> String {
+    var lines: [String] = []
+    func walk(_ view: NSView) {
+      if let button = view as? NSButton, !(button is NSPopUpButton) {
+        lines.append(
+          "button=\(button.accessibilityLabel() ?? button.title) hidden=\(button.isHidden) frame=\(button.frame)"
+        )
+      }
+      for child in view.subviews { walk(child) }
+    }
+    walk(root)
+    return lines.joined(separator: "\n")
+  }
+
   private func waitUntil(
     timeoutNanoseconds: UInt64 = 3_000_000_000, _ body: () -> Bool
   ) async -> Bool {
