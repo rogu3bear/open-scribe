@@ -1615,6 +1615,65 @@ final class RecoveredSessionControllerTests: RecoveredSessionTestCase {
     return matched
   }
 
+  private func hostedField(labeled label: String, in root: NSView) -> NSTextField? {
+    var matched: NSTextField?
+    func walk(_ view: NSView) {
+      if matched != nil { return }
+      if let field = view as? NSTextField,
+        field.accessibilityLabel() == label,
+        field.isHidden == false,
+        field.isHiddenOrHasHiddenAncestor == false,
+        field.frame.width > 1,
+        field.frame.height > 1
+      {
+        matched = field
+      }
+      for child in view.subviews { walk(child) }
+    }
+    walk(root)
+    return matched
+  }
+
+  private func hostedPopup(labeled label: String, in root: NSView) -> NSPopUpButton? {
+    var matched: NSPopUpButton?
+    func walk(_ view: NSView) {
+      if matched != nil { return }
+      if let popup = view as? NSPopUpButton,
+        popup.accessibilityLabel() == label || popup.accessibilityIdentifier() == label,
+        popup.isHidden == false,
+        popup.isHiddenOrHasHiddenAncestor == false,
+        popup.frame.width > 1,
+        popup.frame.height > 1
+      {
+        matched = popup
+      }
+      for child in view.subviews { walk(child) }
+    }
+    walk(root)
+    return matched
+  }
+
+  private func hostedControlProbe(in root: NSView) -> String {
+    var lines: [String] = []
+    func walk(_ view: NSView) {
+      if let button = view as? NSButton {
+        lines.append(
+          "button label=\(button.accessibilityLabel() ?? "") title=\(button.title) frame=\(button.frame) hidden=\(button.isHidden) ancestor=\(button.isHiddenOrHasHiddenAncestor) enabled=\(button.isEnabled)"
+        )
+      } else if let field = view as? NSTextField {
+        lines.append(
+          "field label=\(field.accessibilityLabel() ?? "") value=\(field.stringValue) frame=\(field.frame) hidden=\(field.isHidden) ancestor=\(field.isHiddenOrHasHiddenAncestor)"
+        )
+      }
+      if view.accessibilityIdentifier() == "Speaker review" {
+        lines.append("banner frame=\(view.frame) hidden=\(view.isHidden)")
+      }
+      for child in view.subviews { walk(child) }
+    }
+    walk(root)
+    return lines.joined(separator: "\n")
+  }
+
   private func claimButtonProbe(in root: NSView) -> [String] {
     var lines: [String] = []
     func walk(_ view: NSView) {
@@ -1825,6 +1884,309 @@ final class RecoveredSessionControllerTests: RecoveredSessionTestCase {
     XCTAssertEqual(try digest(of: packageMedia[0]), packageDigest)
     XCTAssertNil(model.message)
     withExtendedLifetime(library) {}
+  }
+
+  /// The hosted reader names two stored passages, merges the second person
+  /// into the first, renames, splits one passage, and restores the source
+  /// label. The clicks are the shipped controls. The correction and audio stay.
+  func testHostedSpeakerReviewAssignsMergesRenamesSplitsAndRestores() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "open-scribe-hosted-speaker-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let package = root.appendingPathComponent("Stored.openscribe")
+    let export = await exportStoredFinalPackage(to: package)
+    XCTAssertEqual(export.status, 0, String(export.log.suffix(2_000)))
+    let packageMedia = try regularFiles(under: package.appendingPathComponent("media"))
+    XCTAssertEqual(packageMedia.count, 1)
+    let packageDigest = try digest(of: packageMedia[0])
+
+    let managed = root.appendingPathComponent("Library", isDirectory: true)
+    let library = try NativeTranscriptLibrary.open(managedRoot: managed.path)
+    let receipt = try library.importPortablePackage(packagePath: package.path)
+    let stored = try library.document(sessionId: receipt.sessionId)
+    let alpha = try XCTUnwrap(stored.first { $0.sequence == 0 })
+    let bravo = try XCTUnwrap(stored.first { $0.sequence == 1 })
+    XCTAssertEqual(alpha.finality, "final")
+    XCTAssertFalse(alpha.corrected)
+    XCTAssertEqual(bravo.finality, "final")
+    XCTAssertTrue(bravo.corrected)
+    XCTAssertGreaterThan(bravo.startNanoseconds, alpha.endNanoseconds)
+    XCTAssertEqual(alpha.speakerLabel, "Unknown speaker")
+    XCTAssertEqual(bravo.speakerLabel, "Unknown speaker")
+    XCTAssertNil(alpha.namedSpeakerId)
+    XCTAssertNil(bravo.namedSpeakerId)
+    let alphaText = alpha.effectiveText
+    let bravoText = bravo.effectiveText
+    let bravoVerbatim = bravo.verbatimText
+    let libraryMedia = try regularFiles(under: managed.appendingPathComponent("Sessions"))
+      .filter { $0.pathExtension == "caf" }
+    XCTAssertEqual(libraryMedia.count, 1)
+    XCTAssertEqual(try digest(of: libraryMedia[0]), packageDigest)
+
+    let model = TranscriptLibraryModel(managedRoot: managed)
+    await model.load(sessionId: receipt.sessionId)
+    XCTAssertNil(model.message)
+    XCTAssertEqual(
+      model.speakerDiarizationText,
+      "Speakers follow the audio source. Voice diarization is unavailable without a calibrated model."
+    )
+    let alphaStamp = TranscriptSection.timestamp(alpha.startNanoseconds)
+    let bravoStamp = TranscriptSection.timestamp(bravo.startNanoseconds)
+    XCTAssertEqual(alphaStamp, "0:00")
+    XCTAssertEqual(bravoStamp, "0:02")
+    func speakerControl(_ stamp: String, _ label: String) -> String {
+      ConversationControlLabels.nameSpeakerAccessibility(stamp: stamp, label: label)
+    }
+    let alphaUnknown = speakerControl(alphaStamp, "Unknown speaker")
+    let bravoUnknown = speakerControl(bravoStamp, "Unknown speaker")
+    XCTAssertNotEqual(alphaUnknown, bravoUnknown)
+
+    let store = RuntimeLibraryStore(managedRoot: managed, refreshesImmediately: false)
+    store.refresh()
+    let listed = await waitUntil {
+      store.savedSessions.contains { $0.sessionId == receipt.sessionId }
+    }
+    XCTAssertTrue(listed, "saved=\(store.savedSessions.map(\.sessionId))")
+    let navigation = MainWorkspaceNavigation()
+    navigation.select(receipt.sessionId)
+    let player = RecoveredAudioPlayerFake()
+    let playback = RecoveredSessionController(
+      recoveryFactory: { try NativeRecordingPreparation.open(managedRoot: managed.path) },
+      importedPlaybackLeaseProvider: { id in
+        try NativeRecordingPreparation.open(managedRoot: managed.path)
+          .leaseImportedPlayback(sessionId: id)
+      },
+      player: player)
+    let live = LiveMicrophoneRecordingController(managedRoot: managed)
+    let view = ContentView(
+      store: store,
+      importedMediaAuthority: ImportedMediaAuthorityAdapter(
+        startSecurityScope: { _ in true },
+        stopSecurityScope: { _ in },
+        importer: { _, _ in throw NativeStorageError.InvalidRequest }
+      ),
+      liveRecording: live,
+      recoveredSessions: playback,
+      transcripts: model,
+      speech: SpeechTranscriptionModel(managedRoot: managed),
+      scheduler: TranscriptionScheduler.inert(),
+      pressure: SystemPressureMonitor(libraryRoot: managed, samplesAutomatically: false),
+      context: ContextScopeModel(
+        binding: { nil },
+        frames: IdleClaimContextFrames(),
+        permissionCheck: { .denied },
+        permissionRequest: { .denied },
+        topology: { [] }
+      ),
+      navigation: navigation
+    )
+    let host = NSHostingView(rootView: view)
+    host.sizingOptions = []
+    let window = NSWindow(
+      contentRect: NSRect(x: 0, y: 0, width: 1100, height: 720),
+      styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    window.contentView = host
+    window.setContentSize(NSSize(width: 1100, height: 720))
+    host.frame = window.contentLayoutRect
+    window.makeKeyAndOrderFront(nil)
+    window.orderFrontRegardless()
+    defer { window.close() }
+
+    let shown = await waitUntil(timeoutNanoseconds: 5_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      window.displayIfNeeded()
+      return self.claimButton(labeled: alphaUnknown, in: host) != nil
+        && self.claimButton(labeled: bravoUnknown, in: host) != nil
+    }
+    XCTAssertTrue(shown, self.hostedControlProbe(in: host))
+    XCTAssertTrue(window.contentView === host)
+    let alphaButton = try XCTUnwrap(self.claimButton(labeled: alphaUnknown, in: host))
+    XCTAssertTrue(alphaButton.isDescendant(of: host))
+    alphaButton.performClick(nil)
+    let danaFieldShown = await waitUntil(timeoutNanoseconds: 5_000_000_000) {
+      self.hostedField(labeled: "Person's name", in: host) != nil
+        && self.claimButton(labeled: "Save speaker", in: host) != nil
+    }
+    XCTAssertTrue(danaFieldShown && window.contentView === host, self.hostedControlProbe(in: host))
+    let danaField = try XCTUnwrap(self.hostedField(labeled: "Person's name", in: host))
+    danaField.stringValue = "Dana"
+    let saveDana = try XCTUnwrap(self.claimButton(labeled: "Save speaker", in: host))
+    XCTAssertTrue(saveDana.isEnabled, self.hostedControlProbe(in: host))
+    saveDana.performClick(nil)
+    await assertEventually {
+      model.segments.first { $0.sequence == alpha.sequence }?.speakerLabel == "Dana"
+    }
+
+    let bravoButton = try XCTUnwrap(self.claimButton(labeled: bravoUnknown, in: host))
+    XCTAssertTrue(bravoButton.isDescendant(of: host) && window.contentView === host)
+    bravoButton.performClick(nil)
+    let morganFieldShown = await waitUntil(timeoutNanoseconds: 5_000_000_000) {
+      self.hostedField(labeled: "Person's name", in: host) != nil
+    }
+    XCTAssertTrue(morganFieldShown, self.hostedControlProbe(in: host))
+    let morganField = try XCTUnwrap(self.hostedField(labeled: "Person's name", in: host))
+    morganField.stringValue = "Morgan"
+    let saveMorgan = try XCTUnwrap(self.claimButton(labeled: "Save speaker", in: host))
+    XCTAssertTrue(saveMorgan.isEnabled)
+    saveMorgan.performClick(nil)
+    let named = await waitUntil(timeoutNanoseconds: 5_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      return model.segments.first { $0.sequence == bravo.sequence }?.speakerLabel == "Morgan"
+        && self.claimButton(labeled: "Rename Morgan", in: host) != nil
+        && self.claimButton(labeled: "Rename Dana", in: host) != nil
+    }
+    XCTAssertTrue(named && window.contentView === host, self.hostedControlProbe(in: host))
+
+    // Morgan is the person being edited, so merge absorbs Morgan and keeps Dana.
+    let renameMorgan = try XCTUnwrap(self.claimButton(labeled: "Rename Morgan", in: host))
+    XCTAssertTrue(renameMorgan.isDescendant(of: host))
+    renameMorgan.performClick(nil)
+    let mergeShown = await waitUntil(timeoutNanoseconds: 5_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      return self.hostedPopup(labeled: "Merge into", in: host) != nil
+        && self.claimButton(labeled: "Merge speakers", in: host) != nil
+    }
+    XCTAssertTrue(mergeShown, self.hostedControlProbe(in: host))
+    let popup = try XCTUnwrap(self.hostedPopup(labeled: "Merge into", in: host))
+    popup.selectItem(withTitle: "Dana")
+    XCTAssertEqual(popup.selectedItem?.title, "Dana")
+    let merge = try XCTUnwrap(self.claimButton(labeled: "Merge speakers", in: host))
+    XCTAssertTrue(merge.isEnabled && merge.isDescendant(of: host), self.hostedControlProbe(in: host))
+    merge.performClick(nil)
+    await assertEventually {
+      model.segments.map(\.speakerLabel) == ["Dana", "Dana"]
+        && model.namedSpeakerTurnHistory.first { $0.sequence == bravo.sequence }?.revisions.map(
+          \.label) == ["Morgan", "Dana"]
+    }
+    let mergedHistory = try XCTUnwrap(
+      model.namedSpeakerTurnHistory.first { $0.sequence == bravo.sequence })
+    XCTAssertEqual(mergedHistory.revisions.map(\.origin), [.human, .human])
+    XCTAssertEqual(model.namedSpeakers.first { $0.label == "Dana" }?.selectedTurns, 2)
+    XCTAssertEqual(
+      TranscriptLibraryModel.namedSpeakerTurnHistoryText(for: mergedHistory),
+      """
+      Source default: Unknown speaker
+      Morgan, named by you
+      Dana, named by you
+      """)
+
+    let renameDana = try XCTUnwrap(self.claimButton(labeled: "Rename Dana", in: host))
+    XCTAssertTrue(renameDana.isDescendant(of: host) && window.contentView === host)
+    renameDana.performClick(nil)
+    let renameShown = await waitUntil(timeoutNanoseconds: 5_000_000_000) {
+      self.hostedField(labeled: "Person's name", in: host)?.stringValue == "Dana"
+    }
+    XCTAssertTrue(renameShown, self.hostedControlProbe(in: host))
+    let renameField = try XCTUnwrap(self.hostedField(labeled: "Person's name", in: host))
+    renameField.stringValue = "D. Morgan"
+    let saveRename = try XCTUnwrap(self.claimButton(labeled: "Save speaker", in: host))
+    XCTAssertTrue(saveRename.isEnabled)
+    saveRename.performClick(nil)
+    let renamedLabel = speakerControl(bravoStamp, "D. Morgan")
+    let renamed = await waitUntil(timeoutNanoseconds: 5_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      return model.segments.map(\.speakerLabel) == ["D. Morgan", "D. Morgan"]
+        && self.claimButton(labeled: renamedLabel, in: host) != nil
+    }
+    XCTAssertTrue(renamed, self.hostedControlProbe(in: host))
+    let renamedHistory = try XCTUnwrap(
+      model.namedSpeakerTurnHistory.first { $0.sequence == bravo.sequence })
+    XCTAssertEqual(renamedHistory.revisions.map(\.label), ["Morgan", "Dana"])
+
+    let splitPassage = try XCTUnwrap(self.claimButton(labeled: renamedLabel, in: host))
+    XCTAssertTrue(splitPassage.isDescendant(of: host) && window.contentView === host)
+    splitPassage.performClick(nil)
+    let splitShown = await waitUntil(timeoutNanoseconds: 5_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      return self.hostedField(labeled: "Name for the split passage", in: host) != nil
+        && self.claimButton(labeled: "Split this passage", in: host) != nil
+    }
+    XCTAssertTrue(splitShown, self.hostedControlProbe(in: host))
+    let splitField = try XCTUnwrap(self.hostedField(labeled: "Name for the split passage", in: host))
+    splitField.stringValue = "Mina"
+    let split = try XCTUnwrap(self.claimButton(labeled: "Split this passage", in: host))
+    XCTAssertTrue(split.isEnabled && split.isDescendant(of: host), self.hostedControlProbe(in: host))
+    split.performClick(nil)
+    let minaLabel = speakerControl(bravoStamp, "Mina")
+    let splitDone = await waitUntil(timeoutNanoseconds: 5_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      return model.segments.first { $0.sequence == bravo.sequence }?.speakerLabel == "Mina"
+        && model.segments.first { $0.sequence == alpha.sequence }?.speakerLabel == "D. Morgan"
+        && self.claimButton(labeled: minaLabel, in: host) != nil
+    }
+    XCTAssertTrue(splitDone && window.contentView === host, self.hostedControlProbe(in: host))
+    let grown = try XCTUnwrap(
+      model.namedSpeakerTurnHistory.first { $0.sequence == bravo.sequence })
+    XCTAssertEqual(grown.revisions.map(\.label), ["Morgan", "Dana", "Mina"])
+    XCTAssertEqual(
+      TranscriptLibraryModel.namedSpeakerTurnHistoryText(for: grown),
+      """
+      Source default: Unknown speaker
+      Morgan, named by you
+      Dana, named by you
+      Mina, named by you
+      """)
+    XCTAssertEqual(model.namedSpeakers.first { $0.label == "D. Morgan" }?.selectedTurns, 1)
+    XCTAssertEqual(model.namedSpeakers.first { $0.label == "Mina" }?.selectedTurns, 1)
+
+    let restoreLabel = speakerControl(alphaStamp, "D. Morgan")
+    let restorePassage = try XCTUnwrap(self.claimButton(labeled: restoreLabel, in: host))
+    XCTAssertTrue(restorePassage.isDescendant(of: host))
+    restorePassage.performClick(nil)
+    let sourceShown = await waitUntil(timeoutNanoseconds: 5_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      return self.claimButton(labeled: "Use audio source label", in: host) != nil
+    }
+    XCTAssertTrue(sourceShown, self.hostedControlProbe(in: host))
+    let source = try XCTUnwrap(self.claimButton(labeled: "Use audio source label", in: host))
+    XCTAssertTrue(source.isEnabled && source.isDescendant(of: host))
+    source.performClick(nil)
+    await assertEventually {
+      model.segments.first { $0.sequence == alpha.sequence }?.speakerLabel == "Unknown speaker"
+        && model.segments.first { $0.sequence == alpha.sequence }?.namedSpeakerId == nil
+        && model.segments.first { $0.sequence == bravo.sequence }?.speakerLabel == "Mina"
+    }
+    let restoredHistory = try XCTUnwrap(
+      model.namedSpeakerTurnHistory.first { $0.sequence == alpha.sequence })
+    XCTAssertEqual(restoredHistory.revisions.map(\.label), ["Dana", "Unknown speaker"])
+    XCTAssertEqual(restoredHistory.revisions.map(\.origin), [.human, .sourceDefault])
+    XCTAssertEqual(
+      TranscriptLibraryModel.namedSpeakerTurnHistoryText(for: restoredHistory),
+      """
+      Source default: Unknown speaker
+      Dana, named by you
+      Unknown speaker, source name
+      """)
+    let bravoHistory = try XCTUnwrap(
+      model.namedSpeakerTurnHistory.first { $0.sequence == bravo.sequence })
+    XCTAssertEqual(bravoHistory.revisions.map(\.label), ["Morgan", "Dana", "Mina"])
+
+    let reread = try library.document(sessionId: receipt.sessionId)
+    let rereadAlpha = try XCTUnwrap(reread.first { $0.sequence == alpha.sequence })
+    let rereadBravo = try XCTUnwrap(reread.first { $0.sequence == bravo.sequence })
+    XCTAssertEqual(rereadAlpha.speakerLabel, "Unknown speaker")
+    XCTAssertEqual(rereadAlpha.effectiveText, alphaText)
+    XCTAssertEqual(rereadAlpha.verbatimText, alpha.verbatimText)
+    XCTAssertEqual(rereadBravo.speakerLabel, "Mina")
+    XCTAssertEqual(rereadBravo.verbatimText, bravoVerbatim)
+    XCTAssertEqual(rereadBravo.effectiveText, bravoText)
+    XCTAssertTrue(rereadBravo.corrected)
+    XCTAssertEqual(rereadBravo.startNanoseconds, bravo.startNanoseconds)
+    XCTAssertEqual(rereadAlpha.startNanoseconds, alpha.startNanoseconds)
+    let tracks = try library.speakers(sessionId: receipt.sessionId)
+    XCTAssertEqual(tracks.map(\.label), ["Unknown speaker"])
+    XCTAssertEqual(tracks.map(\.namedByUser), [false])
+    XCTAssertEqual(
+      model.speakerDiarizationText,
+      "Speakers follow the audio source. Voice diarization is unavailable without a calibrated model."
+    )
+    XCTAssertNil(model.message)
+    XCTAssertTrue(window.contentView === host)
+    XCTAssertEqual(try digest(of: libraryMedia[0]), packageDigest)
+    XCTAssertEqual(try digest(of: packageMedia[0]), packageDigest)
+    withExtendedLifetime((store, live, playback, player, window, host, library)) {}
   }
 
   /// A stored final with a correction, one derived claim, and an in-session
