@@ -16,6 +16,7 @@ struct LaunchConfiguration {
     case selectedAppExit = "selected-app-exit"
     case sleepWake = "sleep-wake"
     case livePauseResume = "live-pause-resume"
+    case pauseResume = "pause-resume"
     case killPreparation = "kill-preparation"
     case killRecording = "kill-recording"
     case killStop = "kill-stop"

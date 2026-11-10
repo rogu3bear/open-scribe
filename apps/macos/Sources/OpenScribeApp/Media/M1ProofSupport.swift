@@ -133,7 +133,10 @@ final class M1ProofInputs: @unchecked Sendable {
   init(root: URL) { proofRoot = root }
 
   var now: UInt64 { lock.withLock { host } }
-  func advance() { lock.withLock { host += AVAudioTime.hostTime(forSeconds: 1) } }
+  func advance(seconds: Double) {
+    lock.withLock { host += AVAudioTime.hostTime(forSeconds: seconds) }
+  }
+  func advance() { advance(seconds: 1) }
   func storage(_ bytes: UInt64?) { lock.withLock { storageOverride = bytes } }
   func available(at path: String) throws -> UInt64 {
     do {

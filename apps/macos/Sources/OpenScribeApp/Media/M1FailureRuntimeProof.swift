@@ -20,6 +20,7 @@ final class M1FailureRuntimeProof {
     self.inputs = inputs
     // This separate, explicit case uses actual platform permission authorities
     // and adapters. It is never included in the permission-free default matrix.
+    // pause-resume stays on the synthetic controller below.
     if scenario == "live-pause-resume" {
       controller = LiveMicrophoneRecordingController(managedRoot: mediaRoot)
       return
@@ -54,6 +55,11 @@ final class M1FailureRuntimeProof {
     do {
       if scenario == "live-pause-resume" {
         try await liveControls(runtime: runtime)
+        NSApp.terminate(nil)
+        return
+      }
+      if scenario == "pause-resume" {
+        try await syntheticPauseResume(runtime: runtime)
         NSApp.terminate(nil)
         return
       }
@@ -260,6 +266,88 @@ final class M1FailureRuntimeProof {
         "visible_message": controller.statusText, "visible_events": detail.events.map(\.kind),
         "visible_status": saved.statusText, "paused_status": paused.statusText,
         "resumed_status": resumed.statusText, "fallback": "explicit-pause-resume-stop",
+        "tracks": 2, "rendered_frames": try Self.decode(final),
+      ], name: "outcome.json", root: root)
+  }
+
+  /// Same pause, resume, and stop entry points as the live case, with synthetic
+  /// sources and a clock that moves only when this runner advances it.
+  private func syntheticPauseResume(runtime: RuntimeLibraryStore) async throws {
+    await controller.start()
+    try requireM1(
+      controller.phase == .starting, controller.errorMessage ?? "capture did not start")
+    guard let microphone = inputs.microphone, let audio = inputs.audio else {
+      throw M1ProofError.failed("missing synthetic source")
+    }
+    let sessionId = microphone.writer.authorization.sessionId
+    try microphone.emit(at: inputs.now)
+    try audio.emit(at: inputs.now)
+    inputs.advance(seconds: 1)
+    try await wait { self.controller.phase == .capturing }
+    runtime.refresh()
+    controller.addMarker(label: "Synthetic pause boundary")
+    try requireM1(
+      controller.recorderDetail?.events.contains { $0.kind == "marker_added" } == true,
+      "marker was not durably projected")
+    await controller.stop(pausing: true)
+    try requireM1(controller.phase == .paused, controller.errorMessage ?? "pause failed")
+    let paused = try await Self.visibleSession(
+      runtime, sessionId: sessionId, lifecycle: "paused")
+    let preparation = try NativeRecordingPreparation.open(managedRoot: mediaRoot.path)
+    let pausedDetail = try preparation.recorderDetail(sessionId: sessionId)
+    guard
+      pausedDetail.lifecycle == "paused",
+      let pausedAt = pausedDetail.events.last(where: { $0.kind == "capture_paused" })?
+        .sessionNanoseconds
+    else { throw M1ProofError.failed("pause boundary was not journaled") }
+    inputs.advance(seconds: 600)
+    await controller.start(resuming: true)
+    try requireM1(
+      controller.phase == .starting || controller.phase == .capturing,
+      controller.errorMessage ?? "resume stayed \(controller.phase.rawValue)")
+    guard let resumedMicrophone = inputs.microphone, let resumedAudio = inputs.audio else {
+      throw M1ProofError.failed("resume did not open synthetic sources")
+    }
+    try requireM1(
+      resumedMicrophone !== microphone && resumedAudio !== audio
+        && !resumedMicrophone.stopped && !resumedAudio.stopped,
+      "resume reused a stopped source")
+    try resumedMicrophone.emit(at: inputs.now, frames: 96_000)
+    try resumedAudio.emit(at: inputs.now, frames: 96_000)
+    inputs.advance(seconds: 2)
+    try await wait { self.controller.phase == .capturing }
+    let resumed = try await Self.visibleSession(
+      runtime, sessionId: sessionId, lifecycle: "recording")
+    await controller.stop()
+    try requireM1(controller.phase == .saved, controller.errorMessage ?? "stop failed")
+    let final = try preparation.playbackTimeline(sessionId: sessionId)
+    let before = final.filter { $0.nativeStartNanoseconds < pausedAt }
+    try requireM1(Set(before.map(\.trackId)).count == 2, "pause lost a source")
+    for track in Set(before.map(\.trackId)) {
+      let priorFrames = before.filter { $0.trackId == track }.reduce(UInt64(0)) {
+        $0 + $1.sampleCount
+      }
+      let finalFrames = final.filter { $0.trackId == track }.reduce(UInt64(0)) {
+        $0 + $1.sampleCount
+      }
+      try requireM1(
+        priorFrames >= 48_000 && finalFrames > priorFrames + 48_000,
+        "one source did not continue after resume")
+    }
+    let detail = try preparation.recorderDetail(sessionId: sessionId)
+    let expected = ["capture_paused", "capture_resumed", "marker_added"]
+    try requireM1(
+      expected.allSatisfy { kind in detail.events.contains { $0.kind == kind } },
+      "pause or resume event missing")
+    let saved = try await Self.visibleSession(
+      runtime, sessionId: sessionId, lifecycle: "ready_for_review")
+    try M1ProofFiles.write(
+      [
+        "scenario": scenario, "session_id": sessionId, "result": "INJECTED_CASE_GREEN",
+        "capture_backend": "synthetic", "lifecycle": detail.lifecycle,
+        "visible_message": controller.statusText, "visible_events": detail.events.map(\.kind),
+        "visible_status": saved.statusText, "paused_status": paused.statusText,
+        "resumed_status": resumed.statusText, "fallback": "synthetic-pause-resume-stop",
         "tracks": 2, "rendered_frames": try Self.decode(final),
       ], name: "outcome.json", root: root)
   }

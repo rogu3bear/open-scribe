@@ -790,6 +790,117 @@ final class LaunchConfigurationTests: XCTestCase {
     XCTAssertFalse(FileManager.default.fileExists(atPath: proof.appendingPathComponent("proof-error").path))
   }
 
+  /// The shipped verification app pauses after a durable sample and marker,
+  /// resumes on new synthetic sources, and saves more than one additional
+  /// second from each source. This launch does not open platform capture
+  /// devices. The real-device live-pause-resume case stays a live launch.
+  func testSyntheticPauseResumeKeepsBothSourcesAcrossTheBoundary() async throws {
+    let base = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
+      .appendingPathComponent("open-scribe-pause-resume-\(UUID().uuidString)", isDirectory: true)
+    let proof = base.appendingPathComponent("proof", isDirectory: true)
+    let media = proof.appendingPathComponent("media", isDirectory: true)
+    try FileManager.default.createDirectory(at: media, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: base) }
+    let normal = base.appendingPathComponent("unused-production")
+    let suite = "OpenScribe.Proof.\(UUID().uuidString)"
+    let synthetic = try LaunchConfiguration.resolve(
+      arguments: [
+        "app", "--m1-injected-proof-root", proof.path,
+        "--m1-proof-media-root", media.path,
+        "--m1-injected-case", "pause-resume",
+        "--verification-preferences", suite,
+      ],
+      environment: [:], normalRoot: normal)
+    XCTAssertEqual(synthetic.mode, .synthetic)
+    XCTAssertEqual(synthetic.action, .injected("pause-resume"))
+    synthetic.preferences.removePersistentDomain(forName: suite)
+    let live = try LaunchConfiguration.resolve(
+      arguments: [
+        "app", "--m1-injected-proof-root", proof.path,
+        "--m1-proof-media-root", media.path,
+        "--m1-injected-case", "live-pause-resume",
+        "--verification-preferences", suite,
+      ],
+      environment: [:], normalRoot: normal)
+    XCTAssertEqual(live.mode, .live)
+    XCTAssertEqual(live.action, .injected("live-pause-resume"))
+    live.preferences.removePersistentDomain(forName: suite)
+
+    var child: Process?
+    defer {
+      if let child, child.isRunning {
+        kill(pid_t(child.processIdentifier), SIGKILL)
+        child.waitUntilExit()
+      }
+    }
+    let capture = try Self.launchVerificationApp(
+      arguments: [
+        "--m1-injected-proof-root", proof.path,
+        "--m1-proof-media-root", media.path,
+        "--m1-injected-case", "pause-resume",
+      ],
+      standardOutput: proof.appendingPathComponent("app-out.log"),
+      standardError: proof.appendingPathComponent("app-err.log"))
+    child = capture
+    let outcomeURL = proof.appendingPathComponent("outcome.json")
+    let finished = await Self.waitForFile(outcomeURL, seconds: 45, process: capture)
+    guard finished else {
+      XCTFail(Self.launchFailure("pause-resume outcome was not written", proof: proof, process: capture))
+      return
+    }
+    let exited = await Self.waitUntil(seconds: 20) { capture.isRunning == false }
+    XCTAssertTrue(exited, Self.launchFailure("pause-resume launch did not exit", proof: proof, process: capture))
+    capture.waitUntilExit()
+    child = nil
+    XCTAssertEqual(capture.terminationStatus, 0)
+    XCTAssertFalse(FileManager.default.fileExists(atPath: proof.appendingPathComponent("proof-error").path))
+    let outcomeData = try Data(contentsOf: outcomeURL)
+    let outcomeText = String(decoding: outcomeData, as: UTF8.self)
+    XCTAssertFalse(outcomeText.contains("AVAudioEngine+ScreenCaptureKit"))
+    XCTAssertFalse(outcomeText.contains("live-pause-resume"))
+    let outcome = try JSONSerialization.jsonObject(with: outcomeData) as? [String: Any]
+    XCTAssertEqual(outcome?["result"] as? String, "INJECTED_CASE_GREEN")
+    XCTAssertEqual(outcome?["scenario"] as? String, "pause-resume")
+    XCTAssertEqual(outcome?["capture_backend"] as? String, "synthetic")
+    XCTAssertEqual(outcome?["lifecycle"] as? String, "ready_for_review")
+    XCTAssertFalse((outcome?["paused_status"] as? String)?.isEmpty ?? true)
+    XCTAssertFalse((outcome?["resumed_status"] as? String)?.isEmpty ?? true)
+    XCTAssertGreaterThan((outcome?["rendered_frames"] as? NSNumber)?.intValue ?? 0, 0)
+    let sessionId = try XCTUnwrap(outcome?["session_id"] as? String)
+    let preparation = try NativeRecordingPreparation.open(managedRoot: media.path)
+    let detail = try preparation.recorderDetail(sessionId: sessionId)
+    XCTAssertEqual(detail.lifecycle, "ready_for_review")
+    for kind in ["capture_paused", "capture_resumed", "marker_added"] {
+      XCTAssertTrue(detail.events.contains { $0.kind == kind }, kind)
+    }
+    let journal = media.appendingPathComponent("Sessions/\(sessionId)/recovery.jsonl")
+    let kinds = try Self.journalKinds(journal)
+    XCTAssertTrue(kinds.contains("recording_started"), kinds.joined(separator: ","))
+    XCTAssertEqual(kinds.filter { $0 == "capture_paused" }.count, 1)
+    XCTAssertEqual(kinds.filter { $0 == "capture_resumed" }.count, 1)
+    XCTAssertEqual(kinds.filter { $0 == "marker_added" }.count, 1)
+    XCTAssertEqual(kinds.filter { $0 == "segment_sealed" }.count, 4)
+    XCTAssertFalse(kinds.contains("playable_media_recovered"), kinds.joined(separator: ","))
+    let pausedAt = try XCTUnwrap(
+      detail.events.last { $0.kind == "capture_paused" }?.sessionNanoseconds)
+    let plan = try preparation.playbackTimeline(sessionId: sessionId)
+    XCTAssertEqual(plan.count, 4)
+    let tracks = Set(plan.map(\.trackId))
+    XCTAssertEqual(tracks.count, 2)
+    for track in tracks {
+      let rows = plan.filter { $0.trackId == track }
+      let prior = rows.filter { $0.nativeStartNanoseconds < pausedAt }
+      let later = rows.filter { $0.nativeStartNanoseconds >= pausedAt }
+      XCTAssertEqual(prior.map(\.sampleCount), [48_000])
+      XCTAssertEqual(later.map(\.sampleCount), [96_000])
+      let priorFrames = prior.reduce(UInt64(0)) { $0 + $1.sampleCount }
+      let finalFrames = rows.reduce(UInt64(0)) { $0 + $1.sampleCount }
+      XCTAssertGreaterThanOrEqual(priorFrames, 48_000)
+      XCTAssertGreaterThan(finalFrames, priorFrames + 48_000)
+    }
+    XCTAssertEqual(try Self.cafPaths(under: media).count, 4)
+  }
+
   private static func launchVerificationApp(
     arguments: [String], standardOutput: URL, standardError: URL
   ) throws -> Process {
