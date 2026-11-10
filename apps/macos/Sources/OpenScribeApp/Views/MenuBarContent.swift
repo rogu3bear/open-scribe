@@ -97,15 +97,15 @@ struct MenuBarContent: View {
       .frame(width: 420, height: 32, alignment: .leading)
     }
     if liveRecording.canStop {
-      Button(ConversationControlLabels.stopAndSave) {
-        Task {
-          await liveRecording.stop()
-          store.refresh()
+      MenuBarStopMount(
+        onStop: {
+          Task {
+            await liveRecording.stop()
+            store.refresh()
+          }
         }
-      }
-      .keyboardShortcut(
-        ConversationControlLabels.stopShortcut.key,
-        modifiers: ConversationControlLabels.stopShortcut.modifiers)
+      )
+      .frame(width: 180, height: 32, alignment: .leading)
     }
     RecorderControls(recorder: liveRecording, store: store, sourcesPresentation: .menu)
     ContextMenuSection(model: context)
@@ -264,6 +264,71 @@ private final class MenuBarRecordControl: NSView {
   @objc private func record() {
     guard button.isEnabled else { return }
     onRecord?()
+  }
+
+  private static func modifierMask(_ modifiers: EventModifiers) -> NSEvent.ModifierFlags {
+    var mask: NSEvent.ModifierFlags = []
+    if modifiers.contains(.command) { mask.insert(.command) }
+    if modifiers.contains(.shift) { mask.insert(.shift) }
+    if modifiers.contains(.option) { mask.insert(.option) }
+    if modifiers.contains(.control) { mask.insert(.control) }
+    return mask
+  }
+}
+
+/// The menu bar's Stop and Save control. The button is created with the first
+/// layout and calls the same stop the toolbar uses.
+private struct MenuBarStopMount: NSViewRepresentable {
+  let onStop: () -> Void
+
+  func makeNSView(context: Context) -> MenuBarStopControl {
+    let view = MenuBarStopControl()
+    view.bind(onStop: onStop)
+    return view
+  }
+
+  func updateNSView(_ view: MenuBarStopControl, context: Context) {
+    view.bind(onStop: onStop)
+  }
+}
+
+private final class MenuBarStopControl: NSView {
+  private let button = NSButton(
+    title: ConversationControlLabels.stopAndSave, target: nil, action: nil)
+  private var onStop: (() -> Void)?
+
+  override init(frame frameRect: NSRect) {
+    super.init(frame: frameRect)
+    setAccessibilityIdentifier("Menu bar stop")
+    button.bezelStyle = .rounded
+    button.setAccessibilityLabel(ConversationControlLabels.stopAndSave)
+    button.setAccessibilityIdentifier("Menu bar stop")
+    let shortcut = ConversationControlLabels.stopShortcut
+    button.keyEquivalent = String(shortcut.key.character)
+    button.keyEquivalentModifierMask = Self.modifierMask(shortcut.modifiers)
+    button.target = self
+    button.action = #selector(stop)
+    button.translatesAutoresizingMaskIntoConstraints = false
+    addSubview(button)
+    NSLayoutConstraint.activate([
+      button.leadingAnchor.constraint(equalTo: leadingAnchor),
+      button.centerYAnchor.constraint(equalTo: centerYAnchor),
+      button.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor),
+    ])
+  }
+
+  required init?(coder: NSCoder) {
+    nil
+  }
+
+  func bind(onStop: @escaping () -> Void) {
+    self.onStop = onStop
+    button.isEnabled = true
+  }
+
+  @objc private func stop() {
+    guard button.isEnabled else { return }
+    onStop?()
   }
 
   private static func modifierMask(_ modifiers: EventModifiers) -> NSEvent.ModifierFlags {
