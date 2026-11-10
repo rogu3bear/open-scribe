@@ -1,6 +1,7 @@
 @preconcurrency import AVFoundation
 import Darwin
 import Foundation
+import SwiftUI
 import XCTest
 
 @testable import OpenScribeApp
@@ -1769,6 +1770,270 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
     withExtendedLifetime(player) {}
   }
 
+  /// The library banner's Import button is the shipped confirmation control.
+  /// The test presses that control and does not call `confirmPendingAudioImport`.
+  func testTheConfirmControlImportsADroppedFileAndLeavesTheOriginal() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "open-scribe-confirm-control-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let source = root.appendingPathComponent("Dropped memo.m4a")
+    do {
+      let file = try AVAudioFile(
+        forWriting: source,
+        settings: [
+          AVFormatIDKey: kAudioFormatAppleLossless,
+          AVSampleRateKey: 48_000.0,
+          AVNumberOfChannelsKey: 1,
+          AVEncoderBitDepthHintKey: 16,
+        ])
+      let buffer = try XCTUnwrap(
+        AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: 48_000))
+      buffer.frameLength = 48_000
+      let channel = try XCTUnwrap(buffer.floatChannelData?[0])
+      for frame in 0..<48_000 {
+        channel[frame] = frame < 24_000 ? 0.25 : -0.5
+      }
+      try file.write(from: buffer)
+    }
+    let original = try Data(contentsOf: source)
+    let importRoot = root.appendingPathComponent("Library", isDirectory: true)
+    try FileManager.default.createDirectory(at: importRoot, withIntermediateDirectories: false)
+    let store = RuntimeLibraryStore(managedRoot: importRoot, refreshesImmediately: false)
+    let adapter = ImportedMediaAuthorityAdapter(
+      startSecurityScope: { _ in true },
+      stopSecurityScope: { _ in },
+      importer: { title, url in
+        try store.importManagedAudio(title: title, sourceURL: url)
+      }
+    )
+    let live = LiveMicrophoneRecordingController(managedRoot: importRoot)
+    let recovery = RecoveredSessionController(managedRoot: importRoot)
+    adapter.stageDroppedAudio([source])
+    XCTAssertEqual(adapter.phase, .idle)
+    XCTAssertNotNil(adapter.pendingAudioImport)
+    XCTAssertTrue(store.savedSessions.isEmpty)
+    XCTAssertEqual(try Data(contentsOf: source), original)
+
+    let view = ContentView(
+      store: store,
+      importedMediaAuthority: adapter,
+      liveRecording: live,
+      recoveredSessions: recovery,
+      transcripts: TranscriptLibraryModel(managedRoot: importRoot),
+      speech: SpeechTranscriptionModel(managedRoot: importRoot),
+      scheduler: TranscriptionScheduler.inert(),
+      pressure: SystemPressureMonitor(libraryRoot: importRoot, samplesAutomatically: false),
+      context: ContextScopeModel(
+        binding: { nil },
+        frames: IdleContextFrames(),
+        permissionCheck: { .denied },
+        permissionRequest: { .denied },
+        topology: { [] }
+      ),
+      navigation: MainWorkspaceNavigation()
+    )
+    let host = NSHostingView(rootView: view)
+    let window = NSWindow(
+      contentRect: NSRect(x: 0, y: 0, width: 1100, height: 720),
+      styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    window.contentView = host
+    window.setContentSize(NSSize(width: 1100, height: 720))
+    host.frame = window.contentLayoutRect
+    if #available(macOS 14, *) {
+      NSApplication.shared.activate()
+    }
+    window.makeKeyAndOrderFront(nil)
+    window.orderFrontRegardless()
+    defer { window.close() }
+    let shown = await waitUntil(timeoutNanoseconds: 5_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      window.displayIfNeeded()
+      return confirmControl(in: host) != nil
+    }
+    let control = confirmControl(in: host)
+    XCTAssertTrue(
+      shown && control != nil,
+      "key=\(window.isKeyWindow) active=\(NSApp.isActive) proxies=\(focusProxyProbe(in: host))"
+    )
+    let button = try XCTUnwrap(control)
+    let identifiesConfirmButton =
+      accessibilityTexts(of: button).contains(confirmControlLabel)
+      || (button as? NSView) === leftBannerConfirmProxy(in: host)
+    XCTAssertTrue(identifiesConfirmButton)
+    pressConfirmControl(button)
+    await assertEventually { adapter.phase == .succeeded }
+    XCTAssertNil(adapter.pendingAudioImport)
+    XCTAssertNotNil(adapter.importedSessionId)
+    XCTAssertEqual(try Data(contentsOf: source), original)
+    withExtendedLifetime(store) {}
+    withExtendedLifetime(live) {}
+    withExtendedLifetime(recovery) {}
+    withExtendedLifetime(window) {}
+  }
+
+  private func focusProxyProbe(in root: NSView) -> [String] {
+    focusProxies(in: root).map { proxy in
+      let hit = hitTest(at: proxy)
+      let hitTexts = (hit as? NSObject).map { accessibilityTexts(of: $0) } ?? []
+      return
+        "frame=\(proxy.frame) texts=\(accessibilityTexts(of: proxy)) hit=\(hit.map { String(describing: type(of: $0)) } ?? "nil") hitTexts=\(hitTexts)"
+    }
+  }
+
+  private func confirmControl(in root: NSView) -> NSObject? {
+    var pending: [NSObject] = [root]
+    var seen = Set<ObjectIdentifier>()
+    while let current = pending.popLast() {
+      guard seen.insert(ObjectIdentifier(current)).inserted else { continue }
+      if accessibilityTexts(of: current).contains(confirmControlLabel) {
+        return current
+      }
+      pending.append(contentsOf: accessibilityDescendants(of: current))
+    }
+    for proxy in focusProxies(in: root) {
+      if accessibilityTexts(of: proxy).contains(confirmControlLabel) {
+        return proxy
+      }
+      if let hit = hitTest(at: proxy) as? NSObject,
+        accessibilityTexts(of: hit).contains(confirmControlLabel)
+      {
+        return hit
+      }
+    }
+    return leftBannerConfirmProxy(in: root)
+  }
+
+  /// The banner's Import button is the left of the two focus proxies at the top
+  /// of the detail column. This hosting session does not publish that button as
+  /// an `NSButton`, and its accessibility label stays unread until the window is
+  /// key. Cancel is the proxy to its right. The lower Import menu is taller.
+  private func leftBannerConfirmProxy(in root: NSView) -> NSView? {
+    let banner = focusProxies(in: root).filter { $0.frame.minY < 40 && $0.frame.height <= 26 }
+    guard banner.count == 2 else { return nil }
+    return banner.min { $0.frame.minX < $1.frame.minX }
+  }
+
+  private let confirmControlLabel = "Confirm audio import"
+
+  private func focusProxies(in root: NSView) -> [NSView] {
+    var proxies: [NSView] = []
+    func walk(_ view: NSView) {
+      if String(describing: type(of: view)).contains("KeyViewProxy") {
+        proxies.append(view)
+      }
+      for child in view.subviews {
+        walk(child)
+      }
+    }
+    walk(root)
+    return proxies
+  }
+
+  private func hitTest(at view: NSView) -> Any? {
+    guard let window = view.window else { return nil }
+    let screen = window.convertPoint(
+      toScreen: view.convert(NSPoint(x: view.bounds.midX, y: view.bounds.midY), to: nil))
+    return view.accessibilityHitTest(screen)
+  }
+
+  private func accessibilityTexts(of object: NSObject) -> [String] {
+    var texts: [String] = []
+    if let view = object as? NSView, let label = view.accessibilityLabel(), !label.isEmpty {
+      texts.append(label)
+    }
+    if let element = object as? NSAccessibilityElement, let label = element.accessibilityLabel(),
+      !label.isEmpty
+    {
+      texts.append(label)
+    }
+    if let button = object as? any NSAccessibilityButton, let label = button.accessibilityLabel(),
+      !label.isEmpty
+    {
+      texts.append(label)
+    }
+    for attribute: NSAccessibility.Attribute in [.description, .title, .value, .roleDescription] {
+      if let text = accessibilityAttribute(object, attribute) as? String, !text.isEmpty {
+        texts.append(text)
+      }
+    }
+    return texts
+  }
+
+  private func accessibilityDescendants(of object: NSObject) -> [NSObject] {
+    var descendants: [NSObject] = []
+    if let view = object as? NSView {
+      descendants.append(contentsOf: view.subviews)
+      if let children = view.accessibilityChildren() {
+        descendants.append(contentsOf: children.compactMap { $0 as? NSObject })
+      }
+    } else if let element = object as? NSAccessibilityElement {
+      if let children = element.accessibilityChildren() {
+        descendants.append(contentsOf: children.compactMap { $0 as? NSObject })
+      }
+    }
+    if let children = accessibilityAttribute(object, .children) as? [Any] {
+      descendants.append(contentsOf: children.compactMap { $0 as? NSObject })
+    }
+    return descendants
+  }
+
+  private func pressConfirmControl(_ object: NSObject) {
+    if let button = object as? NSButton {
+      button.performClick(nil)
+      return
+    }
+    if let button = object as? any NSAccessibilityButton {
+      XCTAssertTrue(button.accessibilityPerformPress())
+      return
+    }
+    if let view = object as? NSView {
+      if view.accessibilityPerformPress() { return }
+      click(view)
+      return
+    }
+    if let element = object as? NSAccessibilityElement {
+      XCTAssertTrue(element.accessibilityPerformPress())
+      return
+    }
+    accessibilityPerform(object, .press)
+  }
+
+  private func click(_ view: NSView) {
+    guard let window = view.window else {
+      XCTFail("Confirm control is not in a window")
+      return
+    }
+    let location = view.convert(NSPoint(x: view.bounds.midX, y: view.bounds.midY), to: nil)
+    func mouseEvent(_ type: NSEvent.EventType, pressure: Float) -> NSEvent? {
+      NSEvent.mouseEvent(
+        with: type, location: location, modifierFlags: [],
+        timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+        context: nil, eventNumber: 1, clickCount: 1, pressure: pressure)
+    }
+    guard let down = mouseEvent(.leftMouseDown, pressure: 1),
+      let up = mouseEvent(.leftMouseUp, pressure: 0)
+    else {
+      XCTFail("Could not build a click for the confirm control")
+      return
+    }
+    window.sendEvent(down)
+    window.sendEvent(up)
+  }
+
+  /// SwiftUI's hosted controls are private accessibility objects. The typed
+  /// AppKit properties do not see them, so the walk uses the attribute API.
+  private func accessibilityAttribute(_ object: NSObject, _ attribute: NSAccessibility.Attribute)
+    -> Any?
+  {
+    object.accessibilityAttributeValue(attribute)
+  }
+
+  private func accessibilityPerform(_ object: NSObject, _ action: NSAccessibility.Action) {
+    object.accessibilityPerformAction(action)
+  }
+
   private func sampleImported(
     preparation: NativeRecordingPreparation, sessionId: String, frame: Int64
   ) throws -> [Float] {
@@ -1825,6 +2090,12 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
   ) async {
     let observed = await waitUntil(predicate)
     XCTAssertTrue(observed, file: file, line: line)
+  }
+}
+
+private struct IdleContextFrames: ContextFrameCapturing {
+  func captureFrame(_ target: ContextCaptureTarget) async throws -> CGImage {
+    throw CancellationError()
   }
 }
 
