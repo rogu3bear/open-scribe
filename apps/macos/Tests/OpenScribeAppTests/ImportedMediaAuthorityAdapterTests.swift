@@ -1994,6 +1994,135 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
     withExtendedLifetime(drag) {}
   }
 
+  /// Cancel on the same hosted banner drops the staged file. The original stays
+  /// put and no conversation is saved. The test does not call `stageDroppedAudio`
+  /// or `cancelPendingAudioImport`.
+  func testAHostedDropCancelledFromTheBannerAddsNothing() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "open-scribe-drop-cancel-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let source = root.appendingPathComponent("Cancelled drop.m4a")
+    do {
+      let file = try AVAudioFile(
+        forWriting: source,
+        settings: [
+          AVFormatIDKey: kAudioFormatAppleLossless,
+          AVSampleRateKey: 48_000.0,
+          AVNumberOfChannelsKey: 1,
+          AVEncoderBitDepthHintKey: 16,
+        ])
+      let buffer = try XCTUnwrap(
+        AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: 48_000))
+      buffer.frameLength = 48_000
+      let channel = try XCTUnwrap(buffer.floatChannelData?[0])
+      for frame in 0..<48_000 {
+        channel[frame] = frame < 24_000 ? 0.25 : -0.5
+      }
+      try file.write(from: buffer)
+    }
+    let original = try Data(contentsOf: source)
+    let importRoot = root.appendingPathComponent("Library", isDirectory: true)
+    try FileManager.default.createDirectory(at: importRoot, withIntermediateDirectories: false)
+    let store = RuntimeLibraryStore(managedRoot: importRoot, refreshesImmediately: false)
+    let events = ImportEventRecorder()
+    let adapter = ImportedMediaAuthorityAdapter(
+      startSecurityScope: { _ in true },
+      stopSecurityScope: { _ in },
+      importer: { title, url in
+        events.append("import")
+        return try store.importManagedAudio(title: title, sourceURL: url)
+      }
+    )
+    let live = LiveMicrophoneRecordingController(managedRoot: importRoot)
+    let recovery = RecoveredSessionController(managedRoot: importRoot)
+    let view = ContentView(
+      store: store,
+      importedMediaAuthority: adapter,
+      liveRecording: live,
+      recoveredSessions: recovery,
+      transcripts: TranscriptLibraryModel(managedRoot: importRoot),
+      speech: SpeechTranscriptionModel(managedRoot: importRoot),
+      scheduler: TranscriptionScheduler.inert(),
+      pressure: SystemPressureMonitor(libraryRoot: importRoot, samplesAutomatically: false),
+      context: ContextScopeModel(
+        binding: { nil },
+        frames: IdleContextFrames(),
+        permissionCheck: { .denied },
+        permissionRequest: { .denied },
+        topology: { [] }
+      ),
+      navigation: MainWorkspaceNavigation()
+    )
+    let host = NSHostingView(rootView: view)
+    host.sizingOptions = []
+    let window = NSWindow(
+      contentRect: NSRect(x: 0, y: 0, width: 1100, height: 720),
+      styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    window.contentView = host
+    window.setContentSize(NSSize(width: 1100, height: 720))
+    host.frame = window.contentLayoutRect
+    if #available(macOS 14, *) {
+      NSApplication.shared.activate()
+    }
+    window.makeKeyAndOrderFront(nil)
+    window.orderFrontRegardless()
+    defer { window.close() }
+    let ready = await waitUntil(timeoutNanoseconds: 5_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      window.displayIfNeeded()
+      return self.dropDestination(in: host) != nil
+    }
+    let destination = try XCTUnwrap(self.dropDestination(in: host))
+    XCTAssertTrue(ready && window.contentView === host, "class=\(type(of: destination))")
+    let location = destination.convert(
+      NSPoint(x: destination.bounds.midX, y: destination.bounds.midY), to: nil)
+    let drag = AudioFileDrag(fileURL: source, window: window, location: location)
+    defer { drag.draggingPasteboard.releaseGlobally() }
+    let entered = destinationDragOperation("draggingEntered:", on: destination, info: drag)
+    let updated = destinationDragOperation("draggingUpdated:", on: destination, info: drag)
+    let prepared = destinationDragAccepted("prepareForDragOperation:", on: destination, info: drag)
+    let performed = destinationDragAccepted("performDragOperation:", on: destination, info: drag)
+    destinationDragEnded("concludeDragOperation:", on: destination, info: drag)
+    destinationDragEnded("draggingEnded:", on: destination, info: drag)
+    let operation = updated == 0 ? entered : updated
+    XCTAssertNotEqual(operation, 0)
+    XCTAssertTrue(prepared && performed)
+    let staged = await waitUntil(timeoutNanoseconds: 5_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      window.displayIfNeeded()
+      return adapter.pendingAudioImport?.urls == [source]
+        && self.bannerCancelButton(in: host) != nil
+    }
+    XCTAssertTrue(
+      staged && window.contentView === host,
+      self.bannerProbe(in: host).joined(separator: "\n"))
+    XCTAssertEqual(adapter.phase, .idle)
+    XCTAssertNil(adapter.importedSessionId)
+    XCTAssertTrue(store.savedSessions.isEmpty)
+    let cancel = try XCTUnwrap(self.bannerCancelButton(in: host))
+    XCTAssertTrue(cancel.isDescendant(of: host))
+    cancel.performClick(nil)
+    let cleared = await waitUntil(timeoutNanoseconds: 5_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      return adapter.pendingAudioImport == nil
+        && adapter.phase == .idle
+        && adapter.importedSessionId == nil
+        && store.savedSessions.isEmpty
+        && self.bannerCancelButton(in: host) == nil
+        && adapter.statusMessage == "Import cancelled. No conversation was added."
+    }
+    XCTAssertTrue(cleared && window.contentView === host, adapter.statusMessage ?? "nil")
+    XCTAssertEqual(events.snapshot(), [])
+    XCTAssertEqual(try Data(contentsOf: source), original)
+    withExtendedLifetime(store) {}
+    withExtendedLifetime(live) {}
+    withExtendedLifetime(recovery) {}
+    withExtendedLifetime(window) {}
+    withExtendedLifetime(drag) {}
+  }
+
   /// A file dropped on the hosted library imports when that same hosting view's
   /// banner button is pressed. The imported item then plays, transcribes through
   /// the automatic queue, and accepts speaker review, search, correction, and
@@ -2328,6 +2457,28 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
       }
     }
     return leftBannerConfirmProxy(in: root)
+  }
+
+  private let cancelControlLabel = "Cancel audio import"
+
+  /// The AppKit Cancel button the drop host reveals beside Import.
+  private func bannerCancelButton(in root: NSView) -> NSButton? {
+    var matched: NSButton?
+    func walk(_ view: NSView) {
+      if matched != nil { return }
+      if let button = view as? NSButton, !(button is NSPopUpButton),
+        button.accessibilityLabel() == cancelControlLabel,
+        button.isHidden == false,
+        button.isHiddenOrHasHiddenAncestor == false,
+        button.frame.width > 1,
+        button.frame.height > 1
+      {
+        matched = button
+      }
+      for child in view.subviews { walk(child) }
+    }
+    walk(root)
+    return matched
   }
 
   /// The AppKit Import button the drop host reveals after a file is staged.
