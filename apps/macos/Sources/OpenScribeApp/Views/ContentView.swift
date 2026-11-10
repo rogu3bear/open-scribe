@@ -294,10 +294,21 @@ struct ContentView: View {
     }
     .overlay(alignment: .bottom) {
       VStack(spacing: 0) {
+        importedPlayback
         renameConfirmation
         deletionConfirmation
       }
     }
+  }
+
+  /// The imported Play control is created with the first layout. The workspace
+  /// that would hold it appears only after a confirmed drop selects a session.
+  private var importedPlayback: some View {
+    ImportedPlaybackMount(
+      store: store, navigation: navigation, playback: recoveredSessions
+    )
+    .frame(maxWidth: .infinity)
+    .frame(height: 44)
   }
 
   /// Pending deletion is published after the first layout. A SwiftUI
@@ -617,6 +628,165 @@ private final class DropConfirmationBannerView: NSView {
     let authority = authority
     Task { @MainActor in
       authority?.cancelPendingAudioImport()
+    }
+  }
+}
+
+/// Plays the selected imported recording. Hidden until that recording exists,
+/// so an empty library drop does not depend on a later workspace body.
+private struct ImportedPlaybackMount: NSViewRepresentable {
+  @ObservedObject var store: RuntimeLibraryStore
+  @ObservedObject var navigation: MainWorkspaceNavigation
+  @ObservedObject var playback: RecoveredSessionController
+
+  func makeNSView(context: Context) -> ImportedPlaybackControl {
+    let view = ImportedPlaybackControl()
+    view.bind(store: store, navigation: navigation, playback: playback)
+    return view
+  }
+
+  func updateNSView(_ view: ImportedPlaybackControl, context: Context) {
+    view.bind(store: store, navigation: navigation, playback: playback)
+  }
+}
+
+private final class ImportedPlaybackControl: NSView {
+  private let message = NSTextField(labelWithString: "")
+  private let playButton = NSButton(title: "Play", target: nil, action: nil)
+  private var subscriptions: [AnyCancellable] = []
+  private var store: RuntimeLibraryStore?
+  private var navigation: MainWorkspaceNavigation?
+  private var playback: RecoveredSessionController?
+  private var showsPlayback = false
+
+  override init(frame frameRect: NSRect) {
+    super.init(frame: frameRect)
+    setAccessibilityIdentifier("Imported playback")
+    message.lineBreakMode = .byTruncatingMiddle
+    message.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+    message.font = .preferredFont(forTextStyle: .callout)
+    playButton.bezelStyle = .rounded
+    playButton.setAccessibilityLabel(ConversationControlLabels.playConversationAudio(.play))
+    playButton.target = self
+    playButton.action = #selector(togglePlayback)
+    for item in [message, playButton] {
+      item.translatesAutoresizingMaskIntoConstraints = false
+      addSubview(item)
+    }
+    NSLayoutConstraint.activate([
+      message.leadingAnchor.constraint(equalTo: leadingAnchor, constant: ScribeSpacing.standard),
+      message.centerYAnchor.constraint(equalTo: centerYAnchor),
+      playButton.trailingAnchor.constraint(
+        equalTo: trailingAnchor, constant: -ScribeSpacing.standard),
+      playButton.centerYAnchor.constraint(equalTo: centerYAnchor),
+      message.trailingAnchor.constraint(
+        lessThanOrEqualTo: playButton.leadingAnchor, constant: -ScribeSpacing.related),
+    ])
+    apply()
+  }
+
+  required init?(coder: NSCoder) {
+    nil
+  }
+
+  func bind(
+    store: RuntimeLibraryStore,
+    navigation: MainWorkspaceNavigation,
+    playback: RecoveredSessionController
+  ) {
+    guard self.store !== store || self.navigation !== navigation || self.playback !== playback
+    else { return }
+    self.store = store
+    self.navigation = navigation
+    self.playback = playback
+    subscriptions.removeAll()
+    store.objectWillChange.sink { [weak self] _ in
+      DispatchQueue.main.async { self?.apply() }
+    }.store(in: &subscriptions)
+    navigation.objectWillChange.sink { [weak self] _ in
+      DispatchQueue.main.async { self?.apply() }
+    }.store(in: &subscriptions)
+    playback.objectWillChange.sink { [weak self] _ in
+      DispatchQueue.main.async { self?.apply() }
+    }.store(in: &subscriptions)
+    DispatchQueue.main.async { [weak self] in self?.apply() }
+  }
+
+  override func hitTest(_ point: NSPoint) -> NSView? {
+    guard showsPlayback else { return nil }
+    let hit = super.hitTest(point)
+    return hit === self ? nil : hit
+  }
+
+  override func draw(_ dirtyRect: NSRect) {
+    guard showsPlayback else { return }
+    NSColor.windowBackgroundColor.setFill()
+    dirtyRect.fill()
+  }
+
+  private func selectedSession() -> RuntimeSessionPresentation? {
+    guard let store, let selectedSessionId = navigation?.selectedSessionId else { return nil }
+    if store.currentSession?.sessionId == selectedSessionId {
+      return store.currentSession
+    }
+    return store.savedSessions.first { $0.sessionId == selectedSessionId }
+  }
+
+  private func showsImportedPlayback(_ session: RuntimeSessionPresentation) -> Bool {
+    if session.lifecycle == "ready_for_review", session.hasCaptureTimeline { return false }
+    return session.playableMedia != nil
+  }
+
+  private func apply() {
+    let session = selectedSession()
+    let visible = session.map { self.showsImportedPlayback($0) } ?? false
+    showsPlayback = visible
+    message.isHidden = !visible
+    playButton.isHidden = !visible
+    guard let session, visible, let playback else {
+      message.stringValue = ""
+      playButton.isEnabled = false
+      needsDisplay = true
+      return
+    }
+    let canPlay = session.playableMedia.map(ImportedPlaybackEligibility.canPlay) ?? false
+    let isPlaying = playback.playingSessionId == session.sessionId
+    let isPending = playback.activePlaybackSessionId == session.sessionId && !isPlaying
+    let action = PlaybackControlAction.resolve(isPending: isPending, isPlaying: isPlaying)
+    playButton.title = action.title
+    playButton.setAccessibilityLabel(ConversationControlLabels.playConversationAudio(action))
+    playButton.isEnabled =
+      action != .play
+      || (canPlay
+        && action.isEnabled(hasActivePlayback: playback.activePlaybackSessionId != nil))
+    if isPending {
+      message.stringValue = "Verifying local audio…"
+    } else if playback.errorSessionId == session.sessionId,
+      playback.errorRecoveredMediaIdentity == nil,
+      let error = playback.errorMessage
+    {
+      message.stringValue = error
+    } else if let media = session.playableMedia, !canPlay {
+      message.stringValue = ImportedPlaybackEligibility.status(media)
+    } else {
+      message.stringValue =
+        session.playableMedia?.sourceDisplayName ?? "Playback uses the imported local audio file."
+    }
+    needsDisplay = true
+    layoutSubtreeIfNeeded()
+  }
+
+  @objc private func togglePlayback() {
+    guard let playback, let session = selectedSession(), showsImportedPlayback(session) else {
+      return
+    }
+    let activeSessionId = playback.activePlaybackSessionId
+    Task { @MainActor in
+      if activeSessionId == session.sessionId {
+        playback.stopPlayback()
+      } else {
+        playback.play(session)
+      }
     }
   }
 }

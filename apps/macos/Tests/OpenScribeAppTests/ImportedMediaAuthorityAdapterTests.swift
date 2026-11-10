@@ -2124,6 +2124,171 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
   }
 
   /// A file dropped on the hosted library imports when that same hosting view's
+  /// banner button is pressed, then plays when that same view's Play button is
+  /// pressed. The original file stays unchanged. The test does not call
+  /// `stageDroppedAudio`, `confirmPendingAudioImport`, or `play`.
+  func testAHostedDropConfirmedFromTheBannerPlaysAndLeavesTheOriginal() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "open-scribe-drop-play-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let source = root.appendingPathComponent("Played drop.m4a")
+    do {
+      let file = try AVAudioFile(
+        forWriting: source,
+        settings: [
+          AVFormatIDKey: kAudioFormatAppleLossless,
+          AVSampleRateKey: 48_000.0,
+          AVNumberOfChannelsKey: 1,
+          AVEncoderBitDepthHintKey: 16,
+        ])
+      let buffer = try XCTUnwrap(
+        AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: 48_000))
+      buffer.frameLength = 48_000
+      let channel = try XCTUnwrap(buffer.floatChannelData?[0])
+      for frame in 0..<48_000 {
+        channel[frame] = frame < 24_000 ? 0.25 : -0.5
+      }
+      try file.write(from: buffer)
+    }
+    let original = try Data(contentsOf: source)
+    let importRoot = root.appendingPathComponent("Library", isDirectory: true)
+    try FileManager.default.createDirectory(at: importRoot, withIntermediateDirectories: false)
+    let store = RuntimeLibraryStore(managedRoot: importRoot, refreshesImmediately: false)
+    let player = RecoveredAudioPlayerFake()
+    let recovery = RecoveredSessionController(
+      recoveryFactory: {
+        try NativeRecordingPreparation.open(managedRoot: importRoot.path)
+      },
+      importedPlaybackLeaseProvider: { sessionId in
+        try NativeRecordingPreparation.open(managedRoot: importRoot.path)
+          .leaseImportedPlayback(sessionId: sessionId)
+      },
+      player: player
+    )
+    let live = LiveMicrophoneRecordingController(managedRoot: importRoot)
+    let adapter = ImportedMediaAuthorityAdapter(
+      startSecurityScope: { _ in true },
+      stopSecurityScope: { _ in },
+      canBeginImport: { live.canStart },
+      importer: { title, url in
+        try store.importManagedAudio(title: title, sourceURL: url)
+      }
+    )
+    let view = ContentView(
+      store: store,
+      importedMediaAuthority: adapter,
+      liveRecording: live,
+      recoveredSessions: recovery,
+      transcripts: TranscriptLibraryModel(managedRoot: importRoot),
+      speech: SpeechTranscriptionModel(managedRoot: importRoot),
+      scheduler: TranscriptionScheduler.inert(),
+      pressure: SystemPressureMonitor(libraryRoot: importRoot, samplesAutomatically: false),
+      context: ContextScopeModel(
+        binding: { nil },
+        frames: IdleContextFrames(),
+        permissionCheck: { .denied },
+        permissionRequest: { .denied },
+        topology: { [] }
+      ),
+      navigation: MainWorkspaceNavigation()
+    )
+    let host = NSHostingView(rootView: view)
+    host.sizingOptions = []
+    let window = NSWindow(
+      contentRect: NSRect(x: 0, y: 0, width: 1100, height: 720),
+      styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    window.contentView = host
+    window.setContentSize(NSSize(width: 1100, height: 720))
+    host.frame = window.contentLayoutRect
+    if #available(macOS 14, *) {
+      NSApplication.shared.activate()
+    }
+    window.makeKeyAndOrderFront(nil)
+    window.orderFrontRegardless()
+    defer { window.close() }
+    let ready = await waitUntil(timeoutNanoseconds: 5_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      window.displayIfNeeded()
+      return self.dropDestination(in: host) != nil
+    }
+    let destination = try XCTUnwrap(self.dropDestination(in: host))
+    XCTAssertTrue(ready && window.contentView === host, "class=\(type(of: destination))")
+    XCTAssertNil(self.bannerImportButton(in: host))
+    XCTAssertNil(self.playConversationButton(in: host))
+    let location = destination.convert(
+      NSPoint(x: destination.bounds.midX, y: destination.bounds.midY), to: nil)
+    let drag = AudioFileDrag(fileURL: source, window: window, location: location)
+    defer { drag.draggingPasteboard.releaseGlobally() }
+    let entered = destinationDragOperation("draggingEntered:", on: destination, info: drag)
+    let updated = destinationDragOperation("draggingUpdated:", on: destination, info: drag)
+    let prepared = destinationDragAccepted("prepareForDragOperation:", on: destination, info: drag)
+    let performed = destinationDragAccepted("performDragOperation:", on: destination, info: drag)
+    destinationDragEnded("concludeDragOperation:", on: destination, info: drag)
+    destinationDragEnded("draggingEnded:", on: destination, info: drag)
+    let operation = updated == 0 ? entered : updated
+    XCTAssertNotEqual(operation, 0)
+    XCTAssertTrue(prepared && performed)
+    let staged = await waitUntil(timeoutNanoseconds: 5_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      window.displayIfNeeded()
+      return adapter.pendingAudioImport?.urls == [source]
+        && self.bannerImportButton(in: host) != nil
+    }
+    XCTAssertTrue(
+      staged && window.contentView === host,
+      self.bannerProbe(in: host).joined(separator: "\n"))
+    XCTAssertNil(self.playConversationButton(in: host))
+    XCTAssertTrue(store.savedSessions.isEmpty)
+    XCTAssertNil(adapter.importedSessionId)
+    let confirm = try XCTUnwrap(self.bannerImportButton(in: host))
+    XCTAssertTrue(confirm.isDescendant(of: host))
+    confirm.performClick(nil)
+    let imported = await waitUntil(timeoutNanoseconds: 15_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      window.displayIfNeeded()
+      return adapter.phase == .succeeded
+        && adapter.importedSessionId != nil
+        && self.playConversationButton(in: host) != nil
+    }
+    XCTAssertTrue(
+      imported && window.contentView === host,
+      "phase=\(adapter.phase) message=\(adapter.statusMessage ?? "nil") pending=\(String(describing: adapter.pendingAudioImport)) play=\(self.playProbe(in: host))"
+    )
+    XCTAssertNil(adapter.pendingAudioImport)
+    let sessionId = try XCTUnwrap(adapter.importedSessionId)
+    let saved = try XCTUnwrap(store.savedSessions.first { $0.sessionId == sessionId })
+    XCTAssertEqual(saved.playableMedia?.isPlayable, true)
+    let play = try XCTUnwrap(self.playConversationButton(in: host))
+    XCTAssertTrue(play.isDescendant(of: host))
+    XCTAssertTrue(play.isEnabled)
+    XCTAssertNil(player.importedReceipt)
+    XCTAssertNil(recovery.playingSessionId)
+    play.performClick(nil)
+    let playing = await waitUntil(timeoutNanoseconds: 5_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      return recovery.playingSessionId == sessionId
+        && player.importedReceipt?.isEmpty == false
+    }
+    XCTAssertTrue(
+      playing,
+      "playing=\(recovery.playingSessionId ?? "nil") error=\(recovery.errorMessage ?? "nil") receipt=\(player.importedReceipt ?? "nil")"
+    )
+    XCTAssertEqual(recovery.activePlaybackSessionId, sessionId)
+    XCTAssertEqual(player.importedStartNanoseconds, 0)
+    XCTAssertNotNil(player.retainedLease)
+    XCTAssertNil(recovery.errorMessage)
+    XCTAssertEqual(try Data(contentsOf: source), original)
+    withExtendedLifetime(store) {}
+    withExtendedLifetime(live) {}
+    withExtendedLifetime(recovery) {}
+    withExtendedLifetime(player) {}
+    withExtendedLifetime(window) {}
+    withExtendedLifetime(drag) {}
+  }
+
+  /// A file dropped on the hosted library imports when that same hosting view's
   /// banner button is pressed. The imported item then plays, transcribes through
   /// the automatic queue, and accepts speaker review, search, correction, and
   /// export. The test does not call `stageDroppedAudio`, `confirmPendingAudioImport`,
@@ -2479,6 +2644,46 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
     }
     walk(root)
     return matched
+  }
+
+  private let playConversationLabel = "Play conversation audio"
+
+  /// The AppKit Play button the host reveals after a confirmed import is selected.
+  private func playConversationButton(in root: NSView) -> NSButton? {
+    var matched: NSButton?
+    func walk(_ view: NSView) {
+      if matched != nil { return }
+      if let button = view as? NSButton, !(button is NSPopUpButton),
+        button.accessibilityLabel() == playConversationLabel,
+        button.isHidden == false,
+        button.isHiddenOrHasHiddenAncestor == false,
+        button.frame.width > 1,
+        button.frame.height > 1
+      {
+        matched = button
+      }
+      for child in view.subviews { walk(child) }
+    }
+    walk(root)
+    return matched
+  }
+
+  private func playProbe(in root: NSView) -> String {
+    var lines: [String] = []
+    func walk(_ view: NSView) {
+      let name = String(describing: type(of: view))
+      if name.contains("ImportedPlayback") || view.accessibilityIdentifier() == "Imported playback"
+        || view is NSButton
+      {
+        let label = (view as? NSButton)?.accessibilityLabel() ?? ""
+        lines.append(
+          "\(name) frame=\(view.frame) hidden=\(view.isHidden) enabled=\((view as? NSButton)?.isEnabled.description ?? "") label=\(label) id=\(view.accessibilityIdentifier() ?? "")"
+        )
+      }
+      for child in view.subviews { walk(child) }
+    }
+    walk(root)
+    return lines.joined(separator: "\n")
   }
 
   /// The AppKit Import button the drop host reveals after a file is staged.

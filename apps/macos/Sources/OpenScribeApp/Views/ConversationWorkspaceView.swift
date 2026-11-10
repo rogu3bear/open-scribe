@@ -434,23 +434,11 @@ struct ConversationWorkspaceView: View {
       let isPlaying = playbackController.playingSessionId == session.sessionId
       let isPending =
         playbackController.activePlaybackSessionId == session.sessionId && !isPlaying
-      let playbackAction = PlaybackControlAction.resolve(
-        isPending: isPending,
-        isPlaying: isPlaying
-      )
       let playbackError =
         playbackController.errorSessionId == session.sessionId
           && playbackController.errorRecoveredMediaIdentity == nil
         ? playbackController.errorMessage : nil
       VStack(alignment: .leading, spacing: ScribeSpacing.related) {
-        primaryAudioButton(
-          playbackAction,
-          isEnabled: playbackAction != .play
-            || (canPlay
-              && playbackAction.isEnabled(
-                hasActivePlayback: playbackController.activePlaybackSessionId != nil)),
-          onToggle: toggleImportedPlayback
-        )
         if isPending {
           Text("Verifying local audio…").foregroundStyle(.secondary)
         } else if let playbackError {
@@ -491,14 +479,6 @@ struct ConversationWorkspaceView: View {
         }
         .accessibilityElement(children: .combine)
       }
-    }
-  }
-
-  private func toggleImportedPlayback() {
-    if playbackController.activePlaybackSessionId == session.sessionId {
-      playbackController.stopPlayback()
-    } else {
-      playbackController.play(session)
     }
   }
 
