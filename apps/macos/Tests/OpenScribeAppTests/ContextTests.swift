@@ -661,6 +661,57 @@ final class ContextTests: XCTestCase {
     XCTAssertEqual(PlaybackControlAction.stop.title, "Stop")
   }
 
+  /// The transcript reader stores this scale and calls `TranscriptPassagePresentation.make`.
+  /// This does not host the reader, drive VoiceOver, or walk focus order.
+  func testLargerTranscriptTextStaysNamedAndSearchMatchesStayMarked() throws {
+    XCTAssertEqual(TranscriptTextScale.resolve(nil), .standard)
+    XCTAssertEqual(TranscriptTextScale.resolve("purple"), .standard)
+    XCTAssertEqual(TranscriptTextScale.resolve(TranscriptTextScale.larger.rawValue), .larger)
+    XCTAssertEqual(
+      TranscriptTextScale.resolve("purple").rawValue, TranscriptTextScale.standard.rawValue)
+    XCTAssertEqual(TranscriptTextScale.controlLabel, "Transcript text size")
+    XCTAssertEqual(TranscriptTextScale.standard.spokenValue, "Standard text")
+    XCTAssertEqual(TranscriptTextScale.larger.spokenValue, "Larger text")
+    XCTAssertEqual(TranscriptTextScale.largest.spokenValue, "Largest text")
+    for scale in TranscriptTextScale.allCases {
+      XCTAssertFalse(scale.spokenValue.contains("#"))
+      XCTAssertFalse(scale.title.isEmpty)
+    }
+
+    let suite = "OpenScribe.Proof.TranscriptText.\(UUID().uuidString)"
+    let store = try XCTUnwrap(UserDefaults(suiteName: suite))
+    defer { store.removePersistentDomain(forName: suite) }
+    XCTAssertEqual(
+      TranscriptTextScale.resolve(store.string(forKey: TranscriptTextScale.storageKey)), .standard)
+    store.set(TranscriptTextScale.largest.rawValue, forKey: TranscriptTextScale.storageKey)
+    let chosen = TranscriptTextScale.resolve(store.string(forKey: TranscriptTextScale.storageKey))
+    XCTAssertEqual(chosen, .largest)
+    XCTAssertEqual(chosen.spokenValue, "Largest text")
+    XCTAssertLessThan(TranscriptTextScale.standard.pointSize, TranscriptTextScale.larger.pointSize)
+    XCTAssertLessThan(TranscriptTextScale.larger.pointSize, TranscriptTextScale.largest.pointSize)
+
+    let value = "alpha bravo"
+    let marked = TranscriptPassagePresentation.make(
+      speaker: "Local user", text: value, finality: "final", corrected: false, isPlaying: false,
+      isCited: false, query: "bravo", scale: .largest)
+    XCTAssertEqual(marked.spoken, "Local user. alpha bravo Final. Matches bravo.")
+    let match = try XCTUnwrap(value.range(of: "bravo"))
+    let matchRange = try XCTUnwrap(Range(match, in: marked.text))
+    XCTAssertEqual(marked.text[matchRange].underlineStyle, .single)
+    XCTAssertNotNil(marked.text[matchRange].font)
+    let other = try XCTUnwrap(value.range(of: "alpha"))
+    let otherRange = try XCTUnwrap(Range(other, in: marked.text))
+    XCTAssertNil(marked.text[otherRange].underlineStyle)
+
+    let cleared = TranscriptPassagePresentation.make(
+      speaker: "Local user", text: value, finality: "final", corrected: true, isPlaying: false,
+      isCited: false, query: " \n", scale: .larger)
+    XCTAssertEqual(cleared.spoken, "Local user. alpha bravo Corrected.")
+    XCTAssertFalse(cleared.spoken.contains(" Final."))
+    XCTAssertFalse(cleared.spoken.contains("Matches"))
+    XCTAssertTrue(cleared.text.runs.allSatisfy { $0.underlineStyle == nil })
+  }
+
   func testScopeSummariesStateScopeRetentionAndWhyContextStopped() throws {
     let fixture = try RecordingFixture()
     defer { try? FileManager.default.removeItem(at: fixture.root) }

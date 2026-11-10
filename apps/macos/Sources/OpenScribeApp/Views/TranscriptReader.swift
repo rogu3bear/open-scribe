@@ -22,6 +22,18 @@ struct TranscriptReader: View {
   @State private var speakerReview: TranscriptSpeakerPresentation?
   @State private var query = ""
   @FocusState private var isSearchFocused: Bool
+  @AppStorage(TranscriptTextScale.storageKey) private var storedTranscriptTextScale =
+    TranscriptTextScale.standard.rawValue
+
+  private var transcriptTextScale: TranscriptTextScale {
+    TranscriptTextScale.resolve(storedTranscriptTextScale)
+  }
+
+  private var textScaleBinding: Binding<String> {
+    Binding(
+      get: { transcriptTextScale.rawValue },
+      set: { storedTranscriptTextScale = TranscriptTextScale.resolve($0).rawValue })
+  }
 
   private var speakerSegments: [NativeTranscriptSegment] {
     transcripts.segments.filter { segment in
@@ -150,6 +162,16 @@ struct TranscriptReader: View {
         .font(.caption)
         .help("To find their passages across the library, search speaker: followed by their name")
       }
+      Picker(TranscriptTextScale.controlLabel, selection: textScaleBinding) {
+        ForEach(TranscriptTextScale.allCases) { scale in
+          Text(scale.title).tag(scale.rawValue)
+        }
+      }
+      .pickerStyle(.menu)
+      .font(.caption)
+      .frame(maxWidth: 280, alignment: .leading)
+      .accessibilityLabel(TranscriptTextScale.controlLabel)
+      .accessibilityValue(transcriptTextScale.spokenValue)
     }
   }
 
@@ -213,6 +235,10 @@ struct TranscriptReader: View {
     let isDraft = segment.finality == "draft"
     let isCited =
       !isDraft && transcripts.claimEvidenceOpen && transcripts.claimHighlightSegmentId == segment.id
+    let presentation = TranscriptPassagePresentation.make(
+      speaker: segment.speakerLabel, text: segment.effectiveText, finality: segment.finality,
+      corrected: segment.corrected, isPlaying: isPlaying, isCited: isCited, query: query,
+      scale: transcriptTextScale)
     return HStack(alignment: .firstTextBaseline, spacing: ScribeSpacing.compact) {
       Button(stamp) { onSeek(segment.startNanoseconds) }
         .buttonStyle(.link)
@@ -253,20 +279,14 @@ struct TranscriptReader: View {
           }
         }
         VStack(alignment: .leading, spacing: ScribeSpacing.tight) {
-          Text(highlightedText(segment.effectiveText))
+          Text(presentation.text)
+            .font(transcriptTextScale.passageFont)
             .textSelection(.enabled)
             .fixedSize(horizontal: false, vertical: true)
             // Selectable AppKit text otherwise retains its pre-correction value.
             .accessibilityElement(children: .ignore)
             .accessibilityAddTraits(.isStaticText)
-            .accessibilityLabel(
-              ConversationControlLabels.passageAccessibility(
-                speaker: segment.speakerLabel,
-                text: segment.effectiveText,
-                finality: segment.finality,
-                corrected: segment.corrected,
-                isPlaying: isPlaying,
-                isCited: isCited))
+            .accessibilityLabel(presentation.spoken)
           if segment.corrected {
             DisclosureGroup("Corrected · Show machine reading") {
               Text(segment.verbatimText)
@@ -308,14 +328,4 @@ struct TranscriptReader: View {
     speakerReview = TranscriptSpeakerPresentation(sessionId: sessionId, subject: .passage(segment))
   }
 
-  private func highlightedText(_ value: String) -> AttributedString {
-    var text = AttributedString(value)
-    for match in TranscriptSearch.ranges(in: value, query: query) {
-      if let range = Range(match, in: text) {
-        text[range].backgroundColor = Color.yellow.opacity(0.25)
-        text[range].font = .body.weight(.semibold)
-      }
-    }
-    return text
-  }
 }
