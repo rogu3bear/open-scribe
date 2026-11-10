@@ -10,7 +10,7 @@ Choose a saved conversation in the sidebar. The title, date, duration, and
 status help distinguish recordings with similar names. The pencil beside the
 title renames that conversation.
 
-**Import → Audio Files** opens local recordings. You can select several files; they are
+**Audio Files…** in the library opens local recordings. You can select several files; they are
 imported one at a time. **Pause Imports** finishes the current file before
 waiting. **Stop Imports** keeps the conversations already imported. A failed
 file is identified without discarding the other completed imports.

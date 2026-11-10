@@ -616,6 +616,7 @@ final class ContextTests: XCTestCase {
     XCTAssertEqual(ConversationControlLabels.findInTranscript, "Find in this transcript")
     XCTAssertEqual(ConversationControlLabels.searchTranscripts, "Search transcripts")
     XCTAssertEqual(ConversationControlLabels.exportTranscript, "Export Transcript…")
+    XCTAssertEqual(ConversationControlLabels.audioFiles, "Audio Files…")
     XCTAssertEqual(ConversationControlLabels.recordShortcut.key.character, "r")
     XCTAssertEqual(ConversationControlLabels.recordShortcut.modifiers, [.command, .shift])
     XCTAssertEqual(ConversationControlLabels.stopShortcut.key.character, "s")

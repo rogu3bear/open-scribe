@@ -2123,6 +2123,135 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
     withExtendedLifetime(drag) {}
   }
 
+  /// Pressing Audio Files… imports the file the chooser returns. The shipped
+  /// default chooser is the open panel. This test supplies one file, presses
+  /// the button, and does not call `chooseAndImport` or open the panel.
+  func testAHostedAudioFileControlImportsAndLeavesTheOriginal() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "open-scribe-open-panel-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let source = root.appendingPathComponent("Opened recording.m4a")
+    do {
+      let file = try AVAudioFile(
+        forWriting: source,
+        settings: [
+          AVFormatIDKey: kAudioFormatAppleLossless,
+          AVSampleRateKey: 48_000.0,
+          AVNumberOfChannelsKey: 1,
+          AVEncoderBitDepthHintKey: 16,
+        ])
+      let buffer = try XCTUnwrap(
+        AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: 48_000))
+      buffer.frameLength = 48_000
+      let channel = try XCTUnwrap(buffer.floatChannelData?[0])
+      for frame in 0..<48_000 {
+        channel[frame] = frame < 24_000 ? 0.25 : -0.5
+      }
+      try file.write(from: buffer)
+    }
+    let original = try Data(contentsOf: source)
+    let importRoot = root.appendingPathComponent("Library", isDirectory: true)
+    try FileManager.default.createDirectory(at: importRoot, withIntermediateDirectories: false)
+    let store = RuntimeLibraryStore(managedRoot: importRoot, refreshesImmediately: false)
+    let live = LiveMicrophoneRecordingController(managedRoot: importRoot)
+    var pickerCalls = 0
+    let adapter = ImportedMediaAuthorityAdapter(
+      startSecurityScope: { _ in true },
+      stopSecurityScope: { _ in },
+      canBeginImport: { live.canStart },
+      importer: { title, url in
+        try store.importManagedAudio(title: title, sourceURL: url)
+      },
+      batchPicker: {
+        pickerCalls += 1
+        return [source]
+      }
+    )
+    let view = ContentView(
+      store: store,
+      importedMediaAuthority: adapter,
+      liveRecording: live,
+      recoveredSessions: RecoveredSessionController(
+        recoveryFactory: {
+          try NativeRecordingPreparation.open(managedRoot: importRoot.path)
+        },
+        importedPlaybackLeaseProvider: { sessionId in
+          try NativeRecordingPreparation.open(managedRoot: importRoot.path)
+            .leaseImportedPlayback(sessionId: sessionId)
+        },
+        player: RecoveredAudioPlayerFake()
+      ),
+      transcripts: TranscriptLibraryModel(managedRoot: importRoot),
+      speech: SpeechTranscriptionModel(managedRoot: importRoot),
+      scheduler: TranscriptionScheduler.inert(),
+      pressure: SystemPressureMonitor(libraryRoot: importRoot, samplesAutomatically: false),
+      context: ContextScopeModel(
+        binding: { nil },
+        frames: IdleContextFrames(),
+        permissionCheck: { .denied },
+        permissionRequest: { .denied },
+        topology: { [] }
+      ),
+      navigation: MainWorkspaceNavigation()
+    )
+    let host = NSHostingView(rootView: view)
+    host.sizingOptions = []
+    let window = NSWindow(
+      contentRect: NSRect(x: 0, y: 0, width: 1100, height: 720),
+      styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    window.contentView = host
+    window.setContentSize(NSSize(width: 1100, height: 720))
+    host.frame = window.contentLayoutRect
+    if #available(macOS 14, *) {
+      NSApplication.shared.activate()
+    }
+    window.makeKeyAndOrderFront(nil)
+    window.orderFrontRegardless()
+    defer { window.close() }
+    let label = ConversationControlLabels.audioFiles
+    let ready = await waitUntil(timeoutNanoseconds: 5_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      window.displayIfNeeded()
+      return self.hostedActionButton(labeled: label, in: host) != nil
+    }
+    let choose = try XCTUnwrap(self.hostedActionButton(labeled: label, in: host))
+    XCTAssertTrue(ready && window.contentView === host, self.bannerProbe(in: host).joined(separator: "\n"))
+    XCTAssertTrue(choose.isDescendant(of: host))
+    XCTAssertTrue(choose.isEnabled)
+    XCTAssertEqual(pickerCalls, 0)
+    XCTAssertNil(adapter.pendingAudioImport)
+    XCTAssertNil(adapter.importedSessionId)
+    XCTAssertTrue(store.savedSessions.isEmpty)
+    XCTAssertNil(self.bannerImportButton(in: host))
+    choose.performClick(nil)
+    let imported = await waitUntil(timeoutNanoseconds: 15_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      window.displayIfNeeded()
+      let sessionId = adapter.importedSessionId
+      return adapter.phase == .succeeded
+        && sessionId != nil
+        && adapter.pendingAudioImport == nil
+        && store.savedSessions.contains { $0.sessionId == sessionId }
+        && self.bannerImportButton(in: host) == nil
+    }
+    XCTAssertTrue(
+      imported && window.contentView === host,
+      "phase=\(adapter.phase) message=\(adapter.statusMessage ?? "nil") pending=\(String(describing: adapter.pendingAudioImport)) sessions=\(store.savedSessions.map(\.sessionId))"
+    )
+    XCTAssertEqual(pickerCalls, 1)
+    let sessionId = try XCTUnwrap(adapter.importedSessionId)
+    let saved = try XCTUnwrap(store.savedSessions.first { $0.sessionId == sessionId })
+    XCTAssertEqual(saved.playableMedia?.isPlayable, true)
+    XCTAssertNil(adapter.pendingAudioImport)
+    XCTAssertNil(self.bannerImportButton(in: host))
+    XCTAssertEqual(try Data(contentsOf: source), original)
+    withExtendedLifetime(store) {}
+    withExtendedLifetime(live) {}
+    withExtendedLifetime(window) {}
+  }
+
   /// A file dropped on the hosted library imports when that same hosting view's
   /// banner button is pressed, then plays when that same view's Play button is
   /// pressed. The original file stays unchanged. The test does not call

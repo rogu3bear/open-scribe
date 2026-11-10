@@ -506,7 +506,7 @@ final class ImportedMediaAuthorityAdapter: ObservableObject {
   }
 
   static var importLimitHelp: String {
-    "Add local CAF or M4A audio (PCM CAF up to \(pcmLimitMiB) MiB, M4A up to \(m4aLimitGiB) GiB, four hours). Drop a file on the library, then confirm the import."
+    "Add local CAF or M4A audio (PCM CAF up to \(pcmLimitMiB) MiB, M4A up to \(m4aLimitGiB) GiB, four hours). Choose Audio Files, or drop a file on the library and confirm the import."
   }
 
   private static var importLimitPrompt: String {

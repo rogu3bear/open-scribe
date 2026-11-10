@@ -148,6 +148,9 @@ struct ContentView: View {
       }
       .frame(maxWidth: .infinity, minHeight: 28, alignment: .leading)
       .padding(.horizontal, ScribeSpacing.related)
+      AudioFileImportMount(authority: importedMediaAuthority, recording: liveRecording)
+        .frame(maxWidth: .infinity, minHeight: 28, alignment: .leading)
+        .padding(.horizontal, ScribeSpacing.related)
       conversationList
       LibraryActivityFooter(
         scheduler: scheduler, speech: speech, pressure: pressure,
@@ -293,9 +296,7 @@ struct ContentView: View {
             importIsBusy: importedMediaAuthority.isBusy
           ),
           canImport: canImport,
-          importIsBusy: importedMediaAuthority.isBusy,
           onRecord: startRecording,
-          onImport: importedMediaAuthority.chooseAndImport,
           onOpenPackage: openPackageAction
         )
       }
@@ -427,15 +428,12 @@ struct ContentView: View {
     {
       ImportBatchStatus(imports: importedMediaAuthority, canResume: liveRecording.canStart)
     }
-    if !importedMediaAuthority.hasPendingAudioImports {
+    if !importedMediaAuthority.hasPendingAudioImports, importedMediaAuthority.canOpenPackages {
       Menu(
         importedMediaAuthority.isBusy ? "Importing…" : "Import",
         systemImage: "square.and.arrow.down"
       ) {
-        Button("Audio Files…") { importedMediaAuthority.chooseAndImport() }
-        if importedMediaAuthority.canOpenPackages {
-          openPackageButton
-        }
+        openPackageButton
       }
       .disabled(!canImport)
       .help(
@@ -1134,9 +1132,7 @@ struct LibraryActivityFooter: View {
 private struct EmptyConversationWorkspace: View {
   let canRecord: Bool
   let canImport: Bool
-  let importIsBusy: Bool
   let onRecord: () -> Void
-  let onImport: () -> Void
   let onOpenPackage: (() -> Void)?
 
   var body: some View {
@@ -1145,7 +1141,7 @@ private struct EmptyConversationWorkspace: View {
         .font(.title.weight(.bold))
         .accessibilityAddTraits(.isHeader)
       Text(
-        "Record a conversation, choose Import, or drop a CAF or M4A file and confirm it. Your recordings stay on this Mac."
+        "Record a conversation, choose Audio Files, or drop a CAF or M4A file and confirm it. Your recordings stay on this Mac."
       )
       .foregroundStyle(.secondary)
       .multilineTextAlignment(.center)
@@ -1154,13 +1150,10 @@ private struct EmptyConversationWorkspace: View {
         Button("Record", systemImage: "record.circle", action: onRecord)
           .disabled(!canRecord)
           .buttonStyle(.borderedProminent)
-        Menu(importIsBusy ? "Importing…" : "Import") {
-          Button("Audio Files…", action: onImport)
-          if let onOpenPackage {
-            Button("Portable Package…", action: onOpenPackage)
-          }
+        if let onOpenPackage {
+          Button("Portable Package…", action: onOpenPackage)
+            .disabled(!canImport)
         }
-        .disabled(!canImport)
       }
       .controlSize(.large)
     }
@@ -1613,6 +1606,96 @@ private final class DeletionConfirmationBanner: NSView {
     Task { @MainActor in
       await transcripts?.cancelDeletion()
     }
+  }
+}
+
+/// Chooses local audio through the shipped importer. The button is created
+/// with the first layout. The default chooser is the open panel.
+private struct AudioFileImportMount: NSViewRepresentable {
+  @ObservedObject var authority: ImportedMediaAuthorityAdapter
+  @ObservedObject var recording: LiveMicrophoneRecordingController
+
+  func makeNSView(context: Context) -> AudioFileImportControl {
+    let view = AudioFileImportControl()
+    view.bind(authority: authority, recording: recording)
+    return view
+  }
+
+  func updateNSView(_ view: AudioFileImportControl, context: Context) {
+    view.bind(authority: authority, recording: recording)
+  }
+}
+
+private final class AudioFileImportControl: NSView {
+  private let chooseButton = NSButton(
+    title: ConversationControlLabels.audioFiles, target: nil, action: nil)
+  private var subscriptions: [AnyCancellable] = []
+  private var authority: ImportedMediaAuthorityAdapter?
+  private var recording: LiveMicrophoneRecordingController?
+
+  override init(frame frameRect: NSRect) {
+    super.init(frame: frameRect)
+    setAccessibilityIdentifier("Audio file import")
+    chooseButton.bezelStyle = .rounded
+    chooseButton.setAccessibilityLabel(ConversationControlLabels.audioFiles)
+    chooseButton.target = self
+    chooseButton.action = #selector(chooseAudioFiles)
+    chooseButton.translatesAutoresizingMaskIntoConstraints = false
+    chooseButton.isHidden = true
+    addSubview(chooseButton)
+    NSLayoutConstraint.activate([
+      chooseButton.leadingAnchor.constraint(equalTo: leadingAnchor),
+      chooseButton.centerYAnchor.constraint(equalTo: centerYAnchor),
+      chooseButton.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor),
+    ])
+  }
+
+  required init?(coder: NSCoder) {
+    nil
+  }
+
+  func bind(
+    authority: ImportedMediaAuthorityAdapter, recording: LiveMicrophoneRecordingController
+  ) {
+    let same = self.authority === authority && self.recording === recording
+    self.authority = authority
+    self.recording = recording
+    if !same {
+      let triggers: [AnyPublisher<Void, Never>] = [
+        authority.objectWillChange.map { _ in () }.eraseToAnyPublisher(),
+        recording.objectWillChange.map { _ in () }.eraseToAnyPublisher(),
+      ]
+      subscriptions.removeAll()
+      Publishers.MergeMany(triggers).sink { [weak self] _ in
+        DispatchQueue.main.async { self?.apply() }
+      }.store(in: &subscriptions)
+    }
+    apply()
+  }
+
+  override func hitTest(_ point: NSPoint) -> NSView? {
+    guard chooseButton.isHidden == false else { return nil }
+    let hit = super.hitTest(point)
+    return hit === self ? nil : hit
+  }
+
+  private var canChoose: Bool {
+    guard let authority, let recording else { return false }
+    return recording.canStart && !authority.isBusy && !authority.hasPendingAudioImports
+  }
+
+  private func apply() {
+    let available = canChoose
+    chooseButton.isHidden = !available
+    chooseButton.isEnabled = available
+    chooseButton.toolTip =
+      available ? ImportedMediaAuthorityAdapter.importLimitHelp : nil
+    layoutSubtreeIfNeeded()
+  }
+
+  @objc private func chooseAudioFiles() {
+    guard canChoose else { return }
+    authority?.chooseAndImport()
   }
 }
 
