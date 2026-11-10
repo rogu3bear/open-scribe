@@ -1994,7 +1994,7 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
     withExtendedLifetime(drag) {}
   }
 
-  /// A file dropped on the hosted library imports when the banner button is pressed.
+  /// A file dropped on the hosted library imports when that same window's banner button is pressed.
   /// The original stays where it is.
   func testAHostedDropConfirmedFromTheBannerImportsAndLeavesTheOriginal() async throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(
@@ -2095,33 +2095,28 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
     )
     XCTAssertEqual(adapter.phase, .idle)
     XCTAssertTrue(store.savedSessions.isEmpty)
-    // This runner draws a hosting view's first body and does not rebuild it
-    // after the drop. A new window of the same library reads the pending import.
+    // The drop host keeps its first AppKit body. Hiding this same window and
+    // installing a new view lets that view's first body show the banner at
+    // the full library size. A second window is not required.
+    window.orderOut(nil)
     let bannerHost = NSHostingView(rootView: view)
-    let bannerWindow = NSWindow(
-      contentRect: NSRect(x: 0, y: 0, width: 1100, height: 720),
-      styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
-    bannerWindow.isReleasedWhenClosed = false
-    bannerWindow.contentView = bannerHost
-    bannerWindow.setContentSize(NSSize(width: 1100, height: 720))
-    bannerHost.frame = bannerWindow.contentLayoutRect
-    bannerWindow.makeKeyAndOrderFront(nil)
-    bannerWindow.orderFrontRegardless()
-    defer { bannerWindow.close() }
-    let banner = await waitUntil(timeoutNanoseconds: 5_000_000_000) {
-      bannerHost.layoutSubtreeIfNeeded()
-      bannerWindow.displayIfNeeded()
-      return settledBannerConfirmProxy(in: bannerHost) != nil
+    bannerHost.sizingOptions = []
+    window.contentView = bannerHost
+    window.setContentSize(NSSize(width: 1100, height: 720))
+    bannerHost.frame = window.contentLayoutRect
+    window.makeKeyAndOrderFront(nil)
+    window.orderFrontRegardless()
+    let banner = await waitUntilRendered(bannerHost, window: window) {
+      settledBannerConfirmProxy(in: bannerHost) != nil
     }
     let proxy = settledBannerConfirmProxy(in: bannerHost)
     XCTAssertTrue(
       banner && proxy != nil,
-      "key=\(window.isKeyWindow) pending=\(String(describing: adapter.pendingAudioImport?.urls)) proxies=\(focusProxyProbe(in: bannerHost))"
+      "key=\(window.isKeyWindow) bounds=\(bannerHost.bounds) pending=\(String(describing: adapter.pendingAudioImport?.urls)) proxies=\(focusProxyProbe(in: bannerHost))"
     )
     let button = try XCTUnwrap(proxy)
-    XCTAssertTrue(button.window === bannerWindow)
-    bannerHost.layoutSubtreeIfNeeded()
-    bannerWindow.displayIfNeeded()
+    XCTAssertTrue(button.window === window)
+    window.displayIfNeeded()
     click(button)
     let imported = await waitUntil { adapter.phase == .succeeded }
     XCTAssertTrue(
@@ -2135,7 +2130,6 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
     withExtendedLifetime(live) {}
     withExtendedLifetime(recovery) {}
     withExtendedLifetime(window) {}
-    withExtendedLifetime(bannerWindow) {}
     withExtendedLifetime(drag) {}
   }
 
@@ -2391,6 +2385,33 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
       }
     }
     return nil
+  }
+
+  private func renderHostedFrame(_ host: NSHostingView<ContentView>, window: NSWindow) {
+    host._renderForTest(interval: 1.0 / 60.0)
+    for _ in 0..<4 {
+      if host._renderAsyncForTest(interval: 1.0 / 60.0) == false { break }
+    }
+    window.displayIfNeeded()
+  }
+
+  private func waitUntilRendered(
+    _ host: NSHostingView<ContentView>,
+    window: NSWindow,
+    timeoutNanoseconds: UInt64 = 5_000_000_000,
+    _ predicate: () -> Bool
+  ) async -> Bool {
+    let started = DispatchTime.now().uptimeNanoseconds
+    while true {
+      let turned = expectation(description: "hosted frame")
+      DispatchQueue.main.async { turned.fulfill() }
+      await fulfillment(of: [turned], timeout: 1)
+      renderHostedFrame(host, window: window)
+      if predicate() { return true }
+      if DispatchTime.now().uptimeNanoseconds - started >= timeoutNanoseconds {
+        return false
+      }
+    }
   }
 
   private func waitUntil(
