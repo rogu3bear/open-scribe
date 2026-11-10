@@ -77,6 +77,36 @@ diagnostics_gap='secret_handling,crash_report_content_check,'
 if [[ "$diagnostics_source_qualified" == 1 ]]; then
 	diagnostics_gap=''
 fi
+# The disposable fixture has no provider Settings proof, so the name stays there.
+provider_source_qualified=0
+if source_has_markers \
+	"$repo_root/apps/macos/Tests/OpenScribeAppTests/ProviderAuthorizationTests.swift" \
+	'testHostedProviderConfigurationAuthorizesNoCategoryUntilTheUserGrantsOne' \
+	'sk-live-example-secret' \
+	'Configure provider' \
+	'Final transcript' \
+	'No outbound request was made.' \
+	'Provider configured — no conversation content authorized' \
+	'performClick' \
+	'assertSecretAbsent' &&
+	source_has_markers \
+		"$repo_root/apps/macos/Sources/OpenScribeApp/Views/SettingsView.swift" \
+		'func prepareReview' \
+		'Configure provider' \
+		'authorization.configureRemote' \
+		'Prepare review' &&
+	source_has_markers \
+		"$repo_root/apps/macos/Sources/OpenScribeApp/Stores/ProviderAuthorizationModel.swift" \
+		'Audio and snapshots are unavailable to remote review.' \
+		'func configureRemote(' \
+		'func prepare(sessionId:' \
+		'materializeContentProviderReview'; then
+	provider_source_qualified=1
+fi
+provider_gap='provider_category_authorization,'
+if [[ "$provider_source_qualified" == 1 ]]; then
+	provider_gap=''
+fi
 for mode in synthetic live-context; do
 	if has_local_only "$mode"; then qualified_modes+=("$mode"); fi
 done
@@ -97,7 +127,9 @@ printf '%s\n' \
 	'qualification=none at the M4 completion plane' \
 	"diagnostics_source_qualified=$diagnostics_source_qualified" \
 	'diagnostics_source_plane=committed_source_not_candidate_receipt' \
-	"missing=${missing_prefix}provider_category_authorization,system_trash_deletion_runtime,${diagnostics_gap}capability_true_website_equality,local_intelligence,structured_memory" \
+	"provider_source_qualified=$provider_source_qualified" \
+	'provider_source_plane=committed_source_not_candidate_receipt' \
+	"missing=${missing_prefix}${provider_gap}system_trash_deletion_runtime,${diagnostics_gap}capability_true_website_equality,local_intelligence,structured_memory" \
 	'protected=provider_credentials,production_deployment' \
 	'next=qualify every missing boundary on the candidate; local-only mode does not admit release or optional context it did not exercise' >&2
 exit 1
