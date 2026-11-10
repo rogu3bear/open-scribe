@@ -59,6 +59,12 @@ struct CompactLiveView: View {
             .accessibilityLabel("Capture needs attention. \(interruption)")
         }
 
+        if let storageNotice = storagePressureNotice {
+          CaptureIssueLabel(message: storageNotice)
+            .font(.callout)
+            .accessibilityLabel(storageNotice)
+        }
+
         if liveRecording.contextBinding != nil {
           ContextInspector(model: context)
         }
@@ -128,9 +134,18 @@ struct CompactLiveView: View {
     return .secondary
   }
 
-  private var accessibilityStatus: String {
-    guard let current = store.currentSession else { return statusText }
-    let sources = current.sources.map { "\($0.name): \($0.stateText)" }.joined(separator: ", ")
-    return "\(current.statusText), \(current.timerText). \(sources)."
+  /// The same notice the live surface shows while Rust reports storage warning.
+  var storagePressureNotice: String? { liveRecording.storagePressureNotice }
+
+  var accessibilityStatus: String {
+    let base: String
+    if let current = store.currentSession {
+      let sources = current.sources.map { "\($0.name): \($0.stateText)" }.joined(separator: ", ")
+      base = "\(current.statusText), \(current.timerText). \(sources)."
+    } else {
+      base = statusText
+    }
+    guard let storagePressureNotice else { return base }
+    return "\(base) \(storagePressureNotice)"
   }
 }

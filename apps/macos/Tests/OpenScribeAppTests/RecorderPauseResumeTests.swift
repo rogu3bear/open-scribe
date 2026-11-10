@@ -777,6 +777,63 @@ final class RecorderPauseResumeTests: XCTestCase {
     XCTAssertEqual(try harness.preparation.playbackTimeline(sessionId: sessionId).count, 4)
   }
 
+  /// A warning observation stays on the live surface while capture continues.
+  /// Crossing the reserve still stops and explains that stop.
+  func testStorageWarningIsVisibleWhileCaptureContinues() async throws {
+    let harness = try PauseHarness()
+    defer { harness.removeFiles() }
+    harness.storage.set(4 * 1024 * 1024 * 1024)
+    await harness.controller.start()
+    try await harness.capture()
+    let sessionId = try XCTUnwrap(harness.captures.microphones.last).writer.authorization
+      .sessionId
+    XCTAssertNil(harness.controller.storagePressureNotice)
+    XCTAssertEqual(
+      try harness.preparation.recorderDetail(sessionId: sessionId).storageLevel, "normal")
+
+    harness.storage.set(768 * 1024 * 1024)
+    await harness.controller.checkStorage()
+    XCTAssertEqual(harness.controller.phase, .capturing)
+    XCTAssertNil(harness.controller.errorMessage)
+    XCTAssertEqual(harness.controller.recorderDetail?.storageLevel, "warning")
+    let notice = try XCTUnwrap(harness.controller.storagePressureNotice)
+    XCTAssertTrue(notice.contains("Storage is low"))
+    XCTAssertTrue(notice.contains("Recording continues"))
+    let store = RuntimeLibraryStore(
+      snapshotProvider: {
+        NativeRuntimeLibrarySnapshot(currentSession: nil, savedSessions: [])
+      },
+      announce: { _ in },
+      startsPolling: false
+    )
+    let live = CompactLiveView(store: store, liveRecording: harness.controller)
+    XCTAssertEqual(live.storagePressureNotice, notice)
+    XCTAssertTrue(live.accessibilityStatus.contains(notice))
+
+    await harness.controller.checkStorage()
+    XCTAssertEqual(harness.controller.phase, .capturing)
+    XCTAssertEqual(harness.controller.storagePressureNotice, notice)
+
+    harness.storage.set(4 * 1024 * 1024 * 1024)
+    await harness.controller.checkStorage()
+    XCTAssertEqual(harness.controller.phase, .capturing)
+    XCTAssertEqual(harness.controller.recorderDetail?.storageLevel, "normal")
+    XCTAssertNil(harness.controller.storagePressureNotice)
+
+    harness.storage.set(64 * 1024 * 1024)
+    await harness.controller.checkStorage()
+    XCTAssertEqual(harness.controller.phase, .saved)
+    XCTAssertNil(harness.controller.storagePressureNotice)
+    XCTAssertEqual(
+      harness.controller.errorMessage,
+      "Recording stopped at the storage reserve. Existing audio is preserved.")
+    let detail = try harness.preparation.recorderDetail(sessionId: sessionId)
+    XCTAssertEqual(detail.storageLevel, "critical")
+    XCTAssertEqual(
+      detail.events.filter { $0.kind == "storage_observed" }.map(\.label),
+      ["normal", "warning", "normal", "critical"])
+  }
+
   /// F7: rotation reserves the successor before opening and sealing. A failure at
   /// any of those steps must abandon the reserved successor durably so the
   /// remaining source keeps recording and Stop still finalizes; the UI never

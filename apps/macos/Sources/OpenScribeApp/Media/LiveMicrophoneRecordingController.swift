@@ -368,6 +368,13 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
     }
   }
 
+  /// Warning is a notice, not a failure. Capture continues, and the reserve
+  /// stop keeps its own message in `errorMessage`.
+  var storagePressureNotice: String? {
+    guard phase == .capturing, recorderDetail?.storageLevel == "warning" else { return nil }
+    return "Storage is low. Recording continues. Free space before the reserve stops capture."
+  }
+
   func start(resuming: Bool = false) async {
     guard resuming ? canResume : canStart else { return }
     let approvedPausedRestore = resuming ? approvedPausedMicrophoneRestore : nil

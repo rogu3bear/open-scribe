@@ -52,6 +52,9 @@ struct MenuBarContent: View {
     if let errorMessage = liveRecording.errorMessage {
       CaptureIssueLabel(message: errorMessage, isFailure: true)
     }
+    if let storageNotice = liveRecording.storagePressureNotice {
+      CaptureIssueLabel(message: storageNotice)
+    }
     if let libraryError = store.errorMessage {
       CaptureIssueLabel(message: libraryError, isFailure: true)
     }
