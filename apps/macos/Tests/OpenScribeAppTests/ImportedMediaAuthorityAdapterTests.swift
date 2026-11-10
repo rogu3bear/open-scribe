@@ -2220,6 +2220,109 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
     withExtendedLifetime(window) {}
   }
 
+  /// Pressing Record in the toolbar starts the shipped recorder. The test does
+  /// not call `start` and does not press the empty-library Record button.
+  func testHostedToolbarRecordStartsPreparationWithBothSources() async throws {
+    let harness = try PauseHarness()
+    defer { harness.removeFiles() }
+    let store = RuntimeLibraryStore(managedRoot: harness.root, refreshesImmediately: false)
+    let adapter = ImportedMediaAuthorityAdapter(
+      canBeginImport: { harness.controller.canStart },
+      importer: { title, url in
+        try store.importManagedAudio(title: title, sourceURL: url)
+      }
+    )
+    let view = ContentView(
+      store: store,
+      importedMediaAuthority: adapter,
+      liveRecording: harness.controller,
+      recoveredSessions: RecoveredSessionController(
+        recoveryFactory: {
+          try NativeRecordingPreparation.open(managedRoot: harness.root.path)
+        },
+        importedPlaybackLeaseProvider: { sessionId in
+          try NativeRecordingPreparation.open(managedRoot: harness.root.path)
+            .leaseImportedPlayback(sessionId: sessionId)
+        },
+        player: RecoveredAudioPlayerFake()
+      ),
+      transcripts: TranscriptLibraryModel(managedRoot: harness.root),
+      speech: SpeechTranscriptionModel(managedRoot: harness.root),
+      scheduler: TranscriptionScheduler.inert(),
+      pressure: SystemPressureMonitor(libraryRoot: harness.root, samplesAutomatically: false),
+      context: ContextScopeModel(
+        binding: { nil },
+        frames: IdleContextFrames(),
+        permissionCheck: { .denied },
+        permissionRequest: { .denied },
+        topology: { [] }
+      ),
+      navigation: MainWorkspaceNavigation()
+    )
+    let host = NSHostingView(rootView: view)
+    host.sizingOptions = []
+    let window = NSWindow(
+      contentRect: NSRect(x: 0, y: 0, width: 1100, height: 720),
+      styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    window.contentView = host
+    window.setContentSize(NSSize(width: 1100, height: 720))
+    host.frame = window.contentLayoutRect
+    window.makeKeyAndOrderFront(nil)
+    window.orderFrontRegardless()
+    defer { window.close() }
+    let ready = await waitUntil(timeoutNanoseconds: 5_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      window.displayIfNeeded()
+      return self.toolbarRecordButton(in: window) != nil
+    }
+    let record = try XCTUnwrap(self.toolbarRecordButton(in: window))
+    let libraryRecord = self.recordConversationButton(in: host)
+    XCTAssertTrue(ready && window.contentView === host)
+    XCTAssertTrue(record.isEnabled)
+    XCTAssertEqual(record.title, ConversationControlLabels.record)
+    XCTAssertEqual(record.accessibilityIdentifier(), "Toolbar record")
+    XCTAssertEqual(record.keyEquivalent, "r")
+    XCTAssertEqual(record.keyEquivalentModifierMask, [.command, .shift])
+    XCTAssertEqual(record.toolTip, "Record microphone + system audio")
+    if let libraryRecord {
+      XCTAssertFalse(record === libraryRecord)
+    }
+    XCTAssertEqual(harness.controller.phase, .idle)
+    XCTAssertTrue(harness.controller.canStart)
+    XCTAssertEqual(harness.captures.microphones.count, 0)
+    XCTAssertEqual(harness.captures.systems.count, 0)
+    record.performClick(nil)
+    let started = await waitUntil(timeoutNanoseconds: 8_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      return harness.controller.phase == .starting
+        && harness.captures.microphones.count == 1
+        && harness.captures.systems.count == 1
+    }
+    XCTAssertTrue(started, harness.controller.errorMessage ?? harness.controller.phase.rawValue)
+    XCTAssertEqual(harness.controller.statusText, "Starting microphone + system audio…")
+    XCTAssertEqual(
+      harness.controller.sourceSelectionPresentation.summary, "Microphone + Mac system audio")
+    XCTAssertFalse(harness.controller.canStart)
+    XCTAssertTrue(harness.controller.canStop)
+    let current = try XCTUnwrap(harness.preparation.runtimeLibrarySnapshot().currentSession)
+    XCTAssertEqual(current.lifecycle, "preparing")
+    let session = RuntimeSessionPresentation(native: current)
+    XCTAssertEqual(session.sources.map(\.name), ["Mac microphone", "Mac system audio"])
+    XCTAssertEqual(session.sources.map(\.stateText), ["Ready", "Ready"])
+    let preparingMenu = MenuBarLabel.presentation(
+      session: session,
+      snapshotStale: false,
+      livePhase: harness.controller.phase,
+      liveStatus: harness.controller.statusText)
+    XCTAssertFalse(preparingMenu.text.hasPrefix("Recording"))
+    XCTAssertFalse(preparingMenu.accessibilityText.hasPrefix("Recording"))
+    XCTAssertTrue(window.contentView === host)
+    withExtendedLifetime(store) {}
+    withExtendedLifetime(harness) {}
+    withExtendedLifetime(window) {}
+  }
+
   /// Pressing Record in the idle menu starts the shipped recorder. The test
   /// does not call `start`. Both selected sources stay named while preparation
   /// is still short of Recording.
@@ -3483,6 +3586,26 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
   }
 
   private let playConversationLabel = "Play conversation audio"
+
+  private func toolbarRecordButton(in window: NSWindow) -> NSButton? {
+    guard let root = window.contentView?.superview ?? window.contentView else { return nil }
+    var matched: NSButton?
+    func walk(_ view: NSView) {
+      if matched != nil { return }
+      if let button = view as? NSButton, !(button is NSPopUpButton),
+        button.accessibilityIdentifier() == "Toolbar record",
+        button.isHidden == false,
+        button.isHiddenOrHasHiddenAncestor == false,
+        button.frame.width > 1,
+        button.frame.height > 1
+      {
+        matched = button
+      }
+      for child in view.subviews { walk(child) }
+    }
+    walk(root)
+    return matched
+  }
 
   private func menuBarRecordButton(in root: NSView) -> NSButton? {
     var matched: NSButton?

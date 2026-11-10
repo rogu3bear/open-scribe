@@ -404,19 +404,14 @@ struct ContentView: View {
           ConversationControlLabels.stopShortcut.key,
           modifiers: ConversationControlLabels.stopShortcut.modifiers)
       } else {
-        Button(ConversationControlLabels.record, systemImage: "record.circle") {
-          startRecording()
-        }
-        .disabled(
-          !MainWorkspaceActions.canRecord(
+        ToolbarRecordMount(
+          enabled: MainWorkspaceActions.canRecord(
             liveCanStart: liveRecording.canStart,
-            importIsBusy: importedMediaAuthority.isBusy
-          )
+            importIsBusy: importedMediaAuthority.isBusy),
+          help: "Record \(liveRecording.captureSelection.recordedAudio)",
+          onRecord: startRecording
         )
-        .keyboardShortcut(
-          ConversationControlLabels.recordShortcut.key,
-          modifiers: ConversationControlLabels.recordShortcut.modifiers)
-        .help("Record \(liveRecording.captureSelection.recordedAudio)")
+        .frame(width: 120, height: 32)
       }
     }
   }
@@ -1159,6 +1154,74 @@ private struct EmptyConversationWorkspace: View {
     .padding(32)
     .frame(maxWidth: .infinity, maxHeight: .infinity)
     .accessibilityElement(children: .contain)
+  }
+}
+
+/// The toolbar's Record control. The button is created with the first layout
+/// and calls the same start the empty library uses.
+private struct ToolbarRecordMount: NSViewRepresentable {
+  let enabled: Bool
+  let help: String
+  let onRecord: () -> Void
+
+  func makeNSView(context: Context) -> ToolbarRecordControl {
+    let view = ToolbarRecordControl()
+    view.bind(enabled: enabled, help: help, onRecord: onRecord)
+    return view
+  }
+
+  func updateNSView(_ view: ToolbarRecordControl, context: Context) {
+    view.bind(enabled: enabled, help: help, onRecord: onRecord)
+  }
+}
+
+private final class ToolbarRecordControl: NSView {
+  private let button = NSButton(
+    title: ConversationControlLabels.record, target: nil, action: nil)
+  private var onRecord: (() -> Void)?
+
+  override init(frame frameRect: NSRect) {
+    super.init(frame: frameRect)
+    setAccessibilityIdentifier("Toolbar record")
+    button.bezelStyle = .rounded
+    button.setAccessibilityLabel(ConversationControlLabels.record)
+    button.setAccessibilityIdentifier("Toolbar record")
+    let shortcut = ConversationControlLabels.recordShortcut
+    button.keyEquivalent = String(shortcut.key.character)
+    button.keyEquivalentModifierMask = Self.modifierMask(shortcut.modifiers)
+    button.target = self
+    button.action = #selector(record)
+    button.translatesAutoresizingMaskIntoConstraints = false
+    addSubview(button)
+    NSLayoutConstraint.activate([
+      button.leadingAnchor.constraint(equalTo: leadingAnchor),
+      button.centerYAnchor.constraint(equalTo: centerYAnchor),
+      button.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor),
+    ])
+  }
+
+  required init?(coder: NSCoder) {
+    nil
+  }
+
+  func bind(enabled: Bool, help: String, onRecord: @escaping () -> Void) {
+    self.onRecord = onRecord
+    button.toolTip = help
+    button.isEnabled = enabled
+  }
+
+  @objc private func record() {
+    guard button.isEnabled else { return }
+    onRecord?()
+  }
+
+  private static func modifierMask(_ modifiers: EventModifiers) -> NSEvent.ModifierFlags {
+    var mask: NSEvent.ModifierFlags = []
+    if modifiers.contains(.command) { mask.insert(.command) }
+    if modifiers.contains(.shift) { mask.insert(.shift) }
+    if modifiers.contains(.option) { mask.insert(.option) }
+    if modifiers.contains(.control) { mask.insert(.control) }
+    return mask
   }
 }
 
