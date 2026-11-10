@@ -539,7 +539,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        AuthorizeMediaOpenRequest, FirstSampleReceipt, InterruptSessionRequest,
+        AuthorizeMediaOpenRequest, CaptureClock, FirstSampleReceipt, InterruptSessionRequest,
         MediaOpenAuthorization, MediaOpenReceipt, PrepareSessionRequest, SealSegmentReceipt,
         SessionInterruptionReason, SessionOrigin,
     };
@@ -647,6 +647,123 @@ mod tests {
             interrupted.interruption_reason,
             Some(SessionInterruptionReason::PermissionRevoked)
         );
+    }
+
+    #[test]
+    fn source_loss_names_the_failed_source_and_keeps_the_uncovered_interval() {
+        let temp = TempDir::new().unwrap();
+        let mut store = SessionStore::open(temp.path().join("Open Scribe")).unwrap();
+        let session_id = store
+            .prepare_session_with_required_sources(
+                PrepareSessionRequest {
+                    title: "Source loss".into(),
+                    origin: SessionOrigin::Capture,
+                },
+                vec![MediaSourceKind::Microphone, MediaSourceKind::SystemAudio],
+            )
+            .unwrap()
+            .session_id;
+        store
+            .anchor_capture_clock(
+                session_id.clone(),
+                CaptureClock {
+                    host_anchor: 1,
+                    numerator: 1,
+                    denominator: 1,
+                },
+            )
+            .unwrap();
+        let microphone = open_source(&mut store, &session_id, MediaSourceKind::Microphone);
+        let system = open_source(&mut store, &session_id, MediaSourceKind::SystemAudio);
+        accept_first_sample(&mut store, &microphone);
+        accept_first_sample(&mut store, &system);
+        store.confirm_recording(session_id.clone()).unwrap();
+        seal_source(&mut store, &system);
+        let lost_bytes = fs::read(&system.absolute_path).unwrap();
+        let evidence = store
+            .record_source_failure(SourceFailureRequest {
+                session_id: session_id.clone(),
+                source_kind: MediaSourceKind::SystemAudio,
+                reason: SourceFailureReason::CaptureFailed,
+            })
+            .unwrap();
+        assert!(evidence.source_failed);
+        assert!(evidence.session_degraded);
+        assert!(evidence.recording_continues);
+        assert!(!evidence.session_interrupted);
+
+        let recording = store.runtime_library_snapshot().unwrap();
+        let current = recording.current_session.unwrap();
+        assert_eq!(current.lifecycle, "recording");
+        assert_eq!(current.health, "degraded");
+        let failed_name = current
+            .sources
+            .iter()
+            .find(|source| source.kind == MediaSourceKind::SystemAudio)
+            .unwrap();
+        assert_eq!(failed_name.lifecycle, "failed");
+        assert_eq!(
+            current
+                .sources
+                .iter()
+                .find(|source| source.kind == MediaSourceKind::Microphone)
+                .unwrap()
+                .lifecycle,
+            "capturing"
+        );
+        let loss = store
+            .recorder_detail(&session_id)
+            .unwrap()
+            .events
+            .into_iter()
+            .find(|event| event.kind == "source_failed")
+            .unwrap();
+        assert_eq!(loss.label, failed_name.display_name);
+        assert!(loss.session_nanoseconds > 0);
+
+        seal_source_with_samples(&mut store, &microphone, 48_000, 1_000_042_000);
+        assert_eq!(fs::read(&system.absolute_path).unwrap(), lost_bytes);
+        let loss_after = store
+            .recorder_detail(&session_id)
+            .unwrap()
+            .events
+            .into_iter()
+            .find(|event| event.kind == "source_failed")
+            .unwrap();
+        assert_eq!(loss_after.session_nanoseconds, loss.session_nanoseconds);
+        assert_eq!(loss_after.label, loss.label);
+
+        let saved = store.runtime_library_snapshot().unwrap();
+        let session = saved
+            .saved_sessions
+            .into_iter()
+            .chain(saved.current_session)
+            .find(|session| session.session_id == session_id)
+            .unwrap();
+        assert_eq!(session.lifecycle, "ready_for_review");
+        assert_eq!(session.health, "degraded");
+        assert_eq!(
+            session
+                .sources
+                .iter()
+                .find(|source| source.kind == MediaSourceKind::SystemAudio)
+                .unwrap()
+                .lifecycle,
+            "failed"
+        );
+        let timeline = store.playback_timeline(&session_id).unwrap();
+        let covered = |track: &str| {
+            timeline
+                .iter()
+                .filter(|segment| segment.track_id == track)
+                .map(|segment| segment.sample_count)
+                .sum::<u64>()
+        };
+        let failed_samples = covered(&system.track_id);
+        let continued_samples = covered(&microphone.track_id);
+        assert!(continued_samples > failed_samples);
+        assert!(failed_samples > 0);
+        assert_eq!(fs::read(&system.absolute_path).unwrap(), lost_bytes);
     }
 
     #[test]
@@ -951,7 +1068,16 @@ mod tests {
     }
 
     fn seal_source(store: &mut SessionStore, authorization: &MediaOpenAuthorization) {
-        replace_with_recoverable_pcm_caf(authorization, 960);
+        seal_source_with_samples(store, authorization, 960, 52_000);
+    }
+
+    fn seal_source_with_samples(
+        store: &mut SessionStore,
+        authorization: &MediaOpenAuthorization,
+        sample_count: u64,
+        final_sample_host_time: u64,
+    ) {
+        replace_with_recoverable_pcm_caf(authorization, sample_count);
         let final_byte_length = fs::metadata(&authorization.absolute_path).unwrap().len();
         store
             .seal_segment(SealSegmentReceipt {
@@ -961,8 +1087,8 @@ mod tests {
                 open_token: authorization.open_token.clone(),
                 writer_generation: authorization.writer_generation,
                 relative_path: authorization.relative_path.clone(),
-                final_sample_host_time: 52_000,
-                sample_count: 960,
+                final_sample_host_time,
+                sample_count,
                 final_byte_length,
             })
             .unwrap();
