@@ -2479,6 +2479,161 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
     withExtendedLifetime(window) {}
   }
 
+  /// One durable source is not Recording. Pressing the toolbar Stop control
+  /// leaves that written audio in place and does not seal a saved conversation.
+  /// The test does not call `start` or `stop`.
+  func testHostedDelayedSourceStopKeepsTheWrittenSampleAndDoesNotClaimRecording() async throws {
+    let harness = try PauseHarness()
+    defer { harness.removeFiles() }
+    let store = RuntimeLibraryStore(managedRoot: harness.root, refreshesImmediately: false)
+    let adapter = ImportedMediaAuthorityAdapter(
+      canBeginImport: { harness.controller.canStart },
+      importer: { title, url in
+        try store.importManagedAudio(title: title, sourceURL: url)
+      }
+    )
+    let view = ContentView(
+      store: store,
+      importedMediaAuthority: adapter,
+      liveRecording: harness.controller,
+      recoveredSessions: RecoveredSessionController(
+        recoveryFactory: {
+          try NativeRecordingPreparation.open(managedRoot: harness.root.path)
+        },
+        importedPlaybackLeaseProvider: { sessionId in
+          try NativeRecordingPreparation.open(managedRoot: harness.root.path)
+            .leaseImportedPlayback(sessionId: sessionId)
+        },
+        player: RecoveredAudioPlayerFake()
+      ),
+      transcripts: TranscriptLibraryModel(managedRoot: harness.root),
+      speech: SpeechTranscriptionModel(managedRoot: harness.root),
+      scheduler: TranscriptionScheduler.inert(),
+      pressure: SystemPressureMonitor(libraryRoot: harness.root, samplesAutomatically: false),
+      context: ContextScopeModel(
+        binding: { nil },
+        frames: IdleContextFrames(),
+        permissionCheck: { .denied },
+        permissionRequest: { .denied },
+        topology: { [] }
+      ),
+      navigation: MainWorkspaceNavigation()
+    )
+    let host = NSHostingView(rootView: view)
+    host.sizingOptions = []
+    let window = NSWindow(
+      contentRect: NSRect(x: 0, y: 0, width: 1100, height: 720),
+      styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    window.contentView = host
+    window.setContentSize(NSSize(width: 1100, height: 720))
+    host.frame = window.contentLayoutRect
+    window.makeKeyAndOrderFront(nil)
+    window.orderFrontRegardless()
+    defer { window.close() }
+    let ready = await waitUntil(timeoutNanoseconds: 5_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      window.displayIfNeeded()
+      return self.toolbarRecordButton(in: window) != nil
+    }
+    let record = try XCTUnwrap(self.toolbarRecordButton(in: window))
+    XCTAssertTrue(ready && window.contentView === host)
+    record.performClick(nil)
+    let started = await waitUntil(timeoutNanoseconds: 8_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      return harness.controller.phase == .starting
+        && harness.captures.microphones.last?.didStart == true
+        && harness.captures.systems.last?.didStart == true
+    }
+    XCTAssertTrue(started, harness.controller.errorMessage ?? harness.controller.phase.rawValue)
+    let microphone = try XCTUnwrap(harness.captures.microphones.last)
+    let system = try XCTUnwrap(harness.captures.systems.last)
+    try microphone.emit(frames: 48_000, hostTime: harness.clock.now, value: 8192)
+    let oneSource = await waitUntil(timeoutNanoseconds: 8_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      guard harness.controller.phase == .starting,
+        let current = try? harness.preparation.runtimeLibrarySnapshot().currentSession
+      else { return false }
+      let session = RuntimeSessionPresentation(native: current)
+      let microphoneState = session.sources.first { $0.name == "Mac microphone" }?.lifecycle
+      let systemState = session.sources.first { $0.name == "Mac system audio" }?.lifecycle
+      return session.lifecycle == "preparing" && microphoneState == "capturing"
+        && systemState == "open" && session.isRecording == false
+    }
+    guard oneSource else {
+      let current = try? harness.preparation.runtimeLibrarySnapshot().currentSession
+      XCTFail(
+        "phase=\(harness.controller.phase.rawValue) code=\(harness.controller.failureCode ?? "none") message=\(harness.controller.errorMessage ?? "none") lifecycle=\(current?.lifecycle ?? "none")"
+      )
+      return
+    }
+    let microphoneURL = URL(fileURLWithPath: microphone.writer.authorization.absolutePath)
+    let systemURL = URL(fileURLWithPath: system.writer.authorization.absolutePath)
+    let microphoneBytes = try Data(contentsOf: microphoneURL)
+    let systemBytes = try Data(contentsOf: systemURL)
+    XCTAssertGreaterThan(microphoneBytes.count, systemBytes.count)
+    let current = try XCTUnwrap(harness.preparation.runtimeLibrarySnapshot().currentSession)
+    let waiting = RuntimeSessionPresentation(native: current)
+    let waitingMenu = MenuBarLabel.presentation(
+      session: waiting,
+      snapshotStale: false,
+      livePhase: harness.controller.phase,
+      liveStatus: harness.controller.statusText)
+    XCTAssertFalse(waitingMenu.text.hasPrefix("Recording"))
+    XCTAssertFalse(waiting.isRecording)
+    let stopReady = await waitUntil(timeoutNanoseconds: 5_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      window.displayIfNeeded()
+      return self.toolbarStopButton(in: window) != nil
+        && self.toolbarRecordButton(in: window) == nil
+    }
+    let stop = try XCTUnwrap(self.toolbarStopButton(in: window))
+    XCTAssertTrue(stopReady)
+    XCTAssertEqual(stop.title, ConversationControlLabels.stopAndSave)
+    XCTAssertEqual(stop.accessibilityIdentifier(), "Toolbar stop")
+    stop.performClick(nil)
+    let interrupted = await waitUntil(timeoutNanoseconds: 8_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      window.displayIfNeeded()
+      return harness.controller.phase == .failed
+        && store.currentSession?.lifecycle == "interrupted"
+        && self.toolbarStopButton(in: window) == nil
+        && self.toolbarRecordButton(in: window) != nil
+    }
+    XCTAssertTrue(interrupted, harness.controller.errorMessage ?? harness.controller.phase.rawValue)
+    XCTAssertEqual(harness.controller.failureCode, "no-durable-sample")
+    XCTAssertEqual(
+      harness.controller.errorMessage,
+      "A required source produced no durable sample. Recovery state was preserved.")
+    XCTAssertEqual(microphone.stopCount, 1)
+    XCTAssertEqual(system.stopCount, 1)
+    XCTAssertEqual(try Data(contentsOf: microphoneURL), microphoneBytes)
+    XCTAssertEqual(try Data(contentsOf: systemURL), systemBytes)
+    let conversation = try XCTUnwrap(store.currentSession)
+    XCTAssertEqual(conversation.sessionId, microphone.writer.authorization.sessionId)
+    XCTAssertEqual(conversation.lifecycle, "interrupted")
+    XCTAssertEqual(conversation.interruptionReason, "stop_without_durable_sample")
+    XCTAssertEqual(
+      conversation.interruptionText, "A required source had no durable final sample.")
+    XCTAssertFalse(conversation.isRecording)
+    XCTAssertEqual(
+      conversation.sources.first { $0.name == "Mac microphone" }?.stateText, "Failed")
+    XCTAssertEqual(
+      conversation.sources.first { $0.name == "Mac system audio" }?.stateText, "Failed")
+    XCTAssertTrue(store.savedSessions.isEmpty)
+    XCTAssertNotEqual(conversation.lifecycle, "ready_for_review")
+    let interruptedMenu = MenuBarLabel.presentation(
+      session: conversation,
+      snapshotStale: false,
+      livePhase: harness.controller.phase,
+      liveStatus: harness.controller.statusText)
+    XCTAssertEqual(interruptedMenu.text, "Recording interrupted")
+    XCTAssertTrue(window.contentView === host)
+    withExtendedLifetime(store) {}
+    withExtendedLifetime(harness) {}
+    withExtendedLifetime(window) {}
+  }
+
   /// Pressing Record in the idle menu starts the shipped recorder. The test
   /// does not call `start`. Both selected sources stay named while preparation
   /// is still short of Recording.
