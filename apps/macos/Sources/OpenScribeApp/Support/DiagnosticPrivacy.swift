@@ -53,6 +53,10 @@ enum DiagnosticPrivacy {
     "storage-observation-failed", "system-audio-unavailable", "segment-seal", "stop-without-sample",
   ]
 
+  static func isCategory(_ value: String) -> Bool {
+    categories.contains(value)
+  }
+
   static func sanitize(category: String, message: String) -> (category: String, message: String) {
     let safeCategory = categories.contains(category) ? category : "redacted"
     guard isBounded(message) else { return (safeCategory, redactedMessage) }

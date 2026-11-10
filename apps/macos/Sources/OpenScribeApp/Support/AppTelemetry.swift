@@ -39,6 +39,7 @@ enum AppTelemetry {
     _ logger: Logger, category: String, message: String,
     failure: Bool = false, journal: Bool = true
   ) {
+    CrashReportContent.observe(message)
     let safe = DiagnosticPrivacy.sanitize(category: category, message: message)
     if failure {
       logger.error("\(safe.message, privacy: .public)")

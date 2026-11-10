@@ -94,7 +94,9 @@ struct SettingsView: View {
           LabeledContent(
             "Models",
             value: "\(speech.models.filter(\.installed).count) installed of \(speech.models.count)")
-          Text("Recent notes stay on this Mac. They omit titles, transcript text, and file paths.")
+          Text(
+            "Recent notes stay on this Mac. They omit titles, transcript text, and file paths. The crash annotation in an export is content-free."
+          )
             .font(.caption)
             .foregroundStyle(.secondary)
           if diagnosticLog.events.isEmpty {

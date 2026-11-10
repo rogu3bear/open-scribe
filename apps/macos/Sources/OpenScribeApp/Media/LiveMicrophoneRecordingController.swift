@@ -1211,6 +1211,7 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
     stopCapture: Bool = true,
     interruptionReason: NativeSessionInterruptionReason? = nil
   ) async {
+    CrashReportContent.observe("stage=failed code=\(code)")
     phase = .stopping
     if stopCapture {
       _ = microphoneCapture?.stop()
