@@ -1,5 +1,5 @@
 use std::fs::File;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 use rusqlite::Connection;
@@ -502,6 +502,113 @@ fn replacement_never_displaces_the_selected_revision_until_it_completes() {
             .select_transcript_revision(&fixture.session, "another-track", &first)
             .is_err()
     );
+}
+
+#[test]
+fn replacement_preserves_audio_and_the_selected_revision_until_completion() {
+    let mut fixture = imported_fixture(144_000);
+    let source = fixture.root.parent().unwrap().join("source.caf");
+    let source_before = std::fs::read(&source).unwrap();
+    let media_before = std::fs::read(&fixture.media).unwrap();
+    let session = fixture.session.clone();
+
+    let first_identity = identity(&fixture, "options-a");
+    let first_run = fixture
+        .store
+        .begin_transcription_run(&first_identity, &plan())
+        .unwrap();
+    let first = complete_all(&mut fixture, &first_run, ["kept meadow", "kept close"]);
+    let selected = fixture.store.transcript_document(&session).unwrap();
+    assert_eq!(selected.len(), 2);
+    assert!(selected.iter().all(|segment| segment.revision_id == first));
+    assert_eq!(selected[0].effective_text, "kept meadow");
+
+    let replacement_identity = TranscriptionRunIdentity {
+        model_id: "replacement-model".into(),
+        model_sha256: "c".repeat(64),
+        ..first_identity
+    };
+    let running = fixture
+        .store
+        .begin_transcription_run(&replacement_identity, &plan())
+        .unwrap();
+    fixture
+        .store
+        .complete_transcript_chunk(&running.run_id, 0, "en", &hypothesis("partial replacement"))
+        .unwrap();
+
+    let during = fixture.store.transcript_document(&session).unwrap();
+    assert_eq!(during.len(), 2);
+    assert!(during.iter().all(|segment| segment.revision_id == first));
+    assert_eq!(during[0].effective_text, "kept meadow");
+    assert_eq!(
+        fixture.store.transcript_revisions(&session).unwrap().len(),
+        1
+    );
+    assert_eq!(std::fs::read(&fixture.media).unwrap(), media_before);
+
+    fixture
+        .store
+        .complete_transcript_chunk(&running.run_id, 1, "en", &hypothesis("new close"))
+        .unwrap();
+    assert_eq!(
+        fixture.store.transcript_revisions(&session).unwrap().len(),
+        1
+    );
+    assert_eq!(
+        fixture.store.transcript_revision_segments(&first).unwrap()[0].text,
+        "kept meadow"
+    );
+    assert_eq!(std::fs::read(&fixture.media).unwrap(), media_before);
+
+    let committed = [
+        segment(&running.chunks[0], SECOND / 10, "partial replacement"),
+        segment(&running.chunks[1], SECOND, "new close"),
+    ];
+    let second = fixture
+        .store
+        .commit_transcript_revision(&running.run_id, &committed, "{}", "[]")
+        .unwrap();
+    assert_ne!(second, first);
+    let revisions = fixture.store.transcript_revisions(&session).unwrap();
+    assert_eq!(revisions.len(), 2);
+    assert!(
+        revisions
+            .iter()
+            .any(|revision| revision.revision_id == first && !revision.selected)
+    );
+    assert!(
+        revisions
+            .iter()
+            .any(|revision| revision.revision_id == second && revision.selected)
+    );
+    assert_eq!(
+        fixture.store.transcript_document(&session).unwrap()[0].effective_text,
+        "partial replacement"
+    );
+    assert_eq!(
+        fixture.store.transcript_revision_segments(&first).unwrap()[0].text,
+        "kept meadow"
+    );
+    assert_eq!(std::fs::read(&fixture.media).unwrap(), media_before);
+    assert_eq!(std::fs::read(&source).unwrap(), source_before);
+
+    let lease = fixture.store.lease_imported_playback(&session).unwrap();
+    let mut opened = Vec::new();
+    lease.file().read_to_end(&mut opened).unwrap();
+    assert_eq!(opened.len() as u64, lease.byte_length());
+    assert_eq!(opened, media_before);
+
+    let reopened = SessionStore::open(&fixture.root).unwrap();
+    assert_eq!(
+        reopened.transcript_revision_segments(&first).unwrap()[0].text,
+        "kept meadow"
+    );
+    assert_eq!(
+        reopened.transcript_document(&session).unwrap()[0].effective_text,
+        "partial replacement"
+    );
+    assert_eq!(std::fs::read(&fixture.media).unwrap(), media_before);
 }
 
 #[test]
