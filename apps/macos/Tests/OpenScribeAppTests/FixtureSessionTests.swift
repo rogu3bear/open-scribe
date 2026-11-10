@@ -306,6 +306,23 @@ final class FixtureSessionTests: XCTestCase {
       ).accessibilityText, "Live recording state unavailable")
   }
 
+  /// A durable recording names Recording, the elapsed time, and each capturing
+  /// source in words. The symbol is not the status.
+  func testRecordingMenuNamesElapsedTimeAndEachSourceInWords() {
+    let session = captureSession("recording", seconds: 125)
+    XCTAssertEqual(session.sources.map(\.stateText), ["Capturing", "Capturing"])
+    let presented = MenuBarLabel.presentation(
+      session: session, snapshotStale: false, livePhase: .capturing, liveStatus: "Recording")
+    XCTAssertEqual(presented.text, "Recording · 00:02:05")
+    XCTAssertEqual(
+      presented.accessibilityText,
+      "Recording Mac microphone and Mac system audio, 00:02:05")
+    XCTAssertTrue(session.sources.allSatisfy { presented.accessibilityText.contains($0.name) })
+    XCTAssertFalse(presented.symbolName.isEmpty)
+    XCTAssertFalse(presented.text.contains(presented.symbolName))
+    XCTAssertFalse(presented.accessibilityText.contains(presented.symbolName))
+  }
+
   func testSourceSelectionPresentationNamesOnlyEligibleSources() {
     let microphoneOnly = RecorderSourceSelectionPresentation(
       selection: .microphoneOnly, microphoneRetired: false)
