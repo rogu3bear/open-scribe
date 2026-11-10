@@ -734,6 +734,146 @@ final class ContextTests: XCTestCase {
     XCTAssertEqual(RegionEditor.clamped(CGRect(x: 0.98, y: -0.2, width: 0.01, height: 2)), CGRect(x: 0.95, y: 0, width: 0.05, height: 1))
     withExtendedLifetime(fixture.writer) {}
   }
+
+  /// Pause and Revoke are the shipped inspector buttons. A saved text event
+  /// stays, and a later display reading is refused. The test does not call
+  /// `pause` or `revoke`.
+  func testHostedPauseAndRevokeLeaveSavedContextWithoutNewEvents() async throws {
+    let fixture = try RecordingFixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let permission = ScreenPermissionStub()
+    permission.grant()
+    let model = ContextScopeModel(
+      binding: { fixture.binding }, frames: FrameScript(), recognize: { _ in [] },
+      permissionCheck: { permission.current },
+      permissionRequest: { permission.current },
+      topology: { RecordingFixture.displays })
+    defer { model.overlay.hide() }
+    model.selection = ContextSelection(mode: .followPointer)
+    XCTAssertTrue(model.authorize())
+    let scope = try XCTUnwrap(model.current)
+    let savedHost = mach_absolute_time()
+    let saved = try fixture.preparation.proposeContextEvent(
+      sessionId: fixture.sessionId,
+      proposal: NativeContextProposal(
+        scopeId: scope.scopeId, epoch: scope.epoch, reason: .userMarked,
+        startHostTime: savedHost, endHostTime: savedHost, observedAtMs: 0,
+        source: NativeContextSource(platformId: "pointer", name: "Pointer", application: nil),
+        bounds: nil, reducerRevision: ContextReducer.revision,
+        visionRevision: ContextReducer.visionRevision, languages: ["en-US"],
+        blocks: [
+          NativeContextTextBlock(text: "Agenda", x: 0.1, y: 0.1, width: 0.3, height: 0.1)
+        ]))
+    guard case .accepted = saved else { return XCTFail("\(saved)") }
+
+    let view = ContextInspector(model: model).frame(width: 520, height: 280)
+    let host = NSHostingView(rootView: view)
+    host.sizingOptions = []
+    let window = NSWindow(
+      contentRect: NSRect(x: 0, y: 0, width: 520, height: 280),
+      styleMask: [.titled, .closable], backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    window.contentView = host
+    window.setContentSize(NSSize(width: 520, height: 280))
+    host.frame = window.contentLayoutRect
+    window.makeKeyAndOrderFront(nil)
+    window.orderFrontRegardless()
+    defer { window.close() }
+
+    let offered = await waitUntil(timeoutNanoseconds: 5_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      window.displayIfNeeded()
+      guard let button = self.button(titled: "Pause Context", in: host) else { return false }
+      return button.frame.width > 1 && button.frame.height > 1 && button.isEnabled
+    }
+    let pause = try XCTUnwrap(self.button(titled: "Pause Context", in: host))
+    XCTAssertTrue(offered && pause.isDescendant(of: host) && window.contentView === host)
+    pause.performClick(nil)
+    let paused = await waitUntil {
+      host.layoutSubtreeIfNeeded()
+      return model.current?.condition == .paused
+    }
+    XCTAssertTrue(paused)
+    XCTAssertEqual(model.current?.condition, .paused)
+
+    let pausedScope = try XCTUnwrap(model.current)
+    let laterHost = mach_absolute_time()
+    let duringPause = try fixture.preparation.proposeContextEvent(
+      sessionId: fixture.sessionId,
+      proposal: NativeContextProposal(
+        scopeId: pausedScope.scopeId, epoch: pausedScope.epoch, reason: .attention,
+        startHostTime: laterHost, endHostTime: laterHost, observedAtMs: 0,
+        source: NativeContextSource(platformId: "pointer", name: "Pointer", application: nil),
+        bounds: nil, reducerRevision: ContextReducer.revision,
+        visionRevision: ContextReducer.visionRevision, languages: ["en-US"],
+        blocks: [
+          NativeContextTextBlock(
+            text: "Paused screen", x: 0.1, y: 0.2, width: 0.3, height: 0.1)
+        ]))
+    XCTAssertEqual(duringPause, .rejected(reason: .paused))
+
+    let library = try NativeTranscriptLibrary.open(managedRoot: fixture.root.path)
+    let events = try library.contextEvents(sessionId: fixture.sessionId)
+    XCTAssertEqual(events.map(\.text), ["Agenda"])
+    XCTAssertTrue(events.allSatisfy { $0.retention == "no_pixels" })
+    let images = FileManager.default.enumerator(at: fixture.root, includingPropertiesForKeys: nil)?
+      .compactMap { $0 as? URL }
+      .filter {
+        ["png", "jpg", "jpeg", "heic", "tiff", "bmp", "gif"].contains($0.pathExtension.lowercased())
+      }
+    XCTAssertEqual(images ?? [], [])
+
+    let revokeOffered = await waitUntil {
+      host.layoutSubtreeIfNeeded()
+      window.displayIfNeeded()
+      guard let button = self.button(titled: "Revoke", in: host) else { return false }
+      return button.frame.width > 1 && button.isEnabled && button.isDescendant(of: host)
+    }
+    let revoke = try XCTUnwrap(self.button(titled: "Revoke", in: host))
+    XCTAssertTrue(revokeOffered && window.contentView === host)
+    revoke.performClick(nil)
+    let revoked = await waitUntil { model.current?.condition == .revoked }
+    XCTAssertTrue(revoked)
+    let afterRevoke = try fixture.preparation.proposeContextEvent(
+      sessionId: fixture.sessionId,
+      proposal: NativeContextProposal(
+        scopeId: pausedScope.scopeId, epoch: pausedScope.epoch, reason: .attention,
+        startHostTime: mach_absolute_time(), endHostTime: mach_absolute_time(), observedAtMs: 0,
+        source: NativeContextSource(platformId: "pointer", name: "Pointer", application: nil),
+        bounds: nil, reducerRevision: ContextReducer.revision,
+        visionRevision: ContextReducer.visionRevision, languages: ["en-US"],
+        blocks: [
+          NativeContextTextBlock(text: "Revoked screen", x: 0.1, y: 0.3, width: 0.3, height: 0.1)
+        ]))
+    XCTAssertEqual(afterRevoke, .rejected(reason: .revoked))
+    let remaining = try library.contextEvents(sessionId: fixture.sessionId)
+    XCTAssertEqual(remaining.map(\.text), ["Agenda"])
+    XCTAssertTrue(window.contentView === host)
+    withExtendedLifetime(fixture.writer) {}
+  }
+
+  private func button(titled title: String, in root: NSView) -> NSButton? {
+    if let button = root as? NSButton,
+      button.title == title || button.accessibilityLabel() == title
+    {
+      return button
+    }
+    for subview in root.subviews {
+      if let found = button(titled: title, in: subview) { return found }
+    }
+    return nil
+  }
+
+  private func waitUntil(
+    timeoutNanoseconds: UInt64 = 3_000_000_000, _ body: () -> Bool
+  ) async -> Bool {
+    let deadline = DispatchTime.now().uptimeNanoseconds + timeoutNanoseconds
+    while DispatchTime.now().uptimeNanoseconds < deadline {
+      if body() { return true }
+      try? await Task.sleep(nanoseconds: 50_000_000)
+    }
+    return body()
+  }
 }
 
 private final class ProposalCounter: @unchecked Sendable {

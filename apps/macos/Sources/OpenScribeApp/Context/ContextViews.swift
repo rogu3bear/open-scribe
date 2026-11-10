@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import SwiftUI
 
 /// The live scope inspector: summary, retention truth, and ordinary buttons
@@ -19,16 +20,9 @@ struct ContextInspector: View {
           .fontWeight(scope.condition == .active ? nil : .semibold)
         Text("\(model.detail?.acceptedEvents ?? 0) context events · \(ContextScopeSummary.retention)")
           .font(.callout).foregroundStyle(.secondary)
-        HStack {
-          if scope.condition == .active {
-            Button("Pause Context") { model.pause() }
-            Button("Mark Now") { model.markNow() }
-          } else if scope.reason != "topology_changed" {
-            Button("Resume Context") { model.resume() }
-          }
-          Button("Narrow Scope…") { showsPreflight = true }
-          Button("Revoke", role: .destructive) { model.revoke() }
-        }
+        ContextActionMount(model: model)
+          .frame(maxWidth: .infinity, minHeight: 28, alignment: .leading)
+        Button("Narrow Scope…") { showsPreflight = true }
       } else {
         if let scope = model.current {
           Text(ContextScopeSummary.condition(scope)).foregroundStyle(.secondary)
@@ -46,6 +40,111 @@ struct ContextInspector: View {
     .sheet(isPresented: $showsPreflight) {
       ContextScopeSheet(model: model) { showsPreflight = false }
     }
+  }
+}
+
+/// Pause, Mark Now, Resume, and Revoke. Created with the first layout so a
+/// hosted click reaches the same model methods the buttons call.
+private struct ContextActionMount: NSViewRepresentable {
+  @ObservedObject var model: ContextScopeModel
+
+  func makeNSView(context: Context) -> ContextActionControl {
+    let view = ContextActionControl()
+    view.bind(model)
+    return view
+  }
+
+  func updateNSView(_ view: ContextActionControl, context: Context) {
+    view.bind(model)
+  }
+}
+
+private final class ContextActionControl: NSView {
+  private let pauseButton = NSButton(title: "Pause Context", target: nil, action: nil)
+  private let markButton = NSButton(title: "Mark Now", target: nil, action: nil)
+  private let resumeButton = NSButton(title: "Resume Context", target: nil, action: nil)
+  private let revokeButton = NSButton(title: "Revoke", target: nil, action: nil)
+  private var model: ContextScopeModel?
+  private var subscribed = false
+  private var cancellables: Set<AnyCancellable> = []
+
+  override init(frame frameRect: NSRect) {
+    super.init(frame: frameRect)
+    setAccessibilityIdentifier("Screen context actions")
+    let stack = NSStackView()
+    stack.orientation = .horizontal
+    stack.alignment = .centerY
+    stack.spacing = 8
+    stack.translatesAutoresizingMaskIntoConstraints = false
+    for button in [pauseButton, markButton, resumeButton, revokeButton] {
+      button.bezelStyle = .rounded
+      button.setAccessibilityLabel(button.title)
+      button.target = self
+      button.translatesAutoresizingMaskIntoConstraints = false
+      stack.addArrangedSubview(button)
+    }
+    pauseButton.action = #selector(pauseContext)
+    markButton.action = #selector(markContext)
+    resumeButton.action = #selector(resumeContext)
+    revokeButton.action = #selector(revokeContext)
+    addSubview(stack)
+    NSLayoutConstraint.activate([
+      stack.leadingAnchor.constraint(equalTo: leadingAnchor),
+      stack.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor),
+      stack.centerYAnchor.constraint(equalTo: centerYAnchor),
+    ])
+  }
+
+  required init?(coder: NSCoder) { nil }
+
+  override var intrinsicContentSize: NSSize {
+    NSSize(width: NSView.noIntrinsicMetric, height: 28)
+  }
+
+  func bind(_ model: ContextScopeModel) {
+    self.model = model
+    if !subscribed {
+      subscribed = true
+      model.objectWillChange.sink { [weak self] _ in
+        DispatchQueue.main.async { self?.apply() }
+      }.store(in: &cancellables)
+    }
+    apply()
+  }
+
+  private func apply() {
+    guard let model, let scope = model.current, model.isLive else {
+      pauseButton.isHidden = true
+      markButton.isHidden = true
+      resumeButton.isHidden = true
+      revokeButton.isHidden = true
+      return
+    }
+    let active = scope.condition == .active
+    pauseButton.isHidden = !active
+    markButton.isHidden = !active
+    resumeButton.isHidden = active || scope.reason == "topology_changed"
+    revokeButton.isHidden = false
+  }
+
+  @objc private func pauseContext() {
+    let model = model
+    MainActor.assumeIsolated { model?.pause() }
+  }
+
+  @objc private func markContext() {
+    let model = model
+    MainActor.assumeIsolated { model?.markNow() }
+  }
+
+  @objc private func resumeContext() {
+    let model = model
+    MainActor.assumeIsolated { model?.resume() }
+  }
+
+  @objc private func revokeContext() {
+    let model = model
+    MainActor.assumeIsolated { model?.revoke() }
   }
 }
 
