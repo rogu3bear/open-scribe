@@ -1,5 +1,15 @@
 import Foundation
 
+/// Disabled local intelligence writes nothing. The review surface says so.
+struct LocalIntelligenceRefusal: Equatable {
+  let mode: String
+  /// Meeting-memory claims this refusal created. Disabled always writes zero.
+  let claimsWritten: Int
+  /// No engine is named while local intelligence is disabled.
+  let engine: String?
+  let readout: String
+}
+
 /// Swift consumer of Rust's transcript review, search, export, and deletion
 /// authority. Rust owns every durable effect; this model holds only the
 /// values the views render and routes user intent back through coarse calls.
@@ -42,6 +52,17 @@ final class TranscriptLibraryModel: ObservableObject {
   @Published private(set) var contextEvents: [NativeContextEvent] = []
   /// Effective claims Rust projected. Swift does not invent or renumber them.
   @Published private(set) var derivedClaims: [DerivedClaimSummary] = []
+
+  /// The only shipped local-intelligence mode. It does not ingest a
+  /// meeting-memory delta, name an engine, or add a claim.
+  func refuseLocalIntelligence() -> LocalIntelligenceRefusal {
+    LocalIntelligenceRefusal(
+      mode: "disabled",
+      claimsWritten: 0,
+      engine: nil,
+      readout: "Intelligence off"
+    )
+  }
   /// Plain review sentence when voice clustering is unavailable. Nil when the
   /// session has no such decision.
   @Published private(set) var speakerDiarizationText: String?

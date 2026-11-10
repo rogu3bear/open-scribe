@@ -567,6 +567,19 @@ struct TranscriptSection: View {
   }
 }
 
+/// Interpretation while local intelligence is disabled. The field is created
+/// with the section and says intelligence is off. It adds no claims.
+struct InterpretationSection: View {
+  @ObservedObject var transcripts: TranscriptLibraryModel
+
+  var body: some View {
+    let refusal = transcripts.refuseLocalIntelligence()
+    ProvenanceReadout(label: "Interpretation", text: refusal.readout)
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .fixedSize(horizontal: false, vertical: true)
+  }
+}
+
 /// One effective claim and the actions that open its evidence or return to it.
 struct ClaimReviewSection: View {
   @ObservedObject var transcripts: TranscriptLibraryModel

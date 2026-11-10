@@ -8,6 +8,53 @@ import XCTest
 
 @MainActor
 final class TranscriptLibraryModelTests: XCTestCase {
+  func testHostedInterpretationSaysIntelligenceOffAndWritesNoClaims() async throws {
+    let transcripts = TranscriptLibraryModel(library: nil)
+    XCTAssertTrue(transcripts.derivedClaims.isEmpty)
+    let host = NSHostingView(rootView: InterpretationSection(transcripts: transcripts))
+    host.sizingOptions = []
+    let size = NSSize(width: 720, height: 120)
+    let window = NSWindow(
+      contentRect: NSRect(origin: .zero, size: size),
+      styleMask: [.titled, .closable], backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    window.contentView = host
+    window.setContentSize(size)
+    host.frame = window.contentLayoutRect
+    window.makeKeyAndOrderFront(nil)
+    window.orderFrontRegardless()
+    func interpretationField(in root: NSView) -> NSTextField? {
+      if let field = root as? NSTextField, field.accessibilityLabel() == "Interpretation" {
+        return field
+      }
+      for subview in root.subviews {
+        if let found = interpretationField(in: subview) { return found }
+      }
+      return nil
+    }
+    var shown: NSTextField?
+    let deadline = Date().addingTimeInterval(3)
+    while Date() < deadline {
+      if let field = interpretationField(in: host), field.stringValue == "Intelligence off" {
+        shown = field
+        break
+      }
+      try? await Task.sleep(nanoseconds: 50_000_000)
+    }
+    let field = try XCTUnwrap(shown, "Interpretation field was not on the first layout")
+    XCTAssertEqual(field.stringValue, "Intelligence off")
+    XCTAssertFalse(field.stringValue.contains("Decision"))
+    XCTAssertFalse(field.stringValue.contains("Loose End"))
+    XCTAssertFalse(field.stringValue.localizedCaseInsensitiveContains("engine"))
+    let refusal = transcripts.refuseLocalIntelligence()
+    XCTAssertEqual(refusal.readout, field.stringValue)
+    XCTAssertEqual(refusal.mode, "disabled")
+    XCTAssertEqual(refusal.claimsWritten, 0)
+    XCTAssertNil(refusal.engine)
+    XCTAssertTrue(transcripts.derivedClaims.isEmpty)
+    window.close()
+  }
+
   func testTranscriptSearchUsesReviewedTextAndPreservesPassageIdentityAndOrder() {
     let rows = [
       segment(

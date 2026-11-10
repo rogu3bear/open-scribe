@@ -107,6 +107,9 @@ struct ConversationWorkspaceView: View {
               onFollowPlayback: { id in proxy.scrollTo("transcript-\(id)", anchor: .center) }
             )
           }
+          if session.lifecycle == "ready_for_review" {
+            InterpretationSection(transcripts: transcripts)
+          }
           if session.lifecycle == "ready_for_review",
             transcripts.sessionId == session.sessionId, !transcripts.derivedClaims.isEmpty
           {
