@@ -474,6 +474,11 @@ fn native_library_keeps_a_human_adjudication_ahead_of_a_meeting_memory_delta() {
     assert!(listed.contains("The team deferred the remote recorder."));
     assert!(listed.contains("Who owns the recorder?"));
     assert!(!listed.contains("upload every recording"));
+    assert!(listed.contains("\"producer\":\"model_run\""));
+    assert!(listed.contains("\"model_run_id\":\"run-1\""));
+    assert!(listed.contains("\"model_run_id\":\"run-2\""));
+    assert!(listed.contains(&format!("\"input_digest\":\"{}\"", "b".repeat(64))));
+    assert!(listed.contains(&format!("\"input_digest\":\"{}\"", "c".repeat(64))));
 
     later["base_revision"] = serde_json::json!(second.next_revision);
     assert!(matches!(

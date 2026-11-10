@@ -104,6 +104,18 @@ pub struct DerivedClaimSummary {
     pub adjudication: Option<String>,
     pub supporting_count: u32,
     pub contradicting_count: u32,
+    /// `model_run` or `human`. Empty when an older projection omitted it.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub producer: String,
+    /// Supporting and contradicting ranges. This is not the cited words.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub evidence: String,
+    /// The meeting-memory run that accepted this claim, when one was stored.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub model_run_id: String,
+    /// Input manifest digest of that run. Empty when no run was stored.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub input_digest: String,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

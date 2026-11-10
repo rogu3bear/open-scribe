@@ -1901,6 +1901,137 @@ final class RecoveredSessionControllerTests: RecoveredSessionTestCase {
     withExtendedLifetime((store, live, playback, player, window, host)) {}
   }
 
+  /// Speaker assignment and a stored model claim show their own runs. The test
+  /// reads those fields. It cites a selected final. It does not call `load`
+  /// or the provenance formatters.
+  func testHostedReviewReadsSpeakerAssignmentAndDerivedItemProvenance() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "open-scribe-speaker-derived-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let package = root.appendingPathComponent("Stored.openscribe")
+    let export = await exportStoredFinalPackage(to: package)
+    XCTAssertEqual(export.status, 0, String(export.log.suffix(2_000)))
+    let packageMedia = try regularFiles(under: package.appendingPathComponent("media"))
+    XCTAssertEqual(packageMedia.count, 1)
+    let packageDigest = try digest(of: packageMedia[0])
+
+    let managed = root.appendingPathComponent("Library", isDirectory: true)
+    let library = try NativeTranscriptLibrary.open(managedRoot: managed.path)
+    let imported = try library.importPortablePackage(packagePath: package.path)
+    let segments = try library.document(sessionId: imported.sessionId)
+    let alpha = try XCTUnwrap(segments.first { $0.sequence == 0 })
+    XCTAssertEqual(alpha.finality, "final")
+    let supporting = try library.citeTranscriptSegment(
+      sessionId: imported.sessionId, revisionId: alpha.revisionId, sequence: alpha.sequence)
+    let history = try library.speakerLabelHistory(sessionId: imported.sessionId)
+    XCTAssertFalse(history.isEmpty)
+    let inputDigest = String(repeating: "c", count: 64)
+    let claimText = "The team agreed to keep the recorder local."
+    let delta = """
+      {"schema":"open-scribe.meeting-memory-delta/v1","model_run_id":"run-local-1","input_manifest_digest":"\(inputDigest)","session_id":"\(imported.sessionId)","base_revision":"0","operations":[{"op":"propose_claim","operation_id":"op-propose","kind":"decision","text":"\(claimText)","status":"agreed","supporting":[\(supporting)],"contradicting":[]}]}
+      """
+    let receipt = try library.ingestMeetingMemoryDelta(deltaJson: delta)
+    let receiptObject = try XCTUnwrap(
+      try JSONSerialization.jsonObject(with: Data(receipt.utf8)) as? [String: Any])
+    let operations = try XCTUnwrap(receiptObject["operations"] as? [[String: Any]])
+    let operation = try XCTUnwrap(operations.first)
+    XCTAssertEqual(operation["outcome"] as? String, "accepted", receipt)
+    XCTAssertEqual(receiptObject["model_run_id"] as? String, "run-local-1")
+    let revisionId = try XCTUnwrap(operation["revision_id"] as? String)
+
+    let store = RuntimeLibraryStore(managedRoot: managed, refreshesImmediately: false)
+    store.refresh()
+    let listed = await waitUntil {
+      store.savedSessions.contains { $0.sessionId == imported.sessionId }
+    }
+    XCTAssertTrue(listed, "saved=\(store.savedSessions.map(\.sessionId))")
+    let presentation = try XCTUnwrap(
+      store.savedSessions.first { $0.sessionId == imported.sessionId })
+    XCTAssertNil(presentation.transcriptionUnavailableReason)
+
+    let model = TranscriptLibraryModel(library: library)
+    let section = TranscriptSection(
+      session: presentation,
+      transcripts: model,
+      speech: SpeechTranscriptionModel(preview: []),
+      scheduler: TranscriptionScheduler.inert(),
+      canSeek: false,
+      onSeek: { _ in }
+    ).frame(width: 720, height: 640)
+    let host = NSHostingView(rootView: section)
+    host.sizingOptions = []
+    let window = NSWindow(
+      contentRect: NSRect(x: 0, y: 0, width: 720, height: 640),
+      styleMask: [.titled, .closable], backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    window.contentView = host
+    window.setContentSize(NSSize(width: 720, height: 640))
+    host.frame = window.contentLayoutRect
+    window.makeKeyAndOrderFront(nil)
+    window.orderFrontRegardless()
+    defer { window.close() }
+
+    let shown = await waitUntil(timeoutNanoseconds: 5_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      window.displayIfNeeded()
+      guard let speakers = self.readout(labeled: "Speaker assignment", in: host),
+        let derived = self.readout(labeled: "Derived item provenance", in: host)
+      else { return false }
+      return !speakers.isHidden && speakers.frame.height > 1 && speakers.isDescendant(of: host)
+        && speakers.stringValue.contains("Source default:")
+        && !derived.isHidden && derived.frame.height > 1 && derived.isDescendant(of: host)
+        && derived.stringValue.contains("run-local-1")
+    }
+    XCTAssertTrue(
+      shown && window.contentView === host,
+      self.hostedControlProbe(in: host))
+    let speakers = try XCTUnwrap(self.readout(labeled: "Speaker assignment", in: host))
+    let derived = try XCTUnwrap(self.readout(labeled: "Derived item provenance", in: host))
+    let speakerText = speakers.stringValue
+    XCTAssertTrue(
+      speakerText.contains(
+        "Speakers follow the audio source. Voice diarization is unavailable without a calibrated model."
+      ))
+    for item in history {
+      XCTAssertTrue(speakerText.contains("Source default: \(item.sourceDefaultLabel)"))
+    }
+    XCTAssertFalse(speakerText.localizedCaseInsensitiveContains("identical"))
+    XCTAssertFalse(speakerText.localizedCaseInsensitiveContains("deterministic"))
+    XCTAssertFalse(speakerText.contains(alpha.effectiveText))
+    XCTAssertFalse(speakerText.contains(claimText))
+    let derivedText = derived.stringValue
+    XCTAssertTrue(derivedText.contains("Model run run-local-1."))
+    XCTAssertTrue(derivedText.contains("Input \(inputDigest)."))
+    XCTAssertTrue(derivedText.contains("Revision \(revisionId)."))
+    XCTAssertTrue(
+      derivedText.contains(
+        "Evidence supporting \(alpha.startNanoseconds)-\(alpha.endNanoseconds) ns."))
+    XCTAssertTrue(
+      derivedText.hasSuffix(
+        "Open Scribe does not claim that running this model again produces the same words."))
+    XCTAssertFalse(derivedText.localizedCaseInsensitiveContains("identical"))
+    XCTAssertFalse(derivedText.localizedCaseInsensitiveContains("deterministic"))
+    XCTAssertFalse(derivedText.contains(alpha.effectiveText))
+    XCTAssertFalse(derivedText.contains(claimText))
+    let libraryMedia = try regularFiles(under: managed.appendingPathComponent("Sessions"))
+      .filter { $0.pathExtension == "caf" }
+    XCTAssertEqual(libraryMedia.count, 1)
+    XCTAssertEqual(try digest(of: libraryMedia[0]), packageDigest)
+    XCTAssertEqual(try digest(of: packageMedia[0]), packageDigest)
+    withExtendedLifetime((model, store, library)) {}
+  }
+
+  private func readout(labeled label: String, in root: NSView) -> NSTextField? {
+    if let field = root as? NSTextField, field.accessibilityLabel() == label {
+      return field
+    }
+    for subview in root.subviews {
+      if let found = readout(labeled: label, in: subview) { return found }
+    }
+    return nil
+  }
+
   private func claimButton(labeled label: String, in root: NSView) -> NSButton? {
     var matched: NSButton?
     func walk(_ view: NSView) {

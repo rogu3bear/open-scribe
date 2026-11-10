@@ -248,6 +248,30 @@ fn status_name(status: ClaimStatus) -> &'static str {
     }
 }
 
+fn producer_label(producer: ClaimProducer) -> &'static str {
+    match producer {
+        ClaimProducer::Human => "human",
+        ClaimProducer::ModelRun => "model_run",
+    }
+}
+
+fn evidence_phrase(claim: &DerivedClaim) -> String {
+    let mut parts = Vec::new();
+    for reference in &claim.supporting {
+        parts.push(format!(
+            "supporting {}-{} ns",
+            reference.start_ns, reference.end_ns
+        ));
+    }
+    for reference in &claim.contradicting {
+        parts.push(format!(
+            "contradicting {}-{} ns",
+            reference.start_ns, reference.end_ns
+        ));
+    }
+    parts.join(", ")
+}
+
 fn action_name(action: AdjudicationAction) -> &'static str {
     match action {
         AdjudicationAction::Accepted => "accepted",
@@ -377,6 +401,10 @@ impl SessionStore {
             if !claim.is_canonical() {
                 continue;
             }
+            let (model_run_id, input_digest) =
+                self.accepted_model_run(&session.0, &claim.claim_id)?;
+            let producer = producer_label(claim.producer).to_owned();
+            let evidence = evidence_phrase(&claim);
             summaries.push(DerivedClaimSummary {
                 claim_id: claim.claim_id,
                 revision_id: claim.revision_id,
@@ -388,9 +416,47 @@ impl SessionStore {
                     .map(|item| action_name(item.action).to_owned()),
                 supporting_count: u32::try_from(claim.supporting.len()).unwrap_or(u32::MAX),
                 contradicting_count: u32::try_from(claim.contradicting.len()).unwrap_or(u32::MAX),
+                producer,
+                evidence,
+                model_run_id,
+                input_digest,
             });
         }
         Ok(summaries)
+    }
+
+    /// The latest accepted meeting-memory run for this claim, and that run's
+    /// input digest. A rejected later proposal does not replace it.
+    fn accepted_model_run(
+        &self,
+        session: &str,
+        claim_id: &str,
+    ) -> Result<(String, String), StoreError> {
+        let mut statement = self.connection.prepare(
+            "SELECT proposal, result FROM meeting_memory_delta_receipts
+             WHERE session_id = ?1 ORDER BY created_at_ms, receipt_id",
+        )?;
+        let rows = statement.query_map(params![session], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        let mut found = (String::new(), String::new());
+        for row in rows {
+            let (proposal, result) = row?;
+            let Ok(receipt) = serde_json::from_str::<DeltaIngestReceipt>(&result) else {
+                continue;
+            };
+            let accepted = receipt.operations.iter().any(|item| {
+                item.outcome == "accepted" && item.claim_id.as_deref() == Some(claim_id)
+            });
+            if !accepted {
+                continue;
+            }
+            let digest = serde_json::from_str::<MeetingMemoryDelta>(&proposal)
+                .map(|delta| delta.input_manifest_digest)
+                .unwrap_or_default();
+            found = (receipt.model_run_id, digest);
+        }
+        Ok(found)
     }
 
     fn require_session(&self, session: &str) -> Result<(), StoreError> {

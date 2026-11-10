@@ -2075,11 +2075,16 @@ final class MicrophoneCaptureAdapterTests: XCTestCase {
 
   @MainActor
   private func provenanceField(in root: NSView) -> NSTextField? {
-    if let field = root as? NSTextField, field.accessibilityLabel() == "Model provenance" {
+    readout(labeled: "Model provenance", in: root)
+  }
+
+  @MainActor
+  private func readout(labeled label: String, in root: NSView) -> NSTextField? {
+    if let field = root as? NSTextField, field.accessibilityLabel() == label {
       return field
     }
     for subview in root.subviews {
-      if let found = provenanceField(in: subview) { return found }
+      if let found = readout(labeled: label, in: subview) { return found }
     }
     return nil
   }

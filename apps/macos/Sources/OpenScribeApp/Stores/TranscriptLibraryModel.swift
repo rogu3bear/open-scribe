@@ -795,6 +795,55 @@ final class TranscriptLibraryModel: ObservableObject {
       + "\nOpen Scribe does not claim that running this model again produces the same words."
   }
 
+  /// Speaker names come from the audio source until a person renames them.
+  /// The diarization sentence stays when no calibrated model ran.
+  nonisolated static func speakerAssignmentText(
+    diarization: String?, history: [NativeSpeakerLabelHistory]
+  ) -> String? {
+    var lines: [String] = []
+    if let diarization, !diarization.isEmpty { lines.append(diarization) }
+    for item in history {
+      lines.append(speakerLabelHistoryText(for: item))
+    }
+    guard !lines.isEmpty else { return nil }
+    return lines.joined(separator: "\n")
+  }
+
+  /// One line per stored claim. Ranges only: the claim sentence stays out.
+  nonisolated static func derivedItemProvenanceText(for claims: [DerivedClaimSummary]) -> String? {
+    var lines: [String] = []
+    var sawModel = false
+    for claim in claims {
+      let producer = claim.producer ?? ""
+      guard producer == "model_run" || producer == "human" else { continue }
+      var line = producer == "model_run" ? "Model run" : "Named by you"
+      if producer == "model_run" {
+        sawModel = true
+        if let run = claim.modelRunId, !run.isEmpty { line += " \(run)" }
+        line += "."
+        if let digest = claim.inputDigest, !digest.isEmpty {
+          line += " Input \(digest)."
+        }
+      } else {
+        line += "."
+      }
+      line += " Revision \(claim.revisionId)."
+      if let adjudication = claim.adjudication, !adjudication.isEmpty {
+        line += " Adjudication \(adjudication)."
+      }
+      if let evidence = claim.evidence, !evidence.isEmpty {
+        line += " Evidence \(evidence)."
+      }
+      lines.append(line)
+    }
+    guard !lines.isEmpty else { return nil }
+    if sawModel {
+      lines.append(
+        "Open Scribe does not claim that running this model again produces the same words.")
+    }
+    return lines.joined(separator: "\n")
+  }
+
   /// Words for the rename sheet. The source default stays on its own line.
   /// Each stored rename follows, oldest first, and says whether a person
   /// chose it or the source name was restored.
@@ -962,6 +1011,10 @@ struct DerivedClaimSummary: Decodable, Equatable, Identifiable, Sendable {
   let adjudication: String?
   let supportingCount: Int
   let contradictingCount: Int
+  let producer: String?
+  let evidence: String?
+  let modelRunId: String?
+  let inputDigest: String?
 
   var id: String { claimId }
 }

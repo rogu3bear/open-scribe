@@ -65,7 +65,25 @@ struct TranscriptSection: View {
         }
       }
       ProvenanceReadout(
+        label: "Model provenance",
         text: session.transcriptionUnavailableReason == nil ? transcripts.provenanceText : nil
+      )
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .fixedSize(horizontal: false, vertical: true)
+      ProvenanceReadout(
+        label: "Speaker assignment",
+        text: TranscriptLibraryModel.speakerAssignmentText(
+          diarization: session.transcriptionUnavailableReason == nil
+            ? transcripts.speakerDiarizationText : nil,
+          history: session.transcriptionUnavailableReason == nil
+            ? transcripts.speakerLabelHistory : [])
+      )
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .fixedSize(horizontal: false, vertical: true)
+      ProvenanceReadout(
+        label: "Derived item provenance",
+        text: session.transcriptionUnavailableReason == nil
+          ? TranscriptLibraryModel.derivedItemProvenanceText(for: transcripts.derivedClaims) : nil
       )
       .frame(maxWidth: .infinity, alignment: .leading)
       .fixedSize(horizontal: false, vertical: true)
@@ -607,16 +625,17 @@ struct ClaimReviewSection: View {
 /// The stored run, shown with the transcript section. The field exists on the
 /// first layout and fills when the section loads provenance.
 private struct ProvenanceReadout: NSViewRepresentable {
+  let label: String
   let text: String?
 
   func makeNSView(context: Context) -> ProvenanceReadoutControl {
     let view = ProvenanceReadoutControl()
-    view.apply(text)
+    view.apply(label: label, text: text)
     return view
   }
 
   func updateNSView(_ view: ProvenanceReadoutControl, context: Context) {
-    view.apply(text)
+    view.apply(label: label, text: text)
   }
 }
 
@@ -627,7 +646,6 @@ private final class ProvenanceReadoutControl: NSView {
     super.init(frame: frameRect)
     field.font = .preferredFont(forTextStyle: .callout)
     field.textColor = .secondaryLabelColor
-    field.setAccessibilityLabel("Model provenance")
     field.setAccessibilityRole(.staticText)
     field.isSelectable = true
     field.maximumNumberOfLines = 0
@@ -652,9 +670,10 @@ private final class ProvenanceReadoutControl: NSView {
     return NSSize(width: NSView.noIntrinsicMetric, height: height)
   }
 
-  func apply(_ text: String?) {
+  func apply(label: String, text: String?) {
     let shown = text ?? ""
     field.stringValue = shown
+    field.setAccessibilityLabel(label)
     field.isHidden = shown.isEmpty
     field.preferredMaxLayoutWidth = 680
     invalidateIntrinsicContentSize()
