@@ -3208,6 +3208,188 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
     withExtendedLifetime(window) {}
   }
 
+  /// Add Marker and Resume key equivalents act on the shipped buttons. The test
+  /// clicks Record to reach a capturing conversation, sends the marker
+  /// equivalent, pauses through the Pause key equivalent, then sends the Resume
+  /// equivalent. It does not call `addMarker`, `start`, or `stop`, and it does
+  /// not click Add Marker or Resume. A different shortcut leaves each control idle.
+  func testHostedResumeAndMarkerKeyEquivalentsKeepTheMarkerAcrossPause() async throws {
+    let harness = try PauseHarness()
+    defer { harness.removeFiles() }
+    let store = RuntimeLibraryStore(managedRoot: harness.root, refreshesImmediately: false)
+    let adapter = ImportedMediaAuthorityAdapter(
+      canBeginImport: { harness.controller.canStart },
+      importer: { title, url in
+        try store.importManagedAudio(title: title, sourceURL: url)
+      }
+    )
+    let view = ContentView(
+      store: store,
+      importedMediaAuthority: adapter,
+      liveRecording: harness.controller,
+      recoveredSessions: RecoveredSessionController(
+        recoveryFactory: {
+          try NativeRecordingPreparation.open(managedRoot: harness.root.path)
+        },
+        importedPlaybackLeaseProvider: { sessionId in
+          try NativeRecordingPreparation.open(managedRoot: harness.root.path)
+            .leaseImportedPlayback(sessionId: sessionId)
+        },
+        player: RecoveredAudioPlayerFake()
+      ),
+      transcripts: TranscriptLibraryModel(managedRoot: harness.root),
+      speech: SpeechTranscriptionModel(managedRoot: harness.root),
+      scheduler: TranscriptionScheduler.inert(),
+      pressure: SystemPressureMonitor(libraryRoot: harness.root, samplesAutomatically: false),
+      context: ContextScopeModel(
+        binding: { nil },
+        frames: IdleContextFrames(),
+        permissionCheck: { .denied },
+        permissionRequest: { .denied },
+        topology: { [] }
+      ),
+      navigation: MainWorkspaceNavigation()
+    )
+    let host = NSHostingView(rootView: view)
+    host.sizingOptions = []
+    let window = NSWindow(
+      contentRect: NSRect(x: 0, y: 0, width: 1100, height: 720),
+      styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    window.contentView = host
+    window.setContentSize(NSSize(width: 1100, height: 720))
+    host.frame = window.contentLayoutRect
+    window.makeKeyAndOrderFront(nil)
+    window.orderFrontRegardless()
+    defer { window.close() }
+    let ready = await waitUntil(timeoutNanoseconds: 5_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      window.displayIfNeeded()
+      return self.toolbarRecordButton(in: window) != nil
+    }
+    let record = try XCTUnwrap(self.toolbarRecordButton(in: window))
+    XCTAssertTrue(ready && window.contentView === host)
+    record.performClick(nil)
+    let started = await waitUntil(timeoutNanoseconds: 8_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      return harness.controller.phase == .starting
+        && harness.captures.microphones.last?.didStart == true
+        && harness.captures.systems.last?.didStart == true
+    }
+    XCTAssertTrue(started, harness.controller.errorMessage ?? harness.controller.phase.rawValue)
+    let microphone = try XCTUnwrap(harness.captures.microphones.last)
+    let system = try XCTUnwrap(harness.captures.systems.last)
+    let sessionId = microphone.writer.authorization.sessionId
+    try microphone.emit(frames: 48_000, hostTime: harness.clock.now, value: 8192)
+    try system.emit(frames: 48_000, hostTime: harness.clock.now, value: 16384)
+    let capturing = await waitUntil(timeoutNanoseconds: 8_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      return harness.controller.phase == .capturing && harness.controller.canMark
+    }
+    guard capturing else {
+      XCTFail(
+        "phase=\(harness.controller.phase.rawValue) code=\(harness.controller.failureCode ?? "none") message=\(harness.controller.errorMessage ?? "none")"
+      )
+      return
+    }
+    harness.clock.advance(seconds: 1)
+    let markerReady = await waitUntil(timeoutNanoseconds: 5_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      window.displayIfNeeded()
+      return self.recordingShortcutButton("Add marker", in: window) != nil
+        && self.resumeRecordingButton(in: window) == nil
+    }
+    let marker = try XCTUnwrap(self.recordingShortcutButton("Add marker", in: window))
+    XCTAssertTrue(markerReady)
+    XCTAssertEqual(marker.title, ConversationControlLabels.addMarker)
+    XCTAssertEqual(marker.accessibilityLabel(), ConversationControlLabels.addMarker)
+    XCTAssertEqual(marker.accessibilityIdentifier(), "Add marker")
+    XCTAssertEqual(marker.keyEquivalent, "m")
+    XCTAssertEqual(marker.keyEquivalentModifierMask, [.command, .shift])
+    let ignoredMarker = try XCTUnwrap(
+      self.keyDownEvent(
+        characters: "S", unmodified: "s", modifiers: [.command, .shift], keyCode: 1, window: window)
+    )
+    XCTAssertFalse(marker.performKeyEquivalent(with: ignoredMarker))
+    XCTAssertEqual(try self.markerLabels(sessionId: sessionId, harness: harness), [])
+    let markerEvent = try XCTUnwrap(
+      self.keyDownEvent(
+        characters: "M", unmodified: "m", modifiers: [.command, .shift], keyCode: 46, window: window)
+    )
+    XCTAssertTrue(marker.performKeyEquivalent(with: markerEvent))
+    let marked = try self.markerEvents(sessionId: sessionId, harness: harness)
+    XCTAssertEqual(marked.map(\.label), [""])
+    XCTAssertGreaterThan(marked[0].sessionNanoseconds, 0)
+    let markerTime = marked[0].sessionNanoseconds
+    let pause = try XCTUnwrap(self.pauseRecordingButton(in: window))
+    microphone.pendingDrain = (harness.clock.now + AVAudioTime.hostTime(forSeconds: 1), 12288)
+    system.pendingDrain = (harness.clock.now + AVAudioTime.hostTime(forSeconds: 1), 20480)
+    harness.clock.advance(seconds: 1.01)
+    let pauseEvent = try XCTUnwrap(
+      self.keyDownEvent(
+        characters: "P", unmodified: "p", modifiers: [.command, .shift], keyCode: 35, window: window)
+    )
+    XCTAssertTrue(pause.performKeyEquivalent(with: pauseEvent))
+    let paused = await waitUntil(timeoutNanoseconds: 8_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      return harness.controller.phase == .paused && harness.controller.canResume
+    }
+    XCTAssertTrue(paused, harness.controller.errorMessage ?? harness.controller.phase.rawValue)
+    XCTAssertEqual(try self.markerEvents(sessionId: sessionId, harness: harness)[0].sessionNanoseconds, markerTime)
+    let resumeReady = await waitUntil(timeoutNanoseconds: 5_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      window.displayIfNeeded()
+      return self.resumeRecordingButton(in: window) != nil
+        && self.pauseRecordingButton(in: window) == nil
+    }
+    let resume = try XCTUnwrap(self.resumeRecordingButton(in: window))
+    XCTAssertTrue(resumeReady)
+    XCTAssertEqual(resume.title, ConversationControlLabels.resume)
+    XCTAssertEqual(resume.accessibilityLabel(), ConversationControlLabels.resume)
+    XCTAssertEqual(resume.accessibilityIdentifier(), "Resume recording")
+    XCTAssertEqual(resume.keyEquivalent, "p")
+    XCTAssertEqual(resume.keyEquivalentModifierMask, [.command, .shift])
+    let ignoredResume = try XCTUnwrap(
+      self.keyDownEvent(
+        characters: "S", unmodified: "s", modifiers: [.command, .shift], keyCode: 1, window: window)
+    )
+    XCTAssertFalse(resume.performKeyEquivalent(with: ignoredResume))
+    XCTAssertEqual(harness.controller.phase, .paused)
+    XCTAssertEqual(harness.captures.microphones.count, 1)
+    XCTAssertEqual(harness.captures.systems.count, 1)
+    harness.clock.advance(seconds: 600)
+    let resumeEvent = try XCTUnwrap(
+      self.keyDownEvent(
+        characters: "P", unmodified: "p", modifiers: [.command, .shift], keyCode: 35, window: window)
+    )
+    XCTAssertTrue(resume.performKeyEquivalent(with: resumeEvent))
+    let resumed = await waitUntil(timeoutNanoseconds: 8_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      return harness.controller.phase == .starting
+        && harness.captures.microphones.count == 2
+        && harness.captures.systems.count == 2
+    }
+    XCTAssertTrue(resumed, harness.controller.errorMessage ?? harness.controller.phase.rawValue)
+    XCTAssertNil(harness.controller.errorMessage)
+    XCTAssertFalse(harness.controller.canResume)
+    XCTAssertEqual(
+      harness.captures.microphones.last?.writer.authorization.sessionId, sessionId)
+    XCTAssertEqual(
+      try self.markerEvents(sessionId: sessionId, harness: harness).map(\.label), [""])
+    XCTAssertEqual(
+      try self.markerEvents(sessionId: sessionId, harness: harness)[0].sessionNanoseconds, markerTime)
+    let resumeLeaves = await waitUntil(timeoutNanoseconds: 5_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      window.displayIfNeeded()
+      return self.resumeRecordingButton(in: window) == nil
+    }
+    XCTAssertTrue(resumeLeaves)
+    XCTAssertTrue(window.contentView === host)
+    withExtendedLifetime(store) {}
+    withExtendedLifetime(harness) {}
+    withExtendedLifetime(window) {}
+  }
+
   /// One durable source is not Recording. Pressing the toolbar Stop control
   /// leaves that written audio in place and does not seal a saved conversation.
   /// The test does not call `start` or `stop`.
@@ -5639,6 +5821,40 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
   }
 
   private let playConversationLabel = "Play conversation audio"
+
+  private func markerEvents(sessionId: String, harness: PauseHarness) throws -> [NativeRecorderEvent] {
+    try harness.preparation.recorderDetail(sessionId: sessionId).events.filter {
+      $0.kind == "marker_added"
+    }
+  }
+
+  private func markerLabels(sessionId: String, harness: PauseHarness) throws -> [String] {
+    try markerEvents(sessionId: sessionId, harness: harness).map(\.label)
+  }
+
+  private func resumeRecordingButton(in window: NSWindow) -> NSButton? {
+    recordingShortcutButton("Resume recording", in: window)
+  }
+
+  private func recordingShortcutButton(_ identifier: String, in window: NSWindow) -> NSButton? {
+    guard let root = window.contentView?.superview ?? window.contentView else { return nil }
+    var matched: NSButton?
+    func walk(_ view: NSView) {
+      if matched != nil { return }
+      if let button = view as? NSButton, !(button is NSPopUpButton),
+        button.accessibilityIdentifier() == identifier,
+        button.isHidden == false,
+        button.isHiddenOrHasHiddenAncestor == false,
+        button.frame.width > 1,
+        button.frame.height > 1
+      {
+        matched = button
+      }
+      for child in view.subviews { walk(child) }
+    }
+    walk(root)
+    return matched
+  }
 
   private func pauseRecordingButton(in window: NSWindow) -> NSButton? {
     guard let root = window.contentView?.superview ?? window.contentView else { return nil }

@@ -15,7 +15,11 @@ struct RecorderControls: View {
 
   var body: some View {
     if recorder.canPause {
-      PauseMount {
+      RecordingShortcutMount(
+        title: ConversationControlLabels.pause,
+        identifier: "Pause recording",
+        shortcut: ConversationControlLabels.pauseShortcut
+      ) {
         Task {
           await recorder.stop(pausing: true)
           store.refresh()
@@ -24,14 +28,17 @@ struct RecorderControls: View {
       .frame(width: 120, height: 32, alignment: .leading)
     }
     if recorder.canResume {
-      Button(ConversationControlLabels.resume, systemImage: "play.fill") {
+      RecordingShortcutMount(
+        title: ConversationControlLabels.resume,
+        identifier: "Resume recording",
+        shortcut: ConversationControlLabels.pauseShortcut
+      ) {
         Task {
           await recorder.start(resuming: true)
           store.refresh()
         }
-      }.keyboardShortcut(
-        ConversationControlLabels.pauseShortcut.key,
-        modifiers: ConversationControlLabels.pauseShortcut.modifiers)
+      }
+      .frame(width: 120, height: 32, alignment: .leading)
     }
     if let microphoneName = recorder.replacementMicrophoneName {
       Button {
@@ -55,13 +62,15 @@ struct RecorderControls: View {
       }
     }
     if recorder.canMark {
-      Button(ConversationControlLabels.addMarker, systemImage: "bookmark") {
+      RecordingShortcutMount(
+        title: ConversationControlLabels.addMarker,
+        identifier: "Add marker",
+        shortcut: ConversationControlLabels.markerShortcut
+      ) {
         recorder.addMarker()
         store.refresh()
       }
-      .keyboardShortcut(
-        ConversationControlLabels.markerShortcut.key,
-        modifiers: ConversationControlLabels.markerShortcut.modifiers)
+      .frame(width: 140, height: 32, alignment: .leading)
     }
     let sourcesEnabled = recorder.canStart || recorder.canResume
     switch sourcesPresentation {
@@ -125,38 +134,41 @@ struct RecorderControls: View {
   }
 }
 
-/// The recording Pause control. The button is created with the first layout
-/// and pauses through the same stop the recorder uses.
-private struct PauseMount: NSViewRepresentable {
-  let onPause: () -> Void
+/// A recording shortcut button. Created with the first layout so Pause, Resume,
+/// and Add Marker call the recorder actions directly.
+private struct RecordingShortcutMount: NSViewRepresentable {
+  let title: String
+  let identifier: String
+  let shortcut: ConversationShortcut
+  let onAction: () -> Void
 
-  func makeNSView(context: Context) -> PauseControl {
-    let view = PauseControl()
-    view.bind(onPause: onPause)
+  func makeNSView(context: Context) -> RecordingShortcutControl {
+    let view = RecordingShortcutControl(title: title, identifier: identifier, shortcut: shortcut)
+    view.bind(onAction: onAction)
     return view
   }
 
-  func updateNSView(_ view: PauseControl, context: Context) {
-    view.bind(onPause: onPause)
+  func updateNSView(_ view: RecordingShortcutControl, context: Context) {
+    view.bind(onAction: onAction)
   }
 }
 
-private final class PauseControl: NSView {
-  private let button = NSButton(
-    title: ConversationControlLabels.pause, target: nil, action: nil)
-  private var onPause: (() -> Void)?
+private final class RecordingShortcutControl: NSView {
+  private let button: NSButton
+  private var onAction: (() -> Void)?
 
-  override init(frame frameRect: NSRect) {
-    super.init(frame: frameRect)
-    setAccessibilityIdentifier("Pause recording")
+  init(title: String, identifier: String, shortcut: ConversationShortcut) {
+    let button = NSButton(title: title, target: nil, action: nil)
+    self.button = button
+    super.init(frame: .zero)
+    setAccessibilityIdentifier(identifier)
     button.bezelStyle = .rounded
-    button.setAccessibilityLabel(ConversationControlLabels.pause)
-    button.setAccessibilityIdentifier("Pause recording")
-    let shortcut = ConversationControlLabels.pauseShortcut
+    button.setAccessibilityLabel(title)
+    button.setAccessibilityIdentifier(identifier)
     button.keyEquivalent = String(shortcut.key.character)
     button.keyEquivalentModifierMask = Self.modifierMask(shortcut.modifiers)
     button.target = self
-    button.action = #selector(pause)
+    button.action = #selector(activate)
     button.translatesAutoresizingMaskIntoConstraints = false
     addSubview(button)
     NSLayoutConstraint.activate([
@@ -170,14 +182,14 @@ private final class PauseControl: NSView {
     nil
   }
 
-  func bind(onPause: @escaping () -> Void) {
-    self.onPause = onPause
+  func bind(onAction: @escaping () -> Void) {
+    self.onAction = onAction
     button.isEnabled = true
   }
 
-  @objc private func pause() {
+  @objc private func activate() {
     guard button.isEnabled else { return }
-    onPause?()
+    onAction?()
   }
 
   private static func modifierMask(_ modifiers: EventModifiers) -> NSEvent.ModifierFlags {
