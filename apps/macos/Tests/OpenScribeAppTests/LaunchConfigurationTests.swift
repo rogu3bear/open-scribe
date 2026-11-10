@@ -303,6 +303,123 @@ final class LaunchConfigurationTests: XCTestCase {
     XCTAssertFalse(FileManager.default.fileExists(atPath: proof.appendingPathComponent("proof-error").path))
   }
 
+  /// The shipped verification app reaches Recording, with a durable sample on
+  /// each source, and suspends at that checkpoint. This test kills that process.
+  /// Recovery keeps both source files and makes the session reviewable. A second
+  /// launch does not append the journal.
+  func testKillRecordingKeepsBothSourcesAfterForcedTermination() async throws {
+    let base = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
+      .appendingPathComponent("open-scribe-kill-recording-\(UUID().uuidString)", isDirectory: true)
+    let proof = base.appendingPathComponent("proof", isDirectory: true)
+    let media = proof.appendingPathComponent("media", isDirectory: true)
+    try FileManager.default.createDirectory(at: media, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: base) }
+    var child: Process?
+    defer {
+      if let child, child.isRunning {
+        kill(pid_t(child.processIdentifier), SIGKILL)
+        child.waitUntilExit()
+      }
+    }
+
+    let capture = try Self.launchVerificationApp(
+      arguments: [
+        "--m1-injected-proof-root", proof.path,
+        "--m1-proof-media-root", media.path,
+        "--m1-injected-case", "kill-recording",
+      ],
+      standardOutput: proof.appendingPathComponent("app-out.log"),
+      standardError: proof.appendingPathComponent("app-err.log"))
+    child = capture
+    let checkpointURL = proof.appendingPathComponent("checkpoint.json")
+    let reached = await Self.waitForFile(checkpointURL, seconds: 45, process: capture)
+    guard reached else {
+      XCTFail(Self.launchFailure("recording checkpoint was not reached", proof: proof, process: capture))
+      return
+    }
+    let stopped = await Self.waitUntil(seconds: 5) { Self.processIsStopped(capture) }
+    XCTAssertTrue(stopped, Self.launchFailure("process did not stop at the recording checkpoint", proof: proof, process: capture))
+    let checkpoint = try JSONSerialization.jsonObject(with: Data(contentsOf: checkpointURL)) as? [String: Any]
+    let sessionId = try XCTUnwrap(checkpoint?["session_id"] as? String)
+    XCTAssertEqual(checkpoint?["phase"] as? String, "recording")
+    XCTAssertEqual((checkpoint?["pid"] as? NSNumber)?.int32Value, capture.processIdentifier)
+    XCTAssertFalse(FileManager.default.fileExists(atPath: proof.appendingPathComponent("proof-error").path))
+    let capturedAudio = try Self.cafPaths(under: media)
+    XCTAssertEqual(capturedAudio.count, 2)
+    let audioBeforeKill = try Dictionary(uniqueKeysWithValues: capturedAudio.map { path in
+      (path, try Self.fileDigest(path))
+    })
+    let journal = media.appendingPathComponent("Sessions/\(sessionId)/recovery.jsonl")
+    let kindsBeforeKill = try Self.journalKinds(journal)
+    XCTAssertTrue(kindsBeforeKill.contains("recording_started"), kindsBeforeKill.joined(separator: ","))
+    XCTAssertFalse(kindsBeforeKill.contains("marker_added"))
+
+    kill(pid_t(capture.processIdentifier), SIGKILL)
+    capture.waitUntilExit()
+    child = nil
+    XCTAssertEqual(capture.terminationReason, .uncaughtSignal)
+    XCTAssertEqual(capture.terminationStatus, SIGKILL)
+
+    let firstRecovery = try Self.launchVerificationApp(
+      arguments: [
+        "--m1-injected-recovery-root", proof.path,
+        "--m1-proof-media-root", media.path,
+      ],
+      standardOutput: proof.appendingPathComponent("recovery-out.log"),
+      standardError: proof.appendingPathComponent("recovery-err.log"))
+    child = firstRecovery
+    let recoveryURL = proof.appendingPathComponent("recovery.json")
+    let recovered = await Self.waitForFile(recoveryURL, seconds: 45, process: firstRecovery)
+    guard recovered else {
+      XCTFail(Self.launchFailure("recording recovery did not report", proof: proof, process: firstRecovery))
+      return
+    }
+    firstRecovery.waitUntilExit()
+    child = nil
+    XCTAssertEqual(firstRecovery.terminationStatus, 0)
+    XCTAssertFalse(FileManager.default.fileExists(atPath: proof.appendingPathComponent("proof-error").path))
+    let firstReport = try Data(contentsOf: recoveryURL)
+    let report = try JSONSerialization.jsonObject(with: firstReport) as? [String: Any]
+    XCTAssertEqual(report?["result"] as? String, "INJECTED_RECOVERY_GREEN")
+    XCTAssertEqual(report?["session_id"] as? String, sessionId)
+    XCTAssertEqual(report?["lifecycle"] as? String, "ready_for_review")
+    XCTAssertEqual(report?["visible_lifecycle"] as? String, "ready_for_review")
+    XCTAssertGreaterThan((report?["rendered_frames"] as? NSNumber)?.intValue ?? 0, 0)
+    for (path, digest) in audioBeforeKill {
+      XCTAssertEqual(try Self.fileDigest(path), digest)
+    }
+    let preparation = try NativeRecordingPreparation.open(managedRoot: media.path)
+    let plan = try preparation.playbackTimeline(sessionId: sessionId)
+    let tracks = Set(plan.map(\.trackId))
+    XCTAssertEqual(tracks.count, 2)
+    for track in tracks {
+      let frames = plan.filter { $0.trackId == track }.reduce(UInt64(0)) { $0 + $1.sampleCount }
+      XCTAssertGreaterThanOrEqual(frames, 48_000)
+    }
+    XCTAssertTrue(try Self.journalKinds(journal).contains("recording_started"))
+    let journalAfterRecovery = SHA256.hash(data: try Data(contentsOf: journal))
+
+    let secondRecovery = try Self.launchVerificationApp(
+      arguments: [
+        "--m1-injected-recovery-root", proof.path,
+        "--m1-proof-media-root", media.path,
+      ],
+      standardOutput: proof.appendingPathComponent("recovery-second-out.log"),
+      standardError: proof.appendingPathComponent("recovery-second-err.log"))
+    child = secondRecovery
+    let sawSecond = await Self.waitUntil(seconds: 45) { secondRecovery.isRunning == false }
+    XCTAssertTrue(sawSecond, Self.launchFailure("second recording recovery did not exit", proof: proof, process: secondRecovery))
+    secondRecovery.waitUntilExit()
+    child = nil
+    XCTAssertEqual(secondRecovery.terminationStatus, 0)
+    XCTAssertEqual(try Data(contentsOf: recoveryURL), firstReport)
+    XCTAssertEqual(SHA256.hash(data: try Data(contentsOf: journal)), journalAfterRecovery)
+    for (path, digest) in audioBeforeKill {
+      XCTAssertEqual(try Self.fileDigest(path), digest)
+    }
+    XCTAssertFalse(FileManager.default.fileExists(atPath: proof.appendingPathComponent("proof-error").path))
+  }
+
   private static func launchVerificationApp(
     arguments: [String], standardOutput: URL, standardError: URL
   ) throws -> Process {
@@ -358,6 +475,10 @@ final class LaunchConfigurationTests: XCTestCase {
       let record = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any])
       return try XCTUnwrap(record["event_kind"] as? String)
     }
+  }
+
+  private static func fileDigest(_ path: String) throws -> SHA256.Digest {
+    SHA256.hash(data: try Data(contentsOf: URL(fileURLWithPath: path)))
   }
 
   private static func cafPaths(under root: URL) throws -> [String] {
