@@ -459,8 +459,8 @@ struct ContentView: View {
     .disabled(!canImport)
     .help(
       canImport
-        ? "Open a .openscribe package exported on another Mac as a new conversation"
-        : "Wait for the current recording or import to finish before opening a package"
+        ? ImportedMediaAuthorityAdapter.portablePackageHelp
+        : ImportedMediaAuthorityAdapter.portablePackageWaitHelp
     )
   }
 
@@ -1260,8 +1260,14 @@ private struct EmptyConversationWorkspace: View {
         RecordStartMount(enabled: canRecord, onRecord: onRecord)
           .frame(width: 120, height: 32)
         if let onOpenPackage {
-          Button("Portable Package…", action: onOpenPackage)
-            .disabled(!canImport)
+          PortablePackageOpenMount(
+            enabled: canImport,
+            help: canImport
+              ? ImportedMediaAuthorityAdapter.portablePackageHelp
+              : ImportedMediaAuthorityAdapter.portablePackageWaitHelp,
+            onOpen: onOpenPackage
+          )
+          .frame(width: 200, height: 32)
         }
       }
       .controlSize(.large)
@@ -1402,6 +1408,64 @@ private final class ToolbarRecordControl: NSView {
     if modifiers.contains(.option) { mask.insert(.option) }
     if modifiers.contains(.control) { mask.insert(.control) }
     return mask
+  }
+}
+
+/// The empty library's package control. The button is created with the first
+/// layout and calls the same opener the toolbar uses. The panel stays the
+/// default chooser; this control does not open a second one.
+private struct PortablePackageOpenMount: NSViewRepresentable {
+  let enabled: Bool
+  let help: String
+  let onOpen: () -> Void
+
+  func makeNSView(context: Context) -> PortablePackageOpenControl {
+    let view = PortablePackageOpenControl()
+    view.bind(enabled: enabled, help: help, onOpen: onOpen)
+    return view
+  }
+
+  func updateNSView(_ view: PortablePackageOpenControl, context: Context) {
+    view.bind(enabled: enabled, help: help, onOpen: onOpen)
+  }
+}
+
+private final class PortablePackageOpenControl: NSView {
+  private let button = NSButton(
+    title: ConversationControlLabels.portablePackage, target: nil, action: nil)
+  private var onOpen: (() -> Void)?
+
+  override init(frame frameRect: NSRect) {
+    super.init(frame: frameRect)
+    setAccessibilityIdentifier("Open portable package")
+    button.bezelStyle = .rounded
+    button.controlSize = .large
+    button.setAccessibilityLabel(ConversationControlLabels.portablePackage)
+    button.setAccessibilityIdentifier("Open portable package")
+    button.target = self
+    button.action = #selector(openPackage)
+    button.translatesAutoresizingMaskIntoConstraints = false
+    addSubview(button)
+    NSLayoutConstraint.activate([
+      button.leadingAnchor.constraint(equalTo: leadingAnchor),
+      button.centerYAnchor.constraint(equalTo: centerYAnchor),
+      button.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor),
+    ])
+  }
+
+  required init?(coder: NSCoder) {
+    nil
+  }
+
+  func bind(enabled: Bool, help: String, onOpen: @escaping () -> Void) {
+    self.onOpen = onOpen
+    button.toolTip = help
+    button.isEnabled = enabled
+  }
+
+  @objc private func openPackage() {
+    guard button.isEnabled else { return }
+    onOpen?()
   }
 }
 

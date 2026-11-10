@@ -2291,6 +2291,143 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
   /// Pressing Record in the empty library starts the shipped recorder. The
   /// test does not call `start`. Both selected sources stay named while
   /// preparation is still short of Recording.
+  /// Pressing Portable Package… on an empty library restores a compressed M4A
+  /// package through the shipped opener. The test supplies the package URL in
+  /// place of the open panel and does not call `chooseAndOpenPackage`.
+  func testHostedEmptyLibraryOpensACompressedPortablePackage() async throws {
+    let exchange = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "open-scribe-package-open-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: exchange, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: exchange) }
+    let source = exchange.appendingPathComponent("Memo.m4a")
+    do {
+      let file = try AVAudioFile(
+        forWriting: source,
+        settings: [
+          AVFormatIDKey: kAudioFormatAppleLossless,
+          AVSampleRateKey: 48_000.0,
+          AVNumberOfChannelsKey: 2,
+          AVEncoderBitDepthHintKey: 16,
+        ])
+      let buffer = try XCTUnwrap(
+        AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: 48_000))
+      buffer.frameLength = 48_000
+      let channels = try XCTUnwrap(buffer.floatChannelData)
+      for frame in 0..<48_000 {
+        channels[0][frame] = 0.2
+        channels[1][frame] = -0.1
+      }
+      try file.write(from: buffer)
+    }
+    let original = try Data(contentsOf: source)
+    let sourceLibrary = exchange.appendingPathComponent("Source", isDirectory: true)
+    let evidence = try RuntimeLibraryStore(managedRoot: sourceLibrary)
+      .importManagedAudio(title: "Memo", sourceURL: source)
+    XCTAssertTrue(evidence.relativePath.hasSuffix(".m4a"))
+    let sourceModel = TranscriptLibraryModel(managedRoot: sourceLibrary)
+    await sourceModel.load(sessionId: evidence.sessionId)
+    let package = exchange.appendingPathComponent("Memo.openscribe", isDirectory: true)
+    let exported = await sourceModel.export(.portablePackage, to: package)
+    XCTAssertTrue(exported, sourceModel.message ?? "package export failed")
+    let packageBefore = try packageFileBytes(package)
+    XCTAssertFalse(packageBefore.isEmpty)
+    XCTAssertEqual(try Data(contentsOf: source), original)
+
+    let harness = try PauseHarness()
+    defer { harness.removeFiles() }
+    let store = RuntimeLibraryStore(managedRoot: harness.root, refreshesImmediately: false)
+    let adapter = ImportedMediaAuthorityAdapter(
+      startSecurityScope: { _ in true },
+      stopSecurityScope: { _ in },
+      canBeginImport: { harness.controller.canStart },
+      importer: { _, _ in throw CancellationError() },
+      packagePicker: { package },
+      packageOpener: { try store.openPortablePackage(packageURL: $0) }
+    )
+    let view = ContentView(
+      store: store,
+      importedMediaAuthority: adapter,
+      liveRecording: harness.controller,
+      recoveredSessions: RecoveredSessionController(
+        recoveryFactory: {
+          try NativeRecordingPreparation.open(managedRoot: harness.root.path)
+        },
+        importedPlaybackLeaseProvider: { sessionId in
+          try NativeRecordingPreparation.open(managedRoot: harness.root.path)
+            .leaseImportedPlayback(sessionId: sessionId)
+        },
+        player: RecoveredAudioPlayerFake()
+      ),
+      transcripts: TranscriptLibraryModel(managedRoot: harness.root),
+      speech: SpeechTranscriptionModel(managedRoot: harness.root),
+      scheduler: TranscriptionScheduler.inert(),
+      pressure: SystemPressureMonitor(libraryRoot: harness.root, samplesAutomatically: false),
+      context: ContextScopeModel(
+        binding: { nil },
+        frames: IdleContextFrames(),
+        permissionCheck: { .denied },
+        permissionRequest: { .denied },
+        topology: { [] }
+      ),
+      navigation: MainWorkspaceNavigation()
+    )
+    let host = NSHostingView(rootView: view)
+    host.sizingOptions = []
+    let window = NSWindow(
+      contentRect: NSRect(x: 0, y: 0, width: 1100, height: 720),
+      styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    window.contentView = host
+    window.setContentSize(NSSize(width: 1100, height: 720))
+    host.frame = window.contentLayoutRect
+    window.makeKeyAndOrderFront(nil)
+    window.orderFrontRegardless()
+    defer { window.close() }
+
+    let ready = await waitUntil(timeoutNanoseconds: 8_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      window.displayIfNeeded()
+      return self.hostedActionButton(
+        labeled: ConversationControlLabels.portablePackage, in: host) != nil
+    }
+    let open = self.hostedActionButton(labeled: ConversationControlLabels.portablePackage, in: host)
+    XCTAssertTrue(
+      ready && open != nil && window.contentView === host,
+      self.reviewProbe(in: host))
+    let button = try XCTUnwrap(open)
+    XCTAssertTrue(button.isDescendant(of: host))
+    XCTAssertTrue(button.isEnabled)
+    XCTAssertEqual(button.title, ConversationControlLabels.portablePackage)
+    XCTAssertEqual(button.accessibilityIdentifier(), "Open portable package")
+    XCTAssertEqual(adapter.phase, .idle)
+    XCTAssertTrue(store.savedSessions.isEmpty)
+    XCTAssertEqual(harness.controller.phase, .idle)
+    button.performClick(nil)
+
+    let restored = await waitUntil(timeoutNanoseconds: 8_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      return adapter.phase == .succeeded && store.savedSessions.count == 1
+    }
+    XCTAssertTrue(restored, adapter.statusMessage ?? "\(adapter.phase)")
+    let saved = try XCTUnwrap(store.savedSessions.first)
+    XCTAssertNotEqual(saved.sessionId, evidence.sessionId)
+    XCTAssertEqual(adapter.importedSessionId, saved.sessionId)
+    XCTAssertTrue(
+      adapter.statusMessage?.contains("1 audio file") == true, adapter.statusMessage ?? "")
+    XCTAssertTrue(adapter.statusMessage?.contains("Opened") == true, adapter.statusMessage ?? "")
+    let library = try NativeTranscriptLibrary.open(managedRoot: harness.root.path)
+    let options = try library.audioExportOptions(sessionId: saved.sessionId)
+    XCTAssertEqual(options.originalExtension, "m4a")
+    XCTAssertTrue(options.pcmTracks.isEmpty)
+    let restoredMedia = try XCTUnwrap(importedAudioFile(under: harness.root))
+    XCTAssertEqual(try Data(contentsOf: restoredMedia), original)
+    XCTAssertEqual(try Data(contentsOf: source), original)
+    XCTAssertEqual(try packageFileBytes(package), packageBefore)
+    XCTAssertEqual(harness.controller.phase, .idle)
+    XCTAssertTrue(window.contentView === host)
+    withExtendedLifetime((store, harness, window, host, sourceModel)) {}
+  }
+
   func testHostedEmptyLibraryRecordStartsPreparationWithBothSources() async throws {
     let harness = try PauseHarness()
     defer { harness.removeFiles() }
@@ -5494,6 +5631,22 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
       UnsafeBufferPointer(start: buffer.floatChannelData![0], count: Int(buffer.frameLength)))
     withExtendedLifetime(lease) {}
     return samples
+  }
+
+  private func packageFileBytes(_ root: URL) throws -> [String: Data] {
+    guard
+      let enumerator = FileManager.default.enumerator(
+        at: root, includingPropertiesForKeys: [.isRegularFileKey])
+    else { return [:] }
+    var files: [String: Data] = [:]
+    for case let url as URL in enumerator {
+      guard try url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile == true else {
+        continue
+      }
+      let relative = url.path.replacingOccurrences(of: root.path + "/", with: "")
+      files[relative] = try Data(contentsOf: url)
+    }
+    return files
   }
 
   private func importedAudioFile(under root: URL) throws -> URL? {

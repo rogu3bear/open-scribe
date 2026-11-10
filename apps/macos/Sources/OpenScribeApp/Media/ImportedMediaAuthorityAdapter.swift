@@ -505,6 +505,11 @@ final class ImportedMediaAuthorityAdapter: ObservableObject {
       "The selected audio could not be imported. Nothing was added to the conversation library."
   }
 
+  static let portablePackageHelp =
+    "Open a .openscribe package exported on another Mac as a new conversation"
+  static let portablePackageWaitHelp =
+    "Wait for the current recording or import to finish before opening a package"
+
   static var importLimitHelp: String {
     "Add local CAF or M4A audio (PCM CAF up to \(pcmLimitMiB) MiB, M4A up to \(m4aLimitGiB) GiB, four hours). Choose Audio Files, or drop a file on the library and confirm the import."
   }

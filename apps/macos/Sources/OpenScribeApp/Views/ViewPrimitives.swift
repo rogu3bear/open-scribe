@@ -31,6 +31,7 @@ enum ConversationControlLabels {
   static let filterByPerson = "Filter transcript by person"
   static let exportTranscript = "Export Transcript…"
   static let audioFiles = "Audio Files…"
+  static let portablePackage = "Portable Package…"
   static let draftState = "Draft"
 
   static let recordShortcut = ConversationShortcut(key: "r", modifiers: [.command, .shift])
