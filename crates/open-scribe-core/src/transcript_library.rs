@@ -42,7 +42,18 @@ impl TranscriptLibrary {
         &self,
         session: &SessionId,
     ) -> Result<TranscriptAvailability, TranscriptExportError> {
-        let mut availability = TranscriptExport::collect(&self.store, session, 0)?.availability();
+        let export = match TranscriptExport::collect(&self.store, session, 0) {
+            Ok(export) => export,
+            // A live draft is provisional before the session is saved. Export
+            // stays refused; the reader still names the open text as Draft.
+            Err(TranscriptExportError::Store(StoreError::InvalidState(
+                "session is not saved for review",
+            ))) if self.store.has_open_transcript_draft(session)? => {
+                return Ok(TranscriptAvailability::Draft);
+            }
+            Err(error) => return Err(error),
+        };
+        let mut availability = export.availability();
         if self.store.has_open_transcript_draft(session)?
             && matches!(
                 availability,

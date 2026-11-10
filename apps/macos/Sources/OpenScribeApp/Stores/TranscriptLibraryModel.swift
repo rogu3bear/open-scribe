@@ -151,12 +151,17 @@ final class TranscriptLibraryModel: ObservableObject {
 
   var availabilityText: String {
     if let transcriptionUnavailableReason { return transcriptionUnavailableReason }
-    return switch availability {
+    return Self.text(for: availability)
+  }
+
+  /// The words a reader shows for this transcript posture. Draft stays distinct
+  /// from a Final transcript and from a failed run.
+  nonisolated static func text(for availability: NativeTranscriptAvailability) -> String {
+    switch availability {
     case .final: "Final transcript"
     case .draft: "Draft — a Final transcript does not cover every range yet"
     case .failed: "Transcription failed. The recorded audio is unaffected."
-    case .unavailable:
-      "No transcript yet."
+    case .unavailable: "No transcript yet."
     }
   }
 

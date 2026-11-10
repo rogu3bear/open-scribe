@@ -1071,6 +1071,61 @@ final class MicrophoneCaptureAdapterTests: XCTestCase {
     _ = adapter.stop()
   }
 
+  /// A later overlapping draft replaces the readable words while recording
+  /// stays open. The earlier samples remain in the capture file.
+  func testProvisionalTextCanChangeWithoutChangingCapturedAudio() throws {
+    let fixture = try openedMicrophone(title: "Changing live draft")
+    let backend = FakeMicrophoneBackend(inputFormat: fixture.format)
+    let adapter = MicrophoneCaptureAdapter(
+      backend: backend,
+      writer: fixture.writer,
+      identity: MicrophoneCaptureIdentity(authorization: fixture.authorization)
+    )
+    adapter.installProvisionalDraftAdmission(
+      preparation: fixture.controller,
+      hypothesis: { start, _ in
+        provisionalFixture(start == 0 ? "early meadow" : "later brook")
+      },
+      windowFrames: 480,
+      overlapFrames: 96
+    )
+    let failures = try startAndConfirm(
+      adapter: adapter, backend: backend, controller: fixture.controller, format: fixture.format)
+    let sessionId = fixture.authorization.sessionId
+    backend.emit(try microphoneFrames(fixture.format, 384), hostTime: 20)
+    adapter.waitForAcceptedAudio()
+    adapter.waitForProvisionalDraftAdmission()
+
+    XCTAssertEqual(
+      try fixture.controller.recorderDetail(sessionId: sessionId).lifecycle, "recording")
+    XCTAssertEqual(
+      try fixture.controller.readableDraftTexts(sessionId: sessionId), ["early meadow"])
+    let library = try NativeTranscriptLibrary.open(managedRoot: fixture.root.path)
+    let firstReading = try labeledDraft(library, sessionId: sessionId)
+    XCTAssertEqual(firstReading.map(\.effectiveText), ["early meadow"])
+    XCTAssertEqual(firstReading.map(\.verbatimText), ["early meadow"])
+    let preserved = try capturedSamples(fixture.authorization)
+    XCTAssertGreaterThanOrEqual(preserved.count, 480)
+
+    backend.emit(try microphoneFrames(fixture.format, 384), hostTime: 30)
+    adapter.waitForAcceptedAudio()
+    adapter.waitForProvisionalDraftAdmission()
+
+    XCTAssertEqual(
+      try fixture.controller.recorderDetail(sessionId: sessionId).lifecycle, "recording")
+    XCTAssertEqual(
+      try fixture.controller.readableDraftTexts(sessionId: sessionId), ["later brook"])
+    let changed = try labeledDraft(library, sessionId: sessionId)
+    XCTAssertEqual(changed.map(\.effectiveText), ["later brook"])
+    XCTAssertEqual(changed.map(\.verbatimText), ["later brook"])
+    XCTAssertNotEqual(changed.map(\.revisionId), firstReading.map(\.revisionId))
+    let kept = try capturedSamples(fixture.authorization)
+    XCTAssertGreaterThan(kept.count, preserved.count)
+    XCTAssertEqual(Array(kept.prefix(preserved.count)), preserved)
+    XCTAssertTrue(failures.snapshot().isEmpty)
+    _ = adapter.stop()
+  }
+
   func testARejectedDraftDoesNotStopCaptureOrInventText() throws {
     let fixture = try openedMicrophone(title: "Rejected live draft")
     let backend = FakeMicrophoneBackend(inputFormat: fixture.format)
@@ -1651,8 +1706,35 @@ final class MicrophoneCaptureAdapterTests: XCTestCase {
     return failures
   }
 
+  private func labeledDraft(
+    _ library: NativeTranscriptLibrary, sessionId: String
+  ) throws -> [NativeTranscriptSegment] {
+    let availability = try library.availability(sessionId: sessionId)
+    XCTAssertEqual(availability, .draft)
+    XCTAssertEqual(
+      TranscriptLibraryModel.text(for: availability),
+      "Draft — a Final transcript does not cover every range yet")
+    let segments = try library.document(sessionId: sessionId)
+    XCTAssertEqual(segments.map(\.finality), ["draft"])
+    XCTAssertEqual(segments.map(\.corrected), [false])
+    return segments
+  }
+
   private func capturedLength(_ authorization: NativeMediaOpenAuthorization) throws -> Int64 {
     try AVAudioFile(forReading: URL(fileURLWithPath: authorization.absolutePath)).length
+  }
+
+  private func capturedSamples(_ authorization: NativeMediaOpenAuthorization) throws -> [Int16] {
+    let audio = try AVAudioFile(
+      forReading: URL(fileURLWithPath: authorization.absolutePath),
+      commonFormat: .pcmFormatInt16,
+      interleaved: false)
+    let capacity = AVAudioFrameCount(audio.length)
+    let decoded = try XCTUnwrap(
+      AVAudioPCMBuffer(pcmFormat: audio.processingFormat, frameCapacity: capacity))
+    try audio.read(into: decoded, frameCount: capacity)
+    let samples = try XCTUnwrap(decoded.int16ChannelData?[0])
+    return Array(UnsafeBufferPointer(start: samples, count: Int(decoded.frameLength)))
   }
 }
 
