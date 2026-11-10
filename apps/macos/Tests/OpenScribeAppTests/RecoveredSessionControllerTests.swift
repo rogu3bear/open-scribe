@@ -2975,6 +2975,209 @@ final class RecoveredSessionControllerTests: RecoveredSessionTestCase {
     withExtendedLifetime((store, live, playback, window, host, library, model)) {}
   }
 
+  /// Confirm on the hosted banner uses `TranscriptLibraryModel.systemTrash`.
+  /// The test does not call `requestDeletion`, `confirmDeletion`, or `systemTrash`.
+  /// The moved directory is removed after its digest is checked. The Trash
+  /// folder itself is not removed.
+  func testHostedDeletionConfirmUsesSystemTrash() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "open-scribe-system-trash-host-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let package = root.appendingPathComponent("Stored.openscribe")
+    let export = await exportStoredFinalPackage(to: package)
+    XCTAssertEqual(export.status, 0, String(export.log.suffix(2_000)))
+
+    let managed = root.appendingPathComponent("Library", isDirectory: true)
+    let library = try NativeTranscriptLibrary.open(managedRoot: managed.path)
+    let receipt = try library.importPortablePackage(packagePath: package.path)
+    let sessionId = receipt.sessionId
+    var trashedSession: URL?
+    defer {
+      if let trashedSession, self.isRemovableSystemTrashChild(trashedSession, sessionId: sessionId) {
+        try? FileManager.default.removeItem(at: trashedSession)
+      }
+      try? FileManager.default.removeItem(at: root)
+    }
+    let segments = try library.document(sessionId: sessionId)
+    let alpha = try XCTUnwrap(segments.first { $0.sequence == 0 })
+    let bravo = try XCTUnwrap(segments.first { $0.sequence == 1 })
+    let supporting = try library.citeTranscriptSegment(
+      sessionId: sessionId, revisionId: alpha.revisionId, sequence: alpha.sequence)
+    let contradicting = try library.citeTranscriptSegment(
+      sessionId: sessionId, revisionId: bravo.revisionId, sequence: bravo.sequence)
+    try library.insertDerivedClaim(
+      claimJson: citedClaimJSON(
+        sessionId: sessionId, supporting: supporting, contradicting: contradicting))
+    let sessionDirectory = managed.appendingPathComponent("Sessions", isDirectory: true)
+      .appendingPathComponent(sessionId, isDirectory: true)
+    let exports = sessionDirectory.appendingPathComponent("exports", isDirectory: true)
+    try FileManager.default.createDirectory(at: exports, withIntermediateDirectories: true)
+    let exportedNote = Data("exported".utf8)
+    try exportedNote.write(to: exports.appendingPathComponent("notes.txt"))
+    let media = try regularFiles(under: sessionDirectory).filter { $0.pathExtension == "caf" }
+    XCTAssertEqual(media.count, 1)
+    let mediaDigest = try digest(of: media[0])
+    let mediaPath = media[0].path
+
+    let model = TranscriptLibraryModel(managedRoot: managed)
+    await model.load(sessionId: sessionId)
+    XCTAssertEqual(
+      model.derivedClaims.first?.text, "The team agreed to ship the local recorder.")
+    let store = RuntimeLibraryStore(managedRoot: managed, refreshesImmediately: false)
+    store.refresh()
+    let listed = await waitUntil {
+      store.savedSessions.contains { $0.sessionId == sessionId }
+    }
+    XCTAssertTrue(listed, "saved=\(store.savedSessions.map(\.sessionId))")
+    let navigation = MainWorkspaceNavigation()
+    navigation.select(sessionId)
+    let live = LiveMicrophoneRecordingController(managedRoot: managed)
+    let playback = RecoveredSessionController(
+      recoveryFactory: { try NativeRecordingPreparation.open(managedRoot: managed.path) },
+      importedPlaybackLeaseProvider: { id in
+        try NativeRecordingPreparation.open(managedRoot: managed.path)
+          .leaseImportedPlayback(sessionId: id)
+      },
+      player: RecoveredAudioPlayerFake())
+    let view = ContentView(
+      store: store,
+      importedMediaAuthority: ImportedMediaAuthorityAdapter(
+        startSecurityScope: { _ in true },
+        stopSecurityScope: { _ in },
+        importer: { _, _ in throw NativeStorageError.InvalidRequest }
+      ),
+      liveRecording: live,
+      recoveredSessions: playback,
+      transcripts: model,
+      speech: SpeechTranscriptionModel(managedRoot: managed),
+      scheduler: TranscriptionScheduler.inert(),
+      pressure: SystemPressureMonitor(libraryRoot: managed, samplesAutomatically: false),
+      context: ContextScopeModel(
+        binding: { nil },
+        frames: IdleClaimContextFrames(),
+        permissionCheck: { .denied },
+        permissionRequest: { .denied },
+        topology: { [] }
+      ),
+      navigation: navigation
+    )
+    let host = NSHostingView(rootView: view)
+    host.sizingOptions = []
+    let window = NSWindow(
+      contentRect: NSRect(x: 0, y: 0, width: 1100, height: 720),
+      styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    window.contentView = host
+    window.setContentSize(NSSize(width: 1100, height: 720))
+    host.frame = window.contentLayoutRect
+    window.makeKeyAndOrderFront(nil)
+    window.orderFrontRegardless()
+    defer { window.close() }
+
+    let offered = await waitUntil(timeoutNanoseconds: 5_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      window.displayIfNeeded()
+      return self.deletionButton(labeled: "Move the selected conversation to Trash", in: host) != nil
+    }
+    let request = try XCTUnwrap(
+      self.deletionButton(labeled: "Move the selected conversation to Trash", in: host))
+    XCTAssertTrue(offered && request.isDescendant(of: host) && window.contentView === host)
+    request.performClick(nil)
+    let asked = await waitUntil(timeoutNanoseconds: 5_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      window.displayIfNeeded()
+      return self.deletionButton(labeled: "Confirm move to Trash", in: host) != nil
+    }
+    XCTAssertTrue(asked && window.contentView === host, model.message ?? "nil")
+    let summary = try XCTUnwrap(self.deletionSummary(in: host))
+    XCTAssertTrue(summary.stringValue.contains("will be moved to Trash"))
+    XCTAssertTrue(summary.stringValue.contains("audio stays in Trash"))
+    XCTAssertEqual(try digest(of: URL(fileURLWithPath: mediaPath)), mediaDigest)
+    let confirm = try XCTUnwrap(self.deletionButton(labeled: "Confirm move to Trash", in: host))
+    XCTAssertTrue(confirm.isDescendant(of: host))
+    confirm.performClick(nil)
+
+    let removed = await waitUntil(timeoutNanoseconds: 5_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      return model.pendingDeletion == nil
+        && model.message?.contains("was moved to Trash") == true
+        && model.messageIsFailure == false
+    }
+    XCTAssertTrue(removed && window.contentView === host, model.message ?? "nil")
+    XCTAssertFalse(FileManager.default.fileExists(atPath: mediaPath))
+    store.refresh()
+    let unlisted = await waitUntil {
+      !store.savedSessions.contains { $0.sessionId == sessionId }
+    }
+    XCTAssertTrue(unlisted, "saved=\(store.savedSessions.map(\.sessionId))")
+    let moved = try XCTUnwrap(
+      self.systemTrashChild(managedRoot: managed, sessionId: sessionId, mediaDigest: mediaDigest),
+      "session \(sessionId) was not found from the deletion receipt")
+    trashedSession = moved
+    XCTAssertTrue(self.isRemovableSystemTrashChild(moved, sessionId: sessionId))
+    XCTAssertFalse(moved.path.hasPrefix(root.path))
+    let trashedMedia = try regularFiles(under: moved).filter { $0.pathExtension == "caf" }
+    XCTAssertEqual(trashedMedia.count, 1)
+    XCTAssertEqual(try digest(of: trashedMedia[0]), mediaDigest)
+    let trashedNote = moved.appendingPathComponent("exports").appendingPathComponent("notes.txt")
+    XCTAssertEqual(try Data(contentsOf: trashedNote), exportedNote)
+    try FileManager.default.removeItem(at: moved)
+    trashedSession = nil
+    XCTAssertFalse(FileManager.default.fileExists(atPath: moved.path))
+    XCTAssertTrue(window.contentView === host)
+    withExtendedLifetime((store, live, playback, window, host, library, model)) {}
+  }
+
+  /// The deletion receipt records the URL `systemTrash` returned. Listing the
+  /// Trash directory is not permitted, so the test opens that stored URL.
+  private func systemTrashChild(managedRoot: URL, sessionId: String, mediaDigest: String) -> URL? {
+    let candidates = [
+      storedTrashReference(managedRoot: managedRoot, sessionId: sessionId),
+      URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
+        .appendingPathComponent(".Trash", isDirectory: true)
+        .appendingPathComponent(sessionId, isDirectory: true),
+    ]
+    for candidate in candidates.compactMap({ $0 }) {
+      let resolved = candidate.resolvingSymlinksInPath().standardizedFileURL
+      guard isRemovableSystemTrashChild(resolved, sessionId: sessionId) else { continue }
+      let media = (try? regularFiles(under: resolved))?.filter { $0.pathExtension == "caf" } ?? []
+      guard media.count == 1, (try? digest(of: media[0])) == mediaDigest else { continue }
+      return resolved
+    }
+    return nil
+  }
+
+  private func storedTrashReference(managedRoot: URL, sessionId: String) -> URL? {
+    let database = managedRoot.appendingPathComponent("Library.sqlite3")
+    guard FileManager.default.fileExists(atPath: database.path) else { return nil }
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/usr/bin/sqlite3")
+    process.arguments = [
+      database.path,
+      "SELECT ifnull(trash_reference,'') FROM deletion_receipts WHERE session_id = '\(sessionId)';",
+    ]
+    let output = Pipe()
+    process.standardOutput = output
+    process.standardError = Pipe()
+    do { try process.run() } catch { return nil }
+    process.waitUntilExit()
+    guard process.terminationStatus == 0 else { return nil }
+    let text = String(data: output.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
+      .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    guard text.isEmpty == false else { return nil }
+    if let url = URL(string: text), url.isFileURL { return url }
+    return URL(fileURLWithPath: text)
+  }
+
+  private func isRemovableSystemTrashChild(_ url: URL, sessionId: String) -> Bool {
+    let resolved = url.resolvingSymlinksInPath().standardizedFileURL
+    let name = resolved.lastPathComponent
+    guard name == sessionId || name.hasPrefix("\(sessionId) ") else { return false }
+    guard name != ".Trash", name != "Trash" else { return false }
+    guard resolved.deletingLastPathComponent().lastPathComponent == ".Trash" else { return false }
+    return FileManager.default.fileExists(atPath: resolved.path)
+  }
+
   private func deletionButton(labeled label: String, in root: NSView) -> NSButton? {
     var matched: NSButton?
     func walk(_ view: NSView) {
