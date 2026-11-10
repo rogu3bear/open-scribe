@@ -1234,6 +1234,56 @@ final class RecorderPauseResumeTests: XCTestCase {
     XCTAssertTrue(plan.allSatisfy { $0.sampleCount > 0 })
   }
 
+  /// A microphone writer failure during capture seals that source, keeps system
+  /// audio recording, and leaves both tracks playable after stop.
+  func testMicrophoneWriterFailureKeepsSystemAudioAndTheSealedMicrophone() async throws {
+    let harness = try PauseHarness()
+    defer { harness.removeFiles() }
+    await harness.controller.start()
+    try await harness.capture()
+    let microphone = try XCTUnwrap(harness.captures.microphones.last)
+    let system = try XCTUnwrap(harness.captures.systems.last)
+    let sessionId = microphone.writer.authorization.sessionId
+    let microphonePath = microphone.writer.authorization.absolutePath
+    let microphoneBytes = try Self.byteCount(microphonePath)
+    XCTAssertGreaterThan(microphoneBytes, 0)
+    XCTAssertGreaterThan(try Self.byteCount(system.writer.authorization.absolutePath), 0)
+
+    microphone.failMicrophone(.writerFailed)
+    await settle()
+
+    XCTAssertEqual(harness.controller.phase, .capturing)
+    XCTAssertEqual(
+      harness.controller.errorMessage,
+      "The microphone stopped. System audio is still recording.")
+    XCTAssertEqual(harness.controller.failureCode, "capture-writerFailed")
+    XCTAssertTrue(harness.controller.showsReconnect)
+    XCTAssertEqual(microphone.stopCount, 1)
+    XCTAssertEqual(system.stopCount, 0)
+    XCTAssertEqual(
+      try harness.preparation.recorderDetail(sessionId: sessionId).lifecycle, "recording")
+    XCTAssertTrue(
+      try harness.preparation.recorderDetail(sessionId: sessionId).events.contains {
+        $0.kind == "source_failed"
+      })
+    XCTAssertGreaterThanOrEqual(try Self.byteCount(microphonePath), microphoneBytes)
+
+    harness.clock.advance(seconds: 1)
+    try system.emit(frames: 48_000, hostTime: harness.clock.now, value: 16384)
+    await harness.controller.stop()
+    XCTAssertEqual(harness.controller.phase, .saved, harness.controller.errorMessage ?? "")
+    XCTAssertGreaterThanOrEqual(try Self.byteCount(microphonePath), microphoneBytes)
+
+    let reopened = try NativeRecordingPreparation.open(managedRoot: harness.root.path)
+    _ = try reopened.recoverPlayableSessions()
+    let detail = try reopened.recorderDetail(sessionId: sessionId)
+    XCTAssertEqual(detail.lifecycle, "ready_for_review")
+    XCTAssertTrue(detail.events.contains { $0.kind == "source_failed" })
+    let plan = try reopened.playbackTimeline(sessionId: sessionId)
+    XCTAssertEqual(Set(plan.map(\.trackId)).count, 2)
+    XCTAssertTrue(plan.allSatisfy { $0.sampleCount > 0 })
+  }
+
   /// Add Marker uses the session clock. The saved recording still has the marker
   /// and its source tracks.
   func testAddMarkerStaysOnTheSessionClockAfterTheRecordingIsSaved() async throws {
