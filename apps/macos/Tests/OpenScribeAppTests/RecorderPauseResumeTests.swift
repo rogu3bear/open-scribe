@@ -1862,6 +1862,119 @@ final class RecorderPauseResumeTests: XCTestCase {
     return ReopenedLibrary(preparation: preparation, store: store)
   }
 
+  /// A missing permission is explained and requested only for the source that
+  /// needs it. Microphone-only capture does not ask for Screen Recording.
+  func testMissingPermissionsAreExplainedOnlyForTheSelectedSource() async throws {
+    let microphoneOnly = try PauseHarness(screenCaptureAuthorized: { false })
+    defer { microphoneOnly.removeFiles() }
+    microphoneOnly.controller.selectCaptureSource(.microphoneOnly)
+    XCTAssertEqual(
+      microphoneOnly.controller.sourceSelectionPresentation.summary, "Microphone only")
+    microphoneOnly.permission.currentState = .notDetermined
+    let microphoneGate = PauseStartGate()
+    microphoneOnly.permission.requestGate = microphoneGate
+    let microphoneStart = Task { await microphoneOnly.controller.start() }
+    await fulfillment(of: [microphoneGate.entered], timeout: 2)
+
+    XCTAssertEqual(microphoneOnly.permission.requestCount, 1)
+    XCTAssertEqual(microphoneOnly.controller.phase, .requestingPermission)
+    XCTAssertEqual(
+      microphoneOnly.controller.statusText,
+      LiveMicrophoneRecordingController.microphonePermissionExplanation)
+    let microphoneMenu = MenuBarLabel.presentation(
+      session: nil,
+      snapshotStale: false,
+      livePhase: microphoneOnly.controller.phase,
+      liveStatus: microphoneOnly.controller.statusText)
+    XCTAssertEqual(microphoneMenu.text, microphoneOnly.controller.statusText)
+    XCTAssertEqual(microphoneMenu.accessibilityText, microphoneMenu.text)
+    XCTAssertFalse(microphoneMenu.text.contains("Screen Recording"))
+    XCTAssertFalse(microphoneMenu.text.contains("Calendar"))
+    XCTAssertFalse(microphoneMenu.text.contains("Contacts"))
+    XCTAssertEqual(microphoneOnly.captures.systems.count, 0)
+    XCTAssertEqual(microphoneOnly.captures.microphones.count, 0)
+
+    microphoneOnly.permission.currentState = .authorized
+    await microphoneGate.release()
+    await microphoneStart.value
+    XCTAssertEqual(microphoneOnly.permission.requestCount, 1)
+    XCTAssertEqual(microphoneOnly.captures.systems.count, 0)
+    XCTAssertEqual(microphoneOnly.captures.microphones.count, 1)
+    XCTAssertEqual(microphoneOnly.captures.microphones[0].microphoneStartCount, 1)
+    XCTAssertEqual(microphoneOnly.controller.phase, .starting)
+    XCTAssertEqual(microphoneOnly.controller.statusText, "Starting microphone…")
+    XCTAssertFalse(microphoneOnly.controller.statusText.contains("Screen Recording"))
+
+    let screenOnly = try PauseHarness(screenCaptureAuthorized: { false })
+    defer { screenOnly.removeFiles() }
+    XCTAssertEqual(screenOnly.permission.currentState, .authorized)
+    let screenGate = PauseStartGate()
+    screenOnly.captures.systemFactoryGate = screenGate
+    let screenStart = Task { await screenOnly.controller.start() }
+    await fulfillment(of: [screenGate.entered], timeout: 2)
+
+    let screenExplanation = LiveMicrophoneRecordingController.screenRecordingPermissionExplanation(
+      sourceName: "Mac system audio")
+    XCTAssertEqual(screenOnly.permission.requestCount, 1)
+    XCTAssertEqual(screenOnly.controller.phase, .requestingPermission)
+    XCTAssertEqual(screenOnly.controller.statusText, screenExplanation)
+    XCTAssertNotEqual(
+      screenOnly.controller.statusText,
+      LiveMicrophoneRecordingController.microphonePermissionExplanation)
+    XCTAssertFalse(screenOnly.controller.statusText.contains("Calendar"))
+    XCTAssertFalse(screenOnly.controller.statusText.contains("Contacts"))
+    XCTAssertEqual(screenOnly.captures.systems.count, 0)
+    XCTAssertEqual(screenOnly.captures.microphones.first?.microphoneStartCount ?? 0, 0)
+    let prepared = try XCTUnwrap(screenOnly.preparation.runtimeLibrarySnapshot().currentSession)
+    let preparedSession = RuntimeSessionPresentation(native: prepared)
+    XCTAssertEqual(preparedSession.sources.map(\.name), ["Mac microphone", "Mac system audio"])
+    let screenMenu = MenuBarLabel.presentation(
+      session: preparedSession,
+      snapshotStale: false,
+      livePhase: screenOnly.controller.phase,
+      liveStatus: screenOnly.controller.statusText)
+    XCTAssertEqual(screenMenu.text, screenExplanation)
+    XCTAssertEqual(screenMenu.accessibilityText, screenExplanation)
+    XCTAssertFalse(screenMenu.text.hasPrefix("Recording"))
+    XCTAssertFalse(screenMenu.text.hasPrefix("Preparing"))
+
+    await screenGate.release()
+    await screenStart.value
+    XCTAssertEqual(screenOnly.permission.requestCount, 1)
+    XCTAssertEqual(screenOnly.captures.systems.count, 1)
+    XCTAssertEqual(screenOnly.captures.microphones.count, 1)
+    XCTAssertEqual(screenOnly.captures.microphones[0].microphoneStartCount, 1)
+    XCTAssertEqual(screenOnly.controller.phase, .starting)
+    XCTAssertEqual(screenOnly.controller.statusText, "Starting microphone + system audio…")
+    XCTAssertFalse(screenOnly.controller.statusText.contains("Screen Recording"))
+
+    let both = try PauseHarness(screenCaptureAuthorized: { false })
+    defer { both.removeFiles() }
+    both.permission.currentState = .notDetermined
+    let bothMicrophone = PauseStartGate()
+    let bothScreen = PauseStartGate()
+    both.permission.requestGate = bothMicrophone
+    both.captures.systemFactoryGate = bothScreen
+    let bothStart = Task { await both.controller.start() }
+    await fulfillment(of: [bothMicrophone.entered], timeout: 2)
+    XCTAssertEqual(
+      both.controller.statusText, LiveMicrophoneRecordingController.microphonePermissionExplanation)
+    XCTAssertEqual(both.captures.systems.count, 0)
+    XCTAssertEqual(both.permission.requestCount, 1)
+    both.permission.currentState = .authorized
+    await bothMicrophone.release()
+    await fulfillment(of: [bothScreen.entered], timeout: 2)
+    XCTAssertEqual(both.controller.statusText, screenExplanation)
+    XCTAssertEqual(both.captures.systems.count, 0)
+    XCTAssertEqual(both.permission.requestCount, 1)
+    await bothScreen.release()
+    await bothStart.value
+    XCTAssertEqual(both.captures.systems.count, 1)
+    XCTAssertEqual(both.captures.microphones[0].microphoneStartCount, 1)
+    XCTAssertEqual(both.controller.statusText, "Starting microphone + system audio…")
+    XCTAssertEqual(both.permission.requestCount, 1)
+  }
+
   /// An idle menu with permission already available has one Record control.
   /// Starting it prepares both selected sources and keeps their names visible.
   func testIdleMenuStartBeginsPreparationWithBothSourcesVisible() async throws {

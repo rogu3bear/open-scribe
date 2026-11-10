@@ -182,6 +182,7 @@ final class PauseSources: @unchecked Sendable {
   var failNextMicrophoneBinding = false
   var failNextMicrophoneStart = false
   var nextSystemStartGate: PauseStartGate?
+  var systemFactoryGate: PauseStartGate?
   func microphone(_ writer: ManagedSegmentWriting) -> PauseSource {
     let source = PauseSource(writer: writer)
     source.failInputBinding = failNextMicrophoneBinding
@@ -228,7 +229,8 @@ final class PauseHarness {
     microphoneDeviceProbe: @escaping @MainActor () -> MicrophoneDeviceIdentity? = { nil },
     restoreTimeoutWait: @escaping MicrophoneRestoreMonitor.Wait = {
       try await MicrophoneRestoreMonitor.waitForTimeout($0)
-    }
+    },
+    screenCaptureAuthorized: @escaping @MainActor () -> Bool = { true }
   ) throws {
     root =
       managedRoot
@@ -247,7 +249,10 @@ final class PauseHarness {
       writerFactory: { try ManagedCAFWriter(authorization: $0) },
       captureFactory: { captures.microphone($0) },
       requiredSources: [.microphone, .systemAudio],
-      systemCaptureFactory: { captures.system($0) }, segmentedCapture: true,
+      systemCaptureFactory: { writer in
+        if let gate = captures.systemFactoryGate { await gate.wait() }
+        return captures.system(writer)
+      }, segmentedCapture: true,
       hostTime: { clock.now },
       availableBytes: { try storage.bytes(at: $0) },
       segmentedSuccessorWriterFactory: { authorization in
@@ -255,7 +260,8 @@ final class PauseHarness {
         return try ManagedCAFWriter(authorization: authorization)
       },
       captureHealthTelemetry: { telemetry.append($0) },
-      microphoneDeviceProbe: microphoneDeviceProbe, restoreTimeoutWait: restoreTimeoutWait
+      microphoneDeviceProbe: microphoneDeviceProbe, restoreTimeoutWait: restoreTimeoutWait,
+      screenCaptureAuthorized: screenCaptureAuthorized
     )
   }
   func capture() async throws {

@@ -36,9 +36,14 @@ struct MenuBarContent: View {
 
   var body: some View {
     if let current = store.currentSession {
-      CaptureStatusLabel(text: current.statusText, symbolName: Self.statusSymbol(for: current))
-      Text(current.timerText)
-        .font(.system(.body, design: .monospaced))
+      if liveRecording.phase == .requestingPermission {
+        Text(liveRecording.statusText)
+          .accessibilityLabel(liveRecording.statusText)
+      } else {
+        CaptureStatusLabel(text: current.statusText, symbolName: Self.statusSymbol(for: current))
+        Text(current.timerText)
+          .font(.system(.body, design: .monospaced))
+      }
       ForEach(current.sources, id: \.kind) { source in
         Label("\(source.name): \(source.stateText)", systemImage: source.symbolName)
       }
@@ -253,6 +258,9 @@ struct MenuBarLabel: View {
   ) -> (text: String, symbolName: String, accessibilityText: String) {
     if snapshotStale {
       return ("State unavailable", "exclamationmark.circle", "Live recording state unavailable")
+    }
+    if livePhase == .requestingPermission {
+      return (liveStatus, SymbolResolver.captureSymbol(for: .starting), liveStatus)
     }
     if let session {
       if let paused = session.pausedStatusSymbolName {

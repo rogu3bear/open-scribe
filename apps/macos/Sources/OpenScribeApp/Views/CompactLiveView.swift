@@ -98,6 +98,7 @@ struct CompactLiveView: View {
   }
 
   private var statusText: String {
+    if liveRecording.phase == .requestingPermission { return liveRecording.statusText }
     if let current = store.currentSession { return current.statusText }
     return switch liveRecording.phase {
     case .requestingPermission, .preparing, .starting: liveRecording.statusText
@@ -139,7 +140,9 @@ struct CompactLiveView: View {
 
   var accessibilityStatus: String {
     let base: String
-    if let current = store.currentSession {
+    if liveRecording.phase == .requestingPermission {
+      base = statusText
+    } else if let current = store.currentSession {
       let sources = current.sources.map { "\($0.name): \($0.stateText)" }.joined(separator: ", ")
       base = "\(current.statusText), \(current.timerText). \(sources)."
     } else {

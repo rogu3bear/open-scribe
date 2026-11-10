@@ -106,6 +106,9 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
   /// Set while an explicit restore has an opening segment and no new sample.
   private var microphoneRestoreSegmentOpen = false
   private var restorePermissionWithdrawn = false
+  /// Shown only while a missing capture permission is about to be requested.
+  private var permissionPreflight: String?
+  private let screenCaptureAuthorized: @MainActor () -> Bool
   private let restoreMonitor: MicrophoneRestoreMonitor
 
   init(
@@ -131,7 +134,8 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
     microphoneDeviceProbe: @escaping @MainActor () -> MicrophoneDeviceIdentity? = { nil },
     restoreTimeoutWait: @escaping MicrophoneRestoreMonitor.Wait = {
       try await MicrophoneRestoreMonitor.waitForTimeout($0)
-    }
+    },
+    screenCaptureAuthorized: @escaping @MainActor () -> Bool = { CGPreflightScreenCaptureAccess() }
   ) {
     self.permission = permission
     self.preparationFactory = preparationFactory
@@ -146,6 +150,7 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
     self.proofCheckpoint = proofCheckpoint
     self.segmentedSuccessorWriterFactory = segmentedSuccessorWriterFactory
     self.microphoneDeviceProbe = microphoneDeviceProbe
+    self.screenCaptureAuthorized = screenCaptureAuthorized
     restoreMonitor = MicrophoneRestoreMonitor(wait: restoreTimeoutWait)
     super.init()
     observeSystemPower()
@@ -344,8 +349,20 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
       : "Ready to record \(captureSelection.recordedAudio)"
   }
 
+  /// Named before macOS asks, and only when microphone access is still undecided.
+  static let microphonePermissionExplanation =
+    "Microphone access is needed to record this conversation. macOS will ask before any microphone audio is captured."
+
+  /// Named before macOS asks, and only when the selected computer-audio source needs it.
+  static func screenRecordingPermissionExplanation(sourceName: String) -> String {
+    "Screen Recording permission is needed to record \(sourceName). macOS will ask before that audio is captured."
+  }
+
   var statusText: String {
-    switch phase {
+    if phase == .requestingPermission, let permissionPreflight {
+      return permissionPreflight
+    }
+    return switch phase {
     case .idle: readinessText
     case .requestingPermission: "Requesting microphone access…"
     case .preparing: "Preparing durable recording…"
@@ -410,8 +427,12 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
     microphoneCaptureIdentity = nil
     acceptedMicrophoneObservationSequence = 0
     if !failedSources.contains(.microphone) {
-      phase = .requestingPermission
+      if permission.currentState == .notDetermined {
+        permissionPreflight = Self.microphonePermissionExplanation
+        phase = .requestingPermission
+      }
       let permissionState = await permission.request()
+      permissionPreflight = nil
       guard permissionState == .authorized else {
         if resuming {
           writers = previousWriters
@@ -564,6 +585,11 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
         guard let systemWriter = writers[audioSource] else {
           throw LiveMicrophoneRecordingError.invalidSourcePlan
         }
+        if !screenCaptureAuthorized() {
+          permissionPreflight = Self.screenRecordingPermissionExplanation(
+            sourceName: captureSelection.name)
+          phase = .requestingPermission
+        }
         do {
           if let selectedSystemCaptureFactory {
             systemCapture = try await selectedSystemCaptureFactory(systemWriter, captureSelection)
@@ -573,6 +599,7 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
             throw LiveMicrophoneRecordingError.invalidSourcePlan
           }
         } catch {
+          permissionPreflight = nil
           if microphoneRestoreSegmentOpen { cancelOpenMicrophoneRestore() }
           await fail(
             "System audio access or the selected source is unavailable. \(error.localizedDescription)",
@@ -592,6 +619,7 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
             preparation: preparation, sessionId: sessionId, hostAnchor: hostTime())
         }
       }
+      permissionPreflight = nil
       phase = .starting
       guard await checkMicrophonePermission() else { return }
       beginPermissionWatch()
