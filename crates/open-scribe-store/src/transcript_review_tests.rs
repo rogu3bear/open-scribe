@@ -1,6 +1,10 @@
+use std::io::Read;
+
 use super::*;
-use crate::TranscriptionRunIdentity;
-use crate::transcripts::tests::{complete_all, identity, imported_fixture, plan};
+use crate::transcripts::tests::{
+    complete_all, identity, imported_fixture, plan, sample, write_caf,
+};
+use crate::{ImportMediaRequest, TranscriptionRunIdentity};
 
 fn transcribed(words: [&str; 2]) -> (crate::transcripts::tests::Fixture, String) {
     let mut fixture = imported_fixture(144_000);
@@ -14,6 +18,58 @@ fn transcribed(words: [&str; 2]) -> (crate::transcripts::tests::Fixture, String)
 
 fn texts(hits: &[TranscriptSearchHit]) -> Vec<&str> {
     hits.iter().map(|hit| hit.effective_text.as_str()).collect()
+}
+
+fn ranges(hits: &[TranscriptSearchHit]) -> Vec<(String, String, String, u32, i64, i64, String)> {
+    let mut found = hits
+        .iter()
+        .map(|hit| {
+            (
+                hit.session_id.clone(),
+                hit.session_title.clone(),
+                hit.revision_id.clone(),
+                hit.sequence,
+                hit.start_nanoseconds,
+                hit.end_nanoseconds,
+                hit.effective_text.clone(),
+            )
+        })
+        .collect::<Vec<_>>();
+    found.sort();
+    found
+}
+
+fn range_of(
+    session: &SessionId,
+    title: &str,
+    segment: &TranscriptDocumentSegment,
+) -> (String, String, String, u32, i64, i64, String) {
+    (
+        session.0.clone(),
+        title.to_owned(),
+        segment.revision_id.clone(),
+        segment.sequence,
+        segment.start_nanoseconds,
+        segment.end_nanoseconds,
+        segment.effective_text.clone(),
+    )
+}
+
+/// Opens the leased local file for one saved conversation and reports its
+/// bytes, digest, and audio end. The lease is the playback descriptor.
+fn opened_audio(store: &SessionStore, session: &SessionId) -> (Vec<u8>, String, i64) {
+    let lease = store.lease_imported_playback(session).unwrap();
+    let mut bytes = Vec::new();
+    lease.file().read_to_end(&mut bytes).unwrap();
+    assert_eq!(bytes.len() as u64, lease.byte_length());
+    let tracks = store.transcription_tracks(session).unwrap();
+    let input = store.transcription_input(session, &tracks[0]).unwrap();
+    assert_eq!(input.spans.len(), 1);
+    let span = &input.spans[0];
+    let end = span.start_nanoseconds
+        + i64::try_from(span.frames).unwrap() * 1_000_000_000
+            / i64::from(crate::MEDIA_SAMPLE_RATE_HZ);
+    (bytes, lease.digest_sha256().to_owned(), end)
 }
 
 #[test]
@@ -313,4 +369,188 @@ fn fts_expressions_quote_every_term_and_prefix_only_the_last() {
         fts_expression(&many).unwrap().matches('"').count(),
         MAX_QUERY_TERMS * 2
     );
+}
+
+#[test]
+fn search_returns_matching_conversations_and_timestamped_ranges() {
+    let mut library = imported_fixture(144_000);
+    let interview_session = library.session.clone();
+    let interview_title = "Transcript fixture";
+    let interview_source = library.root.parent().unwrap().join("source.caf");
+    let interview_source_bytes = std::fs::read(&interview_source).unwrap();
+    let interview_media_bytes = std::fs::read(&library.media).unwrap();
+
+    let budget_source = library.root.parent().unwrap().join("budget.caf");
+    write_caf(&budget_source, 144_000, |frame| {
+        sample(frame.wrapping_add(11))
+    });
+    let budget_source_bytes = std::fs::read(&budget_source).unwrap();
+    let budget = library
+        .store
+        .import_recoverable_caf(ImportMediaRequest {
+            title: "Budget".into(),
+            source_path: budget_source.clone(),
+        })
+        .unwrap();
+    let budget_session = budget.session_id.clone();
+    let budget_title = "Budget";
+    assert_ne!(budget_session, interview_session);
+    assert!(budget.ready_for_review);
+    assert!(!budget.repeated_source);
+    let budget_media = library
+        .root
+        .join(crate::SESSIONS_DIRECTORY)
+        .join(&budget_session.0)
+        .join(&budget.relative_path);
+    let budget_media_bytes = std::fs::read(&budget_media).unwrap();
+
+    let interview_run = library
+        .store
+        .begin_transcription_run(&identity(&library, "options-interview"), &plan())
+        .unwrap();
+    let interview_revision = complete_all(
+        &mut library,
+        &interview_run,
+        ["meadow draft", "closing note"],
+    );
+    library
+        .store
+        .correct_transcript_segment(
+            &interview_session,
+            &interview_revision,
+            0,
+            Some("approved meadow"),
+        )
+        .unwrap();
+
+    let budget_tracks = library.store.transcription_tracks(&budget_session).unwrap();
+    let budget_input = library
+        .store
+        .transcription_input(&budget_session, &budget_tracks[0])
+        .unwrap();
+    let budget_identity = TranscriptionRunIdentity {
+        session_id: budget_session.clone(),
+        track_id: budget_tracks[0].clone(),
+        input_digest: budget_input.input_digest,
+        ..identity(&library, "options-budget")
+    };
+    let budget_run = library
+        .store
+        .begin_transcription_run(&budget_identity, &plan())
+        .unwrap();
+    complete_all(&mut library, &budget_run, ["opening note", "meadow budget"]);
+
+    let interview_document = library
+        .store
+        .transcript_document(&interview_session)
+        .unwrap();
+    let budget_document = library.store.transcript_document(&budget_session).unwrap();
+    assert_eq!(interview_document[0].verbatim_text, "meadow draft");
+    assert_eq!(interview_document[0].effective_text, "approved meadow");
+    assert!(interview_document[0].corrected);
+    assert!(!interview_document[1].corrected);
+    assert!(budget_document.iter().all(|segment| !segment.corrected));
+    assert_ne!(
+        interview_document[0].start_nanoseconds,
+        budget_document[1].start_nanoseconds
+    );
+
+    let mut meadow = vec![
+        range_of(&interview_session, interview_title, &interview_document[0]),
+        range_of(&budget_session, budget_title, &budget_document[1]),
+    ];
+    meadow.sort();
+    assert_eq!(
+        ranges(
+            &library
+                .store
+                .search_transcripts("meadow", None, 10)
+                .unwrap()
+        ),
+        meadow
+    );
+    assert!(
+        library
+            .store
+            .search_transcripts("draft", None, 10)
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        ranges(
+            &library
+                .store
+                .search_transcripts("approved meadow", None, 10)
+                .unwrap()
+        ),
+        vec![range_of(
+            &interview_session,
+            interview_title,
+            &interview_document[0]
+        )]
+    );
+    assert_eq!(
+        ranges(
+            &library
+                .store
+                .search_transcripts("opening note", None, 10)
+                .unwrap()
+        ),
+        vec![range_of(&budget_session, budget_title, &budget_document[0])]
+    );
+
+    let (interview_audio, interview_digest, interview_end) =
+        opened_audio(&library.store, &interview_session);
+    let (budget_audio, budget_digest, budget_end) = opened_audio(&library.store, &budget_session);
+    assert_eq!(interview_audio, interview_media_bytes);
+    assert_eq!(budget_audio, budget_media_bytes);
+    for hit in library
+        .store
+        .search_transcripts("meadow", None, 10)
+        .unwrap()
+    {
+        let end = if hit.session_id == interview_session.0 {
+            interview_end
+        } else {
+            budget_end
+        };
+        assert!(hit.start_nanoseconds >= 0);
+        assert!(hit.end_nanoseconds > hit.start_nanoseconds);
+        assert!(hit.end_nanoseconds <= end);
+    }
+
+    let reopened = SessionStore::open(&library.root).unwrap();
+    assert_eq!(
+        ranges(&reopened.search_transcripts("meadow", None, 10).unwrap()),
+        meadow
+    );
+    let (again, digest, _) = opened_audio(&reopened, &interview_session);
+    assert_eq!(again, interview_audio);
+    assert_eq!(digest, interview_digest);
+    let (again, digest, _) = opened_audio(&reopened, &budget_session);
+    assert_eq!(again, budget_audio);
+    assert_eq!(digest, budget_digest);
+    assert_eq!(
+        std::fs::read(&interview_source).unwrap(),
+        interview_source_bytes
+    );
+    assert_eq!(std::fs::read(&budget_source).unwrap(), budget_source_bytes);
+
+    let snapshot = library.store.runtime_library_snapshot().unwrap();
+    assert!(snapshot.current_session.is_none());
+    let mut saved = snapshot
+        .saved_sessions
+        .iter()
+        .map(|session| (session.session_id.0.clone(), session.title.clone()))
+        .collect::<Vec<_>>();
+    saved.sort();
+    let mut expected_saved = vec![
+        (interview_session.0, interview_title.to_owned()),
+        (budget_session.0, budget_title.to_owned()),
+    ];
+    expected_saved.sort();
+    assert_eq!(saved, expected_saved);
+    assert!(snapshot.saved_sessions.iter().all(|session| {
+        session.lifecycle == "ready_for_review" && session.playable_media.is_some()
+    }));
 }
