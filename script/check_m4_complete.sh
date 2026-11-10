@@ -41,6 +41,42 @@ has_local_only() {
 		"$(candidate_sha256 "$path")" == "$(jq -r '.report_sha256' "$receipt")" ]] || return 1
 	candidate_local_only_report_valid "$path" "$mode" "$(jq -r '.inputs.speech_sha256' "$receipt")"
 }
+# Re-read committed source in this checkout. A copied script whose repo has no
+# diagnostics export proof keeps both names. This is not a candidate receipt.
+source_has_markers() {
+	local path="$1"
+	shift
+	[[ -f "$path" && ! -L "$path" ]] || return 1
+	local marker
+	for marker in "$@"; do
+		rg -F -q -- "$marker" "$path" || return 1
+	done
+}
+diagnostics_source_qualified=0
+if source_has_markers \
+	"$repo_root/apps/macos/Tests/OpenScribeAppTests/DiagnosticsReportTests.swift" \
+	'testHostedDiagnosticsExportOmitsConversationContent' \
+	'sk-live-example-secret' \
+	'crash_report=content_free' \
+	'credential' \
+	'Export Diagnostics…' \
+	'performClick' \
+	'AppTelemetry.captureProof' &&
+	source_has_markers \
+		"$repo_root/apps/macos/Sources/OpenScribeApp/Views/SettingsView.swift" \
+		'func exportDiagnostics' \
+		'currentReport()' \
+		'Export Diagnostics…' &&
+	source_has_markers \
+		"$repo_root/apps/macos/Sources/OpenScribeApp/Support/DiagnosticsReport.swift" \
+		'crash_report=content_free' \
+		'crash_report_refused='; then
+	diagnostics_source_qualified=1
+fi
+diagnostics_gap='secret_handling,crash_report_content_check,'
+if [[ "$diagnostics_source_qualified" == 1 ]]; then
+	diagnostics_gap=''
+fi
 for mode in synthetic live-context; do
 	if has_local_only "$mode"; then qualified_modes+=("$mode"); fi
 done
@@ -59,7 +95,9 @@ printf '%s\n' \
 	'available_source=two_phase_deletion,manifest_rendered_capability_status,adr_0015_routes_csp_and_headers,explicit_catalog_download_network_client,identifier_only_app_logs,local_only_workflow_proof' \
 	"observed_on_candidate=${qualified_text:-none}" \
 	'qualification=none at the M4 completion plane' \
-	"missing=${missing_prefix}provider_category_authorization,system_trash_deletion_runtime,secret_handling,crash_report_content_check,capability_true_website_equality,local_intelligence,structured_memory" \
+	"diagnostics_source_qualified=$diagnostics_source_qualified" \
+	'diagnostics_source_plane=committed_source_not_candidate_receipt' \
+	"missing=${missing_prefix}provider_category_authorization,system_trash_deletion_runtime,${diagnostics_gap}capability_true_website_equality,local_intelligence,structured_memory" \
 	'protected=provider_credentials,production_deployment' \
 	'next=qualify every missing boundary on the candidate; local-only mode does not admit release or optional context it did not exercise' >&2
 exit 1
