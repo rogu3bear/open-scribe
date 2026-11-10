@@ -6,6 +6,30 @@ private struct ContextSeekRequest {
   let event: NativeContextEvent
 }
 
+/// The conversation name is an AppKit label created with the workspace.
+/// A later title change updates this field; it does not wait for a new view.
+private struct ConversationTitleLabel: NSViewRepresentable {
+  let title: String
+
+  func makeNSView(context: Context) -> NSTextField {
+    let field = NSTextField(labelWithString: title)
+    field.font = .preferredFont(forTextStyle: .title1)
+    field.isSelectable = true
+    field.lineBreakMode = .byTruncatingMiddle
+    field.setAccessibilityLabel("Conversation name")
+    field.setAccessibilityRole(.staticText)
+    field.cell?.wraps = true
+    field.cell?.isScrollable = false
+    field.maximumNumberOfLines = 2
+    return field
+  }
+
+  func updateNSView(_ field: NSTextField, context: Context) {
+    field.stringValue = title
+    field.setAccessibilityLabel("Conversation name")
+  }
+}
+
 struct ConversationWorkspaceView: View {
   let session: RuntimeSessionPresentation
   @ObservedObject var store: RuntimeLibraryStore
@@ -22,7 +46,6 @@ struct ConversationWorkspaceView: View {
   @State private var recorderEvents: [NativeRecorderEvent] = []
   @State private var showsAudioDetails = false
   @State private var showsRecordingDetails = false
-  @State private var renaming: ConversationMetadataPresentation?
   @State private var editingDetails: ConversationMetadataPresentation?
   @State private var contextSeek: ContextSeekRequest?
 
@@ -150,11 +173,6 @@ struct ConversationWorkspaceView: View {
     .task(id: "\(session.sessionId)|\(session.lifecycle)") {
       recorderEvents = loadRecorderEvents(session.sessionId)
     }
-    .sheet(item: $renaming) { presentation in
-      ConversationRenameSheet(session: presentation.session, store: store) {
-        presentation.close(&renaming)
-      }
-    }
     .sheet(item: $editingDetails) { presentation in
       ConversationDetailsSheet(
         session: presentation.session,
@@ -171,14 +189,10 @@ struct ConversationWorkspaceView: View {
   private func header(title: String) -> some View {
     VStack(alignment: .leading, spacing: ScribeSpacing.related) {
       HStack(alignment: .firstTextBaseline, spacing: ScribeSpacing.related) {
-        Text(title)
-          .font(.title.weight(.semibold))
-          .fixedSize(horizontal: false, vertical: true)
-          .textSelection(.enabled)
-          .accessibilityAddTraits(.isHeader)
-          .accessibilityLabel(title)
+        ConversationTitleLabel(title: title)
+          .frame(maxWidth: .infinity, alignment: .leading)
         Button {
-          renaming = ConversationMetadataPresentation(session: session)
+          store.beginRename(session)
         } label: {
           Image(systemName: "pencil")
         }

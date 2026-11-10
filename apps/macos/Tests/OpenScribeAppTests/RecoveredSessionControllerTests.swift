@@ -3128,6 +3128,246 @@ final class RecoveredSessionControllerTests: RecoveredSessionTestCase {
     withExtendedLifetime((store, live, playback, window, host, library, model)) {}
   }
 
+  /// The hosted title editor cancels without writing, then stores a new name.
+  /// The test does not call `beginRename`, `cancelRename`, or `rename`.
+  func testHostedRenameCancelLeavesTheTitleThenConfirmKeepsTheRecording() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "open-scribe-hosted-rename-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let package = root.appendingPathComponent("Stored.openscribe")
+    let export = await exportStoredFinalPackage(to: package)
+    XCTAssertEqual(export.status, 0, String(export.log.suffix(2_000)))
+
+    let managed = root.appendingPathComponent("Library", isDirectory: true)
+    let library = try NativeTranscriptLibrary.open(managedRoot: managed.path)
+    let receipt = try library.importPortablePackage(packagePath: package.path)
+    let segments = try library.document(sessionId: receipt.sessionId)
+    let bravo = try XCTUnwrap(segments.first { $0.sequence == 1 })
+    let bravoText = bravo.effectiveText
+    let sessionDirectory = managed.appendingPathComponent("Sessions", isDirectory: true)
+      .appendingPathComponent(receipt.sessionId, isDirectory: true)
+    let media = try regularFiles(under: sessionDirectory).filter { $0.pathExtension == "caf" }
+    XCTAssertEqual(media.count, 1)
+    let mediaDigest = try digest(of: media[0])
+
+    let model = TranscriptLibraryModel(managedRoot: managed)
+    let store = RuntimeLibraryStore(managedRoot: managed, refreshesImmediately: false)
+    store.refresh()
+    let listed = await waitUntil {
+      store.savedSessions.contains { $0.sessionId == receipt.sessionId }
+    }
+    XCTAssertTrue(listed, "saved=\(store.savedSessions.map(\.sessionId))")
+    let original = try XCTUnwrap(
+      store.savedSessions.first { $0.sessionId == receipt.sessionId })
+    let originalTitle = original.title
+    let navigation = MainWorkspaceNavigation()
+    navigation.select(receipt.sessionId)
+    let live = LiveMicrophoneRecordingController(managedRoot: managed)
+    let playback = RecoveredSessionController(
+      recoveryFactory: { try NativeRecordingPreparation.open(managedRoot: managed.path) },
+      importedPlaybackLeaseProvider: { id in
+        try NativeRecordingPreparation.open(managedRoot: managed.path)
+          .leaseImportedPlayback(sessionId: id)
+      },
+      player: RecoveredAudioPlayerFake())
+    let view = ContentView(
+      store: store,
+      importedMediaAuthority: ImportedMediaAuthorityAdapter(
+        startSecurityScope: { _ in true },
+        stopSecurityScope: { _ in },
+        importer: { _, _ in throw NativeStorageError.InvalidRequest }
+      ),
+      liveRecording: live,
+      recoveredSessions: playback,
+      transcripts: model,
+      speech: SpeechTranscriptionModel(managedRoot: managed),
+      scheduler: TranscriptionScheduler.inert(),
+      pressure: SystemPressureMonitor(libraryRoot: managed, samplesAutomatically: false),
+      context: ContextScopeModel(
+        binding: { nil },
+        frames: IdleClaimContextFrames(),
+        permissionCheck: { .denied },
+        permissionRequest: { .denied },
+        topology: { [] }
+      ),
+      navigation: navigation
+    )
+    let host = NSHostingView(rootView: view)
+    host.sizingOptions = []
+    let window = NSWindow(
+      contentRect: NSRect(x: 0, y: 0, width: 1100, height: 720),
+      styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    window.contentView = host
+    window.setContentSize(NSSize(width: 1100, height: 720))
+    host.frame = window.contentLayoutRect
+    window.makeKeyAndOrderFront(nil)
+    window.orderFrontRegardless()
+    defer { window.close() }
+
+    let offered = await waitUntil(timeoutNanoseconds: 5_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      window.displayIfNeeded()
+      return self.deletionButton(labeled: "Rename the selected conversation", in: host) != nil
+    }
+    let request = self.deletionButton(labeled: "Rename the selected conversation", in: host)
+    XCTAssertTrue(
+      offered && request != nil && window.contentView === host,
+      self.deletionProbe(in: host).joined(separator: "\n"))
+    let rename = try XCTUnwrap(request)
+    XCTAssertTrue(rename.isDescendant(of: host))
+    XCTAssertNil(store.pendingRename)
+    rename.performClick(nil)
+
+    let asked = await waitUntil(timeoutNanoseconds: 5_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      window.displayIfNeeded()
+      return store.pendingRename?.sessionId == receipt.sessionId
+        && self.renameTitleField(in: host) != nil
+        && self.deletionButton(labeled: "Cancel rename", in: host) != nil
+    }
+    XCTAssertTrue(asked && window.contentView === host, store.pendingRename?.sessionId ?? "nil")
+    let field = try XCTUnwrap(self.renameTitleField(in: host))
+    XCTAssertEqual(field.stringValue, ConversationIdentityPresentation.title(originalTitle))
+    let summary = try XCTUnwrap(self.renameSummary(in: host))
+    XCTAssertTrue(summary.stringValue.contains("recording and its transcript are unchanged"))
+    self.replaceTitle("Cancelled name", in: field)
+    let cancel = try XCTUnwrap(self.deletionButton(labeled: "Cancel rename", in: host))
+    XCTAssertTrue(cancel.isDescendant(of: host))
+    cancel.performClick(nil)
+
+    let cleared = await waitUntil(timeoutNanoseconds: 5_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      return store.pendingRename == nil && self.renameTitleField(in: host) == nil
+    }
+    XCTAssertTrue(cleared && window.contentView === host)
+    store.refresh()
+    let unchanged = await waitUntil {
+      store.savedSessions.contains {
+        $0.sessionId == receipt.sessionId && $0.title == originalTitle
+      }
+    }
+    XCTAssertTrue(unchanged, "saved=\(store.savedSessions.map { "\($0.sessionId) \($0.title)" })")
+    let displayed = try XCTUnwrap(self.conversationName(in: host))
+    XCTAssertEqual(displayed.stringValue, ConversationIdentityPresentation.title(originalTitle))
+
+    let again = try XCTUnwrap(
+      self.deletionButton(labeled: "Rename the selected conversation", in: host))
+    again.performClick(nil)
+    let reopened = await waitUntil(timeoutNanoseconds: 5_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      window.displayIfNeeded()
+      return self.renameTitleField(in: host) != nil
+        && self.deletionButton(labeled: "Save conversation name", in: host) != nil
+    }
+    XCTAssertTrue(reopened && window.contentView === host)
+    let editor = try XCTUnwrap(self.renameTitleField(in: host))
+    self.replaceTitle("   ", in: editor)
+    let blocked = try XCTUnwrap(self.deletionButton(labeled: "Save conversation name", in: host))
+    XCTAssertFalse(blocked.isEnabled)
+    let renamedTitle = "Local recorder notes"
+    self.replaceTitle(renamedTitle, in: editor)
+    XCTAssertTrue(blocked.isEnabled)
+    blocked.performClick(nil)
+
+    let saved = await waitUntil(timeoutNanoseconds: 5_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      window.displayIfNeeded()
+      return store.pendingRename == nil
+        && self.renameTitleField(in: host) == nil
+        && store.savedSessions.contains {
+          $0.sessionId == receipt.sessionId && $0.title == renamedTitle
+        }
+    }
+    XCTAssertTrue(
+      saved && window.contentView === host,
+      "pending=\(store.pendingRename?.sessionId ?? "nil") edit=\(store.editMessage ?? "nil") "
+        + "saved=\(store.savedSessions.map { "\($0.sessionId) \($0.title)" })")
+    let displayedName = try XCTUnwrap(self.conversationName(in: host))
+    XCTAssertEqual(displayedName.stringValue, renamedTitle)
+    XCTAssertTrue(displayedName.isDescendant(of: host))
+    let reread = try library.document(sessionId: receipt.sessionId)
+    let rereadBravo = try XCTUnwrap(reread.first { $0.sequence == 1 })
+    XCTAssertEqual(rereadBravo.effectiveText, bravoText)
+    XCTAssertEqual(rereadBravo.corrected, bravo.corrected)
+    XCTAssertEqual(rereadBravo.revisionId, bravo.revisionId)
+    XCTAssertEqual(try digest(of: media[0]), mediaDigest)
+    XCTAssertEqual(
+      store.savedSessions.first { $0.sessionId == receipt.sessionId }?.sessionId,
+      receipt.sessionId)
+    XCTAssertNil(self.renameTitleField(in: host))
+    XCTAssertTrue(window.contentView === host)
+    withExtendedLifetime((store, live, playback, window, host, library, model)) {}
+  }
+
+  private func replaceTitle(_ title: String, in field: NSTextField) {
+    XCTAssertEqual(field.window?.makeFirstResponder(field), true)
+    let editor = field.currentEditor() as? NSTextView
+    XCTAssertNotNil(editor)
+    editor?.string = title
+    editor?.didChangeText()
+  }
+
+  private func renameTitleField(in root: NSView) -> NSTextField? {
+    var matched: NSTextField?
+    func walk(_ view: NSView) {
+      if matched != nil { return }
+      if let field = view as? NSTextField,
+        field.accessibilityLabel() == "Conversation title",
+        field.isEditable,
+        field.isHidden == false,
+        field.isHiddenOrHasHiddenAncestor == false,
+        field.frame.width > 1,
+        field.frame.height > 1
+      {
+        matched = field
+      }
+      for child in view.subviews { walk(child) }
+    }
+    walk(root)
+    return matched
+  }
+
+  private func renameSummary(in root: NSView) -> NSTextField? {
+    var matched: NSTextField?
+    func walk(_ view: NSView) {
+      if matched != nil { return }
+      if let field = view as? NSTextField,
+        field.accessibilityLabel() == "Rename summary",
+        field.isHidden == false,
+        field.isHiddenOrHasHiddenAncestor == false,
+        field.frame.width > 1,
+        field.frame.height > 1
+      {
+        matched = field
+      }
+      for child in view.subviews { walk(child) }
+    }
+    walk(root)
+    return matched
+  }
+
+  private func conversationName(in root: NSView) -> NSTextField? {
+    var matched: NSTextField?
+    func walk(_ view: NSView) {
+      if matched != nil { return }
+      if let field = view as? NSTextField,
+        field.accessibilityLabel() == "Conversation name",
+        field.isEditable == false,
+        field.isHidden == false,
+        field.isHiddenOrHasHiddenAncestor == false,
+        field.frame.width > 1,
+        field.frame.height > 1
+      {
+        matched = field
+      }
+      for child in view.subviews { walk(child) }
+    }
+    walk(root)
+    return matched
+  }
+
   /// The deletion receipt records the URL `systemTrash` returned. Listing the
   /// Trash directory is not permitted, so the test opens that stored URL.
   private func systemTrashChild(managedRoot: URL, sessionId: String, mediaDigest: String) -> URL? {

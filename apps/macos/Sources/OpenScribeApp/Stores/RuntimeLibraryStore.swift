@@ -28,6 +28,9 @@ final class RuntimeLibraryStore: ObservableObject {
   /// The result of the last title or details edit, for the workspace notice.
   @Published private(set) var editMessage: String?
   @Published private(set) var editMessageIsFailure = false
+  /// A title edit asked for from the library, before Rust stores it.
+  @Published private(set) var pendingRename: RuntimeSessionPresentation?
+  @Published private(set) var pendingRenameGeneration = 0
   /// Supplied before the first snapshot starts. A read begun during recovery
   /// can still contain a terminated recording after the barrier completes.
   private let isLaunchRecoveryPending: @MainActor () -> Bool
@@ -184,6 +187,9 @@ final class RuntimeLibraryStore: ObservableObject {
       let stored = try await StructuredNativeIO.mutation { try renameProvider(sessionId, title) }
       AppTelemetry.libraryNote(stage: "rename", detail: "session=\(sessionToken) result=renamed")
       report(edit: nil)
+      if pendingRename?.sessionId == sessionId {
+        pendingRename = nil
+      }
       refresh()
       return stored
     } catch {
@@ -217,6 +223,20 @@ final class RuntimeLibraryStore: ObservableObject {
   }
 
   func dismissEditMessage() {
+    report(edit: nil)
+  }
+
+  /// Opens the title editor for one saved or interrupted conversation.
+  /// Rust is not asked to store a title until the editor confirms.
+  func beginRename(_ session: RuntimeSessionPresentation) {
+    pendingRename = session
+    pendingRenameGeneration &+= 1
+    report(edit: nil)
+  }
+
+  /// Closes the title editor and leaves the stored title as it was.
+  func cancelRename() {
+    pendingRename = nil
     report(edit: nil)
   }
 

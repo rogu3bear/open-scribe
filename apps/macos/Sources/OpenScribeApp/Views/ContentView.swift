@@ -15,7 +15,6 @@ struct ContentView: View {
   @ObservedObject var context: ContextScopeModel
   @ObservedObject var navigation: MainWorkspaceNavigation
   @StateObject private var librarySearch = LibrarySearchState()
-  @State private var renaming: ConversationMetadataPresentation?
 
   private var selectedSessionId: String? {
     navigation.selectedSessionId
@@ -130,6 +129,13 @@ struct ContentView: View {
       }
       .frame(maxWidth: .infinity, minHeight: 28, alignment: .leading)
       .padding(.horizontal, ScribeSpacing.related)
+      RenameRequestMount(
+        store: store, liveRecording: liveRecording, navigation: navigation
+      ) { session in
+        store.beginRename(session)
+      }
+      .frame(maxWidth: .infinity, minHeight: 28, alignment: .leading)
+      .padding(.horizontal, ScribeSpacing.related)
       conversationList
       LibraryActivityFooter(
         scheduler: scheduler, speech: speech, pressure: pressure,
@@ -155,7 +161,7 @@ struct ContentView: View {
             .tag(current.sessionId)
             .contextMenu {
               Button("Rename…") {
-                renaming = ConversationMetadataPresentation(session: current)
+                store.beginRename(current)
               }
               Button("Move to Trash…", role: .destructive) {
                 requestDeletion(current)
@@ -185,7 +191,7 @@ struct ContentView: View {
             .tag(session.sessionId)
             .contextMenu {
               Button("Rename…") {
-                renaming = ConversationMetadataPresentation(session: session)
+                store.beginRename(session)
               }
               Button("Move to Trash…", role: .destructive) {
                 requestDeletion(session)
@@ -212,7 +218,7 @@ struct ContentView: View {
             .tag(session.sessionId)
             .contextMenu {
               Button("Rename…") {
-                renaming = ConversationMetadataPresentation(session: session)
+                store.beginRename(session)
               }
               Button("Move to Trash…", role: .destructive) {
                 requestDeletion(session)
@@ -225,11 +231,6 @@ struct ContentView: View {
       }
     }
     .listStyle(.sidebar)
-    .sheet(item: $renaming) { presentation in
-      ConversationRenameSheet(session: presentation.session, store: store) {
-        presentation.close(&renaming)
-      }
-    }
     .onDeleteCommand {
       // Delete (or Edit > Delete) moves the selected saved conversation to
       // Trash through the same confirmation as the context menu.
@@ -292,13 +293,24 @@ struct ContentView: View {
       dropConfirmation
     }
     .overlay(alignment: .bottom) {
-      deletionConfirmation
+      VStack(spacing: 0) {
+        renameConfirmation
+        deletionConfirmation
+      }
     }
   }
 
   /// Pending deletion is published after the first layout. A SwiftUI
   /// confirmation sheet from that change does not appear in the hosting view
   /// that is already on screen. This strip is created with the first layout.
+  /// The title field is created with the first layout. A SwiftUI sheet opened
+  /// after that layout does not appear in the hosting view already on screen.
+  private var renameConfirmation: some View {
+    RenameConfirmationMount(store: store)
+      .frame(maxWidth: .infinity)
+      .frame(height: 112)
+  }
+
   private var deletionConfirmation: some View {
     DeletionConfirmationMount(transcripts: transcripts) {
       store.refresh()
@@ -449,7 +461,7 @@ struct ContentView: View {
       notices.append(
         .init(id: "transcripts", message: message, isFailure: transcripts.messageIsFailure))
     }
-    if let message = store.editMessage, renaming == nil {
+    if let message = store.editMessage, store.pendingRename == nil {
       notices.append(.init(id: "edit", message: message, isFailure: store.editMessageIsFailure))
     }
     if notices.isEmpty, liveRecording.phase == .saved,
@@ -1402,5 +1414,268 @@ private final class DeletionConfirmationBanner: NSView {
     Task { @MainActor in
       await transcripts?.cancelDeletion()
     }
+  }
+}
+
+/// The selected saved or interrupted conversation can be renamed. The button
+/// exists before a selection so a later library refresh only reveals it.
+private struct RenameRequestMount: NSViewRepresentable {
+  @ObservedObject var store: RuntimeLibraryStore
+  @ObservedObject var liveRecording: LiveMicrophoneRecordingController
+  @ObservedObject var navigation: MainWorkspaceNavigation
+  let onRequest: (RuntimeSessionPresentation) -> Void
+
+  func makeNSView(context: Context) -> RenameRequestControl {
+    let view = RenameRequestControl()
+    view.bind(
+      store: store, liveRecording: liveRecording, navigation: navigation, onRequest: onRequest)
+    return view
+  }
+
+  func updateNSView(_ view: RenameRequestControl, context: Context) {
+    view.bind(
+      store: store, liveRecording: liveRecording, navigation: navigation, onRequest: onRequest)
+  }
+}
+
+private final class RenameRequestControl: NSView {
+  private let button = NSButton(title: "Rename…", target: nil, action: nil)
+  private var subscription: AnyCancellable?
+  private var store: RuntimeLibraryStore?
+  private var liveRecording: LiveMicrophoneRecordingController?
+  private var navigation: MainWorkspaceNavigation?
+  private var onRequest: ((RuntimeSessionPresentation) -> Void)?
+
+  override init(frame frameRect: NSRect) {
+    super.init(frame: frameRect)
+    setAccessibilityIdentifier("Rename conversation")
+    button.bezelStyle = .rounded
+    button.setAccessibilityLabel("Rename the selected conversation")
+    button.target = self
+    button.action = #selector(requestRename)
+    button.translatesAutoresizingMaskIntoConstraints = false
+    button.isHidden = true
+    addSubview(button)
+    NSLayoutConstraint.activate([
+      button.leadingAnchor.constraint(equalTo: leadingAnchor),
+      button.centerYAnchor.constraint(equalTo: centerYAnchor),
+      button.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor),
+    ])
+  }
+
+  required init?(coder: NSCoder) {
+    nil
+  }
+
+  func bind(
+    store: RuntimeLibraryStore, liveRecording: LiveMicrophoneRecordingController,
+    navigation: MainWorkspaceNavigation, onRequest: @escaping (RuntimeSessionPresentation) -> Void
+  ) {
+    self.onRequest = onRequest
+    let same =
+      self.store === store && self.liveRecording === liveRecording && self.navigation === navigation
+    self.store = store
+    self.liveRecording = liveRecording
+    self.navigation = navigation
+    if !same {
+      let triggers: [AnyPublisher<Void, Never>] = [
+        store.objectWillChange.map { _ in () }.eraseToAnyPublisher(),
+        liveRecording.objectWillChange.map { _ in () }.eraseToAnyPublisher(),
+        navigation.objectWillChange.map { _ in () }.eraseToAnyPublisher(),
+      ]
+      subscription = Publishers.MergeMany(triggers).sink { [weak self] _ in
+        DispatchQueue.main.async { self?.apply() }
+      }
+    }
+    apply()
+  }
+
+  override func hitTest(_ point: NSPoint) -> NSView? {
+    guard button.isHidden == false else { return nil }
+    let hit = super.hitTest(point)
+    return hit === self ? nil : hit
+  }
+
+  private func apply() {
+    let available = selectedRenamableSession() != nil
+    button.isHidden = !available
+    button.isEnabled = available
+    layoutSubtreeIfNeeded()
+  }
+
+  private func selectedRenamableSession() -> RuntimeSessionPresentation? {
+    guard let liveRecording, liveRecording.canStart, let navigation, let store,
+      let sessionId = navigation.selectedSessionId
+    else { return nil }
+    if let session = store.savedSessions.first(where: { $0.sessionId == sessionId }) {
+      return session
+    }
+    if let current = store.currentSession, current.sessionId == sessionId,
+      current.lifecycle == "interrupted"
+    {
+      return current
+    }
+    return nil
+  }
+
+  @objc private func requestRename() {
+    guard let session = selectedRenamableSession() else { return }
+    let onRequest = onRequest
+    Task { @MainActor in onRequest?(session) }
+  }
+}
+
+/// Asks for a new title before Rust stores it. The field and both buttons are
+/// created here so a later `pendingRename` only unhides them.
+private struct RenameConfirmationMount: NSViewRepresentable {
+  @ObservedObject var store: RuntimeLibraryStore
+
+  func makeNSView(context: Context) -> RenameConfirmationBanner {
+    let view = RenameConfirmationBanner()
+    view.bind(store)
+    return view
+  }
+
+  func updateNSView(_ view: RenameConfirmationBanner, context: Context) {
+    view.bind(store)
+  }
+}
+
+private final class RenameConfirmationBanner: NSView, NSTextFieldDelegate {
+  private let message = NSTextField(wrappingLabelWithString: "")
+  private let titleField = NSTextField(string: "")
+  private let confirmButton = NSButton(title: "Rename", target: nil, action: nil)
+  private let cancelButton = NSButton(title: "Cancel", target: nil, action: nil)
+  private var subscription: AnyCancellable?
+  private var store: RuntimeLibraryStore?
+  private var showsEditor = false
+  private var appliedGeneration = -1
+
+  override init(frame frameRect: NSRect) {
+    super.init(frame: frameRect)
+    setAccessibilityIdentifier("Rename confirmation")
+    message.font = .preferredFont(forTextStyle: .callout)
+    message.maximumNumberOfLines = 2
+    message.lineBreakMode = .byWordWrapping
+    message.cell?.truncatesLastVisibleLine = true
+    message.setAccessibilityLabel("Rename summary")
+    message.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+    titleField.placeholderString = "Title"
+    titleField.delegate = self
+    titleField.setAccessibilityLabel("Conversation title")
+    titleField.lineBreakMode = .byTruncatingTail
+    titleField.bezelStyle = .roundedBezel
+    titleField.isBezeled = true
+    confirmButton.bezelStyle = .rounded
+    confirmButton.setAccessibilityLabel("Save conversation name")
+    confirmButton.target = self
+    confirmButton.action = #selector(confirmRename)
+    cancelButton.bezelStyle = .rounded
+    cancelButton.setAccessibilityLabel("Cancel rename")
+    cancelButton.target = self
+    cancelButton.action = #selector(cancelRename)
+    let column = NSStackView(views: [message, titleField])
+    column.orientation = .vertical
+    column.alignment = .leading
+    column.spacing = ScribeSpacing.tight
+    column.translatesAutoresizingMaskIntoConstraints = false
+    titleField.translatesAutoresizingMaskIntoConstraints = false
+    titleField.widthAnchor.constraint(greaterThanOrEqualToConstant: 240).isActive = true
+    for item in [column, confirmButton, cancelButton] {
+      item.translatesAutoresizingMaskIntoConstraints = false
+      addSubview(item)
+    }
+    NSLayoutConstraint.activate([
+      column.leadingAnchor.constraint(equalTo: leadingAnchor, constant: ScribeSpacing.standard),
+      column.topAnchor.constraint(equalTo: topAnchor, constant: ScribeSpacing.related),
+      column.bottomAnchor.constraint(
+        lessThanOrEqualTo: bottomAnchor, constant: -ScribeSpacing.related),
+      cancelButton.trailingAnchor.constraint(
+        equalTo: trailingAnchor, constant: -ScribeSpacing.standard),
+      cancelButton.centerYAnchor.constraint(equalTo: centerYAnchor),
+      confirmButton.trailingAnchor.constraint(
+        equalTo: cancelButton.leadingAnchor, constant: -ScribeSpacing.related),
+      confirmButton.centerYAnchor.constraint(equalTo: centerYAnchor),
+      column.trailingAnchor.constraint(
+        lessThanOrEqualTo: confirmButton.leadingAnchor, constant: -ScribeSpacing.related),
+    ])
+    apply()
+  }
+
+  required init?(coder: NSCoder) {
+    nil
+  }
+
+  override var intrinsicContentSize: NSSize {
+    NSSize(width: NSView.noIntrinsicMetric, height: 112)
+  }
+
+  func bind(_ store: RuntimeLibraryStore) {
+    guard self.store !== store else { return }
+    self.store = store
+    subscription = store.objectWillChange.sink { [weak self] _ in
+      DispatchQueue.main.async { self?.apply() }
+    }
+    DispatchQueue.main.async { [weak self] in self?.apply() }
+  }
+
+  override func hitTest(_ point: NSPoint) -> NSView? {
+    guard showsEditor else { return nil }
+    let hit = super.hitTest(point)
+    return hit === self ? nil : hit
+  }
+
+  override func draw(_ dirtyRect: NSRect) {
+    guard showsEditor else { return }
+    NSColor.windowBackgroundColor.setFill()
+    dirtyRect.fill()
+  }
+
+  private func apply() {
+    let pending = store?.pendingRename
+    let generation = store?.pendingRenameGeneration ?? 0
+    showsEditor = pending != nil
+    message.isHidden = pending == nil
+    titleField.isHidden = pending == nil
+    confirmButton.isHidden = pending == nil
+    cancelButton.isHidden = pending == nil
+    if let pending, generation != appliedGeneration {
+      titleField.stringValue = ConversationIdentityPresentation.title(pending.title)
+      appliedGeneration = generation
+    }
+    if pending == nil {
+      appliedGeneration = -1
+      titleField.stringValue = ""
+    }
+    if let failure = store?.editMessage, store?.editMessageIsFailure == true {
+      message.stringValue = failure
+    } else {
+      message.stringValue =
+        "The new name is used in the library, exports, and portable packages. The recording and its transcript are unchanged."
+    }
+    let trimmed = titleField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+    confirmButton.isEnabled = pending != nil && !trimmed.isEmpty
+    needsDisplay = true
+    layoutSubtreeIfNeeded()
+  }
+
+  func controlTextDidChange(_ obj: Notification) {
+    guard showsEditor else { return }
+    let trimmed = titleField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+    confirmButton.isEnabled = !trimmed.isEmpty
+  }
+
+  @objc private func confirmRename() {
+    guard let store, let session = store.pendingRename else { return }
+    let title = titleField.stringValue
+    confirmButton.isEnabled = false
+    Task { @MainActor in
+      _ = await store.rename(sessionId: session.sessionId, title: title)
+    }
+  }
+
+  @objc private func cancelRename() {
+    let store = store
+    Task { @MainActor in store?.cancelRename() }
   }
 }
