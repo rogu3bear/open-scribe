@@ -151,6 +151,118 @@ final class SpeechTranscriptionModelTests: XCTestCase {
     XCTAssertEqual(try Data(contentsOf: source), original)
   }
 
+  /// Network is denied. Import, recovery, playback, speaker review, search,
+  /// correction, and export stay on this Mac. No speech model is installed,
+  /// so transcription does not start and no catalog host is contacted.
+  func testADeniedNetworkKeepsTheLocalJourneyOffTheNetworkWithoutAnAccount() async throws {
+    DeniedNetwork.reset()
+    XCTAssertTrue(URLProtocol.registerClass(DeniedNetwork.self))
+    defer { URLProtocol.unregisterClass(DeniedNetwork.self) }
+
+    let root = temporaryRoot()
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let source = root.appendingPathComponent("Interview.caf")
+    let original = try writeRecoverableCaf(frames: 48_000)
+    try original.write(to: source, options: .atomic)
+    let libraryRoot = root.appendingPathComponent("Library", isDirectory: true)
+    let store = RuntimeLibraryStore(managedRoot: libraryRoot, refreshesImmediately: false)
+    let evidence = try store.importManagedAudio(title: "Interview", sourceURL: source)
+    XCTAssertTrue(evidence.originalUntouched)
+    XCTAssertTrue(evidence.readyForReview)
+    XCTAssertEqual(try Data(contentsOf: source), original)
+
+    let recovery = RecoveredSessionController(managedRoot: libraryRoot)
+    recovery.recoverOnLaunch()
+    await recovery.waitForLaunchRecovery()
+    XCTAssertTrue(recovery.captureSafetyComplete)
+    let preparation = try NativeRecordingPreparation.open(managedRoot: libraryRoot.path)
+    let saved = try XCTUnwrap(
+      try preparation.runtimeLibrarySnapshot().savedSessions.first {
+        $0.sessionId == evidence.sessionId
+      })
+    let session = RuntimeSessionPresentation(native: saved)
+    XCTAssertEqual(session.lifecycle, "ready_for_review")
+    XCTAssertTrue(session.playableMedia?.isPlayable == true)
+
+    let player = RecoveredAudioPlayer(outputMode: .silent)
+    let lease = try preparation.leaseImportedPlayback(sessionId: evidence.sessionId)
+    try await player.playImported(
+      receipt: lease.playbackPath(), retaining: lease, generation: UUID(), startNanoseconds: 0)
+    player.stop()
+    let laterLease = try preparation.leaseImportedPlayback(sessionId: evidence.sessionId)
+    try await player.playImported(
+      receipt: laterLease.playbackPath(), retaining: laterLease, generation: UUID(),
+      startNanoseconds: 500_000_000)
+    player.stop()
+    let beginningSample: Float
+    let laterSample: Float
+    do {
+      let sampleLease = try preparation.leaseImportedPlayback(sessionId: evidence.sessionId)
+      let receipt = try ImportedPlaybackDescriptorReceipt(serialized: sampleLease.playbackPath())
+      let snapshot = try AnonymousImportedPlaybackSnapshot.copy(from: receipt)
+      let decoder = try CallbackCAFDecoder(source: snapshot.region, onClose: {})
+      let beginning = try XCTUnwrap(decoder.read(maximumFrames: 1))
+      beginningSample = beginning.floatChannelData?[0][0] ?? 0
+      try decoder.seek(toFrame: 24_000)
+      let later = try XCTUnwrap(decoder.read(maximumFrames: 1))
+      laterSample = later.floatChannelData?[0][0] ?? 0
+      decoder.close()
+      withExtendedLifetime(snapshot) {}
+      withExtendedLifetime(sampleLease) {}
+    }
+    XCTAssertNotEqual(beginningSample, laterSample)
+    withExtendedLifetime(lease) {}
+    withExtendedLifetime(laterLease) {}
+
+    let library = try NativeTranscriptLibrary.open(managedRoot: libraryRoot.path)
+    let transcripts = TranscriptLibraryModel(library: library)
+    await transcripts.load(sessionId: evidence.sessionId)
+    XCTAssertEqual(transcripts.availability, .unavailable)
+    XCTAssertTrue(transcripts.segments.isEmpty)
+    let trackId = try XCTUnwrap(transcripts.speakers.first?.trackId)
+    let renamed = await transcripts.renameSpeaker(trackId: trackId, label: " Dana ")
+    XCTAssertTrue(renamed)
+    XCTAssertEqual(transcripts.speakers.first?.label, "Dana")
+    let restored = await transcripts.renameSpeaker(trackId: trackId, label: nil)
+    XCTAssertTrue(restored)
+    XCTAssertEqual(transcripts.speakers.first?.label, "Unknown speaker")
+    XCTAssertTrue(try library.search(query: "interview", sessionId: evidence.sessionId, limit: 20).isEmpty)
+    XCTAssertThrowsError(
+      try library.correctSegment(
+        sessionId: evidence.sessionId, revisionId: "missing-revision", sequence: 0,
+        text: "changed words"))
+
+    let speech = SpeechTranscriptionModel(managedRoot: libraryRoot)
+    await speech.refreshAndWait()
+    XCTAssertTrue(speech.models.allSatisfy { !$0.installed })
+    XCTAssertNil(speech.installedModel)
+    XCTAssertFalse(speech.isDownloading)
+    let transcribed = await speech.transcribe(sessionId: evidence.sessionId)
+    XCTAssertFalse(transcribed)
+    XCTAssertEqual(speech.message, "No verified speech model is installed.")
+    XCTAssertFalse(speech.messageIsFailure)
+    await transcripts.load(sessionId: evidence.sessionId)
+    XCTAssertTrue(transcripts.segments.isEmpty)
+
+    let exported = root.appendingPathComponent("Interview.md")
+    let wrote = await transcripts.export(format: .markdown, to: exported)
+    XCTAssertTrue(wrote, transcripts.message ?? "")
+    XCTAssertGreaterThan(try Data(contentsOf: exported).count, 0)
+    XCTAssertEqual(try Data(contentsOf: source), original)
+
+    let account = ProviderAuthorizationModel()
+    XCTAssertFalse(account.configured)
+    XCTAssertTrue(account.grants.isEmpty)
+    XCTAssertFalse(account.outboundRequest)
+    XCTAssertFalse(account.networkUsed)
+    XCTAssertEqual(account.notice, providerUnconfiguredNotice())
+    let requests = DeniedNetwork.requests
+    XCTAssertEqual(requests, [], "outbound requests: \(requests.joined(separator: " "))")
+    withExtendedLifetime(recovery) {}
+    withExtendedLifetime(store) {}
+  }
+
   func testAnExplicitDownloadRefusesAShortCatalogFileAndLeavesARecording() async throws {
     let root = temporaryRoot()
     defer { try? FileManager.default.removeItem(at: root) }
@@ -470,6 +582,50 @@ final class SpeechTranscriptionModelTests: XCTestCase {
     XCTAssertEqual(transcripts.availability, .final)
     let text = transcripts.segments.map(\.effectiveText).joined(separator: " ").lowercased()
     XCTAssertTrue(text.contains("recording safe"), text)
+  }
+}
+
+/// Refuses every web request. The local journey must not reach `startLoading`.
+final class DeniedNetwork: URLProtocol {
+  static func reset() { DeniedNetworkLog.shared.reset() }
+  static var requests: [String] { DeniedNetworkLog.shared.requests() }
+
+  override class func canInit(with request: URLRequest) -> Bool {
+    guard let scheme = request.url?.scheme?.lowercased() else { return false }
+    return scheme == "http" || scheme == "https"
+  }
+
+  override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+  override func startLoading() {
+    DeniedNetworkLog.shared.append(request.url?.absoluteString ?? "")
+    client?.urlProtocol(self, didFailWithError: URLError(.notConnectedToInternet))
+  }
+
+  override func stopLoading() {}
+}
+
+private final class DeniedNetworkLog: @unchecked Sendable {
+  static let shared = DeniedNetworkLog()
+  private let lock = NSLock()
+  private var seen: [String] = []
+
+  func reset() {
+    lock.lock()
+    seen = []
+    lock.unlock()
+  }
+
+  func append(_ url: String) {
+    lock.lock()
+    seen.append(url)
+    lock.unlock()
+  }
+
+  func requests() -> [String] {
+    lock.lock()
+    defer { lock.unlock() }
+    return seen
   }
 }
 
