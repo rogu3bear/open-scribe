@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 struct RecorderControls: View {
@@ -14,14 +15,13 @@ struct RecorderControls: View {
 
   var body: some View {
     if recorder.canPause {
-      Button(ConversationControlLabels.pause, systemImage: "pause.fill") {
+      PauseMount {
         Task {
           await recorder.stop(pausing: true)
           store.refresh()
         }
-      }.keyboardShortcut(
-        ConversationControlLabels.pauseShortcut.key,
-        modifiers: ConversationControlLabels.pauseShortcut.modifiers)
+      }
+      .frame(width: 120, height: 32, alignment: .leading)
     }
     if recorder.canResume {
       Button(ConversationControlLabels.resume, systemImage: "play.fill") {
@@ -122,6 +122,71 @@ struct RecorderControls: View {
     recorder.selectCaptureSource(selection)
     store.refresh()
     showsSources = false
+  }
+}
+
+/// The recording Pause control. The button is created with the first layout
+/// and pauses through the same stop the recorder uses.
+private struct PauseMount: NSViewRepresentable {
+  let onPause: () -> Void
+
+  func makeNSView(context: Context) -> PauseControl {
+    let view = PauseControl()
+    view.bind(onPause: onPause)
+    return view
+  }
+
+  func updateNSView(_ view: PauseControl, context: Context) {
+    view.bind(onPause: onPause)
+  }
+}
+
+private final class PauseControl: NSView {
+  private let button = NSButton(
+    title: ConversationControlLabels.pause, target: nil, action: nil)
+  private var onPause: (() -> Void)?
+
+  override init(frame frameRect: NSRect) {
+    super.init(frame: frameRect)
+    setAccessibilityIdentifier("Pause recording")
+    button.bezelStyle = .rounded
+    button.setAccessibilityLabel(ConversationControlLabels.pause)
+    button.setAccessibilityIdentifier("Pause recording")
+    let shortcut = ConversationControlLabels.pauseShortcut
+    button.keyEquivalent = String(shortcut.key.character)
+    button.keyEquivalentModifierMask = Self.modifierMask(shortcut.modifiers)
+    button.target = self
+    button.action = #selector(pause)
+    button.translatesAutoresizingMaskIntoConstraints = false
+    addSubview(button)
+    NSLayoutConstraint.activate([
+      button.leadingAnchor.constraint(equalTo: leadingAnchor),
+      button.centerYAnchor.constraint(equalTo: centerYAnchor),
+      button.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor),
+    ])
+  }
+
+  required init?(coder: NSCoder) {
+    nil
+  }
+
+  func bind(onPause: @escaping () -> Void) {
+    self.onPause = onPause
+    button.isEnabled = true
+  }
+
+  @objc private func pause() {
+    guard button.isEnabled else { return }
+    onPause?()
+  }
+
+  private static func modifierMask(_ modifiers: EventModifiers) -> NSEvent.ModifierFlags {
+    var mask: NSEvent.ModifierFlags = []
+    if modifiers.contains(.command) { mask.insert(.command) }
+    if modifiers.contains(.shift) { mask.insert(.shift) }
+    if modifiers.contains(.option) { mask.insert(.option) }
+    if modifiers.contains(.control) { mask.insert(.control) }
+    return mask
   }
 }
 
