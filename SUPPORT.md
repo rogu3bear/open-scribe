@@ -18,7 +18,7 @@ and visible state/error. Use synthetic or nonprivate steps. Separate expected
 and observed behavior. The public form does not require a recording, database,
 package, model or log upload.
 
-Settings → Diagnostics → Export Diagnostics creates a local text file for
+Settings → Export Diagnostics… creates a local text file for
 inspection; it does not send it. It omits titles, transcript text and paths,
 but can contain session/model identifiers, permission state, OS/build information
 and operation notes. Read the whole file and redact sensitive details before

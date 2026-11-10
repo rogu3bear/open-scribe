@@ -4,22 +4,6 @@ import CoreGraphics
 import SwiftUI
 import UniformTypeIdentifiers
 
-struct DiagnosticsDocument: FileDocument {
-  static var readableContentTypes: [UTType] { [.plainText] }
-  var text: String
-
-  init(text: String) { self.text = text }
-
-  init(configuration: ReadConfiguration) throws {
-    text =
-      configuration.file.regularFileContents.flatMap { String(data: $0, encoding: .utf8) } ?? ""
-  }
-
-  func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
-    FileWrapper(regularFileWithContents: Data(text.utf8))
-  }
-}
-
 struct SettingsView: View {
   let status: AppStatus
   @ObservedObject var speech: SpeechTranscriptionModel
@@ -27,8 +11,7 @@ struct SettingsView: View {
   @ObservedObject var recovery: RecoveredSessionController
   @ObservedObject var scheduler: TranscriptionScheduler
   @ObservedObject var pressure: SystemPressureMonitor
-  @State private var exportDocument = DiagnosticsDocument(text: "")
-  @State private var exportPresented = false
+  var diagnosticsDestination: @MainActor () -> URL? = SettingsView.chooseDiagnosticsDestination
   @State private var showingModels = false
   @State private var showingPolicies = false
   @StateObject private var authorization = ProviderAuthorizationModel()
@@ -71,6 +54,8 @@ struct SettingsView: View {
         if let warning = recovery.transcriptMaintenanceWarning {
           CaptureIssueLabel(message: warning).font(.callout)
         }
+        DiagnosticsExportMount(report: { currentReport() }, destination: diagnosticsDestination)
+          .frame(maxWidth: .infinity, minHeight: 28, alignment: .leading)
         DisclosureGroup("System information") {
           LabeledContent("Library disk", value: pressure.reading.diskText)
           LabeledContent("Memory", value: pressure.reading.memoryText)
@@ -117,11 +102,6 @@ struct SettingsView: View {
               .textSelection(.enabled)
             }
           }
-          Button("Export Diagnostics…") {
-            exportDocument = DiagnosticsDocument(text: currentReport())
-            exportPresented = true
-            AppTelemetry.commandInvoked("export-diagnostics")
-          }
         }
       }
       Section("Remote review") {
@@ -159,20 +139,20 @@ struct SettingsView: View {
         signature = status
       }
     }
-    .fileExporter(
-      isPresented: $exportPresented,
-      document: exportDocument,
-      contentType: .plainText,
-      defaultFilename: "Open Scribe Diagnostics"
-    ) { result in
-      if case .failure(let error) = result {
-        let nsError = error as NSError
-        if nsError.domain == NSCocoaErrorDomain && nsError.code == NSUserCancelledError {
-          return
-        }
-        AppTelemetry.commandInvoked("export-diagnostics-failed")
-      }
-    }
+  }
+
+  /// The user chooses where the local diagnostics file is written. Cancel
+  /// returns nil and writes nothing.
+  static func chooseDiagnosticsDestination() -> URL? {
+    let panel = NSSavePanel()
+    panel.canCreateDirectories = true
+    panel.allowedContentTypes = [.plainText]
+    panel.isExtensionHidden = false
+    panel.nameFieldStringValue = "Open Scribe Diagnostics.txt"
+    panel.prompt = "Export"
+    panel.title = "Export Diagnostics"
+    guard panel.runModal() == .OK else { return nil }
+    return panel.url
   }
 
   private var queueLabel: String {
@@ -258,6 +238,73 @@ struct SettingsView: View {
       },
       events: DiagnosticJournal.shared.recent()
     )
+  }
+}
+
+/// Writes the same diagnostics report Settings shows. The button exists on the
+/// first layout. The default destination is the save panel.
+private struct DiagnosticsExportMount: NSViewRepresentable {
+  let report: @MainActor () -> String
+  let destination: @MainActor () -> URL?
+
+  func makeNSView(context: Context) -> DiagnosticsExportControl {
+    let view = DiagnosticsExportControl()
+    view.bind(report: report, destination: destination)
+    return view
+  }
+
+  func updateNSView(_ view: DiagnosticsExportControl, context: Context) {
+    view.bind(report: report, destination: destination)
+  }
+}
+
+private final class DiagnosticsExportControl: NSView {
+  private let exportButton = NSButton(title: "Export Diagnostics…", target: nil, action: nil)
+  private var report: (@MainActor () -> String)?
+  private var destination: (@MainActor () -> URL?)?
+
+  override init(frame frameRect: NSRect) {
+    super.init(frame: frameRect)
+    setAccessibilityIdentifier("Export diagnostics")
+    exportButton.bezelStyle = .rounded
+    exportButton.setAccessibilityLabel("Export Diagnostics…")
+    exportButton.target = self
+    exportButton.action = #selector(exportDiagnostics)
+    exportButton.translatesAutoresizingMaskIntoConstraints = false
+    addSubview(exportButton)
+    NSLayoutConstraint.activate([
+      exportButton.leadingAnchor.constraint(equalTo: leadingAnchor),
+      exportButton.centerYAnchor.constraint(equalTo: centerYAnchor),
+      exportButton.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor),
+    ])
+  }
+
+  required init?(coder: NSCoder) {
+    nil
+  }
+
+  override var intrinsicContentSize: NSSize {
+    NSSize(width: NSView.noIntrinsicMetric, height: 28)
+  }
+
+  func bind(report: @escaping @MainActor () -> String, destination: @escaping @MainActor () -> URL?) {
+    self.report = report
+    self.destination = destination
+  }
+
+  @objc private func exportDiagnostics() {
+    let report = report
+    let destination = destination
+    MainActor.assumeIsolated {
+      guard let report, let destination, let url = destination() else { return }
+      let text = report()
+      do {
+        try Data(text.utf8).write(to: url, options: .atomic)
+        AppTelemetry.commandInvoked("export-diagnostics")
+      } catch {
+        AppTelemetry.commandInvoked("export-diagnostics-failed")
+      }
+    }
   }
 }
 
