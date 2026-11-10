@@ -3716,6 +3716,181 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
     withExtendedLifetime(drag) {}
   }
 
+  /// Two saved conversations already have final transcripts. Typing in the
+  /// sidebar field lists a match for each, and pressing a match opens that
+  /// conversation at its timestamp. The test does not call `search` or
+  /// `playTranscriptSearchHit`.
+  func testHostedSearchListsBothConversationsAndOpensEachRange() async throws {
+    let environment = ProcessInfo.processInfo.environment
+    guard let modelPath = environment["OPEN_SCRIBE_WHISPER_MODEL"],
+      let speechPath = environment["OPEN_SCRIBE_WHISPER_SPEECH_M4A"]
+    else {
+      throw XCTSkip("Set OPEN_SCRIBE_WHISPER_MODEL and OPEN_SCRIBE_WHISPER_SPEECH_M4A.")
+    }
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "open-scribe-search-two-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let morningSource = root.appendingPathComponent("Morning meeting.m4a")
+    let afternoonSource = root.appendingPathComponent("Afternoon meeting.m4a")
+    try FileManager.default.copyItem(at: URL(fileURLWithPath: speechPath), to: morningSource)
+    try FileManager.default.copyItem(at: URL(fileURLWithPath: speechPath), to: afternoonSource)
+    let morningOriginal = try Data(contentsOf: morningSource)
+    let afternoonOriginal = try Data(contentsOf: afternoonSource)
+    let modelURL = URL(fileURLWithPath: modelPath)
+    let modelBytes = try XCTUnwrap(modelURL.resourceValues(forKeys: [.fileSizeKey]).fileSize)
+    let managedRoot = root.appendingPathComponent("Library", isDirectory: true)
+    let player = RecoveredAudioPlayerFake()
+    let recovery = RecoveredSessionController(
+      recoveryFactory: {
+        try NativeRecordingPreparation.open(managedRoot: managedRoot.path)
+      },
+      importedPlaybackLeaseProvider: { sessionId in
+        try NativeRecordingPreparation.open(managedRoot: managedRoot.path)
+          .leaseImportedPlayback(sessionId: sessionId)
+      },
+      player: player
+    )
+    let live = LiveMicrophoneRecordingController(managedRoot: managedRoot)
+    live.isLaunchRecoveryPending = { !recovery.captureSafetyComplete }
+    let store = RuntimeLibraryStore(
+      managedRoot: managedRoot, isLaunchRecoveryPending: { !recovery.captureSafetyComplete })
+    let speech = SpeechTranscriptionModel(managedRoot: managedRoot)
+    let pressure = SystemPressureMonitor(libraryRoot: managedRoot, samplesAutomatically: false)
+    let defaults = UserDefaults(suiteName: "OpenScribe.Proof.SearchTwo.\(UUID().uuidString)")!
+    let scheduler = TranscriptionScheduler(
+      managedRoot: managedRoot, speech: speech, store: store, liveRecording: live,
+      recovery: recovery, pressure: pressure, defaults: defaults)
+    recovery.recoverOnLaunch()
+    await recovery.waitForLaunchRecovery()
+    XCTAssertTrue(recovery.captureSafetyComplete)
+    await speech.refreshAndWait()
+    let morning = try store.importManagedAudio(title: "Morning meeting", sourceURL: morningSource)
+    let afternoon = try store.importManagedAudio(
+      title: "Afternoon meeting", sourceURL: afternoonSource)
+    XCTAssertNotEqual(morning.sessionId, afternoon.sessionId)
+    let record = try XCTUnwrap(speech.models.first { $0.modelId == "whisper-small.en-q5_1" })
+    let installed = await speech.install(record, from: modelURL)
+    XCTAssertTrue(installed, speech.message ?? "")
+    let sessionIds = [morning.sessionId, afternoon.sessionId]
+    let transcribed = await waitUntil(timeoutNanoseconds: 180_000_000_000) {
+      store.refresh()
+      let ready = sessionIds.allSatisfy { id in
+        guard let session = store.savedSessions.first(where: { $0.sessionId == id }) else {
+          return false
+        }
+        return session.transcript.documentAvailability == .final
+          && session.transcript.selectedRevisionIds.isEmpty == false
+      }
+      return ready && scheduler.runningSessionId == nil && scheduler.queue.isEmpty
+    }
+    XCTAssertTrue(
+      transcribed,
+      "states=\(sessionIds.map { "\($0)=\(String(describing: scheduler.state(for: $0)))" }) hold=\(String(describing: scheduler.hold)) message=\(speech.message ?? "")"
+    )
+    let transcripts = TranscriptLibraryModel(managedRoot: managedRoot)
+    let navigation = MainWorkspaceNavigation()
+    let view = ContentView(
+      store: store,
+      importedMediaAuthority: ImportedMediaAuthorityAdapter(
+        startSecurityScope: { _ in true },
+        stopSecurityScope: { _ in },
+        canBeginImport: { live.canStart },
+        importer: { title, url in
+          try store.importManagedAudio(title: title, sourceURL: url)
+        }
+      ),
+      liveRecording: live,
+      recoveredSessions: recovery,
+      transcripts: transcripts,
+      speech: speech,
+      scheduler: scheduler,
+      pressure: pressure,
+      context: ContextScopeModel(
+        binding: { nil },
+        frames: IdleContextFrames(),
+        permissionCheck: { .denied },
+        permissionRequest: { .denied },
+        topology: { [] }
+      ),
+      navigation: navigation
+    )
+    let host = NSHostingView(rootView: view)
+    host.sizingOptions = []
+    let window = NSWindow(
+      contentRect: NSRect(x: 0, y: 0, width: 1100, height: 720),
+      styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    window.contentView = host
+    window.setContentSize(NSSize(width: 1100, height: 720))
+    host.frame = window.contentLayoutRect
+    window.makeKeyAndOrderFront(nil)
+    window.orderFrontRegardless()
+    defer { window.close() }
+    let ready = await waitUntil(timeoutNanoseconds: 5_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      window.displayIfNeeded()
+      return self.hostedSearchField(in: host) != nil
+    }
+    let field = try XCTUnwrap(self.hostedSearchField(in: host))
+    XCTAssertTrue(ready && window.contentView === host && field.isDescendant(of: host))
+    XCTAssertTrue(self.hostedResultButtons(containing: "recording", in: host).isEmpty)
+    field.stringValue = "recording"
+    let matched = await waitUntil(timeoutNanoseconds: 10_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      window.displayIfNeeded()
+      let buttons = self.hostedResultButtons(containing: "recording", in: host)
+      let found = Set(sessionIds.filter { id in
+        buttons.contains { ($0.identifier?.rawValue ?? "").hasPrefix(id + "#") }
+      })
+      return found == Set(sessionIds)
+    }
+    XCTAssertTrue(
+      matched && window.contentView === host,
+      "results=\(transcripts.searchResults.map { "\($0.sessionId) \($0.sessionTitle) \($0.effectiveText)" }) message=\(transcripts.message ?? "nil")"
+    )
+    let buttons = hostedResultButtons(containing: "recording", in: host)
+    let matchedSessions = Set(buttons.compactMap { button -> String? in
+      guard let raw = button.identifier?.rawValue else { return nil }
+      return raw.split(separator: "#").first.map(String.init)
+    })
+    XCTAssertEqual(matchedSessions, Set(sessionIds))
+    for sessionId in sessionIds {
+      let title = sessionId == morning.sessionId ? "Morning meeting" : "Afternoon meeting"
+      let match = try XCTUnwrap(
+        buttons.first { ($0.identifier?.rawValue ?? "").hasPrefix(sessionId + "#") })
+      XCTAssertTrue(match.isDescendant(of: host))
+      XCTAssertTrue(match.accessibilityLabel()?.contains(title) == true, match.accessibilityLabel() ?? "")
+      let key = try XCTUnwrap(match.identifier?.rawValue)
+      match.performClick(nil)
+      let playing = await waitUntil(timeoutNanoseconds: 5_000_000_000) {
+        recovery.playingSessionId == sessionId && player.importedReceipt?.isEmpty == false
+      }
+      let hit = try XCTUnwrap(
+        transcripts.searchResults.first { "\($0.sessionId)#\($0.sequence)" == key })
+      XCTAssertTrue(
+        playing,
+        "playing=\(recovery.playingSessionId ?? "nil") error=\(recovery.errorMessage ?? "nil") hit=\(hit.startNanoseconds)"
+      )
+      XCTAssertEqual(hit.sessionId, sessionId)
+      XCTAssertEqual(hit.sessionTitle, title)
+      XCTAssertTrue(hit.effectiveText.localizedCaseInsensitiveContains("recording"))
+      XCTAssertGreaterThan(hit.endNanoseconds, hit.startNanoseconds)
+      XCTAssertEqual(navigation.selectedSessionId, sessionId)
+      XCTAssertEqual(player.importedStartNanoseconds, hit.startNanoseconds)
+      XCTAssertNil(recovery.errorMessage)
+    }
+    XCTAssertEqual(try Data(contentsOf: morningSource), morningOriginal)
+    XCTAssertEqual(try Data(contentsOf: afternoonSource), afternoonOriginal)
+    XCTAssertEqual(try modelURL.resourceValues(forKeys: [.fileSizeKey]).fileSize, modelBytes)
+    withExtendedLifetime(store) {}
+    withExtendedLifetime(live) {}
+    withExtendedLifetime(recovery) {}
+    withExtendedLifetime(player) {}
+    withExtendedLifetime(speech) {}
+    withExtendedLifetime(scheduler) {}
+  }
+
   /// A confirmed drop is transcribed by the automatic queue. Typing in the
   /// sidebar field and pressing the match opens that passage. The test does
   /// not call `stageDroppedAudio`, `confirmPendingAudioImport`, `search`, or
