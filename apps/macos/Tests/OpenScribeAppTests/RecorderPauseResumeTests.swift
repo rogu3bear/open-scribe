@@ -1284,6 +1284,71 @@ final class RecorderPauseResumeTests: XCTestCase {
     XCTAssertTrue(plan.allSatisfy { $0.sampleCount > 0 })
   }
 
+  /// An application-audio stream stop seals that source and keeps the microphone.
+  /// A later process exit does not interrupt the recording again.
+  func testApplicationAudioStreamStopKeepsTheMicrophone() async throws {
+    let harness = try PauseHarness()
+    defer { harness.removeFiles() }
+    harness.controller.selectCaptureSource(
+      RecorderCaptureSelection(
+        kind: .applicationAudio, identity: "com.example.call:4242", name: "Proof App",
+        filter: nil, processId: 4242))
+    await harness.controller.start()
+    try await harness.capture()
+    let microphone = try XCTUnwrap(harness.captures.microphones.last)
+    let application = try XCTUnwrap(harness.captures.systems.last)
+    let sessionId = microphone.writer.authorization.sessionId
+    let microphonePath = microphone.writer.authorization.absolutePath
+    let applicationPath = application.writer.authorization.absolutePath
+    let microphoneBytes = try Self.byteCount(microphonePath)
+    let applicationBytes = try Self.byteCount(applicationPath)
+    XCTAssertGreaterThan(microphoneBytes, 0)
+    XCTAssertGreaterThan(applicationBytes, 0)
+    XCTAssertEqual(harness.controller.captureSelection.kind, .applicationAudio)
+
+    application.fail(.streamStopped)
+    await settle()
+
+    XCTAssertEqual(harness.controller.phase, .capturing)
+    XCTAssertEqual(
+      harness.controller.errorMessage,
+      "Selected application audio stopped. Remaining audio is still recording. streamStopped")
+    XCTAssertEqual(harness.controller.failureCode, "system-audio-streamStopped")
+    XCTAssertEqual(harness.controller.statusText, "Recording continues with remaining audio")
+    XCTAssertFalse(harness.controller.showsReconnect)
+    XCTAssertEqual(application.stopCount, 1)
+    XCTAssertEqual(microphone.stopCount, 0)
+    XCTAssertEqual(
+      try harness.preparation.recorderDetail(sessionId: sessionId).lifecycle, "recording")
+    XCTAssertTrue(
+      try harness.preparation.recorderDetail(sessionId: sessionId).events.contains {
+        $0.kind == "source_failed" && $0.label == "Proof App"
+      })
+    XCTAssertGreaterThanOrEqual(try Self.byteCount(applicationPath), applicationBytes)
+
+    await harness.controller.selectedApplicationExited(processId: 4242)
+    XCTAssertEqual(harness.controller.phase, .capturing)
+    XCTAssertEqual(harness.controller.failureCode, "system-audio-streamStopped")
+    XCTAssertEqual(application.stopCount, 1)
+    XCTAssertEqual(microphone.stopCount, 0)
+
+    harness.clock.advance(seconds: 1)
+    try microphone.emit(frames: 48_000, hostTime: harness.clock.now, value: 4096)
+    await harness.controller.stop()
+    XCTAssertEqual(harness.controller.phase, .saved, harness.controller.errorMessage ?? "")
+    XCTAssertGreaterThanOrEqual(try Self.byteCount(microphonePath), microphoneBytes)
+    XCTAssertGreaterThanOrEqual(try Self.byteCount(applicationPath), applicationBytes)
+
+    let reopened = try NativeRecordingPreparation.open(managedRoot: harness.root.path)
+    _ = try reopened.recoverPlayableSessions()
+    let detail = try reopened.recorderDetail(sessionId: sessionId)
+    XCTAssertEqual(detail.lifecycle, "ready_for_review")
+    XCTAssertTrue(detail.events.contains { $0.kind == "source_failed" && $0.label == "Proof App" })
+    let plan = try reopened.playbackTimeline(sessionId: sessionId)
+    XCTAssertEqual(Set(plan.map(\.trackId)).count, 2)
+    XCTAssertTrue(plan.allSatisfy { $0.sampleCount > 0 })
+  }
+
   /// Add Marker uses the session clock. The saved recording still has the marker
   /// and its source tracks.
   func testAddMarkerStaysOnTheSessionClockAfterTheRecordingIsSaved() async throws {
