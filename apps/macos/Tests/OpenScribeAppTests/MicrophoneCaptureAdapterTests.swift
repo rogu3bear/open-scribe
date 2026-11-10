@@ -1164,6 +1164,142 @@ final class MicrophoneCaptureAdapterTests: XCTestCase {
     _ = adapter.stop()
   }
 
+  /// Transcription stays on the utility queue. A live recording keeps accepting
+  /// audio, then the transcription yields without changing either recording.
+  func testCaptureKeepsAcceptingAudioWhileTranscriptionIsSlow() async throws {
+    let root = FileManager.default.temporaryDirectory
+      .appendingPathComponent(
+        "open-scribe-capture-priority-\(UUID().uuidString)", isDirectory: true)
+    managedRoots.append(root)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+    let source = root.appendingPathComponent("existing.caf")
+    let sourceFile = try AVAudioFile(
+      forWriting: source,
+      settings: [
+        AVFormatIDKey: kAudioFormatLinearPCM,
+        AVSampleRateKey: 48_000.0,
+        AVNumberOfChannelsKey: 1,
+        AVLinearPCMBitDepthKey: 16,
+        AVLinearPCMIsFloatKey: false,
+        AVLinearPCMIsBigEndianKey: false,
+      ],
+      commonFormat: .pcmFormatInt16,
+      interleaved: true)
+    let sourceBuffer = try XCTUnwrap(
+      AVAudioPCMBuffer(pcmFormat: sourceFile.processingFormat, frameCapacity: 4_800))
+    sourceBuffer.frameLength = 4_800
+    sourceBuffer.int16ChannelData?[0].initialize(repeating: 1, count: 4_800)
+    try sourceFile.write(from: sourceBuffer)
+    let original = try Data(contentsOf: source)
+    let library = root.appendingPathComponent("Library", isDirectory: true)
+    let controller = try NativeRecordingPreparation.open(managedRoot: library.path)
+    let imported = try controller.importRecoverableCaf(title: "Existing review", sourcePath: source.path)
+    let captureIsActive = CaptureActivity()
+    let slow = SlowTranscription()
+    let job = NativeTranscriptionJob()
+    let defaults = UserDefaults(suiteName: "OpenScribe.Proof.CapturePriority.\(UUID().uuidString)")!
+    let coordinator = try NativeWorkCoordinator.open(managedRoot: library.path)
+    let scheduler = await MainActor.run {
+      TranscriptionScheduler(
+        coordinator: coordinator,
+        runner: { _ in await slow.run(job) },
+        observations: {
+          NativeWorkObservations(
+            automatic: true, paused: false, captureActive: captureIsActive.value,
+            mediaRecoveryPending: false, model: .ready, availableDiskBytes: nil,
+            memoryCritical: false, thermalCritical: false)
+        },
+        stop: { preempt in
+          if preempt {
+            job.preemptForCapture()
+          } else {
+            job.cancel()
+          }
+        },
+        defaults: defaults)
+    }
+    await MainActor.run { scheduler.reconsider() }
+    let entered = await slow.waitUntilEntered()
+    XCTAssertTrue(entered, "transcription did not enter its slow work")
+    XCTAssertFalse(job.isCancelled())
+
+    let prepared = try controller.prepareSession(title: "Live while transcribing")
+    let authorization = try controller.authorizeInitialMedia(
+      sessionId: prepared.sessionId,
+      sourceKind: .microphone,
+      sourceDisplayName: "Synthetic microphone")
+    let writer = try ManagedCAFWriter(authorization: authorization)
+    let opened = try controller.acceptMediaOpen(receipt: writer.receipt())
+    XCTAssertTrue(opened.journalDurable)
+    XCTAssertTrue(opened.mediaFilesOpen)
+    let format = try XCTUnwrap(
+      AVAudioFormat(
+        commonFormat: .pcmFormatInt16, sampleRate: 48_000, channels: 1, interleaved: false))
+    let backend = FakeMicrophoneBackend(inputFormat: format)
+    let adapter = MicrophoneCaptureAdapter(
+      backend: backend, writer: writer,
+      identity: MicrophoneCaptureIdentity(authorization: authorization))
+    let receipts = ReceiptBox()
+    let failures = FailureBox()
+    let firstSample = DispatchSemaphore(value: 0)
+    try adapter.start(
+      onFirstSample: { receipt in
+        receipts.append(receipt)
+        firstSample.signal()
+      },
+      onFailure: { failures.append($0) })
+    backend.emit(try microphoneFrames(format, 96), hostTime: 10)
+    XCTAssertEqual(firstSample.wait(timeout: .now() + 2), .success)
+    let evidence = try controller.acceptFirstSample(
+      receipt: try XCTUnwrap(receipts.snapshot().first))
+    XCTAssertTrue(evidence.firstSampleDurable)
+    let started = try controller.confirmRecording(sessionId: evidence.sessionId)
+    XCTAssertTrue(started.recordingStarted)
+    backend.emit(try microphoneFrames(format, 4_096), hostTime: 20)
+    adapter.waitForAcceptedAudio()
+    let lengthWhileSlow = try capturedLength(authorization)
+    XCTAssertGreaterThanOrEqual(lengthWhileSlow, 4_192)
+    XCTAssertTrue(failures.snapshot().isEmpty)
+    XCTAssertFalse(job.isCancelled())
+    XCTAssertEqual(
+      try controller.recorderDetail(sessionId: evidence.sessionId).lifecycle, "recording")
+    XCTAssertEqual(try Data(contentsOf: source), original)
+
+    await MainActor.run {
+      captureIsActive.set(true)
+      scheduler.reconsider()
+    }
+    var yielded = false
+    for _ in 0..<200 {
+      let paused = await MainActor.run {
+        scheduler.runningSessionId == nil && scheduler.hold == .recordingInProgress
+          && scheduler.queue.contains { $0.sessionId == imported.sessionId }
+      }
+      if paused {
+        yielded = true
+        break
+      }
+      try? await Task.sleep(for: .milliseconds(10))
+    }
+    XCTAssertTrue(yielded, "slow transcription did not yield to the recording")
+    XCTAssertTrue(job.isCancelled())
+    XCTAssertEqual(job.stopOutcome(), .capturePreempted)
+    backend.emit(try microphoneFrames(format, 4_096), hostTime: 30)
+    adapter.waitForAcceptedAudio()
+    XCTAssertGreaterThan(try capturedLength(authorization), lengthWhileSlow)
+    XCTAssertTrue(failures.snapshot().isEmpty)
+    XCTAssertEqual(
+      try controller.recorderDetail(sessionId: evidence.sessionId).lifecycle, "recording")
+    XCTAssertEqual(try Data(contentsOf: source), original)
+    let managedCopy = library
+      .appendingPathComponent("Sessions", isDirectory: true)
+      .appendingPathComponent(imported.sessionId, isDirectory: true)
+      .appendingPathComponent(imported.relativePath)
+    XCTAssertEqual(try Data(contentsOf: managedCopy), original)
+    _ = adapter.stop()
+    withExtendedLifetime(scheduler) {}
+  }
+
   private func openedMicrophone(title: String) throws -> OpenedMicrophone {
     let root = FileManager.default.temporaryDirectory
       .appendingPathComponent("open-scribe-microphone-tests", isDirectory: true)
@@ -1269,6 +1405,43 @@ private final class FailureBox: @unchecked Sendable {
 
   func snapshot() -> [MicrophoneCaptureAdapterError] {
     lock.withLock { failures }
+  }
+}
+
+private final class CaptureActivity: @unchecked Sendable {
+  private let lock = NSLock()
+  private var active = false
+
+  var value: Bool { lock.withLock { active } }
+
+  func set(_ active: Bool) { lock.withLock { self.active = active } }
+}
+
+private final class SlowTranscription: @unchecked Sendable {
+  private let lock = NSLock()
+  private var didEnter = false
+
+  func run(_ job: NativeTranscriptionJob) async -> NativeTranscriptionResult {
+    await withCheckedContinuation { continuation in
+      DispatchQueue.global(qos: .utility).async {
+        self.lock.withLock { self.didEnter = true }
+        let deadline = Date().addingTimeInterval(5)
+        while !job.isCancelled(), Date() < deadline {
+          Thread.sleep(forTimeInterval: 0.005)
+        }
+        continuation.resume(
+          returning: NativeTranscriptionResult(
+            outcome: job.stopOutcome() ?? .failed, summary: nil, reason: nil, failure: nil))
+      }
+    }
+  }
+
+  func waitUntilEntered() async -> Bool {
+    for _ in 0..<200 {
+      if lock.withLock({ didEnter }) { return true }
+      try? await Task.sleep(for: .milliseconds(10))
+    }
+    return false
   }
 }
 
