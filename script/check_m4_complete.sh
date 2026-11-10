@@ -73,10 +73,6 @@ if source_has_markers \
 		'crash_report_refused='; then
 	diagnostics_source_qualified=1
 fi
-diagnostics_gap='secret_handling,crash_report_content_check,'
-if [[ "$diagnostics_source_qualified" == 1 ]]; then
-	diagnostics_gap=''
-fi
 # The disposable fixture has no provider Settings proof, so the name stays there.
 provider_source_qualified=0
 if source_has_markers \
@@ -103,10 +99,6 @@ if source_has_markers \
 		'materializeContentProviderReview'; then
 	provider_source_qualified=1
 fi
-provider_gap='provider_category_authorization,'
-if [[ "$provider_source_qualified" == 1 ]]; then
-	provider_gap=''
-fi
 # Hosted Trash confirm and the interrupted-move launch recovery are one source
 # check. Either marker missing restores the runtime name. Not a candidate receipt.
 trash_source_qualified=0
@@ -128,10 +120,6 @@ if source_has_markers \
 		'trashItem' \
 		'completeDeletion'; then
 	trash_source_qualified=1
-fi
-trash_gap='system_trash_deletion_runtime,'
-if [[ "$trash_source_qualified" == 1 ]]; then
-	trash_gap=''
 fi
 # Disabled local intelligence and stored meeting memory are source checks.
 # A copied script whose repo lacks those proofs keeps both names. Neither
@@ -157,10 +145,6 @@ if source_has_markers \
 		'label: "Structured memory"'; then
 	intelligence_source_qualified=1
 fi
-intelligence_gap=''
-if [[ "$intelligence_source_qualified" != 1 ]]; then
-	intelligence_gap=',local_intelligence'
-fi
 memory_source_qualified=0
 if source_has_markers \
 	"$repo_root/apps/macos/Tests/OpenScribeAppTests/RecoveredSessionControllerTests.swift" \
@@ -180,15 +164,65 @@ if source_has_markers \
 		'label: "Structured memory"'; then
 	memory_source_qualified=1
 fi
-memory_gap=''
-if [[ "$memory_source_qualified" != 1 ]]; then
-	memory_gap=',structured_memory'
+# Byte-identical manifests are not enough. Both equality tests must still
+# assert that match and that no public label is Available. A copied script
+# whose checkout lacks either manifest or either test keeps the name. This
+# is not an Available release entry and not a candidate receipt.
+equality_source_qualified=0
+website_manifest="$repo_root/docs/capabilities/manifest.v1.json"
+runtime_manifest="$repo_root/crates/open-scribe-core/runtime-capabilities.v1.json"
+if [[ -f "$website_manifest" && ! -L "$website_manifest" &&
+	-f "$runtime_manifest" && ! -L "$runtime_manifest" ]] &&
+	cmp -s "$website_manifest" "$runtime_manifest" &&
+	source_has_markers \
+		"$repo_root/crates/open-scribe-core/src/lib.rs" \
+		'fn runtime_registry_matches_the_website_claim_manifest' \
+		'include_str!("../../../docs/capabilities/manifest.v1.json")' \
+		'assert_eq!(website, RUNTIME_CAPABILITY_MANIFEST_JSON)' \
+		'pub const RUNTIME_CAPABILITY_MANIFEST_JSON: &str = include_str!("../runtime-capabilities.v1.json")' \
+		'claim.public_label != "Available"' \
+		'claim.maturity != "Available"' &&
+	source_has_markers \
+		"$repo_root/web/src/app.rs" \
+		'fn website_rows_equal_the_runtime_registry' \
+		'include_str!("../../docs/capabilities/manifest.v1.json")' \
+		'include_str!("../../crates/open-scribe-core/runtime-capabilities.v1.json")' \
+		'assert_eq!(website, runtime)' \
+		'assert_eq!(super::capability_rows(), expected)' \
+		'*label != "Available"' \
+		'fn capability_rows()' \
+		'A malformed manifest renders no claims rather than'; then
+	equality_source_qualified=1
 fi
 for mode in synthetic live-context; do
 	if has_local_only "$mode"; then qualified_modes+=("$mode"); fi
 done
-missing_prefix='candidate_bound_local_only_run,'
-if ((${#qualified_modes[@]} > 0)); then missing_prefix=''; fi
+missing_names=()
+if ((${#qualified_modes[@]} == 0)); then
+	missing_names+=(candidate_bound_local_only_run)
+fi
+if [[ "$provider_source_qualified" != 1 ]]; then
+	missing_names+=(provider_category_authorization)
+fi
+if [[ "$trash_source_qualified" != 1 ]]; then
+	missing_names+=(system_trash_deletion_runtime)
+fi
+if [[ "$diagnostics_source_qualified" != 1 ]]; then
+	missing_names+=(secret_handling crash_report_content_check)
+fi
+if [[ "$equality_source_qualified" != 1 ]]; then
+	missing_names+=(capability_true_website_equality)
+fi
+if [[ "$intelligence_source_qualified" != 1 ]]; then
+	missing_names+=(local_intelligence)
+fi
+if [[ "$memory_source_qualified" != 1 ]]; then
+	missing_names+=(structured_memory)
+fi
+missing_text="$(
+	IFS=,
+	printf '%s' "${missing_names[*]-}"
+)"
 [[ "$qualified_candidate" != 1 ]] || candidate_receipt
 qualified_text="$(
 	IFS=,
@@ -212,7 +246,9 @@ printf '%s\n' \
 	'intelligence_source_plane=committed_source_not_candidate_receipt' \
 	"memory_source_qualified=$memory_source_qualified" \
 	'memory_source_plane=committed_source_not_candidate_receipt' \
-	"missing=${missing_prefix}${provider_gap}${trash_gap}${diagnostics_gap}capability_true_website_equality${intelligence_gap}${memory_gap}" \
+	"equality_source_qualified=$equality_source_qualified" \
+	'equality_source_plane=committed_source_not_candidate_receipt' \
+	"missing=$missing_text" \
 	'protected=provider_credentials,production_deployment' \
 	'next=qualify every missing boundary on the candidate; local-only mode does not admit release or optional context it did not exercise' >&2
 exit 1

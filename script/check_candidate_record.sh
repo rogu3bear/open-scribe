@@ -168,6 +168,8 @@ check_local_completion() {
 	rg -Fxq 'trash_source_qualified=0' "$fixture/log"
 	rg -q 'missing=.*secret_handling,crash_report_content_check,' "$fixture/log"
 	rg -Fxq 'diagnostics_source_qualified=0' "$fixture/log"
+	rg -q 'missing=.*capability_true_website_equality' "$fixture/log"
+	rg -Fxq 'equality_source_qualified=0' "$fixture/log"
 	if [[ -z "$expected" ]]; then
 		rg -q 'missing=candidate_bound_local_only_run,' "$fixture/log"
 	else
