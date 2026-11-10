@@ -3047,6 +3047,167 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
     withExtendedLifetime(window) {}
   }
 
+  /// A low-space observation while capturing shows on the live surface and leaves
+  /// both sources recording. Restoring space hides that notice. Stop and Save
+  /// keeps the warning in the journal. The test clicks Record and Stop. The
+  /// storage watch performs the observation. The test does not call `start` or `stop`.
+  func testHostedStorageWarningShowsWhileCaptureContinues() async throws {
+    let harness = try PauseHarness()
+    defer { harness.removeFiles() }
+    harness.storage.set(4 * 1024 * 1024 * 1024)
+    let store = RuntimeLibraryStore(managedRoot: harness.root, refreshesImmediately: false)
+    let adapter = ImportedMediaAuthorityAdapter(
+      canBeginImport: { harness.controller.canStart },
+      importer: { title, url in
+        try store.importManagedAudio(title: title, sourceURL: url)
+      }
+    )
+    let view = ContentView(
+      store: store,
+      importedMediaAuthority: adapter,
+      liveRecording: harness.controller,
+      recoveredSessions: RecoveredSessionController(
+        recoveryFactory: {
+          try NativeRecordingPreparation.open(managedRoot: harness.root.path)
+        },
+        importedPlaybackLeaseProvider: { sessionId in
+          try NativeRecordingPreparation.open(managedRoot: harness.root.path)
+            .leaseImportedPlayback(sessionId: sessionId)
+        },
+        player: RecoveredAudioPlayerFake()
+      ),
+      transcripts: TranscriptLibraryModel(managedRoot: harness.root),
+      speech: SpeechTranscriptionModel(managedRoot: harness.root),
+      scheduler: TranscriptionScheduler.inert(),
+      pressure: SystemPressureMonitor(libraryRoot: harness.root, samplesAutomatically: false),
+      context: ContextScopeModel(
+        binding: { nil },
+        frames: IdleContextFrames(),
+        permissionCheck: { .denied },
+        permissionRequest: { .denied },
+        topology: { [] }
+      ),
+      navigation: MainWorkspaceNavigation()
+    )
+    let host = NSHostingView(rootView: view)
+    host.sizingOptions = []
+    let window = NSWindow(
+      contentRect: NSRect(x: 0, y: 0, width: 1100, height: 1400),
+      styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    window.contentView = host
+    window.setContentSize(NSSize(width: 1100, height: 1400))
+    host.frame = window.contentLayoutRect
+    window.makeKeyAndOrderFront(nil)
+    window.orderFrontRegardless()
+    defer { window.close() }
+    let ready = await waitUntil(timeoutNanoseconds: 5_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      window.displayIfNeeded()
+      return self.toolbarRecordButton(in: window) != nil
+    }
+    let record = try XCTUnwrap(self.toolbarRecordButton(in: window))
+    XCTAssertTrue(ready && window.contentView === host)
+    record.performClick(nil)
+    let started = await waitUntil(timeoutNanoseconds: 8_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      return harness.controller.phase == .starting
+        && harness.captures.microphones.last?.didStart == true
+        && harness.captures.systems.last?.didStart == true
+    }
+    XCTAssertTrue(started, harness.controller.errorMessage ?? harness.controller.phase.rawValue)
+    let microphone = try XCTUnwrap(harness.captures.microphones.last)
+    let system = try XCTUnwrap(harness.captures.systems.last)
+    let sessionId = microphone.writer.authorization.sessionId
+    try microphone.emit(frames: 48_000, hostTime: harness.clock.now, value: 8192)
+    try system.emit(frames: 48_000, hostTime: harness.clock.now, value: 16384)
+    let capturing = await waitUntil(timeoutNanoseconds: 8_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      return harness.controller.phase == .capturing
+        && store.currentSession?.sessionId == sessionId
+    }
+    guard capturing else {
+      XCTFail(
+        "phase=\(harness.controller.phase.rawValue) code=\(harness.controller.failureCode ?? "none") message=\(harness.controller.errorMessage ?? "none")"
+      )
+      return
+    }
+    let quiet = await waitUntil(timeoutNanoseconds: 5_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      window.displayIfNeeded()
+      return harness.controller.storagePressureNotice == nil
+        && self.hostedLabeledField(labeled: "Storage notice", in: host) == nil
+    }
+    XCTAssertTrue(quiet)
+    XCTAssertNil(harness.controller.errorMessage)
+    XCTAssertEqual(microphone.stopCount, 0)
+    XCTAssertEqual(system.stopCount, 0)
+    harness.storage.set(768 * 1024 * 1024)
+    let warned = await waitUntil(timeoutNanoseconds: 8_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      window.displayIfNeeded()
+      guard let notice = harness.controller.storagePressureNotice,
+        let field = self.hostedLabeledField(labeled: notice, in: host)
+      else { return false }
+      return field.stringValue == notice && harness.controller.phase == .capturing
+    }
+    let notice = try XCTUnwrap(harness.controller.storagePressureNotice)
+    let field = try XCTUnwrap(self.hostedLabeledField(labeled: notice, in: host))
+    XCTAssertTrue(warned && field.isDescendant(of: host))
+    XCTAssertEqual(
+      notice, "Storage is low. Recording continues. Free space before the reserve stops capture.")
+    XCTAssertEqual(field.stringValue, notice)
+    XCTAssertEqual(field.accessibilityLabel(), notice)
+    XCTAssertEqual(harness.controller.phase, .capturing)
+    XCTAssertNil(harness.controller.errorMessage)
+    XCTAssertEqual(harness.controller.recorderDetail?.storageLevel, "warning")
+    XCTAssertEqual(microphone.stopCount, 0)
+    XCTAssertEqual(system.stopCount, 0)
+    let warnedLabels = try harness.preparation.recorderDetail(sessionId: sessionId).events.filter {
+      $0.kind == "storage_observed"
+    }.map(\.label)
+    XCTAssertEqual(warnedLabels.last, "warning")
+    harness.storage.set(4 * 1024 * 1024 * 1024)
+    let cleared = await waitUntil(timeoutNanoseconds: 8_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      window.displayIfNeeded()
+      return harness.controller.phase == .capturing
+        && harness.controller.storagePressureNotice == nil
+        && harness.controller.recorderDetail?.storageLevel == "normal"
+        && self.hostedLabeledField(labeled: notice, in: host) == nil
+    }
+    XCTAssertTrue(cleared, harness.controller.errorMessage ?? harness.controller.phase.rawValue)
+    XCTAssertNil(harness.controller.errorMessage)
+    XCTAssertEqual(microphone.stopCount, 0)
+    XCTAssertEqual(system.stopCount, 0)
+    let clearedLabels = try harness.preparation.recorderDetail(sessionId: sessionId).events.filter {
+      $0.kind == "storage_observed"
+    }.map(\.label)
+    XCTAssertTrue(clearedLabels.contains("warning"))
+    XCTAssertEqual(clearedLabels.last, "normal")
+    let stop = try XCTUnwrap(self.toolbarStopButton(in: window))
+    XCTAssertTrue(stop.isEnabled)
+    stop.performClick(nil)
+    let saved = await waitUntil(timeoutNanoseconds: 8_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      return harness.controller.phase == .saved
+        && store.savedSessions.contains { $0.sessionId == sessionId }
+    }
+    XCTAssertTrue(saved, harness.controller.errorMessage ?? harness.controller.phase.rawValue)
+    XCTAssertNil(harness.controller.storagePressureNotice)
+    let savedLabels = try harness.preparation.recorderDetail(sessionId: sessionId).events.filter {
+      $0.kind == "storage_observed"
+    }.map(\.label)
+    XCTAssertTrue(savedLabels.contains("warning"))
+    XCTAssertEqual(savedLabels.last, "normal")
+    XCTAssertEqual(
+      try harness.preparation.recorderDetail(sessionId: sessionId).lifecycle, "ready_for_review")
+    XCTAssertTrue(window.contentView === host)
+    withExtendedLifetime(store) {}
+    withExtendedLifetime(harness) {}
+    withExtendedLifetime(window) {}
+  }
+
   /// The toolbar Stop and Save key equivalent seals both sources into one saved
   /// conversation. The test clicks Record, delivers one durable sample on each
   /// source, then sends that equivalent through the Stop button. It does not

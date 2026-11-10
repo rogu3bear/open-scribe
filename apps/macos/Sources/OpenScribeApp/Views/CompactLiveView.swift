@@ -60,11 +60,11 @@ struct CompactLiveView: View {
             .accessibilityLabel("Capture needs attention. \(interruption)")
         }
 
-        if let storageNotice = storagePressureNotice {
-          CaptureIssueLabel(message: storageNotice)
-            .font(.callout)
-            .accessibilityLabel(storageNotice)
-        }
+        StorageNoticeMount(notice: storagePressureNotice)
+          .frame(
+            maxWidth: .infinity,
+            minHeight: Self.storageNoticeHeight(storagePressureNotice),
+            alignment: .topLeading)
 
         if liveRecording.contextBinding != nil {
           ContextInspector(model: context)
@@ -138,6 +138,12 @@ struct CompactLiveView: View {
       return .orange
     }
     return .secondary
+  }
+
+  /// The storage notice is created with the live session. Its height grows only
+  /// while Rust reports a warning, so a normal recording does not reserve a row.
+  private static func storageNoticeHeight(_ notice: String?) -> CGFloat {
+    notice == nil ? 0 : 48
   }
 
   /// The marker list is created with the live session. Its height grows only
@@ -270,5 +276,61 @@ private final class LiveMarkerListControl: NSView {
     time.heightAnchor.constraint(greaterThanOrEqualToConstant: 16).isActive = true
     name.heightAnchor.constraint(greaterThanOrEqualToConstant: 16).isActive = true
     return row
+  }
+}
+
+/// The low-space sentence on the live surface. The field is created with the
+/// recording and fills when the storage watch reports a warning.
+private struct StorageNoticeMount: NSViewRepresentable {
+  let notice: String?
+
+  func makeNSView(context: Context) -> StorageNoticeControl {
+    let view = StorageNoticeControl()
+    view.bind(notice: notice)
+    return view
+  }
+
+  func updateNSView(_ view: StorageNoticeControl, context: Context) {
+    view.bind(notice: notice)
+  }
+}
+
+private final class StorageNoticeControl: NSView {
+  private let field = NSTextField(wrappingLabelWithString: "")
+
+  override init(frame frameRect: NSRect) {
+    super.init(frame: frameRect)
+    setAccessibilityIdentifier("Storage notice")
+    field.font = .preferredFont(forTextStyle: .callout)
+    field.textColor = .labelColor
+    field.maximumNumberOfLines = 3
+    field.lineBreakMode = .byWordWrapping
+    field.preferredMaxLayoutWidth = 640
+    field.setAccessibilityIdentifier("Storage notice")
+    field.setAccessibilityRole(.staticText)
+    field.translatesAutoresizingMaskIntoConstraints = false
+    addSubview(field)
+    NSLayoutConstraint.activate([
+      field.leadingAnchor.constraint(equalTo: leadingAnchor),
+      field.topAnchor.constraint(equalTo: topAnchor),
+      field.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor),
+      field.bottomAnchor.constraint(lessThanOrEqualTo: bottomAnchor),
+      field.widthAnchor.constraint(greaterThanOrEqualToConstant: 280),
+      field.heightAnchor.constraint(greaterThanOrEqualToConstant: 16),
+    ])
+    bind(notice: nil)
+  }
+
+  required init?(coder: NSCoder) {
+    nil
+  }
+
+  func bind(notice: String?) {
+    let text = notice ?? ""
+    let shown = !text.isEmpty
+    isHidden = !shown
+    field.isHidden = !shown
+    field.stringValue = shown ? text : ""
+    field.setAccessibilityLabel(shown ? text : "Storage notice")
   }
 }
