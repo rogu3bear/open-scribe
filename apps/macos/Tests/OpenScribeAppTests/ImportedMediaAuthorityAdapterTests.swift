@@ -1492,6 +1492,111 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
     withExtendedLifetime(pressure) {}
   }
 
+  /// The same confirmed drop waits with no model, then the automatic queue
+  /// transcribes it after the pinned model is installed. The test does not
+  /// call `transcribe` itself. Set `OPEN_SCRIBE_WHISPER_MODEL` and
+  /// `OPEN_SCRIBE_WHISPER_SPEECH_M4A` (`TEST_RUNNER_` prefix under xcodebuild).
+  func testAConfirmedDropTranscribesAfterThePinnedModelIsInstalled() async throws {
+    let environment = ProcessInfo.processInfo.environment
+    guard let modelPath = environment["OPEN_SCRIBE_WHISPER_MODEL"],
+      let speechPath = environment["OPEN_SCRIBE_WHISPER_SPEECH_M4A"]
+    else {
+      throw XCTSkip(
+        "Set OPEN_SCRIBE_WHISPER_MODEL and OPEN_SCRIBE_WHISPER_SPEECH_M4A for the queued import.")
+    }
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "open-scribe-drop-queue-words-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let source = root.appendingPathComponent("Dropped memo.m4a")
+    try FileManager.default.copyItem(at: URL(fileURLWithPath: speechPath), to: source)
+    let original = try Data(contentsOf: source)
+    let stagedModel = try Data(contentsOf: URL(fileURLWithPath: modelPath))
+    let importRoot = root.appendingPathComponent("Library", isDirectory: true)
+    try FileManager.default.createDirectory(at: importRoot, withIntermediateDirectories: false)
+    let recovery = RecoveredSessionController(managedRoot: importRoot)
+    let live = LiveMicrophoneRecordingController(managedRoot: importRoot)
+    live.isLaunchRecoveryPending = { !recovery.captureSafetyComplete }
+    let store = RuntimeLibraryStore(
+      managedRoot: importRoot,
+      isLaunchRecoveryPending: { !recovery.captureSafetyComplete })
+    let speech = SpeechTranscriptionModel(managedRoot: importRoot)
+    let pressure = SystemPressureMonitor(libraryRoot: importRoot)
+    let defaults = UserDefaults(
+      suiteName: "OpenScribe.Proof.DropQueueWords.\(UUID().uuidString)")!
+    let scheduler = TranscriptionScheduler(
+      managedRoot: importRoot, speech: speech, store: store, liveRecording: live,
+      recovery: recovery, pressure: pressure, defaults: defaults)
+    recovery.recoverOnLaunch()
+    await recovery.waitForLaunchRecovery()
+    XCTAssertTrue(recovery.captureSafetyComplete)
+    await speech.refreshAndWait()
+    XCTAssertNil(speech.installedModel)
+    XCTAssertEqual(speech.readiness, .absent)
+    scheduler.reconsider()
+    let idle = await waitUntil(timeoutNanoseconds: 5_000_000_000) {
+      scheduler.queue.isEmpty && scheduler.runningSessionId == nil && scheduler.hold == nil
+    }
+    XCTAssertTrue(idle, "queue=\(scheduler.queue) hold=\(String(describing: scheduler.hold))")
+
+    let adapter = ImportedMediaAuthorityAdapter(
+      startSecurityScope: { _ in true },
+      stopSecurityScope: { _ in },
+      canBeginImport: { live.canStart },
+      importer: { title, url in
+        try store.importManagedAudio(title: title, sourceURL: url)
+      }
+    )
+    adapter.stageDroppedAudio([source])
+    adapter.confirmPendingAudioImport()
+    await assertEventually { adapter.phase == .succeeded }
+    let sessionId = try XCTUnwrap(adapter.importedSessionId)
+    let queued = await waitUntil(timeoutNanoseconds: 15_000_000_000) {
+      scheduler.queue.map(\.sessionId) == [sessionId]
+        && scheduler.hold == .noSpeechModel
+        && scheduler.runningSessionId == nil
+        && speech.transcribingSessionId == nil
+    }
+    XCTAssertTrue(
+      queued,
+      "queue=\(scheduler.queue.map(\.sessionId)) hold=\(String(describing: scheduler.hold))"
+    )
+    XCTAssertEqual(scheduler.queue.first?.requestedByUser, false)
+    let managedCopy = try XCTUnwrap(importedAudioFile(under: importRoot))
+    let managedBefore = try Data(contentsOf: managedCopy)
+
+    let record = try XCTUnwrap(speech.models.first { $0.modelId == "whisper-small.en-q5_1" })
+    let installed = await speech.install(record, from: URL(fileURLWithPath: modelPath))
+    XCTAssertTrue(installed, speech.message ?? "")
+    XCTAssertEqual(speech.installedModel?.modelId, "whisper-small.en-q5_1")
+    let finished = await waitUntil(timeoutNanoseconds: 180_000_000_000) {
+      if case .finished = scheduler.state(for: sessionId) { return true }
+      return false
+    }
+    XCTAssertTrue(
+      finished,
+      "state=\(String(describing: scheduler.state(for: sessionId))) hold=\(String(describing: scheduler.hold)) running=\(String(describing: scheduler.runningSessionId)) message=\(speech.message ?? "")"
+    )
+    XCTAssertNil(scheduler.runningSessionId)
+    XCTAssertFalse(scheduler.queue.contains { $0.sessionId == sessionId })
+    XCTAssertNil(speech.transcribingSessionId)
+
+    let transcripts = TranscriptLibraryModel(managedRoot: importRoot)
+    await transcripts.load(sessionId: sessionId)
+    XCTAssertEqual(transcripts.availability, .final)
+    let text = transcripts.segments.map(\.effectiveText).joined(separator: " ").lowercased()
+    XCTAssertTrue(text.contains("recording safe"), text)
+    XCTAssertEqual(try Data(contentsOf: managedCopy), managedBefore)
+    XCTAssertEqual(try Data(contentsOf: source), original)
+    XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: modelPath)), stagedModel)
+    withExtendedLifetime(scheduler) {}
+    withExtendedLifetime(store) {}
+    withExtendedLifetime(live) {}
+    withExtendedLifetime(recovery) {}
+    withExtendedLifetime(speech) {}
+    withExtendedLifetime(pressure) {}
+  }
+
   private func importedAudioFile(under root: URL) throws -> URL? {
     let sessions = root.appendingPathComponent("Sessions")
     guard
