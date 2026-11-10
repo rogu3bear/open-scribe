@@ -1,3 +1,5 @@
+import AppKit
+import Combine
 import CoreGraphics
 import SwiftUI
 import UniformTypeIdentifiers
@@ -30,10 +32,6 @@ struct SettingsView: View {
   @State private var showingModels = false
   @State private var showingPolicies = false
   @StateObject private var authorization = ProviderAuthorizationModel()
-  @State private var providerId = ""
-  @State private var providerModelId = ""
-  @State private var providerOrigin = ""
-  @State private var providerFingerprint = ""
   @ObservedObject private var diagnosticLog = DiagnosticLog.shared
   @State private var signature = "checking"
 
@@ -127,56 +125,8 @@ struct SettingsView: View {
         }
       }
       Section("Remote review") {
-        Text(authorization.notice)
-          .font(.caption)
-          .foregroundStyle(.secondary)
-          .fixedSize(horizontal: false, vertical: true)
-        TextField("Provider", text: $providerId)
-        TextField("Model", text: $providerModelId)
-        TextField("HTTPS origin", text: $providerOrigin)
-        TextField("Credential fingerprint", text: $providerFingerprint)
-        Text("The fingerprint is a SHA-256 digest. The secret stays out of Open Scribe.")
-          .font(.caption)
-          .foregroundStyle(.secondary)
-          .fixedSize(horizontal: false, vertical: true)
-        Button("Configure provider") {
-          do {
-            try authorization.configureRemote(
-              providerId: providerId, modelId: providerModelId, origin: providerOrigin,
-              credentialFingerprint: providerFingerprint.isEmpty ? nil : providerFingerprint)
-          } catch {
-            authorization.noteFailure()
-          }
-        }
-        .disabled(providerId.isEmpty || providerModelId.isEmpty || providerOrigin.isEmpty)
-        if authorization.configured {
-          ForEach(ProviderAuthorizationModel.choices) { choice in
-            Toggle(choice.title, isOn: grantBinding(choice.category))
-          }
-          Button("Prepare review") {
-            do {
-              try authorization.prepare(sessionId: "settings-session", offered: [])
-            } catch {
-              authorization.noteFailure()
-            }
-          }
-          .disabled(authorization.grants.isEmpty)
-        }
-        Text(ProviderAuthorizationModel.unavailableNotice)
-          .font(.caption)
-          .foregroundStyle(.secondary)
-          .fixedSize(horizontal: false, vertical: true)
-        if let prepareNotice = authorization.prepareNotice {
-          Text(prepareNotice)
-            .font(.caption)
-            .foregroundStyle(.secondary)
-        }
-        if let failure = authorization.failure {
-          Text(failure)
-            .font(.caption)
-            .foregroundStyle(.secondary)
-            .fixedSize(horizontal: false, vertical: true)
-        }
+        RemoteReviewMount(authorization: authorization)
+          .frame(maxWidth: .infinity, minHeight: 500, alignment: .topLeading)
       }
       Section("Help and policies") {
         Link(
@@ -223,18 +173,6 @@ struct SettingsView: View {
         AppTelemetry.commandInvoked("export-diagnostics-failed")
       }
     }
-  }
-
-  private func grantBinding(_ category: NativeContentCategory) -> Binding<Bool> {
-    Binding(
-      get: { authorization.grants.contains(category) },
-      set: { enabled in
-        if enabled {
-          authorization.grants.insert(category)
-        } else {
-          authorization.grants.remove(category)
-        }
-      })
   }
 
   private var queueLabel: String {
@@ -320,5 +258,209 @@ struct SettingsView: View {
       },
       events: DiagnosticJournal.shared.recent()
     )
+  }
+}
+
+/// Configuration names a provider. It does not grant a category, and a refused
+/// fingerprint is cleared so the secret does not remain in the field.
+private struct RemoteReviewMount: NSViewRepresentable {
+  @ObservedObject var authorization: ProviderAuthorizationModel
+
+  func makeNSView(context: Context) -> RemoteReviewControl {
+    let view = RemoteReviewControl()
+    view.bind(authorization)
+    return view
+  }
+
+  func updateNSView(_ view: RemoteReviewControl, context: Context) {
+    view.bind(authorization)
+  }
+}
+
+private final class RemoteReviewControl: NSView, NSTextFieldDelegate {
+  private let providerField = RemoteReviewControl.field("Provider")
+  private let modelField = RemoteReviewControl.field("Model")
+  private let originField = RemoteReviewControl.field("HTTPS origin")
+  private let fingerprintField = RemoteReviewControl.field("Credential fingerprint")
+  private let fingerprintRule = RemoteReviewControl.caption(
+    "The fingerprint is a SHA-256 digest. The secret stays out of Open Scribe.",
+    label: "Credential fingerprint rule")
+  private let configureButton = NSButton(title: "Configure provider", target: nil, action: nil)
+  private let limits = RemoteReviewControl.caption(
+    ProviderAuthorizationModel.unavailableNotice, label: "Remote review limits")
+  private let prepareButton = NSButton(title: "Prepare review", target: nil, action: nil)
+  private let statusField = RemoteReviewControl.caption("", label: "Provider authorization")
+  private let outcomeField = RemoteReviewControl.caption("", label: "Provider authorization outcome")
+  private var categoryButtons: [(NativeContentCategory, NSButton)] = []
+  private var subscriptions: [AnyCancellable] = []
+  private var authorization: ProviderAuthorizationModel?
+
+  override init(frame frameRect: NSRect) {
+    super.init(frame: frameRect)
+    setAccessibilityIdentifier("Remote review")
+    configureButton.bezelStyle = .rounded
+    configureButton.setAccessibilityLabel("Configure provider")
+    configureButton.target = self
+    configureButton.action = #selector(configureProvider)
+    configureButton.isEnabled = false
+    prepareButton.bezelStyle = .rounded
+    prepareButton.setAccessibilityLabel("Prepare review")
+    prepareButton.target = self
+    prepareButton.action = #selector(prepareReview)
+    prepareButton.isEnabled = false
+    let column = NSStackView()
+    column.orientation = .vertical
+    column.alignment = .leading
+    column.spacing = 6
+    column.translatesAutoresizingMaskIntoConstraints = false
+    column.detachesHiddenViews = false
+    addSubview(column)
+    NSLayoutConstraint.activate([
+      column.leadingAnchor.constraint(equalTo: leadingAnchor),
+      column.trailingAnchor.constraint(equalTo: trailingAnchor),
+      column.topAnchor.constraint(equalTo: topAnchor),
+      column.bottomAnchor.constraint(equalTo: bottomAnchor),
+    ])
+    for field in [providerField, modelField, originField, fingerprintField] {
+      field.delegate = self
+      column.addArrangedSubview(field)
+      field.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true
+    }
+    column.addArrangedSubview(fingerprintRule)
+    column.addArrangedSubview(configureButton)
+    column.addArrangedSubview(limits)
+    for choice in ProviderAuthorizationModel.choices {
+      let button = NSButton(
+        checkboxWithTitle: choice.title, target: self, action: #selector(toggleCategory(_:)))
+      button.setAccessibilityLabel(choice.title)
+      button.isEnabled = false
+      categoryButtons.append((choice.category, button))
+      column.addArrangedSubview(button)
+    }
+    column.addArrangedSubview(prepareButton)
+    column.addArrangedSubview(statusField)
+    column.addArrangedSubview(outcomeField)
+    for caption in [fingerprintRule, limits, statusField, outcomeField] {
+      caption.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true
+    }
+  }
+
+  required init?(coder: NSCoder) {
+    nil
+  }
+
+  override var intrinsicContentSize: NSSize {
+    NSSize(width: NSView.noIntrinsicMetric, height: 500)
+  }
+
+  func bind(_ authorization: ProviderAuthorizationModel) {
+    let same = self.authorization === authorization
+    self.authorization = authorization
+    if !same {
+      subscriptions.removeAll()
+      authorization.objectWillChange.map { _ in () }.eraseToAnyPublisher().sink { [weak self] _ in
+        DispatchQueue.main.async { self?.apply() }
+      }.store(in: &subscriptions)
+    }
+    apply()
+  }
+
+  func controlTextDidChange(_ notification: Notification) {
+    apply()
+  }
+
+  private static func field(_ label: String) -> NSTextField {
+    let field = NSTextField(string: "")
+    field.placeholderString = label
+    field.setAccessibilityLabel(label)
+    field.bezelStyle = .roundedBezel
+    field.translatesAutoresizingMaskIntoConstraints = false
+    field.cell?.wraps = false
+    field.cell?.isScrollable = true
+    return field
+  }
+
+  private static func caption(_ text: String, label: String) -> NSTextField {
+    let field = NSTextField(wrappingLabelWithString: text)
+    field.setAccessibilityLabel(label)
+    field.translatesAutoresizingMaskIntoConstraints = false
+    field.preferredMaxLayoutWidth = 420
+    field.maximumNumberOfLines = 3
+    return field
+  }
+
+  private func trimmed(_ field: NSTextField) -> String {
+    field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+  }
+
+  private func apply() {
+    let ready =
+      !trimmed(providerField).isEmpty && !trimmed(modelField).isEmpty
+      && !trimmed(originField).isEmpty
+    configureButton.isEnabled = ready
+    let configured = authorization?.configured == true
+    for (category, button) in categoryButtons {
+      button.isEnabled = configured
+      let granted = authorization?.grants.contains(category) == true
+      button.state = granted ? .on : .off
+    }
+    prepareButton.isEnabled = configured && authorization?.grants.isEmpty == false
+    statusField.stringValue = authorization?.notice ?? ""
+    outcomeField.stringValue = authorization?.failure ?? authorization?.prepareNotice ?? ""
+    layoutSubtreeIfNeeded()
+  }
+
+  @objc private func configureProvider() {
+    MainActor.assumeIsolated {
+      let providerId = trimmed(providerField)
+      let modelId = trimmed(modelField)
+      let origin = trimmed(originField)
+      guard !providerId.isEmpty, !modelId.isEmpty, !origin.isEmpty, let authorization else {
+        return
+      }
+      let fingerprint = trimmed(fingerprintField)
+      do {
+        try authorization.configureRemote(
+          providerId: providerId, modelId: modelId, origin: origin,
+          credentialFingerprint: fingerprint.isEmpty ? nil : fingerprint)
+      } catch let error as NativeProviderError where error == .FingerprintRefused {
+        fingerprintField.stringValue = ""
+        authorization.noteFailure()
+      } catch {
+        authorization.noteFailure()
+      }
+      apply()
+    }
+  }
+
+  @objc private func toggleCategory(_ sender: NSButton) {
+    MainActor.assumeIsolated {
+      guard let authorization, authorization.configured,
+        let category = categoryButtons.first(where: { $0.1 === sender })?.0
+      else {
+        sender.state = .off
+        return
+      }
+      if sender.state == .on {
+        authorization.grants.insert(category)
+      } else {
+        authorization.grants.remove(category)
+      }
+      apply()
+    }
+  }
+
+  @objc private func prepareReview() {
+    MainActor.assumeIsolated {
+      guard let authorization, authorization.configured, !authorization.grants.isEmpty else {
+        return
+      }
+      do {
+        try authorization.prepare(sessionId: "settings-session", offered: [])
+      } catch {
+        authorization.noteFailure()
+      }
+      apply()
+    }
   }
 }
