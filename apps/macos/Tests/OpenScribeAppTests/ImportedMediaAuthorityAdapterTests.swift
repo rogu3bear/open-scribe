@@ -1,6 +1,7 @@
 @preconcurrency import AVFoundation
 import Darwin
 import Foundation
+import ObjectiveC
 import SwiftUI
 import XCTest
 
@@ -1873,6 +1874,173 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
     withExtendedLifetime(window) {}
   }
 
+  /// Dropping a supported audio file on the hosted library asks before copying.
+  /// The original stays in place, and no conversation is saved yet.
+  func testASupportedAudioDropOntoTheHostedLibraryStagesConfirmation() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "open-scribe-drop-destination-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let source = root.appendingPathComponent("Library drop.m4a")
+    do {
+      let file = try AVAudioFile(
+        forWriting: source,
+        settings: [
+          AVFormatIDKey: kAudioFormatAppleLossless,
+          AVSampleRateKey: 48_000.0,
+          AVNumberOfChannelsKey: 1,
+          AVEncoderBitDepthHintKey: 16,
+        ])
+      let buffer = try XCTUnwrap(
+        AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: 48_000))
+      buffer.frameLength = 48_000
+      let channel = try XCTUnwrap(buffer.floatChannelData?[0])
+      for frame in 0..<48_000 {
+        channel[frame] = frame < 24_000 ? 0.25 : -0.5
+      }
+      try file.write(from: buffer)
+    }
+    let original = try Data(contentsOf: source)
+    let importRoot = root.appendingPathComponent("Library", isDirectory: true)
+    try FileManager.default.createDirectory(at: importRoot, withIntermediateDirectories: false)
+    let store = RuntimeLibraryStore(managedRoot: importRoot, refreshesImmediately: false)
+    let adapter = ImportedMediaAuthorityAdapter(
+      startSecurityScope: { _ in true },
+      stopSecurityScope: { _ in },
+      importer: { title, url in
+        try store.importManagedAudio(title: title, sourceURL: url)
+      }
+    )
+    let live = LiveMicrophoneRecordingController(managedRoot: importRoot)
+    let recovery = RecoveredSessionController(managedRoot: importRoot)
+    XCTAssertEqual(adapter.phase, .idle)
+    XCTAssertNil(adapter.pendingAudioImport)
+    XCTAssertTrue(store.savedSessions.isEmpty)
+    XCTAssertNil(adapter.importedSessionId)
+
+    let view = ContentView(
+      store: store,
+      importedMediaAuthority: adapter,
+      liveRecording: live,
+      recoveredSessions: recovery,
+      transcripts: TranscriptLibraryModel(managedRoot: importRoot),
+      speech: SpeechTranscriptionModel(managedRoot: importRoot),
+      scheduler: TranscriptionScheduler.inert(),
+      pressure: SystemPressureMonitor(libraryRoot: importRoot, samplesAutomatically: false),
+      context: ContextScopeModel(
+        binding: { nil },
+        frames: IdleContextFrames(),
+        permissionCheck: { .denied },
+        permissionRequest: { .denied },
+        topology: { [] }
+      ),
+      navigation: MainWorkspaceNavigation()
+    )
+    let host = NSHostingView(rootView: view)
+    let window = NSWindow(
+      contentRect: NSRect(x: 0, y: 0, width: 1100, height: 720),
+      styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    window.contentView = host
+    window.setContentSize(NSSize(width: 1100, height: 720))
+    host.frame = window.contentLayoutRect
+    if #available(macOS 14, *) {
+      NSApplication.shared.activate()
+    }
+    window.makeKeyAndOrderFront(nil)
+    window.orderFrontRegardless()
+    defer { window.close() }
+    let shown = await waitUntil(timeoutNanoseconds: 5_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      window.displayIfNeeded()
+      return dropDestination(in: host) != nil
+    }
+    let destination = try XCTUnwrap(dropDestination(in: host))
+    XCTAssertTrue(shown, "class=\(type(of: destination))")
+    let location = destination.convert(
+      NSPoint(x: destination.bounds.midX, y: destination.bounds.midY), to: nil)
+    let drag = AudioFileDrag(fileURL: source, window: window, location: location)
+    defer { drag.draggingPasteboard.releaseGlobally() }
+    let entered = destinationDragOperation("draggingEntered:", on: destination, info: drag)
+    let updated = destinationDragOperation("draggingUpdated:", on: destination, info: drag)
+    let prepared = destinationDragAccepted("prepareForDragOperation:", on: destination, info: drag)
+    let performed = destinationDragAccepted("performDragOperation:", on: destination, info: drag)
+    destinationDragEnded("concludeDragOperation:", on: destination, info: drag)
+    destinationDragEnded("draggingEnded:", on: destination, info: drag)
+    let operation = updated == 0 ? entered : updated
+    XCTAssertNotEqual(
+      operation, 0,
+      "class=\(type(of: destination)) entered=\(entered) updated=\(updated) prepared=\(prepared) performed=\(performed) types=\(destination.registeredDraggedTypes) classes=\(drag.requestedClasses)"
+    )
+    XCTAssertTrue(
+      prepared && performed,
+      "class=\(type(of: destination)) entered=\(entered) updated=\(updated) prepared=\(prepared) performed=\(performed) classes=\(drag.requestedClasses)"
+    )
+    let staged = await waitUntil {
+      adapter.pendingAudioImport?.urls == [source]
+    }
+    XCTAssertTrue(
+      staged,
+      "class=\(type(of: destination)) performed=\(performed) classes=\(drag.requestedClasses) phase=\(adapter.phase) message=\(adapter.statusMessage ?? "nil") pending=\(String(describing: adapter.pendingAudioImport?.urls))"
+    )
+    XCTAssertEqual(adapter.phase, .idle)
+    XCTAssertNil(adapter.importedSessionId)
+    XCTAssertTrue(store.savedSessions.isEmpty)
+    XCTAssertEqual(try Data(contentsOf: source), original)
+    withExtendedLifetime(store) {}
+    withExtendedLifetime(live) {}
+    withExtendedLifetime(recovery) {}
+    withExtendedLifetime(window) {}
+    withExtendedLifetime(drag) {}
+  }
+
+  private func dropDestination(in root: NSView) -> NSView? {
+    var matched: NSView?
+    func walk(_ view: NSView) {
+      let name = String(describing: type(of: view))
+      if name.contains("DraggingDestination"),
+        view.responds(to: NSSelectorFromString("performDragOperation:"))
+      {
+        matched = view
+      }
+      for child in view.subviews {
+        walk(child)
+      }
+    }
+    walk(root)
+    return matched
+  }
+
+  private func destinationDragOperation(
+    _ selectorName: String, on view: NSView, info: AudioFileDrag
+  ) -> UInt {
+    let selector = NSSelectorFromString(selectorName)
+    guard view.responds(to: selector) else { return 0 }
+    typealias Reply = @convention(c) (AnyObject, Selector, AnyObject) -> UInt
+    let function = unsafeBitCast(view.method(for: selector), to: Reply.self)
+    return function(view, selector, info)
+  }
+
+  private func destinationDragAccepted(
+    _ selectorName: String, on view: NSView, info: AudioFileDrag
+  ) -> Bool {
+    let selector = NSSelectorFromString(selectorName)
+    guard view.responds(to: selector) else { return false }
+    typealias Reply = @convention(c) (AnyObject, Selector, AnyObject) -> Bool
+    let function = unsafeBitCast(view.method(for: selector), to: Reply.self)
+    return function(view, selector, info)
+  }
+
+  private func destinationDragEnded(
+    _ selectorName: String, on view: NSView, info: AudioFileDrag
+  ) {
+    let selector = NSSelectorFromString(selectorName)
+    guard view.responds(to: selector) else { return }
+    typealias Reply = @convention(c) (AnyObject, Selector, AnyObject) -> Void
+    let function = unsafeBitCast(view.method(for: selector), to: Reply.self)
+    function(view, selector, info)
+  }
+
   private func focusProxyProbe(in root: NSView) -> [String] {
     focusProxies(in: root).map { proxy in
       let hit = hitTest(at: proxy)
@@ -2096,6 +2264,84 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
 private struct IdleContextFrames: ContextFrameCapturing {
   func captureFrame(_ target: ContextCaptureTarget) async throws -> CGImage {
     throw CancellationError()
+  }
+}
+
+/// An in-process file drag. The hosted drop view reads `NSDraggingItem.item`
+/// and the dragging pasteboard; a new item otherwise reports only its writer.
+private final class AudioFileDrag: NSObject, NSDraggingInfo {
+  let fileURL: URL
+  let provider: NSItemProvider
+  let draggingDestinationWindow: NSWindow?
+  let draggingLocation: NSPoint
+  private let pasteboard: NSPasteboard
+  private(set) var requestedClasses: [String] = []
+
+  init(fileURL: URL, window: NSWindow?, location: NSPoint) {
+    self.fileURL = fileURL
+    self.provider = NSItemProvider(object: fileURL as NSURL)
+    self.draggingDestinationWindow = window
+    self.draggingLocation = location
+    let pasteboard = NSPasteboard(
+      name: NSPasteboard.Name("open-scribe-audio-drop-\(UUID().uuidString)"))
+    pasteboard.writeObjects([fileURL as NSURL])
+    self.pasteboard = pasteboard
+    super.init()
+  }
+
+  var draggingSourceOperationMask: NSDragOperation { .copy }
+  var draggedImageLocation: NSPoint { draggingLocation }
+  var draggedImage: NSImage? { nil }
+  var draggingPasteboard: NSPasteboard { pasteboard }
+  var draggingSource: Any? { nil }
+  var draggingSequenceNumber: Int { 1 }
+
+  func slideDraggedImage(to screenPoint: NSPoint) {}
+
+  override func namesOfPromisedFilesDropped(atDestination dropDestination: URL) -> [String]? {
+    nil
+  }
+
+  var draggingFormation: NSDraggingFormation = .default
+  var animatesToDestination = false
+  var numberOfValidItemsForDrop = 1
+  var springLoadingHighlight: NSSpringLoadingHighlight { .none }
+
+  func resetSpringLoading() {}
+
+  func enumerateDraggingItems(
+    options enumOpts: NSDraggingItemEnumerationOptions,
+    for view: NSView?,
+    classes classArray: [AnyClass],
+    searchOptions: [NSPasteboard.ReadingOptionKey: Any] = [:],
+    using block: (NSDraggingItem, Int, UnsafeMutablePointer<ObjCBool>) -> Void
+  ) {
+    requestedClasses.append(classArray.map { String(describing: $0) }.joined(separator: ","))
+    var stop = ObjCBool(false)
+    let wantsProvider = classArray.contains { $0 == NSItemProvider.self }
+    if wantsProvider {
+      block(providerItem(), 0, &stop)
+      if stop.boolValue { return }
+    }
+    let readable = classArray.filter { $0.conforms(to: NSPasteboardReading.self) }
+    guard !readable.isEmpty else { return }
+    let objects = pasteboard.readObjects(forClasses: readable, options: searchOptions) ?? []
+    for (offset, object) in objects.enumerated() {
+      guard let writer = object as? any NSPasteboardWriting else { continue }
+      let item = NSDraggingItem(pasteboardWriter: writer)
+      item.draggingFrame = NSRect(origin: draggingLocation, size: NSSize(width: 64, height: 64))
+      block(item, wantsProvider ? offset + 1 : offset, &stop)
+      if stop.boolValue { return }
+    }
+  }
+
+  private func providerItem() -> NSDraggingItem {
+    let item = NSDraggingItem(pasteboardWriter: fileURL as NSURL)
+    item.draggingFrame = NSRect(origin: draggingLocation, size: NSSize(width: 64, height: 64))
+    if let field = class_getInstanceVariable(NSDraggingItem.self, "_item") {
+      object_setIvar(item, field, provider)
+    }
+    return item
   }
 }
 
