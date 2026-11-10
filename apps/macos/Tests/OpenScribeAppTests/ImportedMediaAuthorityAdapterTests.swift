@@ -2896,6 +2896,157 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
     withExtendedLifetime(window) {}
   }
 
+  /// Add Marker on the live surface shows the stored session time. Stop and Save
+  /// then keeps that same marker. The test clicks Record, delivers one durable
+  /// sample on each source, clicks Add Marker, reads the live row, then clicks
+  /// Stop. It does not call `addMarker`, `start`, or `stop`, and it does not
+  /// send the marker key equivalent.
+  func testHostedAddMarkerShowsTheStoredTimeThenKeepsItAfterStop() async throws {
+    let harness = try PauseHarness()
+    defer { harness.removeFiles() }
+    let store = RuntimeLibraryStore(managedRoot: harness.root, refreshesImmediately: false)
+    let adapter = ImportedMediaAuthorityAdapter(
+      canBeginImport: { harness.controller.canStart },
+      importer: { title, url in
+        try store.importManagedAudio(title: title, sourceURL: url)
+      }
+    )
+    let view = ContentView(
+      store: store,
+      importedMediaAuthority: adapter,
+      liveRecording: harness.controller,
+      recoveredSessions: RecoveredSessionController(
+        recoveryFactory: {
+          try NativeRecordingPreparation.open(managedRoot: harness.root.path)
+        },
+        importedPlaybackLeaseProvider: { sessionId in
+          try NativeRecordingPreparation.open(managedRoot: harness.root.path)
+            .leaseImportedPlayback(sessionId: sessionId)
+        },
+        player: RecoveredAudioPlayerFake()
+      ),
+      transcripts: TranscriptLibraryModel(managedRoot: harness.root),
+      speech: SpeechTranscriptionModel(managedRoot: harness.root),
+      scheduler: TranscriptionScheduler.inert(),
+      pressure: SystemPressureMonitor(libraryRoot: harness.root, samplesAutomatically: false),
+      context: ContextScopeModel(
+        binding: { nil },
+        frames: IdleContextFrames(),
+        permissionCheck: { .denied },
+        permissionRequest: { .denied },
+        topology: { [] }
+      ),
+      navigation: MainWorkspaceNavigation()
+    )
+    let host = NSHostingView(rootView: view)
+    host.sizingOptions = []
+    let window = NSWindow(
+      contentRect: NSRect(x: 0, y: 0, width: 1100, height: 1400),
+      styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    window.contentView = host
+    window.setContentSize(NSSize(width: 1100, height: 1400))
+    host.frame = window.contentLayoutRect
+    window.makeKeyAndOrderFront(nil)
+    window.orderFrontRegardless()
+    defer { window.close() }
+    let ready = await waitUntil(timeoutNanoseconds: 5_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      window.displayIfNeeded()
+      return self.toolbarRecordButton(in: window) != nil
+    }
+    let record = try XCTUnwrap(self.toolbarRecordButton(in: window))
+    XCTAssertTrue(ready && window.contentView === host)
+    XCTAssertEqual(harness.controller.phase, .idle)
+    record.performClick(nil)
+    let started = await waitUntil(timeoutNanoseconds: 8_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      return harness.controller.phase == .starting
+        && harness.captures.microphones.last?.didStart == true
+        && harness.captures.systems.last?.didStart == true
+    }
+    XCTAssertTrue(started, harness.controller.errorMessage ?? harness.controller.phase.rawValue)
+    let microphone = try XCTUnwrap(harness.captures.microphones.last)
+    let system = try XCTUnwrap(harness.captures.systems.last)
+    let sessionId = microphone.writer.authorization.sessionId
+    try microphone.emit(frames: 48_000, hostTime: harness.clock.now, value: 8192)
+    try system.emit(frames: 48_000, hostTime: harness.clock.now, value: 16384)
+    let capturing = await waitUntil(timeoutNanoseconds: 8_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      return harness.controller.phase == .capturing && harness.controller.canMark
+        && store.currentSession?.sessionId == sessionId
+    }
+    guard capturing else {
+      XCTFail(
+        "phase=\(harness.controller.phase.rawValue) code=\(harness.controller.failureCode ?? "none") message=\(harness.controller.errorMessage ?? "none") current=\(store.currentSession?.sessionId ?? "none")"
+      )
+      return
+    }
+    harness.clock.advance(seconds: 1)
+    let markerReady = await waitUntil(timeoutNanoseconds: 5_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      window.displayIfNeeded()
+      return self.recordingShortcutButton("Add marker", in: window) != nil
+        && self.liveMarkerStampField(in: host) == nil
+    }
+    let markerButton = try XCTUnwrap(self.recordingShortcutButton("Add marker", in: window))
+    XCTAssertTrue(markerReady)
+    XCTAssertTrue(markerButton.isEnabled)
+    XCTAssertEqual(markerButton.title, ConversationControlLabels.addMarker)
+    XCTAssertEqual(markerButton.accessibilityLabel(), ConversationControlLabels.addMarker)
+    XCTAssertEqual(markerButton.accessibilityIdentifier(), "Add marker")
+    XCTAssertNil(self.liveMarkerStampField(in: host))
+    markerButton.performClick(nil)
+    let marked = try self.markerEvents(sessionId: sessionId, harness: harness)
+    let marker = try XCTUnwrap(marked.first)
+    XCTAssertEqual(marker.label, "")
+    XCTAssertGreaterThan(marker.sessionNanoseconds, 0)
+    let stamp = TranscriptSection.timestamp(marker.sessionNanoseconds)
+    let spoken = ConversationControlLabels.liveMarkerAccessibility(stamp: stamp, label: "")
+    let shown = await waitUntil(timeoutNanoseconds: 5_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      window.displayIfNeeded()
+      guard let field = self.hostedLabeledField(labeled: spoken, in: host) else { return false }
+      return field.stringValue == stamp && field.accessibilityIdentifier() == marker.id
+    }
+    let field = try XCTUnwrap(self.hostedLabeledField(labeled: spoken, in: host))
+    XCTAssertTrue(shown && window.contentView === host && field.isDescendant(of: host))
+    XCTAssertEqual(field.stringValue, stamp)
+    XCTAssertEqual(field.accessibilityLabel(), spoken)
+    XCTAssertEqual(field.accessibilityIdentifier(), marker.id)
+    let name = try XCTUnwrap(self.hostedLabeledField(labeled: "Marker", in: host))
+    XCTAssertEqual(name.stringValue, "Marker")
+    XCTAssertNil(self.hostedActionButton(labeled: "Play from \(stamp)", in: host))
+    let stopReady = await waitUntil(timeoutNanoseconds: 5_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      window.displayIfNeeded()
+      return self.toolbarStopButton(in: window) != nil
+    }
+    let stop = try XCTUnwrap(self.toolbarStopButton(in: window))
+    XCTAssertTrue(stopReady)
+    XCTAssertTrue(stop.isEnabled)
+    XCTAssertEqual(stop.accessibilityIdentifier(), "Toolbar stop")
+    stop.performClick(nil)
+    let saved = await waitUntil(timeoutNanoseconds: 8_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      return harness.controller.phase == .saved
+        && store.savedSessions.contains { $0.sessionId == sessionId }
+    }
+    XCTAssertTrue(saved, harness.controller.errorMessage ?? harness.controller.phase.rawValue)
+    XCTAssertNil(harness.controller.errorMessage)
+    XCTAssertNil(store.currentSession)
+    let detail = try harness.preparation.recorderDetail(sessionId: sessionId)
+    let savedMarker = try XCTUnwrap(detail.events.last { $0.kind == "marker_added" })
+    XCTAssertEqual(detail.lifecycle, "ready_for_review")
+    XCTAssertEqual(savedMarker.id, marker.id)
+    XCTAssertEqual(savedMarker.label, "")
+    XCTAssertEqual(savedMarker.sessionNanoseconds, marker.sessionNanoseconds)
+    XCTAssertTrue(window.contentView === host)
+    withExtendedLifetime(store) {}
+    withExtendedLifetime(harness) {}
+    withExtendedLifetime(window) {}
+  }
+
   /// The toolbar Stop and Save key equivalent seals both sources into one saved
   /// conversation. The test clicks Record, delivers one durable sample on each
   /// source, then sends that equivalent through the Stop button. It does not
@@ -6475,6 +6626,27 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
         button.frame.height > 1
       {
         matched = button
+      }
+      for child in view.subviews { walk(child) }
+    }
+    walk(root)
+    return matched
+  }
+
+  /// The live marker stamp. Its spoken label is "Marker at" or "Marker, … at".
+  private func liveMarkerStampField(in root: NSView) -> NSTextField? {
+    var matched: NSTextField?
+    func walk(_ view: NSView) {
+      if matched != nil { return }
+      if let field = view as? NSTextField,
+        let label = field.accessibilityLabel(),
+        (label.hasPrefix("Marker at ") || label.hasPrefix("Marker, ")),
+        field.isHidden == false,
+        field.isHiddenOrHasHiddenAncestor == false,
+        field.frame.width > 1,
+        field.frame.height > 1
+      {
+        matched = field
       }
       for child in view.subviews { walk(child) }
     }

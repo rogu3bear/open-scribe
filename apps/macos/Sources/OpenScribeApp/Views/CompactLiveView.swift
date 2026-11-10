@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 struct CompactLiveView: View {
@@ -70,7 +71,11 @@ struct CompactLiveView: View {
         }
 
         let events = liveRecording.recorderDetail?.events ?? []
-        RecorderEventList(events: events.filter { $0.kind == "marker_added" }, heading: "Markers")
+        LiveMarkerListMount(events: events)
+          .frame(
+            maxWidth: .infinity,
+            minHeight: Self.markerListHeight(events),
+            alignment: .topLeading)
         let details = events.filter { $0.kind != "marker_added" }
         if !details.isEmpty {
           DisclosureGroup("Recording events") {
@@ -135,6 +140,13 @@ struct CompactLiveView: View {
     return .secondary
   }
 
+  /// The marker list is created with the live session. Its height grows only
+  /// when a marker has been saved, so an empty recording does not reserve a row.
+  private static func markerListHeight(_ events: [NativeRecorderEvent]) -> CGFloat {
+    let count = events.filter { $0.kind == "marker_added" }.count
+    return count == 0 ? 0 : CGFloat(24 + count * 28)
+  }
+
   /// The same notice the live surface shows while Rust reports storage warning.
   var storagePressureNotice: String? { liveRecording.storagePressureNotice }
 
@@ -150,5 +162,113 @@ struct CompactLiveView: View {
     }
     guard let storagePressureNotice else { return base }
     return "\(base) \(storagePressureNotice)"
+  }
+}
+
+/// Markers written while capture is open. The control is created with the live
+/// session and fills when Add Marker saves one, so the row is an update. It
+/// names the stored session time and does not play while the writer holds the file.
+private struct LiveMarkerListMount: NSViewRepresentable {
+  let events: [NativeRecorderEvent]
+
+  func makeNSView(context: Context) -> LiveMarkerListControl {
+    let view = LiveMarkerListControl()
+    view.bind(events: events)
+    return view
+  }
+
+  func updateNSView(_ view: LiveMarkerListControl, context: Context) {
+    view.bind(events: events)
+  }
+}
+
+private final class LiveMarkerListControl: NSView {
+  private let heading = NSTextField(labelWithString: "Markers")
+  private let column = NSStackView()
+  private var signature: [String] = []
+
+  override init(frame frameRect: NSRect) {
+    super.init(frame: frameRect)
+    setAccessibilityIdentifier("Live markers")
+    heading.font = .preferredFont(forTextStyle: .headline)
+    heading.setAccessibilityLabel("Markers")
+    heading.setAccessibilityIdentifier("Markers")
+    column.orientation = .vertical
+    column.alignment = .leading
+    column.spacing = ScribeSpacing.tight
+    column.detachesHiddenViews = false
+    heading.translatesAutoresizingMaskIntoConstraints = false
+    column.translatesAutoresizingMaskIntoConstraints = false
+    addSubview(heading)
+    addSubview(column)
+    NSLayoutConstraint.activate([
+      heading.leadingAnchor.constraint(equalTo: leadingAnchor),
+      heading.topAnchor.constraint(equalTo: topAnchor),
+      heading.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor),
+      column.leadingAnchor.constraint(equalTo: leadingAnchor),
+      column.topAnchor.constraint(equalTo: heading.bottomAnchor, constant: ScribeSpacing.tight),
+      column.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor),
+      column.bottomAnchor.constraint(lessThanOrEqualTo: bottomAnchor),
+    ])
+  }
+
+  required init?(coder: NSCoder) {
+    nil
+  }
+
+  override var intrinsicContentSize: NSSize {
+    let count = column.arrangedSubviews.count
+    let height: CGFloat = isHidden || count == 0 ? 0 : 24 + CGFloat(count) * 28
+    return NSSize(width: NSView.noIntrinsicMetric, height: height)
+  }
+
+  func bind(events: [NativeRecorderEvent]) {
+    let markers = events.filter { $0.kind == "marker_added" }
+    let next = markers.map { "\($0.id)\n\($0.label)\n\($0.sessionNanoseconds)" }
+    let shown = !markers.isEmpty
+    isHidden = !shown
+    heading.isHidden = !shown
+    column.isHidden = !shown
+    guard next != signature else { return }
+    signature = next
+    for view in column.arrangedSubviews {
+      column.removeArrangedSubview(view)
+      view.removeFromSuperview()
+    }
+    for marker in markers {
+      column.addArrangedSubview(row(for: marker))
+    }
+    invalidateIntrinsicContentSize()
+  }
+
+  private func row(for marker: NativeRecorderEvent) -> NSView {
+    let stamp = TranscriptSection.timestamp(marker.sessionNanoseconds)
+    let spoken = ConversationControlLabels.liveMarkerAccessibility(
+      stamp: stamp, label: marker.label)
+    let nameText = marker.label.isEmpty ? "Marker" : marker.label
+    let row = NSStackView()
+    row.orientation = .horizontal
+    row.alignment = .centerY
+    row.spacing = ScribeSpacing.related
+    row.detachesHiddenViews = false
+    let time = NSTextField(labelWithString: stamp)
+    time.font = .monospacedDigitSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular)
+    time.setAccessibilityLabel(spoken)
+    time.setAccessibilityIdentifier(marker.id)
+    time.setAccessibilityRole(.staticText)
+    let name = NSTextField(labelWithString: nameText)
+    name.font = .preferredFont(forTextStyle: .body)
+    name.textColor = .labelColor
+    name.setAccessibilityLabel(nameText)
+    name.setAccessibilityRole(.staticText)
+    for item in [time, name] {
+      item.setContentCompressionResistancePriority(.required, for: .horizontal)
+      item.setContentCompressionResistancePriority(.required, for: .vertical)
+      row.addArrangedSubview(item)
+    }
+    time.widthAnchor.constraint(greaterThanOrEqualToConstant: 48).isActive = true
+    time.heightAnchor.constraint(greaterThanOrEqualToConstant: 16).isActive = true
+    name.heightAnchor.constraint(greaterThanOrEqualToConstant: 16).isActive = true
+    return row
   }
 }

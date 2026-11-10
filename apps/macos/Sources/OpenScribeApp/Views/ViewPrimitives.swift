@@ -62,6 +62,13 @@ enum ConversationControlLabels {
     return "\(seek), \(name)"
   }
 
+  /// A marker on the live surface names the stored session time. It does not
+  /// offer playback while capture still has the file open.
+  static func liveMarkerAccessibility(stamp: String, label: String) -> String {
+    let name = label.isEmpty ? "Marker" : "Marker, \(label)"
+    return "\(name) at \(stamp)"
+  }
+
   static func correctAccessibility(stamp: String) -> String {
     "Correct the text at \(stamp)"
   }
