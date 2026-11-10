@@ -394,15 +394,15 @@ struct ContentView: View {
   private var captureButton: some View {
     Group {
       if liveRecording.canStop {
-        Button(ConversationControlLabels.stopAndSave, systemImage: "stop.fill") {
-          Task {
-            await liveRecording.stop()
-            store.refresh()
+        ToolbarStopMount(
+          onStop: {
+            Task {
+              await liveRecording.stop()
+              store.refresh()
+            }
           }
-        }
-        .keyboardShortcut(
-          ConversationControlLabels.stopShortcut.key,
-          modifiers: ConversationControlLabels.stopShortcut.modifiers)
+        )
+        .frame(width: 180, height: 32)
       } else {
         ToolbarRecordMount(
           enabled: MainWorkspaceActions.canRecord(
@@ -1154,6 +1154,71 @@ private struct EmptyConversationWorkspace: View {
     .padding(32)
     .frame(maxWidth: .infinity, maxHeight: .infinity)
     .accessibilityElement(children: .contain)
+  }
+}
+
+/// The toolbar's Stop and Save control. The button is created with the first
+/// layout and calls the same stop the menu uses.
+private struct ToolbarStopMount: NSViewRepresentable {
+  let onStop: () -> Void
+
+  func makeNSView(context: Context) -> ToolbarStopControl {
+    let view = ToolbarStopControl()
+    view.bind(onStop: onStop)
+    return view
+  }
+
+  func updateNSView(_ view: ToolbarStopControl, context: Context) {
+    view.bind(onStop: onStop)
+  }
+}
+
+private final class ToolbarStopControl: NSView {
+  private let button = NSButton(
+    title: ConversationControlLabels.stopAndSave, target: nil, action: nil)
+  private var onStop: (() -> Void)?
+
+  override init(frame frameRect: NSRect) {
+    super.init(frame: frameRect)
+    setAccessibilityIdentifier("Toolbar stop")
+    button.bezelStyle = .rounded
+    button.setAccessibilityLabel(ConversationControlLabels.stopAndSave)
+    button.setAccessibilityIdentifier("Toolbar stop")
+    let shortcut = ConversationControlLabels.stopShortcut
+    button.keyEquivalent = String(shortcut.key.character)
+    button.keyEquivalentModifierMask = Self.modifierMask(shortcut.modifiers)
+    button.target = self
+    button.action = #selector(stop)
+    button.translatesAutoresizingMaskIntoConstraints = false
+    addSubview(button)
+    NSLayoutConstraint.activate([
+      button.leadingAnchor.constraint(equalTo: leadingAnchor),
+      button.centerYAnchor.constraint(equalTo: centerYAnchor),
+      button.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor),
+    ])
+  }
+
+  required init?(coder: NSCoder) {
+    nil
+  }
+
+  func bind(onStop: @escaping () -> Void) {
+    self.onStop = onStop
+    button.isEnabled = true
+  }
+
+  @objc private func stop() {
+    guard button.isEnabled else { return }
+    onStop?()
+  }
+
+  private static func modifierMask(_ modifiers: EventModifiers) -> NSEvent.ModifierFlags {
+    var mask: NSEvent.ModifierFlags = []
+    if modifiers.contains(.command) { mask.insert(.command) }
+    if modifiers.contains(.shift) { mask.insert(.shift) }
+    if modifiers.contains(.option) { mask.insert(.option) }
+    if modifiers.contains(.control) { mask.insert(.control) }
+    return mask
   }
 }
 

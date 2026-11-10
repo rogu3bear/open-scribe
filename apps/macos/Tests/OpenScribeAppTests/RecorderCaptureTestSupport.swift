@@ -93,6 +93,7 @@ final class PauseSource: MicrophoneCapturing, SystemAudioCapturing, @unchecked S
   var holdsFirstNotification = false
   var startGate: PauseStartGate?
   private(set) var microphoneStartCount = 0
+  private(set) var didStart = false
   private(set) var stopCount = 0
   private var firstHandler: MicrophoneFirstSampleHandler?
   private var observationHandler: MicrophoneHealthHandler?
@@ -115,6 +116,7 @@ final class PauseSource: MicrophoneCapturing, SystemAudioCapturing, @unchecked S
     observationHandler = onObservation
     microphoneFailureHandler = onFailure
     deliverWriteFailure = { _ in onFailure(.writerFailed) }
+    didStart = true
   }
   /// Delivers one health observation the way the production adapter does: with
   /// the identity it bound when capture started.
@@ -134,6 +136,7 @@ final class PauseSource: MicrophoneCapturing, SystemAudioCapturing, @unchecked S
     firstHandler = onFirstSample
     systemFailureHandler = onFailure
     deliverWriteFailure = { _ in onFailure(.streamStopped) }
+    didStart = true
     if let startGate { await startGate.wait() }
   }
   /// Reports a system-audio stream failure the way the adapter does.
