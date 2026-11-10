@@ -50,6 +50,42 @@ final class SpeechTranscriptionModelTests: XCTestCase {
     XCTAssertNil(speech.transcribingSessionId)
   }
 
+  func testAnExplicitDownloadRefusesAShortCatalogFileAndLeavesARecording() async throws {
+    let root = temporaryRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let sibling = root.appendingPathComponent("Sessions/s/audio/keep.caf")
+    try FileManager.default.createDirectory(
+      at: sibling.deletingLastPathComponent(), withIntermediateDirectories: true)
+    let siblingBytes = Data("recording-bytes".utf8)
+    try siblingBytes.write(to: sibling)
+    let speech = SpeechTranscriptionModel(managedRoot: root)
+    await speech.refreshAndWait()
+    let model = try XCTUnwrap(speech.models.first { $0.modelId == "whisper-small.en-q5_1" })
+    let native = try NativeSpeechModels.open(managedRoot: root.path)
+    let plan = try native.planModelDownload(modelId: model.modelId)
+    XCTAssertEqual(plan.url, model.downloadOrigin)
+    XCTAssertEqual(plan.resumeOffset, 0)
+    XCTAssertEqual(plan.expectedLength, model.byteLength)
+    XCTAssertTrue(plan.url.hasPrefix("https://"))
+
+    let downloaded = await speech.download(model, protocolClasses: [ShortCatalogDownload.self])
+    XCTAssertFalse(downloaded)
+    XCTAssertTrue(speech.messageIsFailure)
+    XCTAssertEqual(
+      speech.message, "The model file was not installed: it is shorter than the published file.")
+    XCTAssertNil(speech.installedModel)
+    XCTAssertFalse(speech.isDownloading)
+    XCTAssertEqual(
+      try Data(contentsOf: URL(fileURLWithPath: plan.partialPath)), ShortCatalogDownload.body)
+    XCTAssertEqual(try Data(contentsOf: sibling), siblingBytes)
+    XCTAssertFalse(
+      FileManager.default.fileExists(
+        atPath: root.appendingPathComponent(
+          "Models/whisper-small.en-q5_1/1.0.0/ggml-small.en-q5_1.bin"
+        ).path))
+  }
+
   func testSuccessfulInstallAndRepairPublishReadinessBeforeReturning() async throws {
     let readinesses: [NativeModelReadiness] = [.absent, .invalid]
     for initial in readinesses {
@@ -336,7 +372,28 @@ final class SpeechTranscriptionModelTests: XCTestCase {
   }
 }
 
-/// Coarse native adapter only: no file access, weights, ASR, or downloads.
+/// Answers the catalog URL with a few bytes. The production session is not involved.
+final class ShortCatalogDownload: URLProtocol {
+  static let body = Data("partial-model".utf8)
+  override class func canInit(with request: URLRequest) -> Bool { true }
+  override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+  override func startLoading() {
+    guard let url = request.url, let client else { return }
+    let response = HTTPURLResponse(
+      url: url, statusCode: 200, httpVersion: "HTTP/1.1",
+      headerFields: [
+        "Content-Type": "application/octet-stream",
+        "Content-Length": "\(Self.body.count)",
+      ])!
+    client.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+    client.urlProtocol(self, didLoad: Self.body)
+    client.urlProtocolDidFinishLoading(self)
+  }
+  override func stopLoading() {}
+}
+
+/// Coarse native adapter only: no file access, weights, or ASR.
+/// Download planning stays on the real native class. This double refuses it.
 /// Holds post-install discovery so the production model's return ordering is deterministic.
 private final class DelayedInstalledCatalog: NativeSpeechModels, @unchecked Sendable {
   let verificationEntered = DispatchSemaphore(value: 0)
@@ -381,6 +438,12 @@ private final class DelayedInstalledCatalog: NativeSpeechModels, @unchecked Send
   }
   override func repairFromFile(modelId: String, sourcePath: String) throws {
     lock.withLock { installed = true }
+  }
+  override func planModelDownload(modelId: String) throws -> NativeModelDownloadPlan {
+    throw NativeSpeechError.ModelRejected(reason: "not_regular_file")
+  }
+  override func finishModelDownload(modelId: String) throws {
+    throw NativeSpeechError.ModelRejected(reason: "not_regular_file")
   }
   override func needsDecodedCompanionForIntent(sessionId: String, intent: NativeTranscriptionIntent)
     throws -> Bool

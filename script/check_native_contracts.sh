@@ -22,10 +22,10 @@ if [[ "$mode" == --all || "$mode" == --entitlements ]]; then
 	info_plist="apps/macos/Support/Info.plist"
 	entitlements="apps/macos/Support/OpenScribe.entitlements"
 	plutil -lint "$info_plist" "$entitlements" >/dev/null
-	for key in app-sandbox device.audio-input files.user-selected.read-write; do
+	for key in app-sandbox device.audio-input files.user-selected.read-write network.client; do
 		[[ "$(/usr/libexec/PlistBuddy -c "Print :com.apple.security.$key" "$entitlements")" == true ]] || exit 1
 	done
-	[[ "$(plutil -p "$entitlements" | rg -c '=>')" == 3 ]] || exit 1
+	[[ "$(plutil -p "$entitlements" | rg -c '=>')" == 4 ]] || exit 1
 	[[ "$(/usr/libexec/PlistBuddy -c 'Print :NSMicrophoneUsageDescription' "$info_plist")" == 'Open Scribe uses the microphone only when you explicitly start a recording that includes it.' ]] || exit 1
 	build_settings="$(xcodebuild -project apps/macos/OpenScribe.xcodeproj \
 		-target OpenScribeApp -configuration Debug -showBuildSettings)"

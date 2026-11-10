@@ -13,13 +13,15 @@ use open_scribe_asr::{
 };
 use open_scribe_models::{
     Catalog, CatalogError, InstallError, InstalledArtifact, ModelLayout, ModelRecord,
-    QuarantinedModel, VerifyError, verify_staged,
+    QuarantinedModel, ResumeDecision, TransferValidator, VerifyError, resume_decision,
+    verify_staged,
 };
 use open_scribe_store::{SessionStore, StoreError};
 use open_scribe_types::{ModelReadiness, SessionId};
 use std::collections::HashMap;
 use std::fmt;
 use std::fs;
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -115,6 +117,17 @@ pub struct RemovedSpeechModel {
     pub model_id: String,
     pub version: String,
     pub quarantined_directory: PathBuf,
+}
+
+/// Where a platform adapter may write one explicit catalog download.
+/// This plan does not open a socket. `resume_offset` is zero until a
+/// persisted validator exists; unknown bytes are never appended.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ModelDownloadPlan {
+    pub url: String,
+    pub partial_path: PathBuf,
+    pub expected_length: u64,
+    pub resume_offset: u64,
 }
 
 struct ModelRunState {
@@ -296,6 +309,73 @@ impl SpeechModels {
         };
         runs.remove(&record.id);
         Ok(removed_model(quarantined))
+    }
+
+    /// Names the catalog origin and an empty regular partial. No validator
+    /// is stored yet, so the resume rule restarts and the partial is truncated.
+    /// A symlink or extra link at that path is left untouched.
+    pub fn plan_download(&self, model_id: &str) -> Result<ModelDownloadPlan, SpeechModelError> {
+        self.ensure_not_removing(model_id)?;
+        let record = self.record(model_id)?.clone();
+        let url = record
+            .download_origins
+            .iter()
+            .find(|origin| origin.starts_with("https://"))
+            .cloned()
+            .ok_or(SpeechModelError::UnknownModel)?;
+        let partial = self.layout.partial_path(&record);
+        let partial_length = fs::symlink_metadata(&partial)
+            .ok()
+            .filter(|metadata| metadata.is_file())
+            .map(|metadata| metadata.len())
+            .unwrap_or(0);
+        let validator = TransferValidator {
+            url: url.clone(),
+            etag: None,
+            last_modified: None,
+            expected_length: record.byte_length,
+            manifest_sha256: record.sha256.clone(),
+        };
+        // No ETag or Last-Modified is persisted. Restart is the only
+        // decision that may prepare the partial, and it truncates.
+        match resume_decision(&record, None, &validator, partial_length) {
+            ResumeDecision::Restart => {}
+            ResumeDecision::Resume { .. } => {
+                return Err(SpeechModelError::Install(InstallError::RecordMismatch));
+            }
+        }
+        let prepared = self
+            .layout
+            .prepare_download_partial(&record)
+            .map_err(SpeechModelError::Install)?;
+        Ok(ModelDownloadPlan {
+            url,
+            partial_path: prepared.path,
+            expected_length: record.byte_length,
+            resume_offset: prepared.length,
+        })
+    }
+
+    /// Verifies the download partial with the same checks as a chosen file.
+    /// A symlink or extra hard link is refused and left in place. A rejected
+    /// partial stays where the adapter wrote it. A successful install drops
+    /// only that same inode.
+    pub fn finish_download(&self, model_id: &str) -> Result<InstalledArtifact, SpeechModelError> {
+        self.ensure_not_removing(model_id)?;
+        let record = self.record(model_id)?.clone();
+        let path = self.layout.partial_path(&record);
+        let metadata =
+            fs::symlink_metadata(&path).map_err(|error| SpeechModelError::Install(error.into()))?;
+        if !metadata.is_file() || metadata.file_type().is_symlink() || metadata.nlink() != 1 {
+            return Err(SpeechModelError::Install(InstallError::NotRegularFile));
+        }
+        let installed = self.install_from_file(&record.id, &path)?;
+        // The loadable copy is already installed. A partial that was swapped
+        // after that copy is left alone instead of failing the install.
+        let _ = self
+            .layout
+            .discard_owned_partial(&record, metadata.dev(), metadata.ino());
+        Ok(installed)
     }
 
     /// One in-flight recognizer use. Transcription holds this across load and

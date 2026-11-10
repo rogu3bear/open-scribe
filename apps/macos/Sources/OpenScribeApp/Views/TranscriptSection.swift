@@ -57,7 +57,9 @@ struct TranscriptSection: View {
         Text(session.transcriptionUnavailableReason ?? availabilityText)
           .font(.callout)
           .foregroundStyle(.secondary)
-        if session.transcriptionUnavailableReason == nil, let diarization = transcripts.speakerDiarizationText {
+        if session.transcriptionUnavailableReason == nil,
+          let diarization = transcripts.speakerDiarizationText
+        {
           Text(diarization)
             .font(.callout)
             .foregroundStyle(.secondary)
@@ -520,14 +522,19 @@ struct TranscriptSection: View {
   }
 
   private var packageUnavailableReason: String? {
+    Self.packageRefusal(
+      hasTurnSpeakerNames: hasTurnSpeakerNames,
+      originalExtension: loadedAudioOptions?.originalExtension)
+  }
+
+  /// Passage-level names have no portable representation. A compressed M4A
+  /// import is copied with the package and restores as that file.
+  static func packageRefusal(hasTurnSpeakerNames: Bool, originalExtension: String?) -> String? {
     if hasTurnSpeakerNames {
       return
         "This package format cannot retain passage-level names. Export the transcript and audio separately."
     }
-    if loadedAudioOptions?.originalExtension == "m4a" {
-      return
-        "This package format cannot retain M4A originals. Export the transcript and original audio separately."
-    }
+    _ = originalExtension
     return nil
   }
 
@@ -538,7 +545,7 @@ struct TranscriptSection: View {
     panel.canCreateDirectories = true
     panel.nameFieldStringValue = Self.fileName(session.title, type: packageType)
     panel.message =
-      "This format carries supported PCM audio, selected transcripts, speaker labels, and markers. Context evidence is omitted; failed transcript status restores as pending. Compressed imports are not a supported portable round-trip."
+      "This format carries supported PCM audio, a compressed M4A import, selected transcripts, speaker labels, and markers. Context evidence is omitted; failed transcript status restores as pending. Passage-level names are not included."
     guard panel.runModal() == .OK, var url = panel.url else { return }
     if url.pathExtension != "openscribe" { url.appendPathExtension("openscribe") }
     Task { await transcripts.export(.portablePackage, to: url, from: session.sessionId) }

@@ -146,4 +146,51 @@ final class ConversationExportTests: XCTestCase {
     XCTAssertFalse(refused)
     XCTAssertTrue(model.messageIsFailure)
   }
+
+  func testACompressedImportRestoresThroughAPortablePackage() async throws {
+    XCTAssertNil(
+      TranscriptSection.packageRefusal(hasTurnSpeakerNames: false, originalExtension: "m4a"))
+    XCTAssertNotNil(
+      TranscriptSection.packageRefusal(hasTurnSpeakerNames: true, originalExtension: "m4a"))
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let source = root.appendingPathComponent("Memo.m4a")
+    do {
+      let file = try AVAudioFile(
+        forWriting: source,
+        settings: [
+          AVFormatIDKey: kAudioFormatAppleLossless, AVSampleRateKey: 48_000.0,
+          AVNumberOfChannelsKey: 2, AVEncoderBitDepthHintKey: 16,
+        ])
+      let buffer = try XCTUnwrap(
+        AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: 48_000))
+      buffer.frameLength = 48_000
+      try file.write(from: buffer)
+    }
+    let original = try Data(contentsOf: source)
+    let managedRoot = root.appendingPathComponent("Library", isDirectory: true)
+    let evidence = try RuntimeLibraryStore(managedRoot: managedRoot)
+      .importManagedAudio(title: "Memo", sourceURL: source)
+    let model = TranscriptLibraryModel(managedRoot: managedRoot)
+    await model.load(sessionId: evidence.sessionId)
+    let package = root.appendingPathComponent("Memo.openscribe")
+    let exported = await model.export(.portablePackage, to: package)
+    XCTAssertTrue(exported, model.message ?? "")
+    let summary = try verifyPortablePackage(packagePath: package.path)
+    XCTAssertEqual(summary.sourceSessionId, evidence.sessionId)
+
+    let other = root.appendingPathComponent("Other", isDirectory: true)
+    let receipt = try NativeTranscriptLibrary.open(managedRoot: other.path)
+      .importPortablePackage(packagePath: package.path)
+    XCTAssertEqual(receipt.sourceSessionId, evidence.sessionId)
+    XCTAssertEqual(receipt.mediaFiles, 1)
+    let restored = TranscriptLibraryModel(managedRoot: other)
+    await restored.load(sessionId: receipt.sessionId)
+    XCTAssertEqual(restored.audioOptions?.originalExtension, "m4a")
+    let copy = root.appendingPathComponent("Restored.m4a")
+    let exportedOriginal = await restored.export(.original, to: copy)
+    XCTAssertTrue(exportedOriginal, restored.message ?? "")
+    XCTAssertEqual(try Data(contentsOf: copy), original)
+  }
 }

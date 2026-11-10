@@ -46,6 +46,14 @@ pub struct NativeTranscriptionProgress {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct NativeModelDownloadPlan {
+    pub url: String,
+    pub partial_path: String,
+    pub expected_length: u64,
+    pub resume_offset: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
 pub struct NativeTranscriptionSummary {
     pub tracks: u32,
     pub segments: u32,
@@ -269,6 +277,31 @@ impl NativeSpeechModels {
         self.models
             .remove(&model_id, choice)
             .map(|removed| removed.quarantined_directory.to_string_lossy().into_owned())
+            .map_err(map_model_error)
+    }
+
+    /// Returns the catalog origin and an empty managed partial. The caller
+    /// writes bytes there. This process does not fetch them.
+    pub fn plan_model_download(
+        &self,
+        model_id: String,
+    ) -> Result<NativeModelDownloadPlan, NativeSpeechError> {
+        self.models
+            .plan_download(&model_id)
+            .map(|plan| NativeModelDownloadPlan {
+                url: plan.url,
+                partial_path: plan.partial_path.to_string_lossy().into_owned(),
+                expected_length: plan.expected_length,
+                resume_offset: plan.resume_offset,
+            })
+            .map_err(map_model_error)
+    }
+
+    /// Verifies the partial and installs it only when the existing checks pass.
+    pub fn finish_model_download(&self, model_id: String) -> Result<(), NativeSpeechError> {
+        self.models
+            .finish_download(&model_id)
+            .map(|_| ())
             .map_err(map_model_error)
     }
 

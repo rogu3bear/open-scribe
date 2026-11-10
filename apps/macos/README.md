@@ -69,8 +69,9 @@ recording, import, playback, correction, search, and export controls.
 The conversation reader shows the actual date added to the library, stored
 media size and source names. The added date is not an inferred recording date.
 It offers original-language written transcripts using an explicitly installed
-compatible model; selecting files does not download weights. Automatic
-transcription still follows Settings and Rust's existing admission policy.
+compatible model. Download fetches only that published catalog file. Choosing
+a local file does not fetch anything else. Recording does not download a model.
+Automatic transcription still follows Settings and Rust's existing admission policy.
 
 Click a passage's speaker label to confirm a person for that passage, reuse a
 person already named in the conversation, or reset to its audio-source label.

@@ -423,3 +423,43 @@ fn removing_an_installed_model_keeps_its_bytes_and_the_recording() {
         Err(SpeechModelError::NotInstalled)
     ));
 }
+
+#[test]
+fn an_explicit_download_restarts_and_a_short_partial_installs_nothing() {
+    let root = tempfile::tempdir().unwrap();
+    let models = SpeechModels::open(root.path()).unwrap();
+    let record = Catalog::canonical()
+        .unwrap()
+        .get("whisper-small.en-q5_1")
+        .unwrap()
+        .clone();
+    let recording = root.path().join("Sessions/s/audio/keep.caf");
+    std::fs::create_dir_all(recording.parent().unwrap()).unwrap();
+    std::fs::write(&recording, b"recording-bytes").unwrap();
+
+    let plan = models.plan_download(&record.id).unwrap();
+    assert_eq!(plan.url, record.download_origins[0]);
+    assert!(plan.url.starts_with("https://"));
+    assert_eq!(plan.expected_length, record.byte_length);
+    assert_eq!(plan.resume_offset, 0);
+    assert_eq!(
+        plan.partial_path,
+        ModelLayout::new(root.path()).partial_path(&record)
+    );
+    assert_eq!(std::fs::metadata(&plan.partial_path).unwrap().len(), 0);
+
+    std::fs::write(&plan.partial_path, b"stale").unwrap();
+    let again = models.plan_download(&record.id).unwrap();
+    assert_eq!(again.resume_offset, 0);
+    assert_eq!(std::fs::metadata(&again.partial_path).unwrap().len(), 0);
+    std::fs::write(&again.partial_path, b"short").unwrap();
+    let error = models.finish_download(&record.id).unwrap_err();
+    assert_eq!(error.class(), "truncated");
+    assert_eq!(std::fs::read(&again.partial_path).unwrap(), b"short");
+    assert!(models.statuses().iter().all(|status| !status.installed));
+    assert_eq!(std::fs::read(&recording).unwrap(), b"recording-bytes");
+    assert!(matches!(
+        models.plan_download("not-a-model"),
+        Err(SpeechModelError::UnknownModel)
+    ));
+}

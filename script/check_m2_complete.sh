@@ -81,7 +81,7 @@ if [[ "$qualified_candidate" == 1 && ${#missing[@]} -eq 0 && ${#unqualified[@]} 
 		"candidate_checks_qualified=$qualified_candidate" \
 		"qualified_behaviors=$proven_text" \
 		"qualified_source=$qualified_source_text" \
-		'partial_source_surfaces=durable_conversation_library,recovered_and_imported_media_identity,safe_playback,model_catalog_verification,chosen_file_model_install_without_in_app_download_or_removal' \
+		'partial_source_surfaces=durable_conversation_library,recovered_and_imported_media_identity,safe_playback,model_catalog_verification,explicit_catalog_download_and_quarantine_removal' \
 		"unqualified_source=$unqualified_text" \
 		'qualification=candidate_receipts' \
 		"missing=$missing_text" \
@@ -93,7 +93,7 @@ printf '%s\n' \
 	"candidate_checks_qualified=$qualified_candidate" \
 	"qualified_behaviors=$proven_text" \
 	"qualified_source=$qualified_source_text" \
-	'partial_source_surfaces=durable_conversation_library,recovered_and_imported_media_identity,safe_playback,model_catalog_verification,chosen_file_model_install_without_in_app_download_or_removal' \
+	'partial_source_surfaces=durable_conversation_library,recovered_and_imported_media_identity,safe_playback,model_catalog_verification,explicit_catalog_download_and_quarantine_removal' \
 	"unqualified_source=$unqualified_text" \
 	'qualification=none at the M2 completion plane' \
 	"missing=$missing_text" \

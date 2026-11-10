@@ -2,9 +2,10 @@ import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
 
-/// Installs a local speech model from a file the user downloaded. Open Scribe
-/// makes no network request: the published file is checked against the
-/// manifest's exact size and SHA-256, then test-run, before it is installed.
+/// Installs a local speech model. Download fetches the published catalog file
+/// into managed staging. Install from File uses a file the user already has.
+/// Either way the file is checked against the manifest, then test-run, before
+/// it is installed. Recording does not download a model.
 struct SpeechModelSheet: View {
   @ObservedObject var speech: SpeechTranscriptionModel
   let onClose: () -> Void
@@ -14,7 +15,7 @@ struct SpeechModelSheet: View {
       Text("Speech Models")
         .scribeSectionHeading(.title2.weight(.semibold))
       Text(
-        "Download a model, then install its file. Open Scribe verifies it before transcribing on this Mac."
+        "Download the published file, or choose one you already have. Open Scribe checks its size, SHA-256, and a short engine test before transcribing on this Mac. Recording does not use the network. These models are still pending release review."
       )
       .font(.callout)
       .foregroundStyle(.secondary)
@@ -79,15 +80,19 @@ struct SpeechModelSheet: View {
       .foregroundStyle(.secondary)
       HStack(spacing: ScribeSpacing.compact) {
         if let origin = URL(string: model.downloadOrigin) {
-          Link("Download File", destination: origin)
+          Link("Open Download Page", destination: origin)
             .help(model.downloadOrigin)
-            .accessibilityLabel("Download \(Self.title(model)) speech model")
+            .accessibilityLabel("Open the download page for \(Self.title(model))")
         }
         Spacer()
-        if speech.isInstalling || speech.isRemoving {
+        if speech.isInstalling || speech.isRemoving || speech.isDownloading {
           ProgressView().controlSize(.small)
-          Text(speech.isRemoving ? "Removing…" : "Checking…").font(.caption)
+          Text(
+            speech.isRemoving ? "Removing…" : speech.isDownloading ? "Downloading…" : "Checking…"
+          ).font(.caption)
         } else if !model.installed {
+          Button("Download") { Task { await speech.download(model) } }
+            .accessibilityLabel("Download \(Self.title(model)) speech model")
           Button(model.readiness == .invalid ? "Repair from File…" : "Install from File…") {
             choose(model)
           }
@@ -96,7 +101,9 @@ struct SpeechModelSheet: View {
             "\(model.readiness == .invalid ? "Repair" : "Install") \(Self.title(model)) speech model from file"
           )
         }
-        if model.readiness != .absent && !speech.isInstalling && !speech.isRemoving {
+        if model.readiness != .absent && !speech.isInstalling && !speech.isRemoving
+          && !speech.isDownloading
+        {
           Button("Remove", role: .destructive) {
             Task { await speech.remove(model) }
           }

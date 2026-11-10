@@ -1533,6 +1533,11 @@ public func FfiConverterTypeNativeRecordingPreparation_lower(_ value: NativeReco
 public protocol NativeSpeechModelsProtocol: AnyObject, Sendable {
 
   /**
+   * Verifies the partial and installs it only when the existing checks pass.
+   */
+  func finishModelDownload(modelId: String) throws
+
+  /**
    * Verifies and installs a user-chosen model file. Blocking: it hashes
    * the whole file and runs a one-second decode.
    */
@@ -1548,6 +1553,12 @@ public protocol NativeSpeechModelsProtocol: AnyObject, Sendable {
 
   func needsDecodedCompanionForIntent(sessionId: String, intent: NativeTranscriptionIntent) throws
     -> Bool
+
+  /**
+   * Returns the catalog origin and an empty managed partial. The caller
+   * writes bytes there. This process does not fetch them.
+   */
+  func planModelDownload(modelId: String) throws -> NativeModelDownloadPlan
 
   /**
    * Quarantines one installed model version. The returned directory is no
@@ -1634,6 +1645,19 @@ open class NativeSpeechModels: NativeSpeechModelsProtocol, @unchecked Sendable {
   }
 
   /**
+   * Verifies the partial and installs it only when the existing checks pass.
+   */
+  open func finishModelDownload(modelId: String) throws {
+    try rustCallWithError(FfiConverterTypeNativeSpeechError_lift) {
+      uniffiCallStatus in
+      uniffi_open_scribe_uniffi_fn_method_nativespeechmodels_finish_model_download(
+        self.uniffiCloneHandle(),
+        FfiConverterString.lower(modelId), uniffiCallStatus
+      )
+    }
+  }
+
+  /**
    * Verifies and installs a user-chosen model file. Blocking: it hashes
    * the whole file and runs a one-second decode.
    */
@@ -1683,6 +1707,21 @@ open class NativeSpeechModels: NativeSpeechModelsProtocol, @unchecked Sendable {
           self.uniffiCloneHandle(),
           FfiConverterString.lower(sessionId),
           FfiConverterTypeNativeTranscriptionIntent_lower(intent), uniffiCallStatus
+        )
+      })
+  }
+
+  /**
+   * Returns the catalog origin and an empty managed partial. The caller
+   * writes bytes there. This process does not fetch them.
+   */
+  open func planModelDownload(modelId: String) throws -> NativeModelDownloadPlan {
+    return try FfiConverterTypeNativeModelDownloadPlan_lift(
+      try rustCallWithError(FfiConverterTypeNativeSpeechError_lift) {
+        uniffiCallStatus in
+        uniffi_open_scribe_uniffi_fn_method_nativespeechmodels_plan_model_download(
+          self.uniffiCloneHandle(),
+          FfiConverterString.lower(modelId), uniffiCallStatus
         )
       })
   }
@@ -5035,6 +5074,69 @@ public func FfiConverterTypeNativeMixdownReceipt_lift(_ buf: RustBuffer) throws
 public func FfiConverterTypeNativeMixdownReceipt_lower(_ value: NativeMixdownReceipt) -> RustBuffer
 {
   return FfiConverterTypeNativeMixdownReceipt.lower(value)
+}
+
+public struct NativeModelDownloadPlan: Equatable, Hashable {
+  public let url: String
+  public let partialPath: String
+  public let expectedLength: UInt64
+  public let resumeOffset: UInt64
+
+  // Default memberwise initializers are never public by default, so we
+  // declare one manually.
+  public init(url: String, partialPath: String, expectedLength: UInt64, resumeOffset: UInt64) {
+    self.url = url
+    self.partialPath = partialPath
+    self.expectedLength = expectedLength
+    self.resumeOffset = resumeOffset
+  }
+
+}
+
+#if compiler(>=6)
+  extension NativeModelDownloadPlan: Sendable {}
+#endif
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeNativeModelDownloadPlan: FfiConverterRustBuffer {
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws
+    -> NativeModelDownloadPlan
+  {
+    return
+      try NativeModelDownloadPlan(
+        url: FfiConverterString.read(from: &buf),
+        partialPath: FfiConverterString.read(from: &buf),
+        expectedLength: FfiConverterUInt64.read(from: &buf),
+        resumeOffset: FfiConverterUInt64.read(from: &buf)
+      )
+  }
+
+  public static func write(_ value: NativeModelDownloadPlan, into buf: inout [UInt8]) {
+    FfiConverterString.write(value.url, into: &buf)
+    FfiConverterString.write(value.partialPath, into: &buf)
+    FfiConverterUInt64.write(value.expectedLength, into: &buf)
+    FfiConverterUInt64.write(value.resumeOffset, into: &buf)
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeModelDownloadPlan_lift(_ buf: RustBuffer) throws
+  -> NativeModelDownloadPlan
+{
+  return try FfiConverterTypeNativeModelDownloadPlan.lift(buf)
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeModelDownloadPlan_lower(_ value: NativeModelDownloadPlan)
+  -> RustBuffer
+{
+  return FfiConverterTypeNativeModelDownloadPlan.lower(value)
 }
 
 public struct NativeNamedTranscriptSpeaker: Equatable, Hashable {
@@ -12602,6 +12704,9 @@ private let initializationResult: InitializationResult = {
   if uniffi_open_scribe_uniffi_checksum_method_nativetimelinemedia_lease() != 63634 {
     return InitializationResult.apiChecksumMismatch
   }
+  if uniffi_open_scribe_uniffi_checksum_method_nativespeechmodels_finish_model_download() != 15648 {
+    return InitializationResult.apiChecksumMismatch
+  }
   if uniffi_open_scribe_uniffi_checksum_method_nativespeechmodels_install_from_file() != 5955 {
     return InitializationResult.apiChecksumMismatch
   }
@@ -12615,6 +12720,9 @@ private let initializationResult: InitializationResult = {
   if uniffi_open_scribe_uniffi_checksum_method_nativespeechmodels_needs_decoded_companion_for_intent()
     != 15853
   {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_open_scribe_uniffi_checksum_method_nativespeechmodels_plan_model_download() != 17295 {
     return InitializationResult.apiChecksumMismatch
   }
   if uniffi_open_scribe_uniffi_checksum_method_nativespeechmodels_remove_installed() != 21378 {

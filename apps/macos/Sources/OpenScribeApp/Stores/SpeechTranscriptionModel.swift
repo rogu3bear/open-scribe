@@ -3,12 +3,14 @@ import Foundation
 /// Swift consumer of Rust's local speech-model and transcription authority.
 /// Rust verifies, installs, reverifies, and runs the model and commits every
 /// transcript; this model routes intent, polls coarse progress, and renders
-/// the outcome. Open Scribe itself never downloads a model.
+/// the outcome. An explicit Download fetches one catalog file into the
+/// managed partial. Recording does not download a model.
 @MainActor
 final class SpeechTranscriptionModel: ObservableObject {
   @Published private(set) var models: [NativeSpeechModel] = []
   @Published private(set) var isInstalling = false
   @Published private(set) var isRemoving = false
+  @Published private(set) var isDownloading = false
   @Published private(set) var isRefreshing = false
   @Published private(set) var catalogWarning: String?
   @Published private(set) var transcribingSessionId: String?
@@ -97,6 +99,58 @@ final class SpeechTranscriptionModel: ObservableObject {
     refresh()
     while isRefreshing, let current = refreshTask {
       await current.value
+    }
+  }
+
+  /// Fetches the catalog origin into the managed partial, then runs the same
+  /// verification and self-test as a chosen file. `protocolClasses` is how a
+  /// test answers that exact URL. The production call leaves it empty.
+  /// A rejected partial stays uninstalled.
+  @discardableResult
+  func download(_ model: NativeSpeechModel, protocolClasses: [AnyClass] = []) async -> Bool {
+    guard let speech, !isInstalling, !isRemoving, !isDownloading else { return false }
+    isDownloading = true
+    report(nil)
+    defer { isDownloading = false }
+    let modelId = model.modelId
+    let modelToken = DiagnosticPrivacy.token(modelId)
+    let fileName = model.fileName
+    do {
+      let plan = try await Task.detached(priority: .utility) {
+        try speech.planModelDownload(modelId: modelId)
+      }.value
+      guard let origin = URL(string: plan.url), origin.scheme == "https" else {
+        throw CatalogTransferError.refused
+      }
+      try await CatalogOriginTransfer.copy(
+        origin: origin, partialPath: plan.partialPath, expectedLength: plan.expectedLength,
+        resumeOffset: plan.resumeOffset, protocolClasses: protocolClasses)
+      isInstalling = true
+      defer { isInstalling = false }
+      try await Task.detached(priority: .utility) {
+        try speech.finishModelDownload(modelId: modelId)
+      }.value
+      await refreshAndWait()
+      guard catalogWarning == nil,
+        models.contains(where: { $0.modelId == modelId && $0.installed && $0.readiness == .ready })
+      else {
+        report(
+          "\(fileName) was installed, but its readiness could not be confirmed. Refresh the model catalog to check it again.",
+          failure: true)
+        return false
+      }
+      report("\(fileName) verified and installed.")
+      AppTelemetry.libraryNote(
+        stage: "speech-download", detail: "model=\(modelToken) result=installed")
+      return true
+    } catch {
+      refresh()
+      report(Self.describe(error), failure: true)
+      AppTelemetry.libraryNote(
+        stage: "speech-download",
+        detail: "model=\(modelToken) result=rejected code=\(Self.speechCode(error))"
+      )
+      return false
     }
   }
 
@@ -373,5 +427,127 @@ final class SpeechTranscriptionModel: ObservableObject {
 
   nonisolated static func rejection(_ reason: String) -> String {
     SpeechFailurePresentation.rejection(reason)
+  }
+}
+
+private enum CatalogTransferError: Error {
+  case refused
+}
+
+/// Writes one catalog response into the managed partial and stops one byte
+/// past the published length. A redirect to any other URL is refused.
+private final class CatalogOriginTransfer: NSObject, URLSessionDataDelegate, @unchecked Sendable {
+  private let origin: URL
+  private let room: UInt64
+  private let handle: FileHandle
+  private var written: UInt64 = 0
+  private var hitLimit = false
+  private var failure: Error?
+  private var continuation: CheckedContinuation<Void, Error>?
+  private var resumed = false
+
+  static func copy(
+    origin: URL, partialPath: String, expectedLength: UInt64, resumeOffset: UInt64,
+    protocolClasses: [AnyClass]
+  ) async throws {
+    let partial = URL(fileURLWithPath: partialPath)
+    let values = try partial.resourceValues(forKeys: [
+      .isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey, .linkCountKey,
+    ])
+    guard origin.scheme == "https", resumeOffset <= expectedLength,
+      values.isSymbolicLink != true, values.isRegularFile == true, (values.linkCount ?? 0) <= 1,
+      UInt64(values.fileSize ?? 0) == resumeOffset
+    else { throw CatalogTransferError.refused }
+    let handle = try FileHandle(forWritingTo: partial)
+    if resumeOffset > 0 { try handle.seek(toOffset: resumeOffset) }
+    let transfer = CatalogOriginTransfer(
+      origin: origin, room: (expectedLength &+ 1) &- resumeOffset, handle: handle)
+    let configuration = URLSessionConfiguration.ephemeral
+    configuration.requestCachePolicy = .reloadIgnoringLocalAndRemoteCacheData
+    configuration.urlCache = nil
+    configuration.timeoutIntervalForRequest = 30
+    configuration.waitsForConnectivity = false
+    if !protocolClasses.isEmpty { configuration.protocolClasses = protocolClasses }
+    let queue = OperationQueue()
+    queue.maxConcurrentOperationCount = 1
+    let session = URLSession(configuration: configuration, delegate: transfer, delegateQueue: queue)
+    defer { session.finishTasksAndInvalidate() }
+    try await transfer.run(session)
+  }
+
+  private init(origin: URL, room: UInt64, handle: FileHandle) {
+    self.origin = origin
+    self.room = room
+    self.handle = handle
+  }
+
+  private func run(_ session: URLSession) async throws {
+    try await withCheckedThrowingContinuation { continuation in
+      self.continuation = continuation
+      session.dataTask(with: origin).resume()
+    }
+  }
+
+  func urlSession(
+    _ session: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse,
+    completionHandler: @escaping (URLSession.ResponseDisposition) -> Void
+  ) {
+    guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode),
+      dataTask.originalRequest?.url == origin
+    else {
+      completionHandler(.cancel)
+      return
+    }
+    completionHandler(.allow)
+  }
+
+  func urlSession(
+    _ session: URLSession, task: URLSessionTask,
+    willPerformHTTPRedirection response: HTTPURLResponse,
+    newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void
+  ) {
+    completionHandler(request.url == origin ? request : nil)
+  }
+
+  func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+    let remaining = room &- written
+    guard remaining > 0 else {
+      hitLimit = true
+      dataTask.cancel()
+      return
+    }
+    let chunk = data.prefix(Int(min(UInt64(data.count), remaining)))
+    do {
+      try handle.write(contentsOf: chunk)
+      written &+= UInt64(chunk.count)
+      if written >= room {
+        hitLimit = true
+        dataTask.cancel()
+      }
+    } catch {
+      failure = error
+      dataTask.cancel()
+    }
+  }
+
+  func urlSession(
+    _ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?
+  ) {
+    try? handle.synchronize()
+    if let failure {
+      finish(.failure(failure))
+    } else if error == nil || hitLimit {
+      finish(written > 0 ? .success(()) : .failure(CatalogTransferError.refused))
+    } else {
+      finish(.failure(error ?? CatalogTransferError.refused))
+    }
+  }
+
+  private func finish(_ result: Result<Void, Error>) {
+    guard !resumed else { return }
+    resumed = true
+    try? handle.close()
+    continuation?.resume(with: result)
+    continuation = nil
   }
 }

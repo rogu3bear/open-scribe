@@ -60,6 +60,56 @@ impl ModelLayout {
             .join(format!("{}-{}.part", record.id, record.version))
     }
 
+    /// Creates or truncates the download partial. A symlink or extra hard
+    /// link is left untouched. This does not open a socket or read model bytes.
+    /// Callers append only after `resume_decision` returns `Resume`; this
+    /// restart path never appends.
+    pub fn prepare_download_partial(
+        &self,
+        record: &ModelRecord,
+    ) -> Result<PreparedPartial, InstallError> {
+        self.ensure_owned_directory(&self.staging_directory())?;
+        let path = self.partial_path(record);
+        match fs::symlink_metadata(&path) {
+            Ok(metadata) => {
+                if !single_regular_file(&metadata) {
+                    return Err(InstallError::NotRegularFile);
+                }
+                let file = OpenOptions::new()
+                    .write(true)
+                    .truncate(true)
+                    .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
+                    .open(&path)?;
+                let current = file.metadata()?;
+                if !single_regular_file(&current)
+                    || current.dev() != metadata.dev()
+                    || current.ino() != metadata.ino()
+                {
+                    return Err(InstallError::NotRegularFile);
+                }
+                file.sync_all()?;
+                sync_directory(&self.staging_directory())?;
+                Ok(PreparedPartial { path, length: 0 })
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                let file = OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .mode(0o600)
+                    .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
+                    .open(&path)?;
+                let metadata = file.metadata()?;
+                if !single_regular_file(&metadata) {
+                    return Err(InstallError::NotRegularFile);
+                }
+                file.sync_all()?;
+                sync_directory(&self.staging_directory())?;
+                Ok(PreparedPartial { path, length: 0 })
+            }
+            Err(error) => Err(error.into()),
+        }
+    }
+
     pub fn install_directory(&self, record: &ModelRecord) -> PathBuf {
         self.models.join(&record.id).join(&record.version)
     }
@@ -91,6 +141,13 @@ pub struct TransferValidator {
 pub enum ResumeDecision {
     Resume { offset: u64 },
     Restart,
+}
+
+/// An empty regular file at the catalog partial path.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PreparedPartial {
+    pub path: PathBuf,
+    pub length: u64,
 }
 
 pub fn resume_decision(
@@ -532,6 +589,10 @@ fn quarantine_destination(root: &Path, version: &str, inode: u64) -> io::Result<
         }
     }
     Err(io::Error::other("model quarantine name is exhausted"))
+}
+
+fn single_regular_file(metadata: &fs::Metadata) -> bool {
+    metadata.is_file() && !metadata.file_type().is_symlink() && metadata.nlink() == 1
 }
 
 fn discard_owned_file(path: &Path, device: u64, inode: u64) -> io::Result<()> {
@@ -1017,5 +1078,47 @@ mod tests {
         drop(staged);
         assert_eq!(fs::read(path).unwrap(), b"foreign replacement");
         assert!(!layout.installed_path(&record).exists());
+    }
+
+    #[test]
+    fn prepare_download_partial_truncates_a_regular_file_and_leaves_links_untouched() {
+        use std::os::unix::fs::symlink;
+        let root = tempfile::tempdir().unwrap();
+        let layout = ModelLayout::new(root.path());
+        let record = fixture(&fixture_bytes(51864));
+        let path = layout.partial_path(&record);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, b"stale partial").unwrap();
+        let prepared = layout.prepare_download_partial(&record).unwrap();
+        assert_eq!(prepared.path, path);
+        assert_eq!(prepared.length, 0);
+        assert_eq!(fs::metadata(&path).unwrap().len(), 0);
+        assert_eq!(fs::metadata(&path).unwrap().nlink(), 1);
+
+        let foreign = root.path().join("foreign.bin");
+        fs::write(&foreign, b"preserve").unwrap();
+        fs::remove_file(&path).unwrap();
+        symlink(&foreign, &path).unwrap();
+        assert!(matches!(
+            layout.prepare_download_partial(&record),
+            Err(InstallError::NotRegularFile)
+        ));
+        assert!(
+            fs::symlink_metadata(&path)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(fs::read(&foreign).unwrap(), b"preserve");
+
+        fs::remove_file(&path).unwrap();
+        fs::hard_link(&foreign, &path).unwrap();
+        assert!(matches!(
+            layout.prepare_download_partial(&record),
+            Err(InstallError::NotRegularFile)
+        ));
+        assert_eq!(fs::metadata(&path).unwrap().nlink(), 2);
+        assert_eq!(fs::read(&foreign).unwrap(), b"preserve");
+        assert_eq!(fs::read(&path).unwrap(), b"preserve");
     }
 }

@@ -10,15 +10,18 @@ bundled, mirrored, or approved for release.
 
 `open-scribe-models` implements catalog validation, the staging `.part` path,
 staging from a user-chosen file, the ADR 0008 resume rule, verification of
-length, header, engine compatibility, and digest, and atomic installation of
-the exact verified file. It never downloads, maps, loads, or executes a model.
-`open-scribe-core` installs a chosen file only after that verification and a
-one-second decode self-test in the whisper.cpp 1.8.3 engine, and reverifies
-the installed bytes before every load. The app makes no network request; the
-user downloads the file in a browser. The install-time self-test decodes
-silence rather than a speech known answer; persisted installation receipts,
-in-app download, and removal are not implemented, and the manifest
-capability stays Unavailable until release proof exists.
+length, header, engine compatibility, and digest, atomic installation of the
+exact verified file, and quarantine of an installed version. It never
+downloads, maps, loads, or executes a model. `open-scribe-core` plans an
+explicit download into that partial and installs either the partial or a
+chosen file only after verification and a one-second decode self-test in the
+whisper.cpp 1.8.3 engine. It reverifies the installed bytes before every load.
+The app's Download button fetches one catalog origin into the partial. No
+validator is stored yet, so a new download restarts instead of appending.
+Install from File still accepts a file the user already has. The self-test
+decodes silence rather than a speech known answer. Both catalog entries stay
+`review_state: Pending`, and the manifest capability stays Unavailable until
+release proof exists. Recording does not download a model.
 
 Each admitted entry must record:
 

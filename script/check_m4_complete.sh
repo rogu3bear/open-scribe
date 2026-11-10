@@ -56,7 +56,7 @@ printf '%s\n' \
 	"candidate_checks_qualified=$qualified_candidate" \
 	"qualified_local_only_modes=$qualified_text" \
 	'available_contracts=provider_policy_and_release_architecture_contracts' \
-	'available_source=two_phase_deletion,manifest_rendered_capability_status,adr_0015_routes_csp_and_headers,development_sandbox_without_network_entitlement,identifier_only_app_logs,local_only_workflow_proof' \
+	'available_source=two_phase_deletion,manifest_rendered_capability_status,adr_0015_routes_csp_and_headers,explicit_catalog_download_network_client,identifier_only_app_logs,local_only_workflow_proof' \
 	"observed_on_candidate=${qualified_text:-none}" \
 	'qualification=none at the M4 completion plane' \
 	"missing=${missing_prefix}provider_category_authorization,system_trash_deletion_runtime,secret_handling,crash_report_content_check,capability_true_website_equality,local_intelligence,structured_memory" \

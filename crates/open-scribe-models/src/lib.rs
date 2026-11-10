@@ -13,8 +13,8 @@ mod verify;
 
 pub use catalog::{Catalog, CatalogError, ModelHeader, ModelRecord};
 pub use install::{
-    InstallError, InstalledArtifact, LocalStagedModel, ModelLayout, QuarantinedModel,
-    ResumeDecision, TransferValidator, resume_decision,
+    InstallError, InstalledArtifact, LocalStagedModel, ModelLayout, PreparedPartial,
+    QuarantinedModel, ResumeDecision, TransferValidator, resume_decision,
 };
 pub use verify::{VerifiedArtifact, VerifyError, verify_staged};
 

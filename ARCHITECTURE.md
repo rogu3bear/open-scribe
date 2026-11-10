@@ -55,6 +55,6 @@ Optional Meeting/context/intelligence remain intended lanes with existing bounde
 
 Timed duration uses accepted frames and calibrated capture intervals; untimed legacy fallback remains limited. Metadata time and creation-based library ordering are independent. Cooperating handles serialize durable writes through an owned advisory lock; ASR and native decoding run outside durable transactions. Journal v1 append still validates and replaces history; counters characterize its growing cost without enabling a new format.
 
-Portable packages omit context; failed transcript status restores as pending. Compressed import support does not imply portable round-trip support. Export warnings and existing capability rejection expose these limits.
+Portable packages omit context; failed transcript status restores as pending. A compressed M4A import is included in the package and restores as that M4A. Passage-level names are refused. Export warnings and existing capability rejection expose the remaining limits.
 
 Shared crates cannot depend on native I/O, SQLite, Apple APIs, network clients, or model runtimes. ADR 0018 owns disabled Actions and exact local candidate admission. Scaffold, component, native, installed, supported-platform, and release proof remain separate.
