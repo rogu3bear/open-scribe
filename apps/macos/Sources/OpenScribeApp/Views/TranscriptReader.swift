@@ -3,6 +3,198 @@ import Combine
 import SwiftUI
 import UniformTypeIdentifiers
 
+/// The transcript Find control. Command-F is the button's key equivalent, so
+/// the search field is the only other control and does not own the shortcut.
+private struct FindShortcutMount: NSViewRepresentable {
+  let onFind: () -> Void
+
+  func makeNSView(context: Context) -> FindShortcutControl {
+    let view = FindShortcutControl()
+    view.bind(onFind: onFind)
+    return view
+  }
+
+  func updateNSView(_ view: FindShortcutControl, context: Context) {
+    view.bind(onFind: onFind)
+  }
+}
+
+private final class FindShortcutControl: NSView {
+  private let button: NSButton
+  private var onFind: (() -> Void)?
+
+  init() {
+    let button = NSButton(title: "", target: nil, action: nil)
+    self.button = button
+    super.init(frame: NSRect(x: 0, y: 0, width: 28, height: 28))
+    let label = ConversationControlLabels.findInTranscript
+    let shortcut = ConversationControlLabels.findShortcut
+    button.isBordered = false
+    button.bezelStyle = .smallSquare
+    button.image = NSImage(systemSymbolName: "magnifyingglass", accessibilityDescription: label)
+    button.imagePosition = .imageOnly
+    button.setAccessibilityLabel(label)
+    button.setAccessibilityIdentifier("Find in transcript")
+    button.keyEquivalent = String(shortcut.key.character)
+    button.keyEquivalentModifierMask = Self.modifierMask(shortcut.modifiers)
+    button.target = self
+    button.action = #selector(activate)
+    button.translatesAutoresizingMaskIntoConstraints = false
+    addSubview(button)
+    NSLayoutConstraint.activate([
+      button.leadingAnchor.constraint(equalTo: leadingAnchor),
+      button.trailingAnchor.constraint(equalTo: trailingAnchor),
+      button.topAnchor.constraint(equalTo: topAnchor),
+      button.bottomAnchor.constraint(equalTo: bottomAnchor),
+    ])
+  }
+
+  required init?(coder: NSCoder) {
+    nil
+  }
+
+  func bind(onFind: @escaping () -> Void) {
+    self.onFind = onFind
+    button.isEnabled = true
+  }
+
+  @objc private func activate() {
+    guard button.isEnabled else { return }
+    onFind?()
+  }
+
+  private static func modifierMask(_ modifiers: EventModifiers) -> NSEvent.ModifierFlags {
+    var mask: NSEvent.ModifierFlags = []
+    if modifiers.contains(.command) { mask.insert(.command) }
+    if modifiers.contains(.shift) { mask.insert(.shift) }
+    if modifiers.contains(.option) { mask.insert(.option) }
+    if modifiers.contains(.control) { mask.insert(.control) }
+    return mask
+  }
+}
+
+/// The transcript query. The field publishes its own edits; a SwiftUI binding
+/// does not see the field editor.
+private struct TranscriptFindFieldMount: NSViewRepresentable {
+  var query: String
+  var focused: Bool
+  var clearGeneration: Int
+  var onQuery: (String) -> Void
+
+  func makeNSView(context: Context) -> TranscriptFindField {
+    let field = TranscriptFindField()
+    field.onQuery = onQuery
+    field.clearGeneration = clearGeneration
+    field.apply(query: query)
+    field.activate()
+    return field
+  }
+
+  func updateNSView(_ field: TranscriptFindField, context: Context) {
+    field.onQuery = onQuery
+    if field.clearGeneration != clearGeneration {
+      field.clearGeneration = clearGeneration
+      field.apply(query: query)
+    } else if field.currentEditor() == nil {
+      field.apply(query: query)
+    }
+    guard focused, let window = field.window else { return }
+    if window.firstResponder !== field && window.firstResponder !== field.currentEditor() {
+      window.makeFirstResponder(field)
+    }
+  }
+}
+
+private final class TranscriptFindField: NSTextField, NSTextFieldDelegate {
+  var onQuery: ((String) -> Void)?
+  var clearGeneration = 0
+  private var ready = false
+  private var delivering = false
+
+  override init(frame frameRect: NSRect) {
+    super.init(frame: frameRect)
+    isBordered = false
+    isBezeled = false
+    drawsBackground = false
+    focusRingType = .none
+    font = .preferredFont(forTextStyle: .body)
+    placeholderString = ConversationControlLabels.findInTranscript
+    setAccessibilityLabel(ConversationControlLabels.findInTranscript)
+    delegate = self
+    if let cell = cell as? NSTextFieldCell {
+      cell.isScrollable = true
+      cell.wraps = false
+      cell.lineBreakMode = .byClipping
+    }
+  }
+
+  required init?(coder: NSCoder) {
+    nil
+  }
+
+  /// `super.init` may assign an empty string. Delivery starts only after the
+  /// mount has stored `onQuery`.
+  func activate() {
+    ready = true
+  }
+
+  override var stringValue: String {
+    get { super.stringValue }
+    set {
+      super.stringValue = newValue
+      guard ready, !delivering else { return }
+      deliver()
+    }
+  }
+
+  func apply(query: String) {
+    guard stringValue != query else { return }
+    delivering = true
+    stringValue = query
+    delivering = false
+  }
+
+  override func textDidChange(_ notification: Notification) {
+    super.textDidChange(notification)
+    guard ready, !delivering else { return }
+    deliver()
+  }
+
+  func controlTextDidChange(_ notification: Notification) {
+    guard ready, !delivering else { return }
+    deliver()
+  }
+
+  private func deliver() {
+    let text = stringValue
+    let onQuery = onQuery
+    // SwiftUI drops a published query change made inside the field setter.
+    DispatchQueue.main.async {
+      onQuery?(text)
+    }
+  }
+}
+
+private struct TranscriptSearchCountMount: NSViewRepresentable {
+  var text: String
+
+  func makeNSView(context: Context) -> NSTextField {
+    let field = NSTextField(labelWithString: text)
+    field.font = .preferredFont(forTextStyle: .caption1)
+    field.textColor = .secondaryLabelColor
+    field.lineBreakMode = .byWordWrapping
+    field.maximumNumberOfLines = 2
+    field.setAccessibilityLabel("Transcript search count")
+    field.setAccessibilityIdentifier("Transcript search count")
+    return field
+  }
+
+  func updateNSView(_ field: NSTextField, context: Context) {
+    field.stringValue = text
+    field.isHidden = text.isEmpty
+  }
+}
+
 private enum TranscriptPersonFilter: Hashable {
   case all
   case unassigned
@@ -22,7 +214,8 @@ struct TranscriptReader: View {
   @State private var filter: TranscriptPersonFilter = .all
   @State private var followsPlayback = true
   @State private var query = ""
-  @FocusState private var isSearchFocused: Bool
+  @State private var findFocused = false
+  @State private var findClearGeneration = 0
   @AppStorage(TranscriptTextScale.storageKey) private var storedTranscriptTextScale =
     TranscriptTextScale.standard.rawValue
 
@@ -57,6 +250,7 @@ struct TranscriptReader: View {
         }
       } else {
         document(segments, index: index, position: nil)
+          .id(query)
       }
     }
     .onChange(of: transcripts.namedSpeakers) { people in
@@ -78,24 +272,21 @@ struct TranscriptReader: View {
   private func searchControls(resultCount: Int) -> some View {
     VStack(alignment: .leading, spacing: 6) {
       HStack(spacing: ScribeSpacing.related) {
-        Button {
-          isSearchFocused = true
-        } label: {
-          Image(systemName: "magnifyingglass")
+        FindShortcutMount {
+          findFocused = true
         }
-        .buttonStyle(.borderless)
-        .keyboardShortcut(
-          ConversationControlLabels.findShortcut.key,
-          modifiers: ConversationControlLabels.findShortcut.modifiers)
-        .accessibilityLabel(ConversationControlLabels.findInTranscript)
-        TextField(ConversationControlLabels.findInTranscript, text: $query)
-          .textFieldStyle(.plain)
-          .focused($isSearchFocused)
-          .accessibilityLabel(ConversationControlLabels.findInTranscript)
+        .frame(width: 28, height: 28)
+        TranscriptFindFieldMount(
+          query: query, focused: findFocused, clearGeneration: findClearGeneration
+        ) { next in
+          query = next
+        }
+        .frame(maxWidth: .infinity, minHeight: 22)
         if !query.isEmpty {
           Button {
             query = ""
-            isSearchFocused = true
+            findClearGeneration += 1
+            findFocused = true
           } label: {
             Image(systemName: "xmark.circle.fill")
           }
@@ -110,14 +301,15 @@ struct TranscriptReader: View {
         RoundedRectangle(cornerRadius: 6)
           .strokeBorder(Color.secondary.opacity(0.25), lineWidth: 1)
       }
-      if !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-        Text(
-          "\(resultCount) matching \(resultCount == 1 ? "passage" : "passages"). Play a timestamp to check the audio."
-        )
-        .font(.caption)
-        .foregroundStyle(.secondary)
-      }
+      TranscriptSearchCountMount(text: Self.searchCount(resultCount, query: query))
+        .frame(maxWidth: .infinity, minHeight: 16, alignment: .leading)
     }
+  }
+
+  private static func searchCount(_ resultCount: Int, query: String) -> String {
+    let term = query.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !term.isEmpty else { return "" }
+    return "\(resultCount) matching \(resultCount == 1 ? "passage" : "passages"). Play a timestamp to check the audio."
   }
 
   private var peopleControls: some View {

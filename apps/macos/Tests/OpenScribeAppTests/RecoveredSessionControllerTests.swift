@@ -1221,6 +1221,162 @@ final class RecoveredSessionControllerTests: RecoveredSessionTestCase {
     withExtendedLifetime((store, live, playback, player, window, host)) {}
   }
 
+  /// Command-F on the transcript Find button focuses the search field. Typing
+  /// the saved word narrows the visible passages and leaves the audio unchanged.
+  func testHostedFindKeyEquivalentFocusesTheTranscriptSearch() async throws {
+    let suite = "OpenScribe.Proof.Find.\(UUID().uuidString)"
+    let preferences = try XCTUnwrap(UserDefaults(suiteName: suite))
+    defer { preferences.removePersistentDomain(forName: suite) }
+
+    let root = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
+      .appendingPathComponent("open-scribe-find-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let managed = root.appendingPathComponent("Library", isDirectory: true)
+    try FileManager.default.createDirectory(at: managed, withIntermediateDirectories: true)
+    let export = await exportMixedTranscriptLibrary(to: managed)
+    XCTAssertEqual(export.status, 0, String(export.log.suffix(2_000)))
+    let media = try regularFiles(under: managed.appendingPathComponent("Sessions"))
+      .filter { $0.pathExtension == "caf" }
+    XCTAssertEqual(media.count, 1)
+    let mediaDigest = try digest(of: media[0])
+
+    let model = TranscriptLibraryModel(managedRoot: managed)
+    let store = RuntimeLibraryStore(managedRoot: managed, refreshesImmediately: false)
+    store.refresh()
+    let listed = await waitUntil { !store.savedSessions.isEmpty }
+    XCTAssertTrue(listed, "saved=\(store.savedSessions.map(\.sessionId))")
+    let session = try XCTUnwrap(store.savedSessions.first)
+    await model.load(sessionId: session.sessionId)
+    XCTAssertEqual(model.segments.count, 3)
+    XCTAssertTrue(model.segments.contains { $0.effectiveText == "alpha" })
+
+    let navigation = MainWorkspaceNavigation()
+    navigation.select(session.sessionId)
+    let player = RecoveredAudioPlayerFake()
+    let playback = RecoveredSessionController(
+      recoveryFactory: { try NativeRecordingPreparation.open(managedRoot: managed.path) },
+      importedPlaybackLeaseProvider: { id in
+        try NativeRecordingPreparation.open(managedRoot: managed.path)
+          .leaseImportedPlayback(sessionId: id)
+      },
+      player: player)
+    let live = LiveMicrophoneRecordingController(managedRoot: managed)
+    let view = ContentView(
+      store: store,
+      importedMediaAuthority: ImportedMediaAuthorityAdapter(
+        startSecurityScope: { _ in true },
+        stopSecurityScope: { _ in },
+        importer: { _, _ in throw NativeStorageError.InvalidRequest }
+      ),
+      liveRecording: live,
+      recoveredSessions: playback,
+      transcripts: model,
+      speech: SpeechTranscriptionModel(managedRoot: managed),
+      scheduler: TranscriptionScheduler.inert(),
+      pressure: SystemPressureMonitor(libraryRoot: managed, samplesAutomatically: false),
+      context: ContextScopeModel(
+        binding: { nil },
+        frames: IdleClaimContextFrames(),
+        permissionCheck: { .denied },
+        permissionRequest: { .denied },
+        topology: { [] }
+      ),
+      navigation: navigation
+    ).defaultAppStorage(preferences)
+    let host = NSHostingView(rootView: view)
+    host.sizingOptions = []
+    let window = NSWindow(
+      contentRect: NSRect(x: 0, y: 0, width: 1100, height: 720),
+      styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    window.contentView = host
+    window.setContentSize(NSSize(width: 1100, height: 720))
+    host.frame = window.contentLayoutRect
+    window.makeKeyAndOrderFront(nil)
+    window.orderFrontRegardless()
+    defer { window.close() }
+
+    let shown = await waitUntil(timeoutNanoseconds: 8_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      window.displayIfNeeded()
+      return self.claimButton(labeled: ConversationControlLabels.findInTranscript, in: host) != nil
+        && self.searchField(in: host) != nil
+    }
+    let find = try XCTUnwrap(
+      self.claimButton(labeled: ConversationControlLabels.findInTranscript, in: host),
+      self.hostedControlProbe(in: host))
+    XCTAssertTrue(
+      shown && window.contentView === host && find.isDescendant(of: host),
+      self.textFieldProbe(in: host))
+    XCTAssertEqual(find.accessibilityIdentifier(), "Find in transcript")
+    XCTAssertEqual(find.keyEquivalent, "f")
+    XCTAssertEqual(find.keyEquivalentModifierMask, .command)
+    XCTAssertNotNil(self.searchField(in: host), self.textFieldProbe(in: host))
+    XCTAssertTrue(window.makeFirstResponder(find))
+    let resigned = await waitUntil(timeoutNanoseconds: 5_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      window.displayIfNeeded()
+      return self.searchField(in: host)?.currentEditor() == nil
+    }
+    XCTAssertTrue(
+      resigned,
+      "responder=\(String(describing: window.firstResponder)) editor=\(String(describing: self.searchField(in: host)?.currentEditor()))"
+    )
+
+    let other = try XCTUnwrap(
+      NSEvent.keyEvent(
+        with: .keyDown, location: .zero, modifierFlags: .command,
+        timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+        context: nil, characters: "g", charactersIgnoringModifiers: "g", isARepeat: false,
+        keyCode: 5))
+    XCTAssertFalse(find.performKeyEquivalent(with: other))
+    XCTAssertNil(self.searchField(in: host)?.currentEditor())
+
+    let event = try XCTUnwrap(
+      NSEvent.keyEvent(
+        with: .keyDown, location: .zero, modifierFlags: .command,
+        timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+        context: nil, characters: "f", charactersIgnoringModifiers: "f", isARepeat: false,
+        keyCode: 3))
+    XCTAssertTrue(
+      find.performKeyEquivalent(with: event),
+      "key=\(window.isKeyWindow) active=\(NSApp.isActive) equivalent=\(find.keyEquivalent)")
+    let focused = await waitUntil(timeoutNanoseconds: 5_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      window.displayIfNeeded()
+      return self.searchField(in: host)?.currentEditor() != nil
+    }
+    let editor = try XCTUnwrap(
+      self.searchField(in: host)?.currentEditor() as? NSTextView, "search field did not focus")
+    XCTAssertTrue(focused)
+    editor.selectAll(nil)
+    editor.insertText("alpha", replacementRange: editor.selectedRange())
+    let typedField = try XCTUnwrap(self.searchField(in: host))
+    typedField.stringValue = editor.string
+    let started = DispatchTime.now().uptimeNanoseconds
+    var narrowed = false
+    while DispatchTime.now().uptimeNanoseconds - started < 5_000_000_000 {
+      let turned = expectation(description: "find query")
+      DispatchQueue.main.async { turned.fulfill() }
+      await fulfillment(of: [turned], timeout: 1)
+      host.layoutSubtreeIfNeeded()
+      window.displayIfNeeded()
+      if self.hostedString(containing: "1 matching passage", in: host) {
+        narrowed = true
+        break
+      }
+    }
+    let typed = editor.string
+    XCTAssertTrue(
+      narrowed,
+      "typed=\(typed) field=\(self.searchField(in: host)?.stringValue ?? "")\n\(self.textFieldProbe(in: host))\n\(self.hostedControlProbe(in: host))"
+    )
+    XCTAssertEqual(try digest(of: media[0]), mediaDigest)
+    XCTAssertEqual(model.segments.filter { $0.effectiveText == "alpha" }.count, 1)
+    withExtendedLifetime((store, live, playback, player, window, host)) {}
+  }
+
   /// Two restored conversations keep a final passage and a corrected passage.
   /// The library search the sidebar uses returns both, and each match opens
   /// at that passage's audio time.
@@ -2489,6 +2645,60 @@ final class RecoveredSessionControllerTests: RecoveredSessionTestCase {
       if let found = readout(labeled: label, in: subview) { return found }
     }
     return nil
+  }
+
+  private func textFieldProbe(in root: NSView) -> String {
+    var lines: [String] = []
+    func walk(_ view: NSView) {
+      if let field = view as? NSTextField {
+        lines.append(
+          "field label=\(field.accessibilityLabel() ?? "") placeholder=\(field.placeholderString ?? "") id=\(field.accessibilityIdentifier() ?? "") value=\(field.stringValue) hidden=\(field.isHidden)"
+        )
+      }
+      for child in view.subviews { walk(child) }
+    }
+    walk(root)
+    return lines.joined(separator: "\n")
+  }
+
+  private func searchField(in root: NSView) -> NSTextField? {
+    var matched: NSTextField?
+    func walk(_ view: NSView) {
+      if matched != nil { return }
+      if let field = view as? NSTextField, !(field is NSTextView),
+        field.isHidden == false,
+        field.isHiddenOrHasHiddenAncestor == false,
+        field.accessibilityLabel() == ConversationControlLabels.findInTranscript
+          || field.placeholderString == ConversationControlLabels.findInTranscript
+      {
+        matched = field
+      }
+      for child in view.subviews { walk(child) }
+    }
+    walk(root)
+    return matched
+  }
+
+  private func hostedString(containing needle: String, in root: NSView) -> Bool {
+    var found = false
+    func walk(_ view: NSView) {
+      if found { return }
+      if let field = view as? NSTextField, field.stringValue.contains(needle) {
+        found = true
+      }
+      if let text = view as? NSTextView, text.string.contains(needle) {
+        found = true
+      }
+      if let label = view.accessibilityLabel(), label.contains(needle) {
+        found = true
+      }
+      if let value = view.accessibilityValue() as? String, value.contains(needle) {
+        found = true
+      }
+      for child in view.subviews { walk(child) }
+    }
+    walk(root)
+    return found
   }
 
   private func claimButton(labeled label: String, in root: NSView) -> NSButton? {
