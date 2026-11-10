@@ -473,6 +473,161 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
     withExtendedLifetime(lease) {}
   }
 
+  /// The same file dropped twice is confirmed from the hosted banner. The
+  /// second confirm keeps a separate conversation and shows the existing-source
+  /// warning. The test does not call `importManagedAudio` or
+  /// `confirmPendingAudioImport`.
+  func testHostedRepeatedFinderDropKeepsBothConversations() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "open-scribe-finder-repeat-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let source = root.appendingPathComponent("Finder repeat.m4a")
+    do {
+      let file = try AVAudioFile(
+        forWriting: source,
+        settings: [
+          AVFormatIDKey: kAudioFormatAppleLossless,
+          AVSampleRateKey: 48_000.0,
+          AVNumberOfChannelsKey: 1,
+          AVEncoderBitDepthHintKey: 16,
+        ])
+      let buffer = try XCTUnwrap(
+        AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: 48_000))
+      buffer.frameLength = 48_000
+      let channel = try XCTUnwrap(buffer.floatChannelData?[0])
+      for frame in 0..<48_000 {
+        channel[frame] = frame < 24_000 ? 0.25 : -0.5
+      }
+      try file.write(from: buffer)
+    }
+    let original = try Data(contentsOf: source)
+    let importRoot = root.appendingPathComponent("Library", isDirectory: true)
+    try FileManager.default.createDirectory(at: importRoot, withIntermediateDirectories: false)
+    let store = RuntimeLibraryStore(managedRoot: importRoot, refreshesImmediately: false)
+    let recovery = RecoveredSessionController(
+      recoveryFactory: {
+        try NativeRecordingPreparation.open(managedRoot: importRoot.path)
+      },
+      importedPlaybackLeaseProvider: { sessionId in
+        try NativeRecordingPreparation.open(managedRoot: importRoot.path)
+          .leaseImportedPlayback(sessionId: sessionId)
+      },
+      player: RecoveredAudioPlayerFake()
+    )
+    let live = LiveMicrophoneRecordingController(managedRoot: importRoot)
+    let adapter = ImportedMediaAuthorityAdapter(
+      startSecurityScope: { _ in true },
+      stopSecurityScope: { _ in },
+      canBeginImport: { live.canStart },
+      importer: { title, url in
+        try store.importManagedAudio(title: title, sourceURL: url)
+      }
+    )
+    let view = ContentView(
+      store: store,
+      importedMediaAuthority: adapter,
+      liveRecording: live,
+      recoveredSessions: recovery,
+      transcripts: TranscriptLibraryModel(managedRoot: importRoot),
+      speech: SpeechTranscriptionModel(managedRoot: importRoot),
+      scheduler: TranscriptionScheduler.inert(),
+      pressure: SystemPressureMonitor(libraryRoot: importRoot, samplesAutomatically: false),
+      context: ContextScopeModel(
+        binding: { nil },
+        frames: IdleContextFrames(),
+        permissionCheck: { .denied },
+        permissionRequest: { .denied },
+        topology: { [] }
+      ),
+      navigation: MainWorkspaceNavigation()
+    )
+    let host = NSHostingView(rootView: view)
+    host.sizingOptions = []
+    let window = NSWindow(
+      contentRect: NSRect(x: 0, y: 0, width: 1100, height: 720),
+      styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    window.contentView = host
+    window.setContentSize(NSSize(width: 1100, height: 720))
+    host.frame = window.contentLayoutRect
+    window.makeKeyAndOrderFront(nil)
+    window.orderFrontRegardless()
+    defer { window.close() }
+    let warning =
+      "This audio is already in the library. Open Scribe saved a separate conversation and left the existing one unchanged."
+
+    func deliverDrop() async throws {
+      let ready = await waitUntil(timeoutNanoseconds: 5_000_000_000) {
+        host.layoutSubtreeIfNeeded()
+        window.displayIfNeeded()
+        return self.dropDestination(in: host) != nil && self.bannerImportButton(in: host) == nil
+      }
+      let destination = try XCTUnwrap(self.dropDestination(in: host))
+      XCTAssertTrue(ready && window.contentView === host)
+      let location = destination.convert(
+        NSPoint(x: destination.bounds.midX, y: destination.bounds.midY), to: nil)
+      let drag = FinderFileDrag(fileURL: source, window: window, location: location)
+      defer { drag.draggingPasteboard.releaseGlobally() }
+      XCTAssertTrue(drag.wroteFileURL)
+      XCTAssertFalse(drag.didEnumerateItems)
+      let entered = destinationDragOperation("draggingEntered:", on: destination, info: drag)
+      let updated = destinationDragOperation("draggingUpdated:", on: destination, info: drag)
+      let prepared = destinationDragAccepted("prepareForDragOperation:", on: destination, info: drag)
+      let performed = destinationDragAccepted("performDragOperation:", on: destination, info: drag)
+      destinationDragEnded("concludeDragOperation:", on: destination, info: drag)
+      destinationDragEnded("draggingEnded:", on: destination, info: drag)
+      XCTAssertFalse(drag.didEnumerateItems)
+      XCTAssertNotEqual(updated == 0 ? entered : updated, 0)
+      XCTAssertTrue(prepared && performed)
+      let staged = await waitUntil(timeoutNanoseconds: 5_000_000_000) {
+        host.layoutSubtreeIfNeeded()
+        window.displayIfNeeded()
+        return adapter.pendingAudioImport?.urls == [source]
+          && self.bannerImportButton(in: host) != nil
+      }
+      XCTAssertTrue(staged && window.contentView === host, adapter.statusMessage ?? "nil")
+      let confirm = try XCTUnwrap(self.bannerImportButton(in: host))
+      confirm.performClick(nil)
+    }
+
+    try await deliverDrop()
+    let firstImported = await waitUntil(timeoutNanoseconds: 15_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      window.displayIfNeeded()
+      return adapter.phase == .succeeded && store.savedSessions.count == 1
+        && self.bannerImportButton(in: host) == nil
+    }
+    XCTAssertTrue(firstImported, "phase=\(adapter.phase) saved=\(store.savedSessions.count)")
+    let first = try XCTUnwrap(store.savedSessions.first)
+    XCTAssertEqual(first.playableMedia?.isPlayable, true)
+    XCTAssertNotEqual(store.editMessage, warning)
+
+    try await deliverDrop()
+    let repeated = await waitUntil(timeoutNanoseconds: 15_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      window.displayIfNeeded()
+      return store.savedSessions.count == 2 && store.editMessage == warning
+        && self.hostedLabels(in: host).contains { $0.contains(warning) }
+    }
+    XCTAssertTrue(
+      repeated && window.contentView === host,
+      "saved=\(store.savedSessions.map(\.sessionId)) edit=\(store.editMessage ?? "nil") labels=\(self.hostedLabels(in: host))"
+    )
+    XCTAssertFalse(store.editMessageIsFailure)
+    let kept = try XCTUnwrap(store.savedSessions.first { $0.sessionId == first.sessionId })
+    let added = try XCTUnwrap(store.savedSessions.first { $0.sessionId != first.sessionId })
+    XCTAssertEqual(kept.title, first.title)
+    XCTAssertEqual(kept.playableMedia?.isPlayable, true)
+    XCTAssertEqual(added.playableMedia?.isPlayable, true)
+    XCTAssertNotEqual(kept.sessionId, added.sessionId)
+    XCTAssertEqual(try Data(contentsOf: source), original)
+    withExtendedLifetime(store) {}
+    withExtendedLifetime(live) {}
+    withExtendedLifetime(recovery) {}
+    withExtendedLifetime(window) {}
+  }
+
   func testRepeatedImportKeepsASeparateConversationAndLeavesTheFirstUnchanged() async throws {
     let root = FileManager.default.temporaryDirectory
       .appendingPathComponent(
@@ -4917,6 +5072,23 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
     }
     walk(root)
     return matched
+  }
+
+  private func hostedLabels(in root: NSView) -> [String] {
+    var labels: [String] = []
+    func walk(_ view: NSView) {
+      if let label = view.accessibilityLabel(), !label.isEmpty {
+        labels.append(label)
+      }
+      if let text = view as? NSTextField, !text.stringValue.isEmpty {
+        labels.append(text.stringValue)
+      }
+      for child in view.subviews {
+        walk(child)
+      }
+    }
+    walk(root)
+    return labels
   }
 
   private func bannerProbe(in root: NSView) -> [String] {

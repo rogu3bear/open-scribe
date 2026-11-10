@@ -368,20 +368,27 @@ struct ContentView: View {
     if !workspaceNotices.isEmpty {
       VStack(spacing: 0) {
         ForEach(workspaceNotices) { notice in
-          HStack(alignment: .firstTextBaseline, spacing: ScribeSpacing.related) {
-            Image(systemName: notice.isFailure ? "exclamationmark.triangle" : "checkmark.circle")
-              .foregroundStyle(notice.isFailure ? Color.red : Color.secondary)
-            Text(notice.message)
+          if notice.id == "edit" {
+            LibraryNoticeMount(message: notice.message, isFailure: notice.isFailure)
               .frame(maxWidth: .infinity, alignment: .leading)
+              .padding(.horizontal, ScribeSpacing.standard)
+              .padding(.vertical, ScribeSpacing.related)
+          } else {
+            HStack(alignment: .firstTextBaseline, spacing: ScribeSpacing.related) {
+              Image(systemName: notice.isFailure ? "exclamationmark.triangle" : "checkmark.circle")
+                .foregroundStyle(notice.isFailure ? Color.red : Color.secondary)
+              Text(notice.message)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .font(.callout)
+            .foregroundStyle(notice.isFailure ? Color.primary : Color.secondary)
+            .padding(.horizontal, ScribeSpacing.standard)
+            .padding(.vertical, ScribeSpacing.related)
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel(
+              "\(notice.isFailure ? "Problem" : "Status"): \(notice.message)"
+            )
           }
-          .font(.callout)
-          .foregroundStyle(notice.isFailure ? Color.primary : Color.secondary)
-          .padding(.horizontal, ScribeSpacing.standard)
-          .padding(.vertical, ScribeSpacing.related)
-          .accessibilityElement(children: .combine)
-          .accessibilityLabel(
-            "\(notice.isFailure ? "Problem" : "Status"): \(notice.message)"
-          )
         }
       }
       .background(.bar)
@@ -893,6 +900,31 @@ private final class ImportedPlaybackControl: NSView {
         playback.play(session)
       }
     }
+  }
+}
+
+/// The library edit notice. SwiftUI text in this banner does not publish a
+/// readable label in the hosted window, so the warning is an AppKit field.
+private struct LibraryNoticeMount: NSViewRepresentable {
+  let message: String
+  let isFailure: Bool
+
+  func makeNSView(context: Context) -> NSTextField {
+    let field = NSTextField(labelWithString: message)
+    field.lineBreakMode = .byWordWrapping
+    field.maximumNumberOfLines = 4
+    field.setAccessibilityIdentifier("Library notice")
+    field.setAccessibilityLabel(Self.label(message, isFailure: isFailure))
+    return field
+  }
+
+  func updateNSView(_ field: NSTextField, context: Context) {
+    field.stringValue = message
+    field.setAccessibilityLabel(Self.label(message, isFailure: isFailure))
+  }
+
+  private static func label(_ message: String, isFailure: Bool) -> String {
+    "\(isFailure ? "Problem" : "Status"): \(message)"
   }
 }
 
