@@ -54,6 +54,14 @@ enum ConversationControlLabels {
     canSeek ? "Play from \(stamp)" : stamp
   }
 
+  /// A saved marker keeps its own words. The stamp is the session time, and
+  /// the label distinguishes it from a transcript passage at the same minute.
+  static func markerAccessibility(stamp: String, label: String, canSeek: Bool) -> String {
+    let name = label.isEmpty ? "Marker" : "Marker, \(label)"
+    let seek = canSeek ? "Play from \(stamp)" : stamp
+    return "\(seek), \(name)"
+  }
+
   static func correctAccessibility(stamp: String) -> String {
     "Correct the text at \(stamp)"
   }

@@ -30,6 +30,114 @@ private struct ConversationTitleLabel: NSViewRepresentable {
   }
 }
 
+/// Saved markers for one conversation. The control is created with the
+/// document and fills in when the journal events arrive, so a hosted window
+/// can play from a marker without inserting a new SwiftUI row.
+private struct MarkerListMount: NSViewRepresentable {
+  let events: [NativeRecorderEvent]
+  let canSeek: Bool
+  let onSeek: (Int64) -> Void
+
+  func makeNSView(context: Context) -> MarkerListControl {
+    let view = MarkerListControl()
+    view.bind(events: events, canSeek: canSeek, onSeek: onSeek)
+    return view
+  }
+
+  func updateNSView(_ view: MarkerListControl, context: Context) {
+    view.bind(events: events, canSeek: canSeek, onSeek: onSeek)
+  }
+}
+
+private final class MarkerListControl: NSView {
+  private let heading = NSTextField(labelWithString: "Markers")
+  private let column = NSStackView()
+  private var onSeek: ((Int64) -> Void)?
+  private var positions: [String: Int64] = [:]
+  private var signature: [String] = []
+
+  override init(frame frameRect: NSRect) {
+    super.init(frame: frameRect)
+    setAccessibilityIdentifier("Markers")
+    heading.font = .preferredFont(forTextStyle: .headline)
+    heading.setAccessibilityLabel("Markers")
+    heading.setAccessibilityIdentifier("Markers")
+    column.orientation = .vertical
+    column.alignment = .leading
+    column.spacing = ScribeSpacing.tight
+    column.detachesHiddenViews = false
+    heading.translatesAutoresizingMaskIntoConstraints = false
+    column.translatesAutoresizingMaskIntoConstraints = false
+    addSubview(heading)
+    addSubview(column)
+    NSLayoutConstraint.activate([
+      heading.leadingAnchor.constraint(equalTo: leadingAnchor),
+      heading.topAnchor.constraint(equalTo: topAnchor),
+      heading.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor),
+      column.leadingAnchor.constraint(equalTo: leadingAnchor),
+      column.topAnchor.constraint(equalTo: heading.bottomAnchor, constant: ScribeSpacing.tight),
+      column.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor),
+      column.bottomAnchor.constraint(lessThanOrEqualTo: bottomAnchor),
+    ])
+  }
+
+  required init?(coder: NSCoder) {
+    nil
+  }
+
+  func bind(events: [NativeRecorderEvent], canSeek: Bool, onSeek: @escaping (Int64) -> Void) {
+    self.onSeek = onSeek
+    let markers = events.filter { $0.kind == "marker_added" }
+    let next = markers.map { "\($0.id)\n\($0.label)\n\($0.sessionNanoseconds)\n\(canSeek)" }
+    isHidden = markers.isEmpty
+    heading.isHidden = markers.isEmpty
+    column.isHidden = markers.isEmpty
+    guard next != signature else { return }
+    signature = next
+    positions = Dictionary(uniqueKeysWithValues: markers.map { ($0.id, $0.sessionNanoseconds) })
+    for view in column.arrangedSubviews {
+      column.removeArrangedSubview(view)
+      view.removeFromSuperview()
+    }
+    for marker in markers {
+      let stamp = TranscriptSection.timestamp(marker.sessionNanoseconds)
+      let row = NSStackView()
+      row.orientation = .horizontal
+      row.alignment = .centerY
+      row.spacing = ScribeSpacing.related
+      let button = NSButton(title: stamp, target: self, action: #selector(playMarker(_:)))
+      button.bezelStyle = .inline
+      button.isBordered = false
+      button.font = .monospacedDigitSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular)
+      button.isEnabled = canSeek
+      button.identifier = NSUserInterfaceItemIdentifier(marker.id)
+      button.setAccessibilityLabel(
+        ConversationControlLabels.markerAccessibility(
+          stamp: stamp, label: marker.label, canSeek: canSeek))
+      let name = NSTextField(labelWithString: marker.label.isEmpty ? "Marker" : marker.label)
+      name.font = .preferredFont(forTextStyle: .body)
+      name.textColor = .labelColor
+      name.setAccessibilityLabel(marker.label.isEmpty ? "Marker" : marker.label)
+      for item in [button, name] {
+        item.setContentCompressionResistancePriority(.required, for: .horizontal)
+        item.setContentCompressionResistancePriority(.required, for: .vertical)
+        row.addArrangedSubview(item)
+      }
+      button.widthAnchor.constraint(greaterThanOrEqualToConstant: 48).isActive = true
+      button.heightAnchor.constraint(greaterThanOrEqualToConstant: 16).isActive = true
+      column.addArrangedSubview(row)
+    }
+  }
+
+  @objc private func playMarker(_ sender: NSButton) {
+    guard let id = sender.identifier?.rawValue, let start = positions[id], sender.isEnabled else {
+      return
+    }
+    let onSeek = onSeek
+    Task { @MainActor in onSeek?(start) }
+  }
+}
+
 struct ConversationWorkspaceView: View {
   let session: RuntimeSessionPresentation
   @ObservedObject var store: RuntimeLibraryStore
@@ -55,6 +163,13 @@ struct ConversationWorkspaceView: View {
 
   private var hasPreservedAudio: Bool {
     session.hasVerifiedPreservedAudio(from: playbackController.sessions)
+  }
+
+  /// The marker list is created with the document. Its height grows only when
+  /// a saved marker exists, so an empty conversation does not reserve a row.
+  private static func markerListHeight(_ events: [NativeRecorderEvent]) -> CGFloat {
+    let count = events.filter { $0.kind == "marker_added" }.count
+    return count == 0 ? 0 : CGFloat(24 + count * 28)
   }
 
   var body: some View {
@@ -135,9 +250,22 @@ struct ConversationWorkspaceView: View {
             onSeek: { event in
               contextSeek = ContextSeekRequest(sessionId: session.sessionId, event: event)
             })
-          RecorderEventList(
-            events: recorderEvents.filter { $0.kind == "marker_added" }, heading: "Markers"
+          MarkerListMount(
+            events: recorderEvents,
+            canSeek: session.hasCaptureTimeline || session.playableMedia?.isPlayable == true,
+            onSeek: { position in
+              if session.hasCaptureTimeline {
+                playbackController.playSynchronized(
+                  sessionId: session.sessionId, startNanoseconds: position)
+              } else {
+                playbackController.play(session, startNanoseconds: position)
+              }
+            }
           )
+          .frame(
+            maxWidth: .infinity,
+            minHeight: Self.markerListHeight(recorderEvents),
+            alignment: .topLeading)
           let diagnostics = recorderEvents.filter { $0.kind != "marker_added" }
           if !diagnostics.isEmpty {
             DisclosureGroup("Recording Details", isExpanded: $showsRecordingDetails) {

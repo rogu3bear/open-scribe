@@ -1945,6 +1945,140 @@ final class MicrophoneCaptureAdapterTests: XCTestCase {
     withExtendedLifetime(adapter) {}
   }
 
+  /// A marker written during capture stays on the session clock. Playing it
+  /// from the saved conversation opens that time and leaves the audio in place.
+  @MainActor
+  func testHostedSavedMarkerPlaysFromItsTime() async throws {
+    let fixture = try openedMicrophone(title: "Hosted marker seek")
+    var timebase = mach_timebase_info_data_t()
+    XCTAssertEqual(mach_timebase_info(&timebase), KERN_SUCCESS)
+    let anchor = mach_absolute_time()
+    try fixture.controller.anchorCaptureClock(
+      sessionId: fixture.authorization.sessionId,
+      hostAnchor: anchor,
+      numerator: timebase.numer,
+      denominator: timebase.denom)
+    let firstHost = anchor
+    let backend = FakeMicrophoneBackend(inputFormat: fixture.format)
+    let adapter = MicrophoneCaptureAdapter(
+      backend: backend,
+      writer: fixture.writer,
+      identity: MicrophoneCaptureIdentity(authorization: fixture.authorization)
+    )
+    let failures = try startAndConfirm(
+      adapter: adapter, backend: backend, controller: fixture.controller, format: fixture.format,
+      firstHostTime: firstHost)
+    let sessionId = fixture.authorization.sessionId
+    backend.emit(try microphoneFrames(fixture.format, 384), hostTime: firstHost &+ 1)
+    adapter.waitForAcceptedAudio()
+    backend.emit(
+      try microphoneFrames(fixture.format, 384),
+      hostTime: firstHost &+ AVAudioTime.hostTime(forSeconds: 0.01))
+    adapter.waitForAcceptedAudio()
+    XCTAssertEqual(
+      try fixture.controller.recorderDetail(sessionId: sessionId).lifecycle, "recording")
+    let markerHost = firstHost &+ AVAudioTime.hostTime(forSeconds: 0.005)
+    let marked = try fixture.controller.recorderAction(
+      sessionId: sessionId,
+      action: .marker(hostTime: markerHost, label: "Decision"))
+    let marker = try XCTUnwrap(marked.events.last { $0.kind == "marker_added" })
+    XCTAssertEqual(marker.label, "Decision")
+    XCTAssertGreaterThan(marker.sessionNanoseconds, 0)
+    XCTAssertLessThan(marker.sessionNanoseconds, 20_000_000)
+    let stoppedAt = adapter.stop() ?? markerHost
+    let sealed = try fixture.controller.sealSegment(
+      receipt: try fixture.writer.sealSegmentReceipt(
+        finalSampleHostTime: max(stoppedAt, firstHost &+ AVAudioTime.hostTime(forSeconds: 0.02))))
+    XCTAssertTrue(sealed.segmentSealed)
+    let mediaURL = URL(fileURLWithPath: fixture.authorization.absolutePath)
+    let sealedMedia = try Data(contentsOf: mediaURL)
+    let persisted = try fixture.controller.recorderDetail(sessionId: sessionId).events.filter {
+      $0.kind == "marker_added"
+    }
+    XCTAssertEqual(persisted.map(\.label), ["Decision"])
+    XCTAssertEqual(persisted.map(\.sessionNanoseconds), [marker.sessionNanoseconds])
+    let saved = try XCTUnwrap(
+      fixture.controller.runtimeLibrarySnapshot().savedSessions.first { $0.sessionId == sessionId })
+    let presentation = RuntimeSessionPresentation(native: saved)
+    XCTAssertEqual(presentation.lifecycle, "ready_for_review")
+    XCTAssertTrue(presentation.hasCaptureTimeline)
+    let preparation = fixture.controller
+    let playback = RecoveredSessionController(
+      recoveryFactory: { preparation },
+      player: RecoveredAudioPlayerFake(),
+      timelineProvider: { _ in try preparation.playbackTimeline(sessionId: sessionId) }
+    )
+    let transcripts = TranscriptLibraryModel(
+      library: try NativeTranscriptLibrary.open(managedRoot: fixture.root.path))
+    let store = RuntimeLibraryStore(managedRoot: fixture.root)
+    let preferences = UserDefaults(
+      suiteName: "OpenScribe.Proof.MarkerSeek.\(UUID().uuidString)")!
+    let workspace = ConversationWorkspaceView(
+      session: presentation,
+      store: store,
+      playbackController: playback,
+      transcripts: transcripts,
+      speech: SpeechTranscriptionModel(preview: []),
+      scheduler: TranscriptionScheduler.inert(),
+      reference: nil,
+      audioReviewRequest: nil,
+      canStartNewRecording: false,
+      newRecordingUnavailableReason: "A recording is already saved.",
+      onStartNewRecording: {},
+      loadRecorderEvents: { sessionId in
+        (try? preparation.recorderDetail(sessionId: sessionId).events) ?? []
+      }
+    )
+    .defaultAppStorage(preferences)
+    let host = NSHostingView(rootView: workspace)
+    host.sizingOptions = []
+    let window = NSWindow(
+      contentRect: NSRect(x: 0, y: 0, width: 1100, height: 1400),
+      styleMask: [.titled, .closable], backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    window.contentView = host
+    window.setContentSize(NSSize(width: 1100, height: 1400))
+    host.frame = window.contentLayoutRect
+    window.makeKeyAndOrderFront(nil)
+    window.orderFrontRegardless()
+    defer { window.close() }
+    let stamp = TranscriptSection.timestamp(marker.sessionNanoseconds)
+    let markerLabel = ConversationControlLabels.markerAccessibility(
+      stamp: stamp, label: "Decision", canSeek: true)
+    let shown = await waitUntil(timeoutNanoseconds: 5_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      window.displayIfNeeded()
+      return self.seekButton(containing: "Marker, Decision", in: host) != nil
+    }
+    let button = try XCTUnwrap(self.seekButton(containing: "Marker, Decision", in: host))
+    XCTAssertTrue(shown && window.contentView === host && button.isDescendant(of: host))
+    XCTAssertEqual(button.accessibilityLabel(), markerLabel)
+    XCTAssertTrue(button.isEnabled)
+    button.performClick(nil)
+    let opened = await waitUntil(timeoutNanoseconds: 5_000_000_000) {
+      guard let started = playback.timelinePlayer.lastOpenedStartNanoseconds else { return false }
+      let delta = abs(started - marker.sessionNanoseconds)
+      return delta <= 1_000_000
+    }
+    XCTAssertTrue(opened, playback.errorMessage ?? "marker did not open playback")
+    XCTAssertNil(playback.errorMessage)
+    XCTAssertEqual(playback.playingSessionId, sessionId)
+    let started = try XCTUnwrap(playback.timelinePlayer.lastOpenedStartNanoseconds)
+    XCTAssertLessThanOrEqual(abs(started - marker.sessionNanoseconds), 1_000_000)
+    XCTAssertEqual(try Data(contentsOf: mediaURL), sealedMedia)
+    XCTAssertEqual(
+      try preparation.recorderDetail(sessionId: sessionId).events.filter { $0.kind == "marker_added" }
+        .map(\.label),
+      ["Decision"])
+    XCTAssertTrue(failures.snapshot().isEmpty)
+    playback.stopPlayback()
+    withExtendedLifetime(store) {}
+    withExtendedLifetime(transcripts) {}
+    withExtendedLifetime(playback) {}
+    withExtendedLifetime(adapter) {}
+    withExtendedLifetime(preferences) {}
+  }
+
   /// A saved draft stays readable when voice clustering cannot name the speaker.
   /// The user's source-speaker name leaves the words, the transcript run, and the capture file in place.
   func testManualSpeakerReviewKeepsTheReadableDraftWhenClusteringIsUnavailable() async throws {
