@@ -363,15 +363,6 @@ struct TranscriptSection: View {
         ProgressView().controlSize(.small)
         Text("Exporting…").font(.caption).foregroundStyle(.secondary)
       }
-      Button(ConversationControlLabels.exportTranscript) {
-        export(.markdown, type: UTType(filenameExtension: "md") ?? .plainText)
-      }
-      .disabled(
-        transcripts.isExporting || transcripts.sessionId != session.sessionId
-          || session.transcriptionUnavailableReason != nil
-          || transcripts.segments.isEmpty
-      )
-      .help("Save readable Markdown with timestamps and the current text and speaker names")
       Menu("Other Exports") {
         Section("Transcript") {
           Group {

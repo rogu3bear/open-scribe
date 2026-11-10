@@ -1,6 +1,7 @@
 import AppKit
 import Combine
 import SwiftUI
+import UniformTypeIdentifiers
 
 private enum TranscriptPersonFilter: Hashable {
   case all
@@ -20,8 +21,6 @@ struct TranscriptReader: View {
   let onFollowPlayback: (String) -> Void
   @State private var filter: TranscriptPersonFilter = .all
   @State private var followsPlayback = true
-  @StateObject private var speakerActions = SpeakerActionController()
-  @StateObject private var correctionActions = CorrectionActionController()
   @State private var query = ""
   @FocusState private var isSearchFocused: Bool
   @AppStorage(TranscriptTextScale.storageKey) private var storedTranscriptTextScale =
@@ -56,14 +55,6 @@ struct TranscriptReader: View {
     VStack(alignment: .leading, spacing: ScribeSpacing.standard) {
       searchControls(resultCount: segments.count)
       peopleControls
-      SpeakerActionMount(
-        transcripts: transcripts, actions: speakerActions, sessionId: sessionId
-      )
-      .frame(maxWidth: .infinity, minHeight: 150, alignment: .topLeading)
-      CorrectionActionMount(
-        transcripts: transcripts, actions: correctionActions, sessionId: sessionId
-      )
-      .frame(maxWidth: .infinity, minHeight: 140, alignment: .topLeading)
       if isPlaybackActive {
         // Only the active reader ticks. No library-wide publisher, frame
         // callback, ASR work, or file decoding runs on this display timer.
@@ -190,8 +181,8 @@ struct TranscriptReader: View {
     let activeIds =
       position.flatMap { $0.sessionId == sessionId ? $0.nanoseconds : nil }
       .map { index.activeTurnIds(at: $0) } ?? []
-    // Every passage control is created with the document. A later update does
-    // not mount a control that was absent from this hosting view's first layout.
+    // The timestamp is created with the passage. Naming, correction, and export
+    // live on the review strip created with the library's first layout.
     return VStack(alignment: .leading, spacing: ScribeSpacing.compact) {
       if segments.isEmpty {
         Text(
@@ -239,19 +230,8 @@ struct TranscriptReader: View {
       .frame(minWidth: 48, alignment: .leading)
       VStack(alignment: .leading, spacing: ScribeSpacing.tight) {
         HStack(spacing: ScribeSpacing.related) {
-          if isDraft {
-            Text(segment.speakerLabel)
-              .font(.subheadline.weight(.semibold))
-          } else {
-            PassageSpeakerMount(
-              transcripts: transcripts,
-              actions: speakerActions,
-              revisionId: segment.revisionId,
-              sequence: segment.sequence,
-              stamp: stamp
-            )
-            .frame(minWidth: 160, minHeight: 18, alignment: .leading)
-          }
+          Text(segment.speakerLabel)
+            .font(.subheadline.weight(.semibold))
           if isPlaying {
             Label("Playing", systemImage: "speaker.wave.2.fill")
               .font(.caption)
@@ -287,19 +267,6 @@ struct TranscriptReader: View {
       }
       .frame(maxWidth: 500, alignment: .leading)
       Spacer(minLength: ScribeSpacing.related)
-      if !isDraft {
-        PassageCorrectionMount(
-          actions: correctionActions,
-          revisionId: segment.revisionId,
-          sequence: segment.sequence,
-          stamp: stamp
-        ) {
-          followsPlayback = false
-          transcripts.dismissMessage()
-        }
-        .frame(minWidth: 72, minHeight: 18, alignment: .leading)
-        .help("Correct text")
-      }
     }
     .padding(.vertical, ScribeSpacing.tight)
     .frame(maxWidth: 660, alignment: .leading)
@@ -322,7 +289,7 @@ struct TranscriptReader: View {
 /// The passage or person currently being named. The review controls subscribe
 /// to this directly, so opening one does not wait for a later SwiftUI pass.
 @MainActor
-private final class SpeakerActionController: ObservableObject {
+final class SpeakerActionController: ObservableObject {
   @Published var passageId: String?
   @Published var personId: String?
 
@@ -345,7 +312,7 @@ private final class SpeakerActionController: ObservableObject {
 /// The passage whose text is being corrected. The editor subscribes to this
 /// directly, so opening it does not wait for a later SwiftUI sheet.
 @MainActor
-private final class CorrectionActionController: ObservableObject {
+final class CorrectionActionController: ObservableObject {
   @Published var segmentId: String?
 
   func begin(_ id: String) {
@@ -441,126 +408,6 @@ private final class PassageSeekControl: NSView {
     let start = startNanoseconds
     let onSeek = onSeek
     Task { @MainActor in onSeek?(start) }
-  }
-}
-
-/// The speaker review strip. It is created with the reader, then shows the
-/// name, merge, and split controls inside this view. A sheet presented after
-/// the click would not appear in the hosting view that already displayed.
-private struct SpeakerActionMount: NSViewRepresentable {
-  @ObservedObject var transcripts: TranscriptLibraryModel
-  let actions: SpeakerActionController
-  let sessionId: String
-
-  func makeNSView(context: Context) -> SpeakerActionBanner {
-    let view = SpeakerActionBanner()
-    view.bind(transcripts: transcripts, actions: actions, sessionId: sessionId)
-    return view
-  }
-
-  func updateNSView(_ view: SpeakerActionBanner, context: Context) {
-    view.bind(transcripts: transcripts, actions: actions, sessionId: sessionId)
-  }
-}
-
-private struct PassageSpeakerMount: NSViewRepresentable {
-  @ObservedObject var transcripts: TranscriptLibraryModel
-  let actions: SpeakerActionController
-  let revisionId: String
-  let sequence: UInt32
-  let stamp: String
-
-  func makeNSView(context: Context) -> PassageSpeakerControl {
-    let view = PassageSpeakerControl()
-    view.bind(
-      transcripts: transcripts, actions: actions, revisionId: revisionId, sequence: sequence,
-      stamp: stamp)
-    return view
-  }
-
-  func updateNSView(_ view: PassageSpeakerControl, context: Context) {
-    view.bind(
-      transcripts: transcripts, actions: actions, revisionId: revisionId, sequence: sequence,
-      stamp: stamp)
-  }
-}
-
-/// The name on one passage. Its label follows that passage after a rename.
-private final class PassageSpeakerControl: NSView {
-  private let button = NSButton(title: "", target: nil, action: nil)
-  private var subscription: AnyCancellable?
-  private var transcripts: TranscriptLibraryModel?
-  private var actions: SpeakerActionController?
-  private var revisionId = ""
-  private var sequence: UInt32 = 0
-  private var stamp = ""
-
-  override init(frame frameRect: NSRect) {
-    super.init(frame: frameRect)
-    button.bezelStyle = .inline
-    button.isBordered = false
-    button.font = .systemFont(ofSize: NSFont.systemFontSize, weight: .semibold)
-    button.lineBreakMode = .byTruncatingTail
-    button.target = self
-    button.action = #selector(nameSpeaker)
-    button.translatesAutoresizingMaskIntoConstraints = false
-    addSubview(button)
-    NSLayoutConstraint.activate([
-      button.leadingAnchor.constraint(equalTo: leadingAnchor),
-      button.trailingAnchor.constraint(equalTo: trailingAnchor),
-      button.topAnchor.constraint(equalTo: topAnchor),
-      button.bottomAnchor.constraint(equalTo: bottomAnchor),
-      button.widthAnchor.constraint(greaterThanOrEqualToConstant: 160),
-      button.heightAnchor.constraint(greaterThanOrEqualToConstant: 18),
-    ])
-  }
-
-  required init?(coder: NSCoder) {
-    nil
-  }
-
-  override var intrinsicContentSize: NSSize {
-    let fitted = button.intrinsicContentSize
-    return NSSize(width: max(160, fitted.width), height: max(18, fitted.height))
-  }
-
-  func bind(
-    transcripts: TranscriptLibraryModel,
-    actions: SpeakerActionController,
-    revisionId: String,
-    sequence: UInt32,
-    stamp: String
-  ) {
-    self.stamp = stamp
-    let same =
-      self.transcripts === transcripts && self.actions === actions && self.revisionId == revisionId
-      && self.sequence == sequence
-    self.transcripts = transcripts
-    self.actions = actions
-    self.revisionId = revisionId
-    self.sequence = sequence
-    if !same {
-      subscription = transcripts.$segments.sink { [weak self] _ in
-        DispatchQueue.main.async { self?.apply() }
-      }
-    }
-    apply()
-  }
-
-  private func apply() {
-    let passageId = "\(revisionId)#\(sequence)"
-    guard let segment = transcripts?.segments.first(where: { $0.id == passageId }) else { return }
-    button.title = segment.speakerLabel
-    button.setAccessibilityLabel(
-      ConversationControlLabels.nameSpeakerAccessibility(stamp: stamp, label: segment.speakerLabel)
-    )
-    invalidateIntrinsicContentSize()
-  }
-
-  @objc private func nameSpeaker() {
-    let passageId = "\(revisionId)#\(sequence)"
-    let actions = actions
-    Task { @MainActor in actions?.beginPassage(passageId) }
   }
 }
 
@@ -929,105 +776,8 @@ private final class SpeakerActionBanner: NSView, NSTextFieldDelegate {
   }
 }
 
-/// The pencil beside one passage. It is created with that passage.
-private struct PassageCorrectionMount: NSViewRepresentable {
-  let actions: CorrectionActionController
-  let revisionId: String
-  let sequence: UInt32
-  let stamp: String
-  let onBegin: @MainActor () -> Void
-
-  func makeNSView(context: Context) -> PassageCorrectionControl {
-    let view = PassageCorrectionControl()
-    view.bind(
-      actions: actions, revisionId: revisionId, sequence: sequence, stamp: stamp, onBegin: onBegin)
-    return view
-  }
-
-  func updateNSView(_ view: PassageCorrectionControl, context: Context) {
-    view.bind(
-      actions: actions, revisionId: revisionId, sequence: sequence, stamp: stamp, onBegin: onBegin)
-  }
-}
-
-private final class PassageCorrectionControl: NSView {
-  private let button = NSButton(title: "Correct", target: nil, action: nil)
-  private var actions: CorrectionActionController?
-  private var onBegin: (@MainActor () -> Void)?
-  private var revisionId = ""
-  private var sequence: UInt32 = 0
-
-  override init(frame frameRect: NSRect) {
-    super.init(frame: frameRect)
-    button.bezelStyle = .inline
-    button.isBordered = false
-    button.font = .systemFont(ofSize: NSFont.systemFontSize)
-    button.target = self
-    button.action = #selector(correct)
-    button.translatesAutoresizingMaskIntoConstraints = false
-    addSubview(button)
-    NSLayoutConstraint.activate([
-      button.leadingAnchor.constraint(equalTo: leadingAnchor),
-      button.trailingAnchor.constraint(equalTo: trailingAnchor),
-      button.topAnchor.constraint(equalTo: topAnchor),
-      button.bottomAnchor.constraint(equalTo: bottomAnchor),
-      button.widthAnchor.constraint(greaterThanOrEqualToConstant: 72),
-      button.heightAnchor.constraint(greaterThanOrEqualToConstant: 18),
-    ])
-  }
-
-  required init?(coder: NSCoder) {
-    nil
-  }
-
-  override var intrinsicContentSize: NSSize {
-    NSSize(width: 72, height: 18)
-  }
-
-  func bind(
-    actions: CorrectionActionController,
-    revisionId: String,
-    sequence: UInt32,
-    stamp: String,
-    onBegin: @escaping @MainActor () -> Void
-  ) {
-    self.actions = actions
-    self.onBegin = onBegin
-    self.revisionId = revisionId
-    self.sequence = sequence
-    button.setAccessibilityLabel(ConversationControlLabels.correctAccessibility(stamp: stamp))
-    button.identifier = NSUserInterfaceItemIdentifier("\(revisionId)#\(sequence)")
-  }
-
-  @objc private func correct() {
-    let id = "\(revisionId)#\(sequence)"
-    let actions = actions
-    let onBegin = onBegin
-    Task { @MainActor in
-      onBegin?()
-      actions?.begin(id)
-    }
-  }
-}
-
 /// Correct, cancel, or restore one passage. The controls exist before the
 /// pencil is clicked; a click only fills this hosting view.
-private struct CorrectionActionMount: NSViewRepresentable {
-  @ObservedObject var transcripts: TranscriptLibraryModel
-  let actions: CorrectionActionController
-  let sessionId: String
-
-  func makeNSView(context: Context) -> CorrectionActionBanner {
-    let view = CorrectionActionBanner()
-    view.bind(transcripts: transcripts, actions: actions, sessionId: sessionId)
-    return view
-  }
-
-  func updateNSView(_ view: CorrectionActionBanner, context: Context) {
-    view.bind(transcripts: transcripts, actions: actions, sessionId: sessionId)
-  }
-}
-
 private final class CorrectionActionBanner: NSView, NSTextFieldDelegate {
   private let title = NSTextField(labelWithString: "Correct Transcript Text")
   private let machine = NSTextField(labelWithString: "")
@@ -1208,6 +958,283 @@ private final class CorrectionActionBanner: NSView, NSTextFieldDelegate {
       else { return }
       let saved = await transcripts.correct(segment, text: nil, in: sessionId)
       if saved { actions.close() }
+    }
+  }
+}
+
+/// Speaker review, correction, and Markdown export created with the first
+/// library layout. A later transcript fills this view; it does not wait for
+/// the conversation workspace to mount a new control.
+struct ImportedReviewMount: NSViewRepresentable {
+  @ObservedObject var store: RuntimeLibraryStore
+  @ObservedObject var navigation: MainWorkspaceNavigation
+  @ObservedObject var transcripts: TranscriptLibraryModel
+  @ObservedObject var scheduler: TranscriptionScheduler
+  let speakerActions: SpeakerActionController
+  let correctionActions: CorrectionActionController
+  let exportDestination: (String) -> URL?
+
+  func makeNSView(context: Context) -> ImportedReviewControl {
+    let view = ImportedReviewControl(
+      speakerActions: speakerActions, correctionActions: correctionActions)
+    view.bind(
+      store: store, navigation: navigation, transcripts: transcripts, scheduler: scheduler,
+      exportDestination: exportDestination)
+    return view
+  }
+
+  func updateNSView(_ view: ImportedReviewControl, context: Context) {
+    view.bind(
+      store: store, navigation: navigation, transcripts: transcripts, scheduler: scheduler,
+      exportDestination: exportDestination)
+  }
+}
+
+final class ImportedReviewControl: NSView {
+  private let passageColumn = NSStackView()
+  private let speakerBanner = SpeakerActionBanner()
+  private let correctionBanner = CorrectionActionBanner()
+  private let exportButton = NSButton(
+    title: ConversationControlLabels.exportTranscript, target: nil, action: nil)
+  private var subscription: AnyCancellable?
+  private var store: RuntimeLibraryStore?
+  private var navigation: MainWorkspaceNavigation?
+  private var transcripts: TranscriptLibraryModel?
+  private var scheduler: TranscriptionScheduler?
+  private let speakerActions: SpeakerActionController
+  private let correctionActions: CorrectionActionController
+  private var exportDestination: ((String) -> URL?)?
+  private var passageSignature: [String] = []
+  private var loadKey: String?
+  private var showsReview = false
+
+  init(speakerActions: SpeakerActionController, correctionActions: CorrectionActionController) {
+    self.speakerActions = speakerActions
+    self.correctionActions = correctionActions
+    super.init(frame: .zero)
+    setAccessibilityIdentifier("Imported review")
+    passageColumn.orientation = .vertical
+    passageColumn.alignment = .leading
+    passageColumn.spacing = ScribeSpacing.tight
+    passageColumn.translatesAutoresizingMaskIntoConstraints = false
+    speakerBanner.translatesAutoresizingMaskIntoConstraints = false
+    correctionBanner.translatesAutoresizingMaskIntoConstraints = false
+    exportButton.bezelStyle = .rounded
+    exportButton.setAccessibilityLabel(ConversationControlLabels.exportTranscript)
+    exportButton.toolTip =
+      "Save readable Markdown with timestamps and the current text and speaker names"
+    exportButton.target = self
+    exportButton.action = #selector(exportTranscript)
+    exportButton.translatesAutoresizingMaskIntoConstraints = false
+    exportButton.isHidden = true
+    for item in [passageColumn, speakerBanner, correctionBanner, exportButton] {
+      addSubview(item)
+    }
+    NSLayoutConstraint.activate([
+      passageColumn.leadingAnchor.constraint(
+        equalTo: leadingAnchor, constant: ScribeSpacing.standard),
+      passageColumn.topAnchor.constraint(equalTo: topAnchor, constant: ScribeSpacing.tight),
+      passageColumn.trailingAnchor.constraint(
+        lessThanOrEqualTo: trailingAnchor, constant: -ScribeSpacing.standard),
+      speakerBanner.leadingAnchor.constraint(equalTo: leadingAnchor, constant: ScribeSpacing.standard),
+      speakerBanner.topAnchor.constraint(equalTo: passageColumn.bottomAnchor, constant: ScribeSpacing.tight),
+      speakerBanner.trailingAnchor.constraint(equalTo: trailingAnchor),
+      speakerBanner.heightAnchor.constraint(equalToConstant: 150),
+      correctionBanner.leadingAnchor.constraint(
+        equalTo: leadingAnchor, constant: ScribeSpacing.standard),
+      correctionBanner.topAnchor.constraint(
+        equalTo: speakerBanner.bottomAnchor, constant: ScribeSpacing.tight),
+      correctionBanner.trailingAnchor.constraint(equalTo: trailingAnchor),
+      correctionBanner.heightAnchor.constraint(equalToConstant: 140),
+      exportButton.leadingAnchor.constraint(
+        equalTo: leadingAnchor, constant: ScribeSpacing.standard),
+      exportButton.topAnchor.constraint(
+        equalTo: correctionBanner.bottomAnchor, constant: ScribeSpacing.tight),
+      exportButton.heightAnchor.constraint(greaterThanOrEqualToConstant: 24),
+    ])
+  }
+
+  required init?(coder: NSCoder) {
+    nil
+  }
+
+  func bind(
+    store: RuntimeLibraryStore,
+    navigation: MainWorkspaceNavigation,
+    transcripts: TranscriptLibraryModel,
+    scheduler: TranscriptionScheduler,
+    exportDestination: @escaping (String) -> URL?
+  ) {
+    self.exportDestination = exportDestination
+    let same =
+      self.store === store && self.navigation === navigation && self.transcripts === transcripts
+      && self.scheduler === scheduler
+    self.store = store
+    self.navigation = navigation
+    self.transcripts = transcripts
+    self.scheduler = scheduler
+    if !same {
+      let triggers: [AnyPublisher<Void, Never>] = [
+        store.objectWillChange.map { _ in () }.eraseToAnyPublisher(),
+        navigation.objectWillChange.map { _ in () }.eraseToAnyPublisher(),
+        transcripts.objectWillChange.map { _ in () }.eraseToAnyPublisher(),
+        scheduler.objectWillChange.map { _ in () }.eraseToAnyPublisher(),
+        speakerActions.objectWillChange.map { _ in () }.eraseToAnyPublisher(),
+        correctionActions.objectWillChange.map { _ in () }.eraseToAnyPublisher(),
+      ]
+      subscription = Publishers.MergeMany(triggers).sink { [weak self] _ in
+        DispatchQueue.main.async { self?.apply() }
+      }
+    }
+    apply()
+  }
+
+  override func hitTest(_ point: NSPoint) -> NSView? {
+    guard showsReview else { return nil }
+    let hit = super.hitTest(point)
+    guard let hit, hit !== self else { return nil }
+    if hit is NSButton || hit is NSTextField || hit is NSPopUpButton { return hit }
+    return nil
+  }
+
+  override func draw(_ dirtyRect: NSRect) {
+    guard showsReview else { return }
+    NSColor.windowBackgroundColor.setFill()
+    dirtyRect.fill()
+  }
+
+  private func apply() {
+    let session = selectedSession()
+    let sessionId = session?.sessionId ?? ""
+    showsReview = !sessionId.isEmpty
+    if let transcripts {
+      speakerBanner.bind(
+        transcripts: transcripts, actions: speakerActions, sessionId: sessionId)
+      correctionBanner.bind(
+        transcripts: transcripts, actions: correctionActions, sessionId: sessionId)
+    }
+    syncPassages(sessionId: sessionId)
+    syncExport(sessionId: sessionId)
+    considerLoad(session)
+    needsDisplay = true
+    layoutSubtreeIfNeeded()
+  }
+
+  private func selectedSession() -> RuntimeSessionPresentation? {
+    guard let store, let navigation, let selectedSessionId = navigation.selectedSessionId else {
+      return nil
+    }
+    if store.currentSession?.sessionId == selectedSessionId {
+      return store.currentSession
+    }
+    return store.savedSessions.first { $0.sessionId == selectedSessionId }
+  }
+
+  private func syncPassages(sessionId: String) {
+    let segments =
+      transcripts?.sessionId == sessionId && !sessionId.isEmpty
+      ? (transcripts?.segments.filter { $0.finality != "draft" } ?? []) : []
+    passageColumn.isHidden = segments.isEmpty
+    let signature = segments.map { "\($0.id)\n\($0.speakerLabel)\n\($0.startNanoseconds)" }
+    guard signature != passageSignature else { return }
+    passageSignature = signature
+    for view in passageColumn.arrangedSubviews {
+      passageColumn.removeArrangedSubview(view)
+      view.removeFromSuperview()
+    }
+    for segment in segments {
+      let stamp = TranscriptSection.timestamp(segment.startNanoseconds)
+      let row = NSStackView()
+      row.orientation = .horizontal
+      row.alignment = .centerY
+      row.spacing = ScribeSpacing.related
+      let name = NSButton(
+        title: segment.speakerLabel, target: self, action: #selector(namePassage(_:)))
+      name.bezelStyle = .rounded
+      name.setAccessibilityLabel(
+        ConversationControlLabels.nameSpeakerAccessibility(
+          stamp: stamp, label: segment.speakerLabel))
+      name.identifier = NSUserInterfaceItemIdentifier(segment.id)
+      let correct = NSButton(title: "Correct", target: self, action: #selector(correctPassage(_:)))
+      correct.bezelStyle = .rounded
+      correct.setAccessibilityLabel(ConversationControlLabels.correctAccessibility(stamp: stamp))
+      correct.identifier = NSUserInterfaceItemIdentifier(segment.id)
+      for button in [name, correct] {
+        button.setContentCompressionResistancePriority(.required, for: .vertical)
+        button.setContentCompressionResistancePriority(.required, for: .horizontal)
+        row.addArrangedSubview(button)
+        button.heightAnchor.constraint(greaterThanOrEqualToConstant: 22).isActive = true
+      }
+      name.widthAnchor.constraint(greaterThanOrEqualToConstant: 160).isActive = true
+      correct.widthAnchor.constraint(greaterThanOrEqualToConstant: 72).isActive = true
+      passageColumn.addArrangedSubview(row)
+    }
+  }
+
+  private func syncExport(sessionId: String) {
+    let ready =
+      transcripts?.sessionId == sessionId && !sessionId.isEmpty
+      && transcripts?.segments.isEmpty == false
+    exportButton.isHidden = !ready
+    exportButton.isEnabled = ready && transcripts?.isExporting != true
+  }
+
+  private func considerLoad(_ session: RuntimeSessionPresentation?) {
+    guard let session, let transcripts else {
+      loadKey = nil
+      return
+    }
+    let key = Self.reviewLoadKey(session: session, job: scheduler?.state(for: session.sessionId))
+    guard key != loadKey else { return }
+    loadKey = key
+    Task { @MainActor in
+      await transcripts.load(session: session)
+    }
+  }
+
+  private static func reviewLoadKey(
+    session: RuntimeSessionPresentation, job: TranscriptionJobState?
+  ) -> String {
+    let jobKey: String
+    switch job {
+    case .finished: jobKey = "finished"
+    case .running: jobKey = "running"
+    case .failed: jobKey = "failed"
+    case .queued: jobKey = "queued"
+    case .cancelled: jobKey = "cancelled"
+    case .preempted: jobKey = "preempted"
+    case .deferred: jobKey = "deferred"
+    case .incomplete: jobKey = "incomplete"
+    case nil: jobKey = "none"
+    }
+    return session.sessionId
+      + (session.transcriptionUnavailableReason == nil ? ":timed" : ":untimed")
+      + ":\(session.transcript.state.rawValue):\(session.transcript.documentVersion):\(jobKey)"
+  }
+
+  @objc private func namePassage(_ sender: NSButton) {
+    guard let id = sender.identifier?.rawValue else { return }
+    let actions = speakerActions
+    Task { @MainActor in actions.beginPassage(id) }
+  }
+
+  @objc private func correctPassage(_ sender: NSButton) {
+    guard let id = sender.identifier?.rawValue else { return }
+    let actions = correctionActions
+    Task { @MainActor in actions.begin(id) }
+  }
+
+  @objc private func exportTranscript() {
+    guard let transcripts, let session = selectedSession(),
+      transcripts.sessionId == session.sessionId, !transcripts.segments.isEmpty,
+      transcripts.isExporting == false
+    else { return }
+    let suggested = TranscriptSection.fileName(
+      session.title, type: UTType(filenameExtension: "md") ?? .plainText)
+    guard let destination = exportDestination?(suggested) else { return }
+    let sessionId = session.sessionId
+    Task { @MainActor in
+      await transcripts.export(format: .markdown, to: destination, from: sessionId)
     }
   }
 }

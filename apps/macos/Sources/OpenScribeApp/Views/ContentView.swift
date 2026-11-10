@@ -14,7 +14,19 @@ struct ContentView: View {
   @ObservedObject var pressure: SystemPressureMonitor
   @ObservedObject var context: ContextScopeModel
   @ObservedObject var navigation: MainWorkspaceNavigation
+  /// Markdown export asks for a destination. The panel is the shipped default.
+  /// A hosted proof can supply a file URL and still press the export button.
+  var exportTranscriptDestination: (String) -> URL? = { suggestedName in
+    let panel = NSSavePanel()
+    panel.allowedContentTypes = [UTType(filenameExtension: "md") ?? .plainText]
+    panel.canCreateDirectories = true
+    panel.nameFieldStringValue = suggestedName
+    guard panel.runModal() == .OK else { return nil }
+    return panel.url
+  }
   @StateObject private var librarySearch = LibrarySearchState()
+  @StateObject private var speakerActions = SpeakerActionController()
+  @StateObject private var correctionActions = CorrectionActionController()
 
   private var selectedSessionId: String? {
     navigation.selectedSessionId
@@ -294,11 +306,28 @@ struct ContentView: View {
     }
     .overlay(alignment: .bottom) {
       VStack(spacing: 0) {
+        importedReview
         importedPlayback
         renameConfirmation
         deletionConfirmation
       }
     }
+  }
+
+  /// Speaker review, correction, and export are created with the first layout.
+  /// The workspace that would hold them appears only after a session is selected.
+  private var importedReview: some View {
+    ImportedReviewMount(
+      store: store,
+      navigation: navigation,
+      transcripts: transcripts,
+      scheduler: scheduler,
+      speakerActions: speakerActions,
+      correctionActions: correctionActions,
+      exportDestination: exportTranscriptDestination
+    )
+    .frame(maxWidth: .infinity)
+    .frame(height: 420)
   }
 
   /// The imported Play control is created with the first layout. The workspace

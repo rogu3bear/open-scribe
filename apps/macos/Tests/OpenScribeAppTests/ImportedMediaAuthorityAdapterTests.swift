@@ -2502,6 +2502,258 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
     withExtendedLifetime(drag) {}
   }
 
+  /// A confirmed drop is transcribed by the automatic queue. The hosted review
+  /// strip then names the speaker, saves a correction, and exports Markdown.
+  /// The test does not call `stageDroppedAudio`, `confirmPendingAudioImport`,
+  /// `load`, `assignSpeaker`, `renameSpeaker`, `correct`, or `export`.
+  func testAHostedDropConfirmedFromTheBannerReviewsAndExports() async throws {
+    let environment = ProcessInfo.processInfo.environment
+    guard let modelPath = environment["OPEN_SCRIBE_WHISPER_MODEL"],
+      let speechPath = environment["OPEN_SCRIBE_WHISPER_SPEECH_M4A"]
+    else {
+      throw XCTSkip(
+        "Set OPEN_SCRIBE_WHISPER_MODEL and OPEN_SCRIBE_WHISPER_SPEECH_M4A for the hosted drop.")
+    }
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "open-scribe-drop-review-export-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let source = root.appendingPathComponent("Reviewed drop.m4a")
+    try FileManager.default.copyItem(at: URL(fileURLWithPath: speechPath), to: source)
+    let original = try Data(contentsOf: source)
+    let modelURL = URL(fileURLWithPath: modelPath)
+    let modelBytes = try XCTUnwrap(modelURL.resourceValues(forKeys: [.fileSizeKey]).fileSize)
+    let exportURL = root.appendingPathComponent("Reviewed drop.md")
+    let importRoot = root.appendingPathComponent("Library", isDirectory: true)
+    try FileManager.default.createDirectory(at: importRoot, withIntermediateDirectories: false)
+    let recovery = RecoveredSessionController(
+      recoveryFactory: {
+        try NativeRecordingPreparation.open(managedRoot: importRoot.path)
+      },
+      importedPlaybackLeaseProvider: { sessionId in
+        try NativeRecordingPreparation.open(managedRoot: importRoot.path)
+          .leaseImportedPlayback(sessionId: sessionId)
+      },
+      player: RecoveredAudioPlayerFake()
+    )
+    let live = LiveMicrophoneRecordingController(managedRoot: importRoot)
+    live.isLaunchRecoveryPending = { !recovery.captureSafetyComplete }
+    let store = RuntimeLibraryStore(
+      managedRoot: importRoot,
+      isLaunchRecoveryPending: { !recovery.captureSafetyComplete })
+    let speech = SpeechTranscriptionModel(managedRoot: importRoot)
+    let pressure = SystemPressureMonitor(libraryRoot: importRoot, samplesAutomatically: false)
+    let defaults = UserDefaults(
+      suiteName: "OpenScribe.Proof.HostedDropReview.\(UUID().uuidString)")!
+    let scheduler = TranscriptionScheduler(
+      managedRoot: importRoot, speech: speech, store: store, liveRecording: live,
+      recovery: recovery, pressure: pressure, defaults: defaults)
+    recovery.recoverOnLaunch()
+    await recovery.waitForLaunchRecovery()
+    XCTAssertTrue(recovery.captureSafetyComplete)
+    await speech.refreshAndWait()
+    XCTAssertEqual(speech.readiness, .absent)
+    scheduler.reconsider()
+    let idle = await waitUntil(timeoutNanoseconds: 5_000_000_000) {
+      scheduler.queue.isEmpty && scheduler.runningSessionId == nil && scheduler.hold == nil
+    }
+    XCTAssertTrue(idle, "queue=\(scheduler.queue) hold=\(String(describing: scheduler.hold))")
+    let adapter = ImportedMediaAuthorityAdapter(
+      startSecurityScope: { _ in true },
+      stopSecurityScope: { _ in },
+      canBeginImport: { live.canStart },
+      importer: { title, url in
+        try store.importManagedAudio(title: title, sourceURL: url)
+      }
+    )
+    let transcripts = TranscriptLibraryModel(managedRoot: importRoot)
+    let navigation = MainWorkspaceNavigation()
+    let speakerName = "Riley"
+    let revised = "The recording stays on this Mac after review."
+    let view = ContentView(
+      store: store,
+      importedMediaAuthority: adapter,
+      liveRecording: live,
+      recoveredSessions: recovery,
+      transcripts: transcripts,
+      speech: speech,
+      scheduler: scheduler,
+      pressure: pressure,
+      context: ContextScopeModel(
+        binding: { nil },
+        frames: IdleContextFrames(),
+        permissionCheck: { .denied },
+        permissionRequest: { .denied },
+        topology: { [] }
+      ),
+      navigation: navigation,
+      exportTranscriptDestination: { _ in exportURL }
+    )
+    let host = NSHostingView(rootView: view)
+    host.sizingOptions = []
+    let window = NSWindow(
+      contentRect: NSRect(x: 0, y: 0, width: 1100, height: 720),
+      styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    window.contentView = host
+    window.setContentSize(NSSize(width: 1100, height: 720))
+    host.frame = window.contentLayoutRect
+    if #available(macOS 14, *) {
+      NSApplication.shared.activate()
+    }
+    window.makeKeyAndOrderFront(nil)
+    window.orderFrontRegardless()
+    defer { window.close() }
+    let ready = await waitUntil(timeoutNanoseconds: 5_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      window.displayIfNeeded()
+      return self.dropDestination(in: host) != nil
+    }
+    let destination = try XCTUnwrap(self.dropDestination(in: host))
+    XCTAssertTrue(ready && window.contentView === host && destination.isDescendant(of: host))
+    XCTAssertNil(self.bannerImportButton(in: host))
+    let location = destination.convert(
+      NSPoint(x: destination.bounds.midX, y: destination.bounds.midY), to: nil)
+    let drag = AudioFileDrag(fileURL: source, window: window, location: location)
+    defer { drag.draggingPasteboard.releaseGlobally() }
+    let entered = destinationDragOperation("draggingEntered:", on: destination, info: drag)
+    let updated = destinationDragOperation("draggingUpdated:", on: destination, info: drag)
+    let prepared = destinationDragAccepted("prepareForDragOperation:", on: destination, info: drag)
+    let performed = destinationDragAccepted("performDragOperation:", on: destination, info: drag)
+    destinationDragEnded("concludeDragOperation:", on: destination, info: drag)
+    destinationDragEnded("draggingEnded:", on: destination, info: drag)
+    XCTAssertNotEqual(updated == 0 ? entered : updated, 0)
+    XCTAssertTrue(prepared && performed)
+    let staged = await waitUntil(timeoutNanoseconds: 5_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      window.displayIfNeeded()
+      return adapter.pendingAudioImport?.urls == [source]
+        && self.bannerImportButton(in: host) != nil
+    }
+    XCTAssertTrue(staged && window.contentView === host, self.bannerProbe(in: host).joined(separator: "\n"))
+    let confirm = try XCTUnwrap(self.bannerImportButton(in: host))
+    XCTAssertTrue(confirm.isDescendant(of: host))
+    confirm.performClick(nil)
+    let imported = await waitUntil(timeoutNanoseconds: 15_000_000_000) {
+      adapter.phase == .succeeded && adapter.importedSessionId != nil
+    }
+    XCTAssertTrue(imported, "phase=\(adapter.phase) message=\(adapter.statusMessage ?? "nil")")
+    XCTAssertNil(adapter.pendingAudioImport)
+    XCTAssertEqual(try Data(contentsOf: source), original)
+    let sessionId = try XCTUnwrap(adapter.importedSessionId)
+    let queued = await waitUntil(timeoutNanoseconds: 15_000_000_000) {
+      scheduler.queue.map(\.sessionId) == [sessionId] && scheduler.hold == .noSpeechModel
+        && scheduler.runningSessionId == nil && speech.transcribingSessionId == nil
+    }
+    XCTAssertTrue(
+      queued,
+      "queue=\(scheduler.queue.map(\.sessionId)) hold=\(String(describing: scheduler.hold))"
+    )
+    let record = try XCTUnwrap(speech.models.first { $0.modelId == "whisper-small.en-q5_1" })
+    let installed = await speech.install(record, from: modelURL)
+    XCTAssertTrue(installed, speech.message ?? "")
+    let finished = await waitUntil(timeoutNanoseconds: 180_000_000_000) {
+      if case .finished = scheduler.state(for: sessionId) { return true }
+      return false
+    }
+    XCTAssertTrue(
+      finished,
+      "state=\(String(describing: scheduler.state(for: sessionId))) hold=\(String(describing: scheduler.hold)) running=\(String(describing: scheduler.runningSessionId)) message=\(speech.message ?? "")"
+    )
+    let listed = await waitUntil(timeoutNanoseconds: 5_000_000_000) {
+      store.savedSessions.contains { $0.sessionId == sessionId && $0.playableMedia?.isPlayable == true }
+        && navigation.selectedSessionId == sessionId
+    }
+    XCTAssertTrue(listed, "saved=\(store.savedSessions.map(\.sessionId)) selected=\(navigation.selectedSessionId ?? "nil")")
+    let reviewReady = await waitUntil(timeoutNanoseconds: 20_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      window.displayIfNeeded()
+      guard let segment = transcripts.segments.first(where: { $0.finality != "draft" }),
+        transcripts.sessionId == sessionId
+      else { return false }
+      let stamp = TranscriptSection.timestamp(segment.startNanoseconds)
+      let nameLabel = ConversationControlLabels.nameSpeakerAccessibility(
+        stamp: stamp, label: segment.speakerLabel)
+      return self.hostedActionButton(labeled: nameLabel, in: host) != nil
+        && self.hostedActionButton(
+          labeled: ConversationControlLabels.correctAccessibility(stamp: stamp), in: host) != nil
+        && self.hostedActionButton(
+          labeled: ConversationControlLabels.exportTranscript, in: host) != nil
+    }
+    XCTAssertTrue(
+      reviewReady && window.contentView === host,
+      "segments=\(transcripts.segments.map(\.effectiveText)) message=\(transcripts.message ?? "nil")\n\(self.reviewProbe(in: host))"
+    )
+    let segment = try XCTUnwrap(transcripts.segments.first { $0.finality != "draft" })
+    let stamp = TranscriptSection.timestamp(segment.startNanoseconds)
+    let nameLabel = ConversationControlLabels.nameSpeakerAccessibility(
+      stamp: stamp, label: segment.speakerLabel)
+    let nameButton = try XCTUnwrap(self.hostedActionButton(labeled: nameLabel, in: host))
+    XCTAssertTrue(nameButton.isDescendant(of: host))
+    nameButton.performClick(nil)
+    let nameShown = await waitUntil(timeoutNanoseconds: 5_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      return self.hostedLabeledField(labeled: "Person's name", in: host) != nil
+        && self.hostedActionButton(labeled: "Save speaker", in: host) != nil
+    }
+    XCTAssertTrue(nameShown && window.contentView === host, self.reviewProbe(in: host))
+    let nameField = try XCTUnwrap(self.hostedLabeledField(labeled: "Person's name", in: host))
+    nameField.stringValue = speakerName
+    let saveSpeaker = try XCTUnwrap(self.hostedActionButton(labeled: "Save speaker", in: host))
+    XCTAssertTrue(saveSpeaker.isEnabled && saveSpeaker.isDescendant(of: host), self.reviewProbe(in: host))
+    saveSpeaker.performClick(nil)
+    let named = await waitUntil(timeoutNanoseconds: 10_000_000_000) {
+      transcripts.segments.first { $0.id == segment.id }?.speakerLabel == speakerName
+    }
+    XCTAssertTrue(named, "labels=\(transcripts.segments.map(\.speakerLabel)) message=\(transcripts.message ?? "nil")")
+    let correctLabel = ConversationControlLabels.correctAccessibility(stamp: stamp)
+    let correctButton = try XCTUnwrap(self.hostedActionButton(labeled: correctLabel, in: host))
+    XCTAssertTrue(correctButton.isDescendant(of: host))
+    correctButton.performClick(nil)
+    let editor = await waitUntil(timeoutNanoseconds: 5_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      return self.hostedLabeledField(labeled: "Corrected text", in: host) != nil
+        && self.hostedActionButton(labeled: "Save correction", in: host) != nil
+    }
+    XCTAssertTrue(editor && window.contentView === host, self.reviewProbe(in: host))
+    let correctionField = try XCTUnwrap(self.hostedLabeledField(labeled: "Corrected text", in: host))
+    correctionField.stringValue = revised
+    let saveCorrection = try XCTUnwrap(self.hostedActionButton(labeled: "Save correction", in: host))
+    XCTAssertTrue(
+      saveCorrection.isEnabled && saveCorrection.isDescendant(of: host), self.reviewProbe(in: host))
+    saveCorrection.performClick(nil)
+    let corrected = await waitUntil(timeoutNanoseconds: 10_000_000_000) {
+      let passage = transcripts.segments.first { $0.id == segment.id }
+      return passage?.effectiveText == revised && passage?.corrected == true
+        && passage?.speakerLabel == speakerName
+    }
+    XCTAssertTrue(
+      corrected, "text=\(transcripts.segments.map(\.effectiveText)) message=\(transcripts.message ?? "nil")")
+    let export = try XCTUnwrap(
+      self.hostedActionButton(labeled: ConversationControlLabels.exportTranscript, in: host))
+    XCTAssertTrue(export.isEnabled && export.isDescendant(of: host))
+    export.performClick(nil)
+    let wrote = await waitUntil(timeoutNanoseconds: 15_000_000_000) {
+      guard let text = try? String(contentsOf: exportURL, encoding: .utf8) else { return false }
+      return text.contains(speakerName) && text.contains(revised)
+    }
+    XCTAssertTrue(wrote, "message=\(transcripts.message ?? "nil")")
+    let markdown = try String(contentsOf: exportURL, encoding: .utf8)
+    XCTAssertTrue(markdown.contains(speakerName))
+    XCTAssertTrue(markdown.contains(revised))
+    XCTAssertEqual(try Data(contentsOf: source), original)
+    XCTAssertEqual(try modelURL.resourceValues(forKeys: [.fileSizeKey]).fileSize, modelBytes)
+    XCTAssertFalse(FileManager.default.fileExists(atPath: exportURL.path) == false)
+    withExtendedLifetime(store) {}
+    withExtendedLifetime(live) {}
+    withExtendedLifetime(recovery) {}
+    withExtendedLifetime(speech) {}
+    withExtendedLifetime(scheduler) {}
+    withExtendedLifetime(pressure) {}
+    withExtendedLifetime(window) {}
+    withExtendedLifetime(drag) {}
+  }
+
   /// A file dropped on the hosted library imports when that same hosting view's
   /// banner button is pressed. The imported item then plays, transcribes through
   /// the automatic queue, and accepts speaker review, search, correction, and
@@ -2905,6 +3157,73 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
   }
 
   private let playConversationLabel = "Play conversation audio"
+
+  private func hostedActionButton(labeled label: String, in root: NSView) -> NSButton? {
+    var matched: NSButton?
+    func walk(_ view: NSView) {
+      if matched != nil { return }
+      if let button = view as? NSButton, !(button is NSPopUpButton),
+        button.accessibilityLabel() == label,
+        button.isHidden == false,
+        button.isHiddenOrHasHiddenAncestor == false,
+        button.frame.width > 1,
+        button.frame.height > 1
+      {
+        matched = button
+      }
+      for child in view.subviews { walk(child) }
+    }
+    walk(root)
+    return matched
+  }
+
+  private func hostedLabeledField(labeled label: String, in root: NSView) -> NSTextField? {
+    var matched: NSTextField?
+    func walk(_ view: NSView) {
+      if matched != nil { return }
+      if let field = view as? NSTextField,
+        field.accessibilityLabel() == label,
+        field.isHidden == false,
+        field.isHiddenOrHasHiddenAncestor == false,
+        field.frame.width > 1,
+        field.frame.height > 1
+      {
+        matched = field
+      }
+      for child in view.subviews { walk(child) }
+    }
+    walk(root)
+    return matched
+  }
+
+  private func reviewProbe(in root: NSView) -> String {
+    var lines: [String] = []
+    func walk(_ view: NSView) {
+      if view.accessibilityIdentifier() == "Imported review"
+        || view.accessibilityIdentifier() == "Speaker review"
+        || view.accessibilityIdentifier() == "Correct transcript text"
+      {
+        lines.append(
+          "banner id=\(view.accessibilityIdentifier() ?? "") frame=\(view.frame) hidden=\(view.isHidden)"
+        )
+      }
+      if let button = view as? NSButton {
+        lines.append(
+          "button label=\(button.accessibilityLabel() ?? "") title=\(button.title) frame=\(button.frame) hidden=\(button.isHidden) ancestor=\(button.isHiddenOrHasHiddenAncestor) enabled=\(button.isEnabled)"
+        )
+      } else if let field = view as? NSTextField {
+        let label = field.accessibilityLabel() ?? ""
+        if label == "Person's name" || label == "Corrected text" || label == "Machine reading" {
+          lines.append(
+            "field label=\(label) value=\(field.stringValue) frame=\(field.frame) hidden=\(field.isHidden) ancestor=\(field.isHiddenOrHasHiddenAncestor)"
+          )
+        }
+      }
+      for child in view.subviews { walk(child) }
+    }
+    walk(root)
+    return lines.joined(separator: "\n")
+  }
 
   /// The AppKit Play button the host reveals after a confirmed import is selected.
   private func playConversationButton(in root: NSView) -> NSButton? {
