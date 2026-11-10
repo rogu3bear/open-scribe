@@ -3144,6 +3144,79 @@ public func FfiConverterTypeNativeAudioExportOptions_lower(_ value: NativeAudioE
   return FfiConverterTypeNativeAudioExportOptions.lower(value)
 }
 
+public struct NativeAuthorizedPart: Equatable, Hashable {
+  public let category: NativeContentCategory
+  public let recordId: String
+  public let revisionId: String?
+  public let contentDigest: String
+  public let byteCount: UInt64
+  public let text: String
+
+  // Default memberwise initializers are never public by default, so we
+  // declare one manually.
+  public init(
+    category: NativeContentCategory, recordId: String, revisionId: String?, contentDigest: String,
+    byteCount: UInt64, text: String
+  ) {
+    self.category = category
+    self.recordId = recordId
+    self.revisionId = revisionId
+    self.contentDigest = contentDigest
+    self.byteCount = byteCount
+    self.text = text
+  }
+
+}
+
+#if compiler(>=6)
+  extension NativeAuthorizedPart: Sendable {}
+#endif
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeNativeAuthorizedPart: FfiConverterRustBuffer {
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws
+    -> NativeAuthorizedPart
+  {
+    return
+      try NativeAuthorizedPart(
+        category: FfiConverterTypeNativeContentCategory.read(from: &buf),
+        recordId: FfiConverterString.read(from: &buf),
+        revisionId: FfiConverterOptionString.read(from: &buf),
+        contentDigest: FfiConverterString.read(from: &buf),
+        byteCount: FfiConverterUInt64.read(from: &buf),
+        text: FfiConverterString.read(from: &buf)
+      )
+  }
+
+  public static func write(_ value: NativeAuthorizedPart, into buf: inout [UInt8]) {
+    FfiConverterTypeNativeContentCategory.write(value.category, into: &buf)
+    FfiConverterString.write(value.recordId, into: &buf)
+    FfiConverterOptionString.write(value.revisionId, into: &buf)
+    FfiConverterString.write(value.contentDigest, into: &buf)
+    FfiConverterUInt64.write(value.byteCount, into: &buf)
+    FfiConverterString.write(value.text, into: &buf)
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeAuthorizedPart_lift(_ buf: RustBuffer) throws
+  -> NativeAuthorizedPart
+{
+  return try FfiConverterTypeNativeAuthorizedPart.lift(buf)
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeAuthorizedPart_lower(_ value: NativeAuthorizedPart) -> RustBuffer
+{
+  return FfiConverterTypeNativeAuthorizedPart.lower(value)
+}
+
 public struct NativeClaimNavigation: Equatable, Hashable {
   public let claimId: String
   public let revisionId: String
@@ -5409,6 +5482,79 @@ public func FfiConverterTypeNativePortableSummary_lower(_ value: NativePortableS
   return FfiConverterTypeNativePortableSummary.lower(value)
 }
 
+public struct NativePreparedReview: Equatable, Hashable {
+  public let granted: [NativeContentCategory]
+  public let parts: [NativeAuthorizedPart]
+  public let receipt: NativeProviderReceipt
+  public let networkUsed: Bool
+  public let outboundRequest: Bool
+  public let notice: String
+
+  // Default memberwise initializers are never public by default, so we
+  // declare one manually.
+  public init(
+    granted: [NativeContentCategory], parts: [NativeAuthorizedPart], receipt: NativeProviderReceipt,
+    networkUsed: Bool, outboundRequest: Bool, notice: String
+  ) {
+    self.granted = granted
+    self.parts = parts
+    self.receipt = receipt
+    self.networkUsed = networkUsed
+    self.outboundRequest = outboundRequest
+    self.notice = notice
+  }
+
+}
+
+#if compiler(>=6)
+  extension NativePreparedReview: Sendable {}
+#endif
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeNativePreparedReview: FfiConverterRustBuffer {
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws
+    -> NativePreparedReview
+  {
+    return
+      try NativePreparedReview(
+        granted: FfiConverterSequenceTypeNativeContentCategory.read(from: &buf),
+        parts: FfiConverterSequenceTypeNativeAuthorizedPart.read(from: &buf),
+        receipt: FfiConverterTypeNativeProviderReceipt.read(from: &buf),
+        networkUsed: FfiConverterBool.read(from: &buf),
+        outboundRequest: FfiConverterBool.read(from: &buf),
+        notice: FfiConverterString.read(from: &buf)
+      )
+  }
+
+  public static func write(_ value: NativePreparedReview, into buf: inout [UInt8]) {
+    FfiConverterSequenceTypeNativeContentCategory.write(value.granted, into: &buf)
+    FfiConverterSequenceTypeNativeAuthorizedPart.write(value.parts, into: &buf)
+    FfiConverterTypeNativeProviderReceipt.write(value.receipt, into: &buf)
+    FfiConverterBool.write(value.networkUsed, into: &buf)
+    FfiConverterBool.write(value.outboundRequest, into: &buf)
+    FfiConverterString.write(value.notice, into: &buf)
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativePreparedReview_lift(_ buf: RustBuffer) throws
+  -> NativePreparedReview
+{
+  return try FfiConverterTypeNativePreparedReview.lift(buf)
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativePreparedReview_lower(_ value: NativePreparedReview) -> RustBuffer
+{
+  return FfiConverterTypeNativePreparedReview.lower(value)
+}
+
 public struct NativePreparedSession: Equatable, Hashable {
   public let sessionId: String
   public let schemaVersion: UInt32
@@ -5485,6 +5631,236 @@ public func FfiConverterTypeNativePreparedSession_lower(_ value: NativePreparedS
   -> RustBuffer
 {
   return FfiConverterTypeNativePreparedSession.lower(value)
+}
+
+public struct NativeProviderConfiguration: Equatable, Hashable {
+  public let providerId: String
+  public let modelId: String
+  public let execution: NativeProviderExecution
+  public let origin: String?
+  public let credentialFingerprint: String?
+  public let notice: String
+
+  // Default memberwise initializers are never public by default, so we
+  // declare one manually.
+  public init(
+    providerId: String, modelId: String, execution: NativeProviderExecution, origin: String?,
+    credentialFingerprint: String?, notice: String
+  ) {
+    self.providerId = providerId
+    self.modelId = modelId
+    self.execution = execution
+    self.origin = origin
+    self.credentialFingerprint = credentialFingerprint
+    self.notice = notice
+  }
+
+}
+
+#if compiler(>=6)
+  extension NativeProviderConfiguration: Sendable {}
+#endif
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeNativeProviderConfiguration: FfiConverterRustBuffer {
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws
+    -> NativeProviderConfiguration
+  {
+    return
+      try NativeProviderConfiguration(
+        providerId: FfiConverterString.read(from: &buf),
+        modelId: FfiConverterString.read(from: &buf),
+        execution: FfiConverterTypeNativeProviderExecution.read(from: &buf),
+        origin: FfiConverterOptionString.read(from: &buf),
+        credentialFingerprint: FfiConverterOptionString.read(from: &buf),
+        notice: FfiConverterString.read(from: &buf)
+      )
+  }
+
+  public static func write(_ value: NativeProviderConfiguration, into buf: inout [UInt8]) {
+    FfiConverterString.write(value.providerId, into: &buf)
+    FfiConverterString.write(value.modelId, into: &buf)
+    FfiConverterTypeNativeProviderExecution.write(value.execution, into: &buf)
+    FfiConverterOptionString.write(value.origin, into: &buf)
+    FfiConverterOptionString.write(value.credentialFingerprint, into: &buf)
+    FfiConverterString.write(value.notice, into: &buf)
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeProviderConfiguration_lift(_ buf: RustBuffer) throws
+  -> NativeProviderConfiguration
+{
+  return try FfiConverterTypeNativeProviderConfiguration.lift(buf)
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeProviderConfiguration_lower(_ value: NativeProviderConfiguration)
+  -> RustBuffer
+{
+  return FfiConverterTypeNativeProviderConfiguration.lower(value)
+}
+
+public struct NativeProviderOfferedRecord: Equatable, Hashable {
+  public let category: NativeContentCategory
+  public let recordId: String
+  public let revisionId: String?
+  public let contentDigest: String
+  public let byteCount: UInt64
+  public let text: String
+
+  // Default memberwise initializers are never public by default, so we
+  // declare one manually.
+  public init(
+    category: NativeContentCategory, recordId: String, revisionId: String?, contentDigest: String,
+    byteCount: UInt64, text: String
+  ) {
+    self.category = category
+    self.recordId = recordId
+    self.revisionId = revisionId
+    self.contentDigest = contentDigest
+    self.byteCount = byteCount
+    self.text = text
+  }
+
+}
+
+#if compiler(>=6)
+  extension NativeProviderOfferedRecord: Sendable {}
+#endif
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeNativeProviderOfferedRecord: FfiConverterRustBuffer {
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws
+    -> NativeProviderOfferedRecord
+  {
+    return
+      try NativeProviderOfferedRecord(
+        category: FfiConverterTypeNativeContentCategory.read(from: &buf),
+        recordId: FfiConverterString.read(from: &buf),
+        revisionId: FfiConverterOptionString.read(from: &buf),
+        contentDigest: FfiConverterString.read(from: &buf),
+        byteCount: FfiConverterUInt64.read(from: &buf),
+        text: FfiConverterString.read(from: &buf)
+      )
+  }
+
+  public static func write(_ value: NativeProviderOfferedRecord, into buf: inout [UInt8]) {
+    FfiConverterTypeNativeContentCategory.write(value.category, into: &buf)
+    FfiConverterString.write(value.recordId, into: &buf)
+    FfiConverterOptionString.write(value.revisionId, into: &buf)
+    FfiConverterString.write(value.contentDigest, into: &buf)
+    FfiConverterUInt64.write(value.byteCount, into: &buf)
+    FfiConverterString.write(value.text, into: &buf)
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeProviderOfferedRecord_lift(_ buf: RustBuffer) throws
+  -> NativeProviderOfferedRecord
+{
+  return try FfiConverterTypeNativeProviderOfferedRecord.lift(buf)
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeProviderOfferedRecord_lower(_ value: NativeProviderOfferedRecord)
+  -> RustBuffer
+{
+  return FfiConverterTypeNativeProviderOfferedRecord.lower(value)
+}
+
+public struct NativeProviderReceipt: Equatable, Hashable {
+  public let authorizationId: String
+  public let categories: [String]
+  public let contentDigests: [String]
+  public let byteCount: UInt64
+  public let networkUsed: Bool
+  public let outboundRequest: Bool
+  public let credentialFingerprint: String?
+  public let publicRecord: String
+
+  // Default memberwise initializers are never public by default, so we
+  // declare one manually.
+  public init(
+    authorizationId: String, categories: [String], contentDigests: [String], byteCount: UInt64,
+    networkUsed: Bool, outboundRequest: Bool, credentialFingerprint: String?, publicRecord: String
+  ) {
+    self.authorizationId = authorizationId
+    self.categories = categories
+    self.contentDigests = contentDigests
+    self.byteCount = byteCount
+    self.networkUsed = networkUsed
+    self.outboundRequest = outboundRequest
+    self.credentialFingerprint = credentialFingerprint
+    self.publicRecord = publicRecord
+  }
+
+}
+
+#if compiler(>=6)
+  extension NativeProviderReceipt: Sendable {}
+#endif
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeNativeProviderReceipt: FfiConverterRustBuffer {
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws
+    -> NativeProviderReceipt
+  {
+    return
+      try NativeProviderReceipt(
+        authorizationId: FfiConverterString.read(from: &buf),
+        categories: FfiConverterSequenceString.read(from: &buf),
+        contentDigests: FfiConverterSequenceString.read(from: &buf),
+        byteCount: FfiConverterUInt64.read(from: &buf),
+        networkUsed: FfiConverterBool.read(from: &buf),
+        outboundRequest: FfiConverterBool.read(from: &buf),
+        credentialFingerprint: FfiConverterOptionString.read(from: &buf),
+        publicRecord: FfiConverterString.read(from: &buf)
+      )
+  }
+
+  public static func write(_ value: NativeProviderReceipt, into buf: inout [UInt8]) {
+    FfiConverterString.write(value.authorizationId, into: &buf)
+    FfiConverterSequenceString.write(value.categories, into: &buf)
+    FfiConverterSequenceString.write(value.contentDigests, into: &buf)
+    FfiConverterUInt64.write(value.byteCount, into: &buf)
+    FfiConverterBool.write(value.networkUsed, into: &buf)
+    FfiConverterBool.write(value.outboundRequest, into: &buf)
+    FfiConverterOptionString.write(value.credentialFingerprint, into: &buf)
+    FfiConverterString.write(value.publicRecord, into: &buf)
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeProviderReceipt_lift(_ buf: RustBuffer) throws
+  -> NativeProviderReceipt
+{
+  return try FfiConverterTypeNativeProviderReceipt.lift(buf)
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeProviderReceipt_lower(_ value: NativeProviderReceipt)
+  -> RustBuffer
+{
+  return FfiConverterTypeNativeProviderReceipt.lower(value)
 }
 
 public struct NativeRecorderDetail: Equatable, Hashable {
@@ -8594,6 +8970,98 @@ public func FfiConverterTypeNativeCommandKind_lower(_ value: NativeCommandKind) 
   return FfiConverterTypeNativeCommandKind.lower(value)
 }
 
+public enum NativeContentCategory: Equatable, Hashable {
+
+  case finalTranscript
+  case draftTranscript
+  case contextText
+  case userNotes
+  case participantTopic
+  case humanCorrections
+  case existingDerivedClaims
+
+}
+
+#if compiler(>=6)
+  extension NativeContentCategory: Sendable {}
+#endif
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeNativeContentCategory: FfiConverterRustBuffer {
+  typealias SwiftType = NativeContentCategory
+
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws
+    -> NativeContentCategory
+  {
+    let variant: Int32 = try readInt(&buf)
+    switch variant {
+
+    case 1: return .finalTranscript
+
+    case 2: return .draftTranscript
+
+    case 3: return .contextText
+
+    case 4: return .userNotes
+
+    case 5: return .participantTopic
+
+    case 6: return .humanCorrections
+
+    case 7: return .existingDerivedClaims
+
+    default: throw UniffiInternalError.unexpectedEnumCase
+    }
+  }
+
+  public static func write(_ value: NativeContentCategory, into buf: inout [UInt8]) {
+    switch value {
+
+    case .finalTranscript:
+      writeInt(&buf, Int32(1))
+
+    case .draftTranscript:
+      writeInt(&buf, Int32(2))
+
+    case .contextText:
+      writeInt(&buf, Int32(3))
+
+    case .userNotes:
+      writeInt(&buf, Int32(4))
+
+    case .participantTopic:
+      writeInt(&buf, Int32(5))
+
+    case .humanCorrections:
+      writeInt(&buf, Int32(6))
+
+    case .existingDerivedClaims:
+      writeInt(&buf, Int32(7))
+
+    }
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeContentCategory_lift(_ buf: RustBuffer) throws
+  -> NativeContentCategory
+{
+  return try FfiConverterTypeNativeContentCategory.lift(buf)
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeContentCategory_lower(_ value: NativeContentCategory)
+  -> RustBuffer
+{
+  return FfiConverterTypeNativeContentCategory.lower(value)
+}
+
 public enum NativeContextAction: Equatable, Hashable {
 
   case authorize(
@@ -9796,6 +10264,193 @@ public func FfiConverterTypeNativeModelReadiness_lift(_ buf: RustBuffer) throws
 public func FfiConverterTypeNativeModelReadiness_lower(_ value: NativeModelReadiness) -> RustBuffer
 {
   return FfiConverterTypeNativeModelReadiness.lower(value)
+}
+
+public
+  enum NativeProviderError: Swift.Error, Equatable, Hashable, Foundation.LocalizedError
+{
+
+  case InvalidIdentifier
+  case OriginRequired
+  case OriginRefused
+  case LocalOriginRefused
+  case FingerprintRefused
+  case SecretMaterialRefused
+  case NoCategoryGranted
+  case CategoryUnavailable
+  case UnknownCategory
+  case LocalGrantDoesNotAuthorizeRemote
+  case OriginChangeRequiresNewAuthorization
+  case InvalidRecord
+  case ByteCountMismatch
+  case TooLarge
+
+  public var errorDescription: String? {
+    String(reflecting: self)
+  }
+
+}
+
+#if compiler(>=6)
+  extension NativeProviderError: Sendable {}
+#endif
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeNativeProviderError: FfiConverterRustBuffer {
+  typealias SwiftType = NativeProviderError
+
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws
+    -> NativeProviderError
+  {
+    let variant: Int32 = try readInt(&buf)
+    switch variant {
+
+    case 1: return .InvalidIdentifier
+    case 2: return .OriginRequired
+    case 3: return .OriginRefused
+    case 4: return .LocalOriginRefused
+    case 5: return .FingerprintRefused
+    case 6: return .SecretMaterialRefused
+    case 7: return .NoCategoryGranted
+    case 8: return .CategoryUnavailable
+    case 9: return .UnknownCategory
+    case 10: return .LocalGrantDoesNotAuthorizeRemote
+    case 11: return .OriginChangeRequiresNewAuthorization
+    case 12: return .InvalidRecord
+    case 13: return .ByteCountMismatch
+    case 14: return .TooLarge
+
+    default: throw UniffiInternalError.unexpectedEnumCase
+    }
+  }
+
+  public static func write(_ value: NativeProviderError, into buf: inout [UInt8]) {
+    switch value {
+
+    case .InvalidIdentifier:
+      writeInt(&buf, Int32(1))
+
+    case .OriginRequired:
+      writeInt(&buf, Int32(2))
+
+    case .OriginRefused:
+      writeInt(&buf, Int32(3))
+
+    case .LocalOriginRefused:
+      writeInt(&buf, Int32(4))
+
+    case .FingerprintRefused:
+      writeInt(&buf, Int32(5))
+
+    case .SecretMaterialRefused:
+      writeInt(&buf, Int32(6))
+
+    case .NoCategoryGranted:
+      writeInt(&buf, Int32(7))
+
+    case .CategoryUnavailable:
+      writeInt(&buf, Int32(8))
+
+    case .UnknownCategory:
+      writeInt(&buf, Int32(9))
+
+    case .LocalGrantDoesNotAuthorizeRemote:
+      writeInt(&buf, Int32(10))
+
+    case .OriginChangeRequiresNewAuthorization:
+      writeInt(&buf, Int32(11))
+
+    case .InvalidRecord:
+      writeInt(&buf, Int32(12))
+
+    case .ByteCountMismatch:
+      writeInt(&buf, Int32(13))
+
+    case .TooLarge:
+      writeInt(&buf, Int32(14))
+
+    }
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeProviderError_lift(_ buf: RustBuffer) throws
+  -> NativeProviderError
+{
+  return try FfiConverterTypeNativeProviderError.lift(buf)
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeProviderError_lower(_ value: NativeProviderError) -> RustBuffer {
+  return FfiConverterTypeNativeProviderError.lower(value)
+}
+
+public enum NativeProviderExecution: Equatable, Hashable {
+
+  case local
+  case remote
+
+}
+
+#if compiler(>=6)
+  extension NativeProviderExecution: Sendable {}
+#endif
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeNativeProviderExecution: FfiConverterRustBuffer {
+  typealias SwiftType = NativeProviderExecution
+
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws
+    -> NativeProviderExecution
+  {
+    let variant: Int32 = try readInt(&buf)
+    switch variant {
+
+    case 1: return .local
+
+    case 2: return .remote
+
+    default: throw UniffiInternalError.unexpectedEnumCase
+    }
+  }
+
+  public static func write(_ value: NativeProviderExecution, into buf: inout [UInt8]) {
+    switch value {
+
+    case .local:
+      writeInt(&buf, Int32(1))
+
+    case .remote:
+      writeInt(&buf, Int32(2))
+
+    }
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeProviderExecution_lift(_ buf: RustBuffer) throws
+  -> NativeProviderExecution
+{
+  return try FfiConverterTypeNativeProviderExecution.lift(buf)
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeProviderExecution_lower(_ value: NativeProviderExecution)
+  -> RustBuffer
+{
+  return FfiConverterTypeNativeProviderExecution.lower(value)
 }
 
 public enum NativeRecorderAction: Equatable, Hashable {
@@ -11793,6 +12448,33 @@ private struct FfiConverterSequenceString: FfiConverterRustBuffer {
 #if swift(>=5.8)
   @_documentation(visibility: private)
 #endif
+private struct FfiConverterSequenceTypeNativeAuthorizedPart: FfiConverterRustBuffer {
+  typealias SwiftType = [NativeAuthorizedPart]
+
+  public static func write(_ value: [NativeAuthorizedPart], into buf: inout [UInt8]) {
+    let len = Int32(value.count)
+    writeInt(&buf, len)
+    for item in value {
+      FfiConverterTypeNativeAuthorizedPart.write(item, into: &buf)
+    }
+  }
+
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws
+    -> [NativeAuthorizedPart]
+  {
+    let len: Int32 = try readInt(&buf)
+    var seq = [NativeAuthorizedPart]()
+    seq.reserveCapacity(Int(len))
+    for _ in 0..<len {
+      seq.append(try FfiConverterTypeNativeAuthorizedPart.read(from: &buf))
+    }
+    return seq
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
 private struct FfiConverterSequenceTypeNativeClaimTarget: FfiConverterRustBuffer {
   typealias SwiftType = [NativeClaimTarget]
 
@@ -11974,6 +12656,33 @@ private struct FfiConverterSequenceTypeNativeNamedTranscriptSpeaker: FfiConverte
     seq.reserveCapacity(Int(len))
     for _ in 0..<len {
       seq.append(try FfiConverterTypeNativeNamedTranscriptSpeaker.read(from: &buf))
+    }
+    return seq
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+private struct FfiConverterSequenceTypeNativeProviderOfferedRecord: FfiConverterRustBuffer {
+  typealias SwiftType = [NativeProviderOfferedRecord]
+
+  public static func write(_ value: [NativeProviderOfferedRecord], into buf: inout [UInt8]) {
+    let len = Int32(value.count)
+    writeInt(&buf, len)
+    for item in value {
+      FfiConverterTypeNativeProviderOfferedRecord.write(item, into: &buf)
+    }
+  }
+
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws
+    -> [NativeProviderOfferedRecord]
+  {
+    let len: Int32 = try readInt(&buf)
+    var seq = [NativeProviderOfferedRecord]()
+    seq.reserveCapacity(Int(len))
+    for _ in 0..<len {
+      seq.append(try FfiConverterTypeNativeProviderOfferedRecord.read(from: &buf))
     }
     return seq
   }
@@ -12414,6 +13123,33 @@ private struct FfiConverterSequenceTypeNativeTranscriptionWork: FfiConverterRust
 #if swift(>=5.8)
   @_documentation(visibility: private)
 #endif
+private struct FfiConverterSequenceTypeNativeContentCategory: FfiConverterRustBuffer {
+  typealias SwiftType = [NativeContentCategory]
+
+  public static func write(_ value: [NativeContentCategory], into buf: inout [UInt8]) {
+    let len = Int32(value.count)
+    writeInt(&buf, len)
+    for item in value {
+      FfiConverterTypeNativeContentCategory.write(item, into: &buf)
+    }
+  }
+
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws
+    -> [NativeContentCategory]
+  {
+    let len: Int32 = try readInt(&buf)
+    var seq = [NativeContentCategory]()
+    seq.reserveCapacity(Int(len))
+    for _ in 0..<len {
+      seq.append(try FfiConverterTypeNativeContentCategory.read(from: &buf))
+    }
+    return seq
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
 private struct FfiConverterSequenceTypeNativeMediaSourceKind: FfiConverterRustBuffer {
   typealias SwiftType = [NativeMediaSourceKind]
 
@@ -12486,6 +13222,124 @@ public func nativeStatus() -> NativeStatus {
       )
     })
 }
+public func authorizeContentProviderRun(
+  configuration: NativeProviderConfiguration, authorizationId: String, sessionId: String,
+  granted: [NativeContentCategory]
+) throws -> [NativeContentCategory] {
+  return try FfiConverterSequenceTypeNativeContentCategory.lift(
+    try rustCallWithError(FfiConverterTypeNativeProviderError_lift) {
+      uniffiCallStatus in
+      uniffi_open_scribe_uniffi_fn_func_authorize_content_provider_run(
+        FfiConverterTypeNativeProviderConfiguration_lower(configuration),
+        FfiConverterString.lower(authorizationId),
+        FfiConverterString.lower(sessionId),
+        FfiConverterSequenceTypeNativeContentCategory.lower(granted), uniffiCallStatus
+      )
+    })
+}
+public func configureContentProvider(
+  providerId: String, modelId: String, execution: NativeProviderExecution, origin: String?,
+  credentialFingerprint: String?
+) throws -> NativeProviderConfiguration {
+  return try FfiConverterTypeNativeProviderConfiguration_lift(
+    try rustCallWithError(FfiConverterTypeNativeProviderError_lift) {
+      uniffiCallStatus in
+      uniffi_open_scribe_uniffi_fn_func_configure_content_provider(
+        FfiConverterString.lower(providerId),
+        FfiConverterString.lower(modelId),
+        FfiConverterTypeNativeProviderExecution_lower(execution),
+        FfiConverterOptionString.lower(origin),
+        FfiConverterOptionString.lower(credentialFingerprint), uniffiCallStatus
+      )
+    })
+}
+public func grantContentCategory(name: String) throws -> NativeContentCategory {
+  return try FfiConverterTypeNativeContentCategory_lift(
+    try rustCallWithError(FfiConverterTypeNativeProviderError_lift) {
+      uniffiCallStatus in
+      uniffi_open_scribe_uniffi_fn_func_grant_content_category(
+        FfiConverterString.lower(name), uniffiCallStatus
+      )
+    })
+}
+public func materializeContentProviderReview(
+  configuration: NativeProviderConfiguration, authorizationId: String, sessionId: String,
+  granted: [NativeContentCategory], offered: [NativeProviderOfferedRecord]
+) throws -> NativePreparedReview {
+  return try FfiConverterTypeNativePreparedReview_lift(
+    try rustCallWithError(FfiConverterTypeNativeProviderError_lift) {
+      uniffiCallStatus in
+      uniffi_open_scribe_uniffi_fn_func_materialize_content_provider_review(
+        FfiConverterTypeNativeProviderConfiguration_lower(configuration),
+        FfiConverterString.lower(authorizationId),
+        FfiConverterString.lower(sessionId),
+        FfiConverterSequenceTypeNativeContentCategory.lower(granted),
+        FfiConverterSequenceTypeNativeProviderOfferedRecord.lower(offered), uniffiCallStatus
+      )
+    })
+}
+public func outboundFromContentProviderConfiguration(
+  configuration: NativeProviderConfiguration, offered: [NativeProviderOfferedRecord]
+) throws -> NativePreparedReview {
+  return try FfiConverterTypeNativePreparedReview_lift(
+    try rustCallWithError(FfiConverterTypeNativeProviderError_lift) {
+      uniffiCallStatus in
+      uniffi_open_scribe_uniffi_fn_func_outbound_from_content_provider_configuration(
+        FfiConverterTypeNativeProviderConfiguration_lower(configuration),
+        FfiConverterSequenceTypeNativeProviderOfferedRecord.lower(offered), uniffiCallStatus
+      )
+    })
+}
+public func providerConfiguredNotice() -> String {
+  return try! FfiConverterString.lift(
+    try! rustCall {
+      uniffiCallStatus in
+      uniffi_open_scribe_uniffi_fn_func_provider_configured_notice(
+        uniffiCallStatus
+      )
+    })
+}
+public func providerNoOutboundNotice() -> String {
+  return try! FfiConverterString.lift(
+    try! rustCall {
+      uniffiCallStatus in
+      uniffi_open_scribe_uniffi_fn_func_provider_no_outbound_notice(
+        uniffiCallStatus
+      )
+    })
+}
+public func providerUnconfiguredNotice() -> String {
+  return try! FfiConverterString.lift(
+    try! rustCall {
+      uniffiCallStatus in
+      uniffi_open_scribe_uniffi_fn_func_provider_unconfigured_notice(
+        uniffiCallStatus
+      )
+    })
+}
+public func refuseContentProviderSecret(material: String) throws {
+  try rustCallWithError(FfiConverterTypeNativeProviderError_lift) {
+    uniffiCallStatus in
+    uniffi_open_scribe_uniffi_fn_func_refuse_content_provider_secret(
+      FfiConverterString.lower(material), uniffiCallStatus
+    )
+  }
+}
+public func retargetContentProviderRemote(
+  configuration: NativeProviderConfiguration, authorizationId: String, sessionId: String,
+  granted: [NativeContentCategory], origin: String
+) throws {
+  try rustCallWithError(FfiConverterTypeNativeProviderError_lift) {
+    uniffiCallStatus in
+    uniffi_open_scribe_uniffi_fn_func_retarget_content_provider_remote(
+      FfiConverterTypeNativeProviderConfiguration_lower(configuration),
+      FfiConverterString.lower(authorizationId),
+      FfiConverterString.lower(sessionId),
+      FfiConverterSequenceTypeNativeContentCategory.lower(granted),
+      FfiConverterString.lower(origin), uniffiCallStatus
+    )
+  }
+}
 /// Checks an untrusted `.openscribe` package without opening a library.
 public func verifyPortablePackage(packagePath: String) throws -> NativePortableSummary {
   return try FfiConverterTypeNativePortableSummary_lift(
@@ -12525,6 +13379,37 @@ private let initializationResult: InitializationResult = {
     return InitializationResult.apiChecksumMismatch
   }
   if uniffi_open_scribe_uniffi_checksum_func_native_status() != 55397 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_open_scribe_uniffi_checksum_func_authorize_content_provider_run() != 26513 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_open_scribe_uniffi_checksum_func_configure_content_provider() != 48810 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_open_scribe_uniffi_checksum_func_grant_content_category() != 48680 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_open_scribe_uniffi_checksum_func_materialize_content_provider_review() != 64931 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_open_scribe_uniffi_checksum_func_outbound_from_content_provider_configuration() != 64339
+  {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_open_scribe_uniffi_checksum_func_provider_configured_notice() != 17460 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_open_scribe_uniffi_checksum_func_provider_no_outbound_notice() != 11844 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_open_scribe_uniffi_checksum_func_provider_unconfigured_notice() != 46472 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_open_scribe_uniffi_checksum_func_refuse_content_provider_secret() != 11520 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_open_scribe_uniffi_checksum_func_retarget_content_provider_remote() != 3719 {
     return InitializationResult.apiChecksumMismatch
   }
   if uniffi_open_scribe_uniffi_checksum_func_verify_portable_package() != 50136 {

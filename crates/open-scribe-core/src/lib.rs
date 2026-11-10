@@ -2,8 +2,9 @@
 //!
 //! The current tranche keeps deterministic fixture commands and adds native
 //! durable session/media-open preparation, review, and local transcription
-//! through a manifest-verified model. It performs no capture, playback,
-//! provider, or network work and never starts Recording.
+//! through a manifest-verified model. Provider configuration authorizes no
+//! content category and opens no connection. It performs no capture, playback,
+//! or network work and never starts Recording.
 
 use std::path::{Path, PathBuf};
 
@@ -67,6 +68,12 @@ pub use open_scribe_domain::{
 };
 pub use open_scribe_evidence::{
     AdjudicationAction, DerivedClaim, EvidenceKind, EvidenceRef, EvidenceRefError, ResolutionState,
+};
+pub use open_scribe_memory::{
+    CONFIGURED_PROVIDER_NOTICE, ContentCategory, ExecutionMode, NO_OUTBOUND_NOTICE, OfferedRecord,
+    PolicyError, PreparedReview, ProviderConfiguration, ProviderReceipt, RunAuthorization,
+    UNCONFIGURED_PROVIDER_NOTICE, authorize_run, configure_provider, grant_category,
+    materialize_review, outbound_from_configuration, refuse_provider_secret, retarget_remote,
 };
 pub use open_scribe_store::{
     ClaimEvidenceSide, ClaimNavigation, ClaimNavigationTarget, DecodedAudioError, LibraryRecovery,

@@ -40,6 +40,8 @@
 		B0198AA144C943FF87190002 /* ConversationIdentityPresentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0198AA144C943FF87190012 /* ConversationIdentityPresentation.swift */; };
 		302DB5C18FFCD7389677DAA3 /* OpenScribeApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 32118F0168D462A2AF9207B5 /* OpenScribeApp.swift */; };
 		3D040E77A31B5F287D42504A /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 74480CF189E8E48F995656F2 /* SettingsView.swift */; };
+		A4C0E1F27B9D4E6A81C3D011 /* ProviderAuthorizationModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A4C0E1F27B9D4E6A81C3D012 /* ProviderAuthorizationModel.swift */; };
+		A4C0E1F27B9D4E6A81C3D013 /* ProviderAuthorizationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A4C0E1F27B9D4E6A81C3D014 /* ProviderAuthorizationTests.swift */; };
 		3D25B82DFEFE01398833B042 /* RustStatusSourceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F999B06ACC1C80F559FDEF6B /* RustStatusSourceTests.swift */; };
 		4A61A3F920D148E6A9BCE201 /* ManagedCAFWriter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A61A3F920D148E6A9BCE201 /* ManagedCAFWriter.swift */; };
 		AB61A3F920D148E6A9BCE301 /* SegmentedCAFWriter.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC61A3F920D148E6A9BCE301 /* SegmentedCAFWriter.swift */; };
@@ -161,6 +163,8 @@
 		6712658CEAD0838E764A5BBF /* AccessibilityAnnouncer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccessibilityAnnouncer.swift; sourceTree = "<group>"; };
 		68710CE895B2216A5675AE4A /* SessionPresentation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionPresentation.swift; sourceTree = "<group>"; };
 		74480CF189E8E48F995656F2 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
+		A4C0E1F27B9D4E6A81C3D012 /* ProviderAuthorizationModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProviderAuthorizationModel.swift; sourceTree = "<group>"; };
+		A4C0E1F27B9D4E6A81C3D014 /* ProviderAuthorizationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProviderAuthorizationTests.swift; sourceTree = "<group>"; };
 		7E6CCF0ABF9686858E86AD53 /* OpenScribeAppTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = OpenScribeAppTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		87CA610842D2D723210F765F /* FixtureSessionStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FixtureSessionStore.swift; sourceTree = "<group>"; };
 		18C734C65CBC9FBD50993FB3 /* TranscriptLibraryModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptLibraryModel.swift; sourceTree = "<group>"; };
@@ -251,6 +255,7 @@
 				A14183000000000000000005 /* RuntimeLibraryStore.swift */,
 				87CA610842D2D723210F765F /* FixtureSessionStore.swift */,
 				5E7C1A2B3D4F5061728394A6 /* SpeechTranscriptionModel.swift */,
+				A4C0E1F27B9D4E6A81C3D012 /* ProviderAuthorizationModel.swift */,
 				18C734C65CBC9FBD50993FB3 /* TranscriptLibraryModel.swift */,
 				E8138793F73B1D66711F99B7 /* TranscriptionScheduler.swift */,
 			);
@@ -379,6 +384,7 @@
 				C2AE901A1122334455660014 /* TranscriptPlaybackProjectionTests.swift */,
 				F563A3F920D148E6A9BCE201 /* SingleInstanceGuardTests.swift */,
 				F999B06ACC1C80F559FDEF6B /* RustStatusSourceTests.swift */,
+				A4C0E1F27B9D4E6A81C3D014 /* ProviderAuthorizationTests.swift */,
 				D1A6T0000000000000000001 /* DiagnosticsReportTests.swift */,
 				B7C001F00000000000000001 /* DiagnosticsUnifiedLogTests.swift */,
 				1003D5D4F9A95E6C4078E7C5 /* TranscriptionSchedulerTests.swift */,
@@ -569,6 +575,7 @@
 				C2AE901A1122334455660004 /* TranscriptPlaybackProjectionTests.swift in Sources */,
 				E563A3F920D148E6A9BCE201 /* SingleInstanceGuardTests.swift in Sources */,
 				3D25B82DFEFE01398833B042 /* RustStatusSourceTests.swift in Sources */,
+				A4C0E1F27B9D4E6A81C3D013 /* ProviderAuthorizationTests.swift in Sources */,
 				D1A6T0000000000000000002 /* DiagnosticsReportTests.swift in Sources */,
 				B7C001F00000000000000002 /* DiagnosticsUnifiedLogTests.swift in Sources */,
 			);
@@ -650,6 +657,7 @@
 				80867FCED39F6D49A72CD0FB /* SessionPresentation.swift in Sources */,
 				E463A3F920D148E6A9BCE201 /* SingleInstanceGuard.swift in Sources */,
 				3D040E77A31B5F287D42504A /* SettingsView.swift in Sources */,
+				A4C0E1F27B9D4E6A81C3D011 /* ProviderAuthorizationModel.swift in Sources */,
 				EDDBA4832BEA98E75718E55F /* SymbolResolver.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

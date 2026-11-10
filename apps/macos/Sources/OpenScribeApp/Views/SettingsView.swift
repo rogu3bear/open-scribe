@@ -29,6 +29,11 @@ struct SettingsView: View {
   @State private var exportPresented = false
   @State private var showingModels = false
   @State private var showingPolicies = false
+  @StateObject private var authorization = ProviderAuthorizationModel()
+  @State private var providerId = ""
+  @State private var providerModelId = ""
+  @State private var providerOrigin = ""
+  @State private var providerFingerprint = ""
   @ObservedObject private var diagnosticLog = DiagnosticLog.shared
   @State private var signature = "checking"
 
@@ -111,6 +116,58 @@ struct SettingsView: View {
           }
         }
       }
+      Section("Remote review") {
+        Text(authorization.notice)
+          .font(.caption)
+          .foregroundStyle(.secondary)
+          .fixedSize(horizontal: false, vertical: true)
+        TextField("Provider", text: $providerId)
+        TextField("Model", text: $providerModelId)
+        TextField("HTTPS origin", text: $providerOrigin)
+        TextField("Credential fingerprint", text: $providerFingerprint)
+        Text("The fingerprint is a SHA-256 digest. The secret stays out of Open Scribe.")
+          .font(.caption)
+          .foregroundStyle(.secondary)
+          .fixedSize(horizontal: false, vertical: true)
+        Button("Configure provider") {
+          do {
+            try authorization.configureRemote(
+              providerId: providerId, modelId: providerModelId, origin: providerOrigin,
+              credentialFingerprint: providerFingerprint.isEmpty ? nil : providerFingerprint)
+          } catch {
+            authorization.noteFailure()
+          }
+        }
+        .disabled(providerId.isEmpty || providerModelId.isEmpty || providerOrigin.isEmpty)
+        if authorization.configured {
+          ForEach(ProviderAuthorizationModel.choices) { choice in
+            Toggle(choice.title, isOn: grantBinding(choice.category))
+          }
+          Button("Prepare review") {
+            do {
+              try authorization.prepare(sessionId: "settings-session", offered: [])
+            } catch {
+              authorization.noteFailure()
+            }
+          }
+          .disabled(authorization.grants.isEmpty)
+        }
+        Text(ProviderAuthorizationModel.unavailableNotice)
+          .font(.caption)
+          .foregroundStyle(.secondary)
+          .fixedSize(horizontal: false, vertical: true)
+        if let prepareNotice = authorization.prepareNotice {
+          Text(prepareNotice)
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        }
+        if let failure = authorization.failure {
+          Text(failure)
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+        }
+      }
       Section("Help and policies") {
         Link(
           "Review Guide (online)",
@@ -156,6 +213,18 @@ struct SettingsView: View {
         AppTelemetry.commandInvoked("export-diagnostics-failed")
       }
     }
+  }
+
+  private func grantBinding(_ category: NativeContentCategory) -> Binding<Bool> {
+    Binding(
+      get: { authorization.grants.contains(category) },
+      set: { enabled in
+        if enabled {
+          authorization.grants.insert(category)
+        } else {
+          authorization.grants.remove(category)
+        }
+      })
   }
 
   private var queueLabel: String {
