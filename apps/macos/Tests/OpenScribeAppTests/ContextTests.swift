@@ -612,6 +612,140 @@ final class ContextTests: XCTestCase {
     XCTAssertEqual(ContextOverlayController.cocoaFrame(CGRect(x: 10, y: 20, width: 100, height: 50)).width, 100)
   }
 
+  /// The perimeter view draws its boundary. The window stays unordered, and
+  /// this does not call `ContextOverlayController.show`.
+  @MainActor
+  func testRenderedPerimeterMeasuresTheBoundaryWithoutShowingAPanel() throws {
+    let dark = NSColor(calibratedWhite: 0, alpha: 1)
+    let light = NSColor(calibratedWhite: 1, alpha: 1)
+    let eligible = try renderPerimeter(
+      state: .eligible, increaseContrast: false, reduceMotion: false, wallpaper: dark,
+      appearance: .darkAqua)
+    let active = try renderPerimeter(
+      state: .active, increaseContrast: false, reduceMotion: false, wallpaper: dark,
+      appearance: .darkAqua)
+    let activeReduced = try renderPerimeter(
+      state: .active, increaseContrast: false, reduceMotion: true, wallpaper: dark,
+      appearance: .darkAqua)
+    let lightPlain = try renderPerimeter(
+      state: .selected, increaseContrast: false, reduceMotion: false, wallpaper: light,
+      appearance: .aqua)
+    let lightContrast = try renderPerimeter(
+      state: .selected, increaseContrast: true, reduceMotion: true, wallpaper: light,
+      appearance: .aqua)
+
+    let eligiblePeak = peakLuminance(eligible.bitmap)
+    let activePeak = peakLuminance(active.bitmap)
+    XCTAssertGreaterThan(
+      activePeak - eligiblePeak, 0.4,
+      "eligible=\(eligiblePeak) active=\(activePeak)")
+    XCTAssertLessThan(eligible.center, 0.05, "the open interior stays the dark wallpaper")
+    XCTAssertLessThan(active.center, 0.05, "the open interior stays the dark wallpaper")
+    XCTAssertEqual(peakLuminance(activeReduced.bitmap), activePeak, accuracy: 0.05)
+    XCTAssertGreaterThan(
+      lightPlain.darkest, 0.85, "a white perimeter on a light wallpaper adds no dark keyline")
+    XCTAssertLessThan(
+      lightContrast.darkest, 0.25, "Increase Contrast draws the black outer keyline")
+    XCTAssertGreaterThan(lightContrast.brightest, 0.9)
+    for sample in [eligible, active, activeReduced, lightPlain, lightContrast] {
+      XCTAssertFalse(sample.windowWasVisible)
+      XCTAssertFalse(sample.accessibilityElement)
+      XCTAssertNil(sample.hit)
+    }
+  }
+
+  private struct RenderedPerimeterSample {
+    let bitmap: NSBitmapImageRep
+    let center: CGFloat
+    let brightest: CGFloat
+    let darkest: CGFloat
+    let windowWasVisible: Bool
+    let accessibilityElement: Bool
+    let hit: NSView?
+  }
+
+  @MainActor
+  private func renderPerimeter(
+    state: ContextOverlayState,
+    increaseContrast: Bool,
+    reduceMotion: Bool,
+    wallpaper: NSColor,
+    appearance: NSAppearance.Name
+  ) throws -> RenderedPerimeterSample {
+    let size = NSSize(width: 200, height: 140)
+    let view = PerimeterView(frame: NSRect(origin: .zero, size: size))
+    let window = NSWindow(
+      contentRect: NSRect(origin: .zero, size: size),
+      styleMask: [.borderless], backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    window.appearance = NSAppearance(named: appearance)
+    defer { window.close() }
+    let background = NSView(frame: NSRect(origin: .zero, size: size))
+    background.wantsLayer = true
+    background.layer?.backgroundColor = wallpaper.cgColor
+    window.contentView = background
+    background.addSubview(view)
+    view.frame = background.bounds
+    view.apply(state, increaseContrast: increaseContrast, reduceMotion: reduceMotion)
+    background.layoutSubtreeIfNeeded()
+    view.layoutSubtreeIfNeeded()
+    removeLayerAnimations(view.layer)
+    let visible = window.isVisible
+    let hit = view.hitTest(NSPoint(x: size.width / 2, y: size.height / 2))
+    let element = view.isAccessibilityElement()
+    let bitmap = NSBitmapImageRep(
+      bitmapDataPlanes: nil, pixelsWide: Int(size.width), pixelsHigh: Int(size.height),
+      bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+      colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)
+    let image = try XCTUnwrap(bitmap)
+    NSGraphicsContext.saveGraphicsState()
+    let graphics = try XCTUnwrap(NSGraphicsContext(bitmapImageRep: image))
+    NSGraphicsContext.current = graphics
+    graphics.cgContext.setFillColor(wallpaper.cgColor)
+    graphics.cgContext.fill(CGRect(origin: .zero, size: size))
+    view.layer?.render(in: graphics.cgContext)
+    NSGraphicsContext.restoreGraphicsState()
+    return RenderedPerimeterSample(
+      bitmap: image,
+      center: luminance(image, x: Int(size.width / 2), y: Int(size.height / 2)),
+      brightest: peakLuminance(image),
+      darkest: floorLuminance(image),
+      windowWasVisible: visible,
+      accessibilityElement: element,
+      hit: hit)
+  }
+
+  private func removeLayerAnimations(_ layer: CALayer?) {
+    guard let layer else { return }
+    layer.removeAllAnimations()
+    layer.sublayers?.forEach(removeLayerAnimations)
+  }
+
+  private func luminance(_ bitmap: NSBitmapImageRep, x: Int, y: Int) -> CGFloat {
+    guard let color = bitmap.colorAt(x: x, y: y)?.usingColorSpace(.deviceRGB) else { return 0 }
+    return (color.redComponent + color.greenComponent + color.blueComponent) / 3
+  }
+
+  private func peakLuminance(_ bitmap: NSBitmapImageRep) -> CGFloat {
+    var peak: CGFloat = 0
+    for y in 0..<bitmap.pixelsHigh {
+      for x in 0..<bitmap.pixelsWide {
+        peak = max(peak, luminance(bitmap, x: x, y: y))
+      }
+    }
+    return peak
+  }
+
+  private func floorLuminance(_ bitmap: NSBitmapImageRep) -> CGFloat {
+    var floor: CGFloat = 1
+    for y in 0..<bitmap.pixelsHigh {
+      for x in 0..<bitmap.pixelsWide {
+        floor = min(floor, luminance(bitmap, x: x, y: y))
+      }
+    }
+    return floor
+  }
+
   /// The words and shortcuts the conversation controls use. This does not drive
   /// VoiceOver, a hosted menu, or an increased-text layout pass.
   func testRequiredConversationControlsStayWordedWithoutColor() {
