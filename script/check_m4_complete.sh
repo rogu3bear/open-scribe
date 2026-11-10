@@ -107,6 +107,32 @@ provider_gap='provider_category_authorization,'
 if [[ "$provider_source_qualified" == 1 ]]; then
 	provider_gap=''
 fi
+# Hosted Trash confirm and the interrupted-move launch recovery are one source
+# check. Either marker missing restores the runtime name. Not a candidate receipt.
+trash_source_qualified=0
+if source_has_markers \
+	"$repo_root/apps/macos/Tests/OpenScribeAppTests/RecoveredSessionControllerTests.swift" \
+	'testHostedDeletionConfirmUsesSystemTrash' \
+	'Confirm move to Trash' \
+	'performClick' \
+	'does not call `requestDeletion`' &&
+	source_has_markers \
+		"$repo_root/apps/macos/Tests/OpenScribeAppTests/TranscriptLibraryModelTests.swift" \
+		'testLaunchRecoverySettlesASystemTrashMoveThatStoppedBeforeCompletion' \
+		'TranscriptLibraryModel.systemTrash' \
+		'recoverOnLaunch' \
+		'launch recovery completes without the Trash URL' &&
+	source_has_markers \
+		"$repo_root/apps/macos/Sources/OpenScribeApp/Stores/TranscriptLibraryModel.swift" \
+		'func systemTrash' \
+		'trashItem' \
+		'completeDeletion'; then
+	trash_source_qualified=1
+fi
+trash_gap='system_trash_deletion_runtime,'
+if [[ "$trash_source_qualified" == 1 ]]; then
+	trash_gap=''
+fi
 for mode in synthetic live-context; do
 	if has_local_only "$mode"; then qualified_modes+=("$mode"); fi
 done
@@ -129,7 +155,9 @@ printf '%s\n' \
 	'diagnostics_source_plane=committed_source_not_candidate_receipt' \
 	"provider_source_qualified=$provider_source_qualified" \
 	'provider_source_plane=committed_source_not_candidate_receipt' \
-	"missing=${missing_prefix}${provider_gap}system_trash_deletion_runtime,${diagnostics_gap}capability_true_website_equality,local_intelligence,structured_memory" \
+	"trash_source_qualified=$trash_source_qualified" \
+	'trash_source_plane=committed_source_not_candidate_receipt' \
+	"missing=${missing_prefix}${provider_gap}${trash_gap}${diagnostics_gap}capability_true_website_equality,local_intelligence,structured_memory" \
 	'protected=provider_credentials,production_deployment' \
 	'next=qualify every missing boundary on the candidate; local-only mode does not admit release or optional context it did not exercise' >&2
 exit 1

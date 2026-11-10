@@ -164,6 +164,8 @@ check_local_completion() {
 	rg -Fxq "qualified_local_only_modes=$expected" "$fixture/log"
 	rg -q 'missing=.*provider_category_authorization' "$fixture/log"
 	rg -Fxq 'provider_source_qualified=0' "$fixture/log"
+	rg -q 'missing=.*system_trash_deletion_runtime,' "$fixture/log"
+	rg -Fxq 'trash_source_qualified=0' "$fixture/log"
 	rg -q 'missing=.*secret_handling,crash_report_content_check,' "$fixture/log"
 	rg -Fxq 'diagnostics_source_qualified=0' "$fixture/log"
 	if [[ -z "$expected" ]]; then

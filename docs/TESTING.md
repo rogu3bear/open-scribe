@@ -238,9 +238,12 @@ this checkout's committed diagnostics export source re-verifies.
 `provider_category_authorization` leaves only when the committed hosted
 Settings provider proof re-verifies. Each check is not a candidate receipt,
 leaves `qualification=none at the M4 completion plane`, and restores its
-names when any marker is absent. A checkout without those files, including
-the candidate-record fixture, keeps the names. Deletion, capability, and
-intelligence boundaries stay until their own qualification exists. This development-artifact result does not qualify signed sandboxing, system
+names when any marker is absent. `system_trash_deletion_runtime` leaves
+only when the hosted Trash confirm and the interrupted-move launch recovery
+both re-verify. A checkout without those files, including the
+candidate-record fixture, keeps the names. Capability and intelligence
+boundaries stay until their own qualification exists. This
+development-artifact result does not qualify signed sandboxing, system
 Trash, live capture, omitted context, platform support or public release.
 Earlier dated commands and receipts below retain their historical scope.
 
