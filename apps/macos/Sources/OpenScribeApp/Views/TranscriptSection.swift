@@ -19,9 +19,6 @@ struct TranscriptSection: View {
   var playbackPosition: () -> TranscriptPlaybackPosition? = { nil }
   var onFollowPlayback: (String) -> Void = { _ in }
 
-  @State private var renaming: NativeSessionSpeaker?
-  @State private var draftLabel = ""
-  @State private var renameRequest = UUID()
   @State private var showingModels = false
 
   /// The reader is part of the document only after this model is bound to
@@ -31,6 +28,16 @@ struct TranscriptSection: View {
   ) -> Bool {
     session.transcriptionUnavailableReason == nil
       && transcripts.sessionId == session.sessionId && !transcripts.segments.isEmpty
+  }
+
+  /// The source-label editor is created with the section. Its height grows
+  /// only when this conversation has a track, so an empty document does not
+  /// reserve the row.
+  static func sourceLabelHeight(
+    _ transcripts: TranscriptLibraryModel, sessionId: String
+  ) -> CGFloat {
+    guard transcripts.sessionId == sessionId, !transcripts.speakers.isEmpty else { return 0 }
+    return CGFloat(80 + transcripts.speakers.count * 150)
   }
 
   var body: some View {
@@ -105,16 +112,12 @@ struct TranscriptSection: View {
           onSeek: onSeek, onFollowPlayback: onFollowPlayback
         )
         .id(session.sessionId)
-        DisclosureGroup("Audio source labels") {
-          VStack(alignment: .leading, spacing: ScribeSpacing.related) {
-            Text("Source labels apply to every unassigned passage on that audio track.")
-              .font(.caption)
-              .foregroundStyle(.secondary)
-            speakerList
-          }
-          .padding(.top, ScribeSpacing.related)
-        }
       }
+      AudioSourceLabelMount(transcripts: transcripts, sessionId: session.sessionId)
+        .frame(
+          maxWidth: .infinity,
+          minHeight: Self.sourceLabelHeight(transcripts, sessionId: session.sessionId),
+          alignment: .topLeading)
     }
     // Rust's transcript posture is part of the identity: launch recovery or a
     // finished run changes it, and the document rereads itself.
@@ -124,9 +127,6 @@ struct TranscriptSection: View {
         + ":\(session.transcript.state.rawValue):\(session.transcript.documentVersion)"
     ) {
       await transcripts.load(session: session)
-    }
-    .sheet(item: $renaming) { speaker in
-      renameSheet(speaker)
     }
     .sheet(isPresented: $showingModels) {
       SpeechModelSheet(speech: speech) { showingModels = false }
@@ -328,42 +328,6 @@ struct TranscriptSection: View {
     }
   }
 
-  private var speakerList: some View {
-    HStack(spacing: ScribeSpacing.compact) {
-      ForEach(transcripts.speakers) { speaker in
-        Button {
-          draftLabel = speaker.namedByUser ? speaker.label : ""
-          renameRequest = UUID()
-          transcripts.dismissMessage()
-          renaming = speaker
-        } label: {
-          HStack(spacing: ScribeSpacing.tight) {
-            Label(speaker.label, systemImage: "person.wave.2")
-            Image(systemName: "pencil")
-              .font(.caption)
-              .foregroundStyle(.secondary)
-              .accessibilityHidden(true)
-          }
-        }
-        .buttonStyle(.borderless)
-        .help(
-          (speaker.namedByUser ? "Named by you. " : "Named from the capture source. ")
-            + "Click to rename"
-        )
-        .accessibilityLabel("Rename speaker \(speaker.label)")
-      }
-    }
-    .font(.callout)
-  }
-
-  /// A failed save keeps the sheet and its text open and says why.
-  @ViewBuilder
-  private var sheetFailure: some View {
-    if let message = transcripts.editingFailureMessage {
-      CaptureIssueLabel(message: message, isFailure: true).font(.callout)
-    }
-  }
-
   private var exportMenu: some View {
     HStack(spacing: ScribeSpacing.related) {
       if transcripts.isExporting {
@@ -426,61 +390,6 @@ struct TranscriptSection: View {
       Button("Original Audio…") {
         exportConversation(
           .original, type: UTType(filenameExtension: fileExtension) ?? .audio)
-      }
-    }
-  }
-
-  private func renameSheet(_ speaker: NativeSessionSpeaker) -> some View {
-    VStack(alignment: .leading, spacing: ScribeSpacing.compact) {
-      Text("Rename Speaker")
-        .scribeSectionHeading(.title2.weight(.semibold))
-      Text("This names everyone heard on this source. It does not identify individual voices.")
-        .font(.callout)
-        .foregroundStyle(.secondary)
-      if let history = transcripts.speakerLabelHistory.first(where: {
-        $0.trackId == speaker.trackId
-      }) {
-        Text("Name history")
-          .font(.callout.weight(.semibold))
-        Text(TranscriptLibraryModel.speakerLabelHistoryText(for: history))
-          .font(.callout)
-          .foregroundStyle(.secondary)
-          .fixedSize(horizontal: false, vertical: true)
-          .textSelection(.enabled)
-      }
-      TextField("Name", text: $draftLabel)
-        .textFieldStyle(.roundedBorder)
-      sheetFailure
-      HStack {
-        if speaker.namedByUser {
-          Button("Use Source Name") {
-            saveSourceName(speaker, label: nil)
-          }
-          .disabled(transcripts.isEditing)
-        }
-        Spacer()
-        SheetActionButtons(
-          confirmTitle: "Rename",
-          isConfirmationDisabled: transcripts.isEditing || transcripts.isLoading
-            || draftLabel.trimmingCharacters(in: .whitespaces).isEmpty,
-          cancel: { renaming = nil },
-          confirm: {
-            saveSourceName(speaker, label: draftLabel)
-          })
-      }
-    }
-    .padding(ScribeSpacing.standard)
-    .frame(width: 400)
-  }
-
-  private func saveSourceName(_ speaker: NativeSessionSpeaker, label: String?) {
-    let request = renameRequest
-    Task {
-      if await transcripts.renameSpeaker(
-        trackId: speaker.trackId, label: label, in: session.sessionId),
-        renameRequest == request
-      {
-        renaming = nil
       }
     }
   }
@@ -631,6 +540,253 @@ struct ClaimReviewSection: View {
     }
     parts.append(claim.text)
     return parts.joined(separator: ". ")
+  }
+}
+
+/// Track names for unassigned passages. The control is created with the
+/// transcript section and fills when that conversation's speakers arrive, so
+/// a hosted window can rename the source without opening a disclosure.
+private struct AudioSourceLabelMount: NSViewRepresentable {
+  @ObservedObject var transcripts: TranscriptLibraryModel
+  let sessionId: String
+
+  func makeNSView(context: Context) -> AudioSourceLabelControl {
+    let view = AudioSourceLabelControl()
+    view.bind(transcripts: transcripts, sessionId: sessionId)
+    return view
+  }
+
+  func updateNSView(_ view: AudioSourceLabelControl, context: Context) {
+    view.bind(transcripts: transcripts, sessionId: sessionId)
+  }
+}
+
+/// An editable source name whose programmatic value enables Rename immediately.
+private final class AudioSourceNameField: NSTextField {
+  var onValue: (() -> Void)?
+
+  override var stringValue: String {
+    get { super.stringValue }
+    set {
+      super.stringValue = newValue
+      onValue?()
+    }
+  }
+}
+
+private final class AudioSourceLabelControl: NSView, NSTextFieldDelegate {
+  static let headingText = "Audio source labels"
+  static let explanationText =
+    "Source labels apply to every unassigned passage on that audio track. This does not identify individual voices."
+
+  private let heading = NSTextField(labelWithString: AudioSourceLabelControl.headingText)
+  private let explanation = NSTextField(wrappingLabelWithString: "")
+  private let failure = NSTextField(wrappingLabelWithString: "")
+  private let column = NSStackView()
+  private var transcripts: TranscriptLibraryModel?
+  private var sessionId: String?
+  private var signature: [String] = []
+  private var fields: [String: AudioSourceNameField] = [:]
+  private var renameButtons: [String: NSButton] = [:]
+
+  override init(frame frameRect: NSRect) {
+    super.init(frame: frameRect)
+    setAccessibilityIdentifier(Self.headingText)
+    heading.font = .preferredFont(forTextStyle: .headline)
+    heading.setAccessibilityLabel(Self.headingText)
+    heading.setAccessibilityIdentifier(Self.headingText)
+    explanation.stringValue = Self.explanationText
+    explanation.font = .preferredFont(forTextStyle: .caption1)
+    explanation.textColor = .secondaryLabelColor
+    explanation.maximumNumberOfLines = 3
+    explanation.lineBreakMode = .byWordWrapping
+    explanation.preferredMaxLayoutWidth = 640
+    explanation.setAccessibilityLabel(Self.explanationText)
+    failure.font = .preferredFont(forTextStyle: .callout)
+    failure.textColor = .systemRed
+    failure.maximumNumberOfLines = 3
+    failure.lineBreakMode = .byWordWrapping
+    failure.preferredMaxLayoutWidth = 640
+    failure.setAccessibilityLabel("Audio source label")
+    column.orientation = .vertical
+    column.alignment = .leading
+    column.spacing = ScribeSpacing.related
+    column.detachesHiddenViews = false
+    let stack = NSStackView(views: [heading, explanation, failure, column])
+    stack.orientation = .vertical
+    stack.alignment = .leading
+    stack.spacing = ScribeSpacing.tight
+    stack.translatesAutoresizingMaskIntoConstraints = false
+    explanation.translatesAutoresizingMaskIntoConstraints = false
+    failure.translatesAutoresizingMaskIntoConstraints = false
+    explanation.widthAnchor.constraint(lessThanOrEqualToConstant: 640).isActive = true
+    failure.widthAnchor.constraint(lessThanOrEqualToConstant: 640).isActive = true
+    addSubview(stack)
+    NSLayoutConstraint.activate([
+      stack.leadingAnchor.constraint(equalTo: leadingAnchor),
+      stack.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor),
+      stack.topAnchor.constraint(equalTo: topAnchor),
+      stack.bottomAnchor.constraint(lessThanOrEqualTo: bottomAnchor),
+    ])
+    applyVisibility(hasSpeakers: false)
+  }
+
+  required init?(coder: NSCoder) { nil }
+
+  override var intrinsicContentSize: NSSize {
+    let count = column.arrangedSubviews.count
+    let height: CGFloat = isHidden || count == 0 ? 0 : 80 + CGFloat(count) * 150
+    return NSSize(width: NSView.noIntrinsicMetric, height: height)
+  }
+
+  func bind(transcripts: TranscriptLibraryModel, sessionId: String) {
+    self.transcripts = transcripts
+    self.sessionId = sessionId
+    let speakers = transcripts.sessionId == sessionId ? transcripts.speakers : []
+    let next = speakers.map { speaker -> String in
+      let history = transcripts.speakerLabelHistory.first { $0.trackId == speaker.trackId }
+      let historyText = history.map { TranscriptLibraryModel.speakerLabelHistoryText(for: $0) } ?? ""
+      return "\(speaker.trackId)\n\(speaker.label)\n\(speaker.namedByUser)\n\(historyText)"
+    }
+    applyVisibility(hasSpeakers: !speakers.isEmpty)
+    guard next != signature else {
+      refreshChrome()
+      return
+    }
+    signature = next
+    fields = [:]
+    renameButtons = [:]
+    for view in column.arrangedSubviews {
+      column.removeArrangedSubview(view)
+      view.removeFromSuperview()
+    }
+    for speaker in speakers {
+      column.addArrangedSubview(row(for: speaker, transcripts: transcripts))
+    }
+    refreshChrome()
+    invalidateIntrinsicContentSize()
+  }
+
+  private func applyVisibility(hasSpeakers: Bool) {
+    isHidden = !hasSpeakers
+    heading.isHidden = !hasSpeakers
+    explanation.isHidden = !hasSpeakers
+    column.isHidden = !hasSpeakers
+    if !hasSpeakers {
+      failure.isHidden = true
+      failure.stringValue = ""
+    }
+  }
+
+  private func refreshChrome() {
+    let message = transcripts?.editingFailureMessage
+    if isHidden || message == nil || message?.isEmpty == true {
+      failure.isHidden = true
+      failure.stringValue = ""
+    } else if let message {
+      failure.isHidden = false
+      failure.stringValue = message
+      failure.setAccessibilityLabel("Audio source label")
+    }
+    let busy = transcripts?.isEditing == true
+    for (trackId, button) in renameButtons {
+      let name = fields[trackId]?.stringValue.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+      button.isEnabled = !busy && !name.isEmpty
+    }
+    invalidateIntrinsicContentSize()
+  }
+
+  private func row(
+    for speaker: NativeSessionSpeaker, transcripts: TranscriptLibraryModel
+  ) -> NSView {
+    let history = transcripts.speakerLabelHistory.first { $0.trackId == speaker.trackId }
+    let historyText = history.map { TranscriptLibraryModel.speakerLabelHistoryText(for: $0) } ?? ""
+    let name = NSTextField(labelWithString: speaker.label)
+    name.font = .preferredFont(forTextStyle: .body)
+    name.setAccessibilityLabel("Current audio source, \(speaker.label)")
+    let historyField = NSTextField(wrappingLabelWithString: historyText)
+    historyField.font = .preferredFont(forTextStyle: .caption1)
+    historyField.textColor = .secondaryLabelColor
+    historyField.maximumNumberOfLines = 6
+    historyField.preferredMaxLayoutWidth = 640
+    historyField.setAccessibilityLabel("Name history for \(speaker.label)")
+    historyField.isHidden = historyText.isEmpty
+    if historyText.isEmpty { historyField.stringValue = "" }
+    let field = AudioSourceNameField(string: "")
+    field.placeholderString = "Name"
+    field.setAccessibilityLabel("Name for \(speaker.label)")
+    field.isEditable = true
+    field.isBezeled = true
+    field.bezelStyle = .roundedBezel
+    field.delegate = self
+    field.identifier = NSUserInterfaceItemIdentifier(speaker.trackId)
+    field.onValue = { [weak self] in self?.refreshChrome() }
+    let rename = NSButton(title: "Rename", target: self, action: #selector(renameSource(_:)))
+    rename.bezelStyle = .rounded
+    rename.identifier = NSUserInterfaceItemIdentifier(speaker.trackId)
+    rename.setAccessibilityLabel("Rename speaker \(speaker.label)")
+    rename.isEnabled = false
+    var actions: [NSView] = [field, rename]
+    if speaker.namedByUser {
+      let restore = NSButton(
+        title: "Use Source Name", target: self, action: #selector(restoreSource(_:)))
+      restore.bezelStyle = .rounded
+      restore.identifier = NSUserInterfaceItemIdentifier(speaker.trackId)
+      restore.setAccessibilityLabel("Use source name for \(speaker.label)")
+      restore.isEnabled = transcripts.isEditing == false
+      actions.append(restore)
+    }
+    let actionRow = NSStackView(views: actions)
+    actionRow.orientation = .horizontal
+    actionRow.alignment = .centerY
+    actionRow.spacing = ScribeSpacing.related
+    let row = NSStackView(views: [name, historyField, actionRow])
+    row.orientation = .vertical
+    row.alignment = .leading
+    row.spacing = ScribeSpacing.tight
+    field.translatesAutoresizingMaskIntoConstraints = false
+    historyField.translatesAutoresizingMaskIntoConstraints = false
+    NSLayoutConstraint.activate([
+      field.widthAnchor.constraint(greaterThanOrEqualToConstant: 240),
+      field.heightAnchor.constraint(greaterThanOrEqualToConstant: 22),
+      rename.heightAnchor.constraint(greaterThanOrEqualToConstant: 24),
+      historyField.widthAnchor.constraint(lessThanOrEqualToConstant: 640),
+    ])
+    fields[speaker.trackId] = field
+    renameButtons[speaker.trackId] = rename
+    return row
+  }
+
+  func controlTextDidChange(_ notification: Notification) {
+    refreshChrome()
+  }
+
+  @objc private func renameSource(_ sender: NSButton) {
+    guard let trackId = sender.identifier?.rawValue,
+      let field = fields[trackId],
+      let transcripts,
+      let sessionId
+    else { return }
+    let label = field.stringValue
+    guard !label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, sender.isEnabled else {
+      return
+    }
+    Task { @MainActor in
+      transcripts.dismissMessage()
+      await transcripts.renameSpeaker(trackId: trackId, label: label, in: sessionId)
+    }
+  }
+
+  @objc private func restoreSource(_ sender: NSButton) {
+    guard let trackId = sender.identifier?.rawValue,
+      let transcripts,
+      let sessionId,
+      sender.isEnabled
+    else { return }
+    Task { @MainActor in
+      transcripts.dismissMessage()
+      await transcripts.renameSpeaker(trackId: trackId, label: nil, in: sessionId)
+    }
   }
 }
 
