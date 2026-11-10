@@ -195,10 +195,143 @@ private struct TranscriptSearchCountMount: NSViewRepresentable {
   }
 }
 
+/// The sentence shown when the current person or query has no passages.
+/// It stays in the tree so a hosted window can reveal it without inserting a view.
+private struct TranscriptReadingEmptyMount: NSViewRepresentable {
+  let text: String
+
+  func makeNSView(context: Context) -> NSTextField {
+    let field = NSTextField(labelWithString: text)
+    field.font = .preferredFont(forTextStyle: .callout)
+    field.textColor = .secondaryLabelColor
+    field.lineBreakMode = .byWordWrapping
+    field.maximumNumberOfLines = 3
+    field.setAccessibilityLabel("Transcript reading")
+    field.setAccessibilityIdentifier("Transcript reading")
+    field.isHidden = text.isEmpty
+    return field
+  }
+
+  func updateNSView(_ field: NSTextField, context: Context) {
+    field.stringValue = text
+    field.isHidden = text.isEmpty
+  }
+}
+
 private enum TranscriptPersonFilter: Hashable {
   case all
   case unassigned
   case person(String)
+}
+
+/// The person menu. It is created with the reader so a hosted window can
+/// narrow the reading without a second SwiftUI control.
+private struct TranscriptPersonFilterMount: NSViewRepresentable {
+  let selection: TranscriptPersonFilter
+  let people: [NativeNamedTranscriptSpeaker]
+  let onSelect: (TranscriptPersonFilter) -> Void
+
+  func makeNSView(context: Context) -> TranscriptPersonFilterControl {
+    let view = TranscriptPersonFilterControl()
+    view.bind(selection: selection, people: people, onSelect: onSelect)
+    return view
+  }
+
+  func updateNSView(_ view: TranscriptPersonFilterControl, context: Context) {
+    view.bind(selection: selection, people: people, onSelect: onSelect)
+  }
+}
+
+private final class TranscriptPersonFilterControl: NSView {
+  private let popup = NSPopUpButton()
+  private var onSelect: ((TranscriptPersonFilter) -> Void)?
+  private var selection = TranscriptPersonFilter.all
+  private var signature = ""
+
+  override init(frame frameRect: NSRect) {
+    super.init(frame: frameRect)
+    popup.target = self
+    popup.action = #selector(choose)
+    popup.setAccessibilityLabel(ConversationControlLabels.filterByPerson)
+    popup.setAccessibilityIdentifier(ConversationControlLabels.filterByPerson)
+    popup.translatesAutoresizingMaskIntoConstraints = false
+    addSubview(popup)
+    NSLayoutConstraint.activate([
+      popup.leadingAnchor.constraint(equalTo: leadingAnchor),
+      popup.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor),
+      popup.topAnchor.constraint(equalTo: topAnchor),
+      popup.bottomAnchor.constraint(equalTo: bottomAnchor),
+      popup.widthAnchor.constraint(greaterThanOrEqualToConstant: 220),
+    ])
+  }
+
+  required init?(coder: NSCoder) { nil }
+
+  override var intrinsicContentSize: NSSize {
+    NSSize(width: NSView.noIntrinsicMetric, height: 24)
+  }
+
+  func bind(
+    selection: TranscriptPersonFilter, people: [NativeNamedTranscriptSpeaker],
+    onSelect: @escaping (TranscriptPersonFilter) -> Void
+  ) {
+    self.onSelect = onSelect
+    let nextSignature = people.map { "\($0.id)\n\($0.label)\n\($0.selectedTurns)" }.joined(
+      separator: "\u{1e}")
+    if nextSignature != signature {
+      signature = nextSignature
+      popup.removeAllItems()
+      addItem(title: "All speakers", token: "all")
+      addItem(title: "Unassigned passages", token: "unassigned")
+      for person in people {
+        addItem(
+          title: "\(person.label) · \(person.selectedTurns) passages",
+          token: "person:\(person.id)")
+      }
+    }
+    self.selection = selection
+    let token = Self.token(selection)
+    if let index = (0..<popup.numberOfItems).first(where: {
+      popup.item(at: $0)?.representedObject as? String == token
+    }), popup.indexOfSelectedItem != index {
+      popup.selectItem(at: index)
+    }
+    popup.setAccessibilityValue(popup.titleOfSelectedItem)
+  }
+
+  @objc private func choose() {
+    guard let token = popup.selectedItem?.representedObject as? String,
+      let next = Self.filter(token), next != selection
+    else { return }
+    selection = next
+    popup.setAccessibilityValue(popup.titleOfSelectedItem)
+    onSelect?(next)
+  }
+
+  private func addItem(title: String, token: String) {
+    popup.addItem(withTitle: title)
+    popup.lastItem?.representedObject = token
+  }
+
+  private static func token(_ filter: TranscriptPersonFilter) -> String {
+    switch filter {
+    case .all: "all"
+    case .unassigned: "unassigned"
+    case .person(let id): "person:\(id)"
+    }
+  }
+
+  private static func filter(_ token: String) -> TranscriptPersonFilter? {
+    switch token {
+    case "all": return .all
+    case "unassigned": return .unassigned
+    default:
+      guard token.hasPrefix("person:") else { return nil }
+      let id = String(token.dropFirst("person:".count))
+      guard !id.isEmpty else { return nil }
+      return .person(id)
+    }
+  }
 }
 
 /// A chronological conversation document. Human names filter the reading;
@@ -242,15 +375,17 @@ struct TranscriptReader: View {
     VStack(alignment: .leading, spacing: ScribeSpacing.standard) {
       searchControls(resultCount: segments.count)
       peopleControls
+      let readingIdentity = Self.readingIdentity(query: query, filter: filter)
       if isPlaybackActive {
         // Only the active reader ticks. No library-wide publisher, frame
         // callback, ASR work, or file decoding runs on this display timer.
         TimelineView(.periodic(from: .now, by: 0.25)) { _ in
           document(segments, index: index, position: playbackPosition())
         }
+        .id(readingIdentity)
       } else {
         document(segments, index: index, position: nil)
-          .id(query)
+          .id(readingIdentity)
       }
     }
     .onChange(of: transcripts.namedSpeakers) { people in
@@ -312,6 +447,23 @@ struct TranscriptReader: View {
     return "\(resultCount) matching \(resultCount == 1 ? "passage" : "passages"). Play a timestamp to check the audio."
   }
 
+  private static func readingIdentity(query: String, filter: TranscriptPersonFilter) -> String {
+    let person: String
+    switch filter {
+    case .all: person = "all"
+    case .unassigned: person = "unassigned"
+    case .person(let id): person = "person:\(id)"
+    }
+    return "\(query)\u{1f}\(person)"
+  }
+
+  private static func emptyReading(segmentCount: Int, query: String) -> String {
+    guard segmentCount == 0 else { return "" }
+    return query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+      ? "No passages are assigned to this person in the selected transcript."
+      : "No passages match. Try different words, clear the search, or choose all speakers."
+  }
+
   private var peopleControls: some View {
     VStack(alignment: .leading, spacing: ScribeSpacing.related) {
       ViewThatFits(in: .horizontal) {
@@ -333,18 +485,12 @@ struct TranscriptReader: View {
   }
 
   private var personPicker: some View {
-    Picker("Show", selection: $filter) {
-      Text("All speakers").tag(TranscriptPersonFilter.all)
-      Text("Unassigned passages").tag(TranscriptPersonFilter.unassigned)
-      ForEach(transcripts.namedSpeakers, id: \.id) { person in
-        Text("\(person.label) · \(person.selectedTurns) passages")
-          .tag(TranscriptPersonFilter.person(person.id))
-      }
+    TranscriptPersonFilterMount(
+      selection: filter, people: transcripts.namedSpeakers
+    ) { next in
+      filter = next
     }
-    .pickerStyle(.menu)
-    .frame(maxWidth: 320, alignment: .leading)
-    .lineLimit(1)
-    .accessibilityLabel(ConversationControlLabels.filterByPerson)
+    .frame(maxWidth: 320, minHeight: 24, alignment: .leading)
   }
 
   private var followControl: some View {
@@ -364,15 +510,8 @@ struct TranscriptReader: View {
     // The timestamp is created with the passage. Naming, correction, and export
     // live on the review strip created with the library's first layout.
     return VStack(alignment: .leading, spacing: ScribeSpacing.compact) {
-      if segments.isEmpty {
-        Text(
-          query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            ? "No passages are assigned to this person in the selected transcript."
-            : "No passages match. Try different words, clear the search, or choose all speakers."
-        )
-        .font(.callout)
-        .foregroundStyle(.secondary)
-      }
+      TranscriptReadingEmptyMount(text: Self.emptyReading(segmentCount: segments.count, query: query))
+        .frame(maxWidth: .infinity, minHeight: 16, alignment: .leading)
       ForEach(segments) { segment in
         passage(segment, isPlaying: activeIds.contains(segment.id))
           .id("transcript-\(segment.id)")
