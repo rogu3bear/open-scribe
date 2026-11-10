@@ -1,5 +1,14 @@
 import Foundation
 
+/// Which passages the transcript reading and the speaker-review strip show.
+/// All speakers is the full non-draft document. A person or unassigned choice
+/// narrows both surfaces together.
+enum TranscriptReadingPerson: Equatable {
+  case all
+  case unassigned
+  case person(String)
+}
+
 /// Disabled local intelligence writes nothing. The review surface says so.
 struct LocalIntelligenceRefusal: Equatable {
   let mode: String
@@ -82,6 +91,10 @@ final class TranscriptLibraryModel: ObservableObject {
   @Published private(set) var isSearching = false
   @Published private(set) var isEditing = false
   @Published private(set) var isDeleting = false
+  /// The person menu and the transcript query. The review strip reads these
+  /// so it lists the same passages the reading shows.
+  @Published private(set) var readingPerson: TranscriptReadingPerson = .all
+  @Published private(set) var readingQuery = ""
   private var loadGeneration: UInt64 = 0
   private var searchGeneration: UInt64 = 0
   private var library: NativeTranscriptLibrary?
@@ -773,6 +786,18 @@ final class TranscriptLibraryModel: ObservableObject {
       + "Earlier data may remain in the database journal. When capture and other work have finished, restart Open Scribe before copying or sharing the library."
   }
 
+  /// The reader publishes the menu choice. An equal value does not republish.
+  func setReadingPerson(_ person: TranscriptReadingPerson) {
+    guard readingPerson != person else { return }
+    readingPerson = person
+  }
+
+  /// The reader publishes the transcript query. An equal value does not republish.
+  func setReadingQuery(_ query: String) {
+    guard readingQuery != query else { return }
+    readingQuery = query
+  }
+
   /// Clears a finished status before a new edit starts.
   func dismissMessage() {
     report(nil)
@@ -807,6 +832,8 @@ final class TranscriptLibraryModel: ObservableObject {
     focusedClaim = nil
     claimHighlightSegmentId = nil
     claimEvidenceOpen = false
+    if readingPerson != .all { readingPerson = .all }
+    if !readingQuery.isEmpty { readingQuery = "" }
     report(message)
   }
 

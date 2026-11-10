@@ -363,11 +363,7 @@ private struct TranscriptReadingEmptyMount: NSViewRepresentable {
   }
 }
 
-private enum TranscriptPersonFilter: Hashable {
-  case all
-  case unassigned
-  case person(String)
-}
+private typealias TranscriptPersonFilter = TranscriptReadingPerson
 
 /// The person menu. It is created with the reader so a hosted window can
 /// narrow the reading without a second SwiftUI control.
@@ -533,8 +529,15 @@ struct TranscriptReader: View {
           .id(readingIdentity)
       }
     }
+    .onAppear {
+      transcripts.setReadingPerson(filter)
+      transcripts.setReadingQuery(query)
+    }
     .onChange(of: transcripts.namedSpeakers) { people in
-      if case .person(let id) = filter, !people.contains(where: { $0.id == id }) { filter = .all }
+      if case .person(let id) = filter, !people.contains(where: { $0.id == id }) {
+        filter = .all
+        transcripts.setReadingPerson(.all)
+      }
     }
     .onChange(of: query) { value in
       if !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -560,10 +563,12 @@ struct TranscriptReader: View {
           query: query, focused: findFocused, clearGeneration: findClearGeneration
         ) { next in
           query = next
+          transcripts.setReadingQuery(next)
         }
         .frame(maxWidth: .infinity, minHeight: 22)
         TranscriptFindClearMount(visible: !query.isEmpty) {
           query = ""
+          transcripts.setReadingQuery("")
           findClearGeneration += 1
           findFocused = true
         }
@@ -628,6 +633,7 @@ struct TranscriptReader: View {
       selection: filter, people: transcripts.namedSpeakers
     ) { next in
       filter = next
+      transcripts.setReadingPerson(next)
     }
     .frame(maxWidth: 320, minHeight: 24, alignment: .leading)
   }
@@ -1647,10 +1653,24 @@ final class ImportedReviewControl: NSView {
     return store.savedSessions.first { $0.sessionId == selectedSessionId }
   }
 
+  /// Non-draft passages in the current reading. A person choice or a transcript
+  /// query removes the other rows from this strip.
+  private func reviewPassages(sessionId: String) -> [NativeTranscriptSegment] {
+    guard let transcripts, transcripts.sessionId == sessionId, !sessionId.isEmpty else { return [] }
+    let person = transcripts.readingPerson
+    let scoped = transcripts.segments.filter { segment in
+      guard segment.finality != "draft" else { return false }
+      switch person {
+      case .all: return true
+      case .unassigned: return segment.namedSpeakerId == nil
+      case .person(let id): return segment.namedSpeakerId == id
+      }
+    }
+    return TranscriptSearch.matching(scoped, query: transcripts.readingQuery)
+  }
+
   private func syncPassages(sessionId: String) {
-    let segments =
-      transcripts?.sessionId == sessionId && !sessionId.isEmpty
-      ? (transcripts?.segments.filter { $0.finality != "draft" } ?? []) : []
+    let segments = reviewPassages(sessionId: sessionId)
     passageColumn.isHidden = segments.isEmpty
     let signature = segments.map { "\($0.id)\n\($0.speakerLabel)\n\($0.startNanoseconds)" }
     guard signature != passageSignature else { return }

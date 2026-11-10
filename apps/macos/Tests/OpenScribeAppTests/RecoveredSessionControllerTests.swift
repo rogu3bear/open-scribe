@@ -1814,6 +1814,175 @@ final class RecoveredSessionControllerTests: RecoveredSessionTestCase {
     withExtendedLifetime((store, live, playback, player, window, host)) {}
   }
 
+  /// The speaker-review strip follows the person menu. Choosing one person
+  /// leaves that passage's name and correction controls and removes the other.
+  func testHostedSpeakerReviewListsOnlyTheSelectedPersonsPassages() async throws {
+    let suite = "OpenScribe.Proof.ReviewStrip.\(UUID().uuidString)"
+    let preferences = try XCTUnwrap(UserDefaults(suiteName: suite))
+    defer { preferences.removePersistentDomain(forName: suite) }
+
+    let root = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
+      .appendingPathComponent("open-scribe-review-strip-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let package = root.appendingPathComponent("Stored.openscribe")
+    let export = await exportStoredFinalPackage(to: package)
+    XCTAssertEqual(export.status, 0, String(export.log.suffix(2_000)))
+    let packageMedia = try regularFiles(under: package.appendingPathComponent("media"))
+    XCTAssertEqual(packageMedia.count, 1)
+    let packageDigest = try digest(of: packageMedia[0])
+
+    let managed = root.appendingPathComponent("Library", isDirectory: true)
+    let library = try NativeTranscriptLibrary.open(managedRoot: managed.path)
+    let receipt = try library.importPortablePackage(packagePath: package.path)
+    let stored = try library.document(sessionId: receipt.sessionId)
+    let storedAlpha = try XCTUnwrap(stored.first { $0.sequence == 0 })
+    let storedBravo = try XCTUnwrap(stored.first { $0.sequence == 1 })
+    let libraryMedia = try regularFiles(under: managed.appendingPathComponent("Sessions"))
+      .filter { $0.pathExtension == "caf" }
+    XCTAssertEqual(libraryMedia.count, 1)
+    XCTAssertEqual(try digest(of: libraryMedia[0]), packageDigest)
+
+    let model = TranscriptLibraryModel(managedRoot: managed)
+    await model.load(sessionId: receipt.sessionId)
+    let alpha = try XCTUnwrap(model.segments.first { $0.sequence == storedAlpha.sequence })
+    let namedDana = await model.assignSpeaker(
+      sessionId: receipt.sessionId, segment: alpha, assignment: .new(label: "Dana"))
+    XCTAssertTrue(namedDana)
+    let bravo = try XCTUnwrap(model.segments.first { $0.sequence == storedBravo.sequence })
+    let namedMorgan = await model.assignSpeaker(
+      sessionId: receipt.sessionId, segment: bravo, assignment: .new(label: "Morgan"))
+    XCTAssertTrue(namedMorgan)
+    let dana = try XCTUnwrap(model.namedSpeakers.first { $0.label == "Dana" })
+    let morgan = try XCTUnwrap(model.namedSpeakers.first { $0.label == "Morgan" })
+    let danaSegment = try XCTUnwrap(model.segments.first { $0.namedSpeakerId == dana.id })
+    let morganSegment = try XCTUnwrap(model.segments.first { $0.namedSpeakerId == morgan.id })
+    func nameLabel(_ segment: NativeTranscriptSegment) -> String {
+      ConversationControlLabels.nameSpeakerAccessibility(
+        stamp: TranscriptSection.timestamp(segment.startNanoseconds), label: segment.speakerLabel)
+    }
+    func correctLabel(_ segment: NativeTranscriptSegment) -> String {
+      ConversationControlLabels.correctAccessibility(
+        stamp: TranscriptSection.timestamp(segment.startNanoseconds))
+    }
+    let danaName = nameLabel(danaSegment)
+    let morganName = nameLabel(morganSegment)
+    let danaCorrect = correctLabel(danaSegment)
+    let morganCorrect = correctLabel(morganSegment)
+    XCTAssertNotEqual(danaName, morganName)
+    XCTAssertNotEqual(danaCorrect, morganCorrect)
+    let danaTitle = "\(dana.label) · \(dana.selectedTurns) passages"
+
+    let store = RuntimeLibraryStore(managedRoot: managed, refreshesImmediately: false)
+    store.refresh()
+    let listed = await waitUntil {
+      store.savedSessions.contains { $0.sessionId == receipt.sessionId }
+    }
+    XCTAssertTrue(listed, "saved=\(store.savedSessions.map(\.sessionId))")
+    let navigation = MainWorkspaceNavigation()
+    navigation.select(receipt.sessionId)
+    let player = RecoveredAudioPlayerFake()
+    let playback = RecoveredSessionController(
+      recoveryFactory: { try NativeRecordingPreparation.open(managedRoot: managed.path) },
+      importedPlaybackLeaseProvider: { id in
+        try NativeRecordingPreparation.open(managedRoot: managed.path)
+          .leaseImportedPlayback(sessionId: id)
+      },
+      player: player)
+    let live = LiveMicrophoneRecordingController(managedRoot: managed)
+    let view = ContentView(
+      store: store,
+      importedMediaAuthority: ImportedMediaAuthorityAdapter(
+        startSecurityScope: { _ in true },
+        stopSecurityScope: { _ in },
+        importer: { _, _ in throw NativeStorageError.InvalidRequest }
+      ),
+      liveRecording: live,
+      recoveredSessions: playback,
+      transcripts: model,
+      speech: SpeechTranscriptionModel(managedRoot: managed),
+      scheduler: TranscriptionScheduler.inert(),
+      pressure: SystemPressureMonitor(libraryRoot: managed, samplesAutomatically: false),
+      context: ContextScopeModel(
+        binding: { nil },
+        frames: IdleClaimContextFrames(),
+        permissionCheck: { .denied },
+        permissionRequest: { .denied },
+        topology: { [] }
+      ),
+      navigation: navigation
+    ).defaultAppStorage(preferences)
+    let host = NSHostingView(rootView: view)
+    host.sizingOptions = []
+    let window = NSWindow(
+      contentRect: NSRect(x: 0, y: 0, width: 1100, height: 720),
+      styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    window.contentView = host
+    window.setContentSize(NSSize(width: 1100, height: 720))
+    host.frame = window.contentLayoutRect
+    window.makeKeyAndOrderFront(nil)
+    window.orderFrontRegardless()
+    defer { window.close() }
+
+    let shown = await waitUntil(timeoutNanoseconds: 8_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      window.displayIfNeeded()
+      return self.claimButton(labeled: danaName, in: host) != nil
+        && self.claimButton(labeled: morganName, in: host) != nil
+        && self.claimButton(labeled: danaCorrect, in: host) != nil
+        && self.claimButton(labeled: morganCorrect, in: host) != nil
+    }
+    let popup = try XCTUnwrap(
+      self.hostedPopup(labeled: ConversationControlLabels.filterByPerson, in: host),
+      self.hostedControlProbe(in: host))
+    XCTAssertTrue(shown && window.contentView === host && popup.isDescendant(of: host))
+    XCTAssertEqual(popup.titleOfSelectedItem, "All speakers")
+
+    func choose(_ title: String) {
+      let index = popup.indexOfItem(withTitle: title)
+      XCTAssertGreaterThanOrEqual(index, 0, "missing \(title)")
+      popup.selectItem(at: index)
+      XCTAssertTrue(popup.sendAction(popup.action, to: popup.target))
+    }
+    choose(danaTitle)
+    let narrowed = await waitUntil(timeoutNanoseconds: 5_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      window.displayIfNeeded()
+      return self.claimButton(labeled: danaName, in: host) != nil
+        && self.claimButton(labeled: danaCorrect, in: host) != nil
+        && self.claimButton(labeled: morganName, in: host) == nil
+        && self.claimButton(labeled: morganCorrect, in: host) == nil
+    }
+    XCTAssertTrue(narrowed, self.hostedControlProbe(in: host))
+
+    choose("All speakers")
+    let restored = await waitUntil(timeoutNanoseconds: 5_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      window.displayIfNeeded()
+      return self.claimButton(labeled: danaName, in: host) != nil
+        && self.claimButton(labeled: morganName, in: host) != nil
+        && self.claimButton(labeled: danaCorrect, in: host) != nil
+        && self.claimButton(labeled: morganCorrect, in: host) != nil
+    }
+    XCTAssertTrue(restored, self.hostedControlProbe(in: host))
+
+    choose("Unassigned passages")
+    let unassigned = await waitUntil(timeoutNanoseconds: 5_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      window.displayIfNeeded()
+      return self.claimButton(labeled: danaName, in: host) == nil
+        && self.claimButton(labeled: morganName, in: host) == nil
+        && self.claimButton(labeled: danaCorrect, in: host) == nil
+        && self.claimButton(labeled: morganCorrect, in: host) == nil
+    }
+    XCTAssertTrue(unassigned, self.hostedControlProbe(in: host))
+    XCTAssertEqual(model.segments.first { $0.id == danaSegment.id }?.speakerLabel, "Dana")
+    XCTAssertEqual(model.segments.first { $0.id == morganSegment.id }?.speakerLabel, "Morgan")
+    XCTAssertEqual(try digest(of: libraryMedia[0]), packageDigest)
+    withExtendedLifetime((store, live, playback, player, window, host)) {}
+  }
+
   /// Two restored conversations keep a final passage and a corrected passage.
   /// The library search the sidebar uses returns both, and each match opens
   /// at that passage's audio time.
