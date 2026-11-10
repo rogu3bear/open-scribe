@@ -102,8 +102,9 @@ mod transcripts;
 pub use transcript_selection::TranscriptSelectionPolicy;
 pub use transcripts::{
     LiveDraftWindow, PlannedTranscriptChunk, RevisionSegmentInput, StoredTranscriptionRun,
-    TRANSCRIPT_SCHEMA_VERSION, TranscriptChunk, TranscriptChunkState, TranscriptRevisionSummary,
-    TranscriptSegmentView, TranscriptionFailure, TranscriptionRunHandle, TranscriptionRunIdentity,
+    TRANSCRIPT_SCHEMA_VERSION, TranscriptChunk, TranscriptChunkState, TranscriptProvenance,
+    TranscriptProvenanceRange, TranscriptRevisionSummary, TranscriptSegmentView,
+    TranscriptionFailure, TranscriptionRunHandle, TranscriptionRunIdentity,
     TranscriptionRunSummary,
 };
 

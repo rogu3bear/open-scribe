@@ -1,5 +1,6 @@
 import AVFoundation
 import CoreMedia
+import Darwin
 import ScreenCaptureKit
 import XCTest
 
@@ -1300,6 +1301,97 @@ final class MicrophoneCaptureAdapterTests: XCTestCase {
     withExtendedLifetime(scheduler) {}
   }
 
+  func testReviewInspectsStoredModelProvenanceWithoutClaimingIdenticalOutput() async throws {
+    let fixture = try openedMicrophone(title: "Provenance review")
+    var timebase = mach_timebase_info_data_t()
+    XCTAssertEqual(mach_timebase_info(&timebase), KERN_SUCCESS)
+    try fixture.controller.anchorCaptureClock(
+      sessionId: fixture.authorization.sessionId,
+      hostAnchor: mach_absolute_time(),
+      numerator: timebase.numer,
+      denominator: timebase.denom)
+    let backend = FakeMicrophoneBackend(inputFormat: fixture.format)
+    let adapter = MicrophoneCaptureAdapter(
+      backend: backend,
+      writer: fixture.writer,
+      identity: MicrophoneCaptureIdentity(authorization: fixture.authorization)
+    )
+    let digest = String(repeating: "a", count: 64)
+    adapter.installProvisionalDraftAdmission(
+      preparation: fixture.controller,
+      hypothesis: { _, _ in provisionalFixture("provisional meadow", digest: digest) },
+      windowFrames: 480,
+      overlapFrames: 96
+    )
+    let failures = try startAndConfirm(
+      adapter: adapter, backend: backend, controller: fixture.controller, format: fixture.format)
+    backend.emit(try microphoneFrames(fixture.format, 384), hostTime: 20)
+    adapter.waitForAcceptedAudio()
+    adapter.waitForProvisionalDraftAdmission()
+    XCTAssertEqual(
+      try fixture.controller.readableDraftTexts(sessionId: fixture.authorization.sessionId),
+      ["provisional meadow"])
+    let mediaURL = URL(fileURLWithPath: fixture.authorization.absolutePath)
+    XCTAssertGreaterThanOrEqual(try capturedLength(fixture.authorization), 480)
+    let stoppedAt = adapter.stop() ?? 20
+    let sealed = try fixture.controller.sealSegment(
+      receipt: try fixture.writer.sealSegmentReceipt(finalSampleHostTime: max(stoppedAt, 20)))
+    XCTAssertTrue(sealed.segmentSealed)
+    XCTAssertFalse(sealed.recordingStarted)
+    XCTAssertEqual(
+      try fixture.controller.recorderDetail(sessionId: fixture.authorization.sessionId).lifecycle,
+      "ready_for_review")
+    let sealedMedia = try Data(contentsOf: mediaURL)
+    let saved = try XCTUnwrap(
+      fixture.controller.runtimeLibrarySnapshot().savedSessions.first {
+        $0.sessionId == fixture.authorization.sessionId
+      })
+    XCTAssertTrue(saved.hasCaptureTimeline)
+    let presentation = RuntimeSessionPresentation(native: saved)
+    XCTAssertNil(presentation.transcriptionUnavailableReason)
+    let library = try NativeTranscriptLibrary.open(managedRoot: fixture.root.path)
+    let inspected = try library.inspectProvenance(sessionId: fixture.authorization.sessionId)
+    XCTAssertEqual(inspected.count, 1)
+    let item = try XCTUnwrap(inspected.first)
+    XCTAssertEqual(item.engine, "fixture-engine")
+    XCTAssertEqual(item.engineVersion, "1")
+    XCTAssertEqual(item.modelId, "fixture-model")
+    XCTAssertEqual(item.modelSha256, digest)
+    XCTAssertEqual(item.inputDigest, "live-unsealed")
+    XCTAssertEqual(item.runState, "complete")
+    XCTAssertEqual(item.finality, "draft")
+    XCTAssertEqual(
+      item.ranges,
+      [NativeTranscriptProvenanceRange(startNanoseconds: 0, endNanoseconds: 10_000_000)])
+    let model = await MainActor.run { TranscriptLibraryModel(library: library) }
+    await model.load(session: presentation)
+    let review = await MainActor.run {
+      (
+        model.message, model.messageIsFailure, model.provenance, model.provenanceText,
+        model.segments.map(\.effectiveText)
+      )
+    }
+    XCTAssertNil(review.0)
+    XCTAssertFalse(review.1)
+    XCTAssertEqual(review.2, inspected)
+    let text = try XCTUnwrap(review.3)
+    XCTAssertEqual(text, TranscriptLibraryModel.provenanceText(for: inspected))
+    XCTAssertTrue(text.contains("Engine fixture-engine 1."))
+    XCTAssertTrue(text.contains("Model fixture-model, revision \(digest)."))
+    XCTAssertTrue(text.contains("Input live-unsealed."))
+    XCTAssertTrue(text.contains("Run complete."))
+    XCTAssertTrue(text.contains("Finality draft."))
+    XCTAssertTrue(text.contains("Evidence 0-10000000 ns."))
+    XCTAssertTrue(
+      text.hasSuffix(
+        "Open Scribe does not claim that running this model again produces the same words."))
+    XCTAssertFalse(text.localizedCaseInsensitiveContains("identical"))
+    XCTAssertFalse(text.localizedCaseInsensitiveContains("deterministic"))
+    XCTAssertEqual(review.4, ["provisional meadow"])
+    XCTAssertTrue(failures.snapshot().isEmpty)
+    XCTAssertEqual(try Data(contentsOf: mediaURL), sealedMedia)
+  }
+
   private func openedMicrophone(title: String) throws -> OpenedMicrophone {
     let root = FileManager.default.temporaryDirectory
       .appendingPathComponent("open-scribe-microphone-tests", isDirectory: true)
@@ -1326,7 +1418,8 @@ final class MicrophoneCaptureAdapterTests: XCTestCase {
       )
     )
     return OpenedMicrophone(
-      controller: controller, authorization: authorization, writer: writer, format: format)
+      root: root, controller: controller, authorization: authorization, writer: writer,
+      format: format)
   }
 
   private func startAndConfirm(
@@ -1362,6 +1455,7 @@ final class MicrophoneCaptureAdapterTests: XCTestCase {
 }
 
 private struct OpenedMicrophone {
+  let root: URL
   let controller: NativeRecordingPreparation
   let authorization: NativeMediaOpenAuthorization
   let writer: ManagedCAFWriter

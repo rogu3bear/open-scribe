@@ -65,6 +65,13 @@ struct TranscriptSection: View {
             .foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
         }
+        if session.transcriptionUnavailableReason == nil, let provenance = transcripts.provenanceText
+        {
+          Text(provenance)
+            .font(.callout)
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+        }
       }
       if showsTranscriptionControls {
         transcriptionControls

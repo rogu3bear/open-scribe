@@ -110,7 +110,8 @@ pub use open_scribe_store::{
     LiveDraftWindow, NamedTranscriptSpeaker, SelectedRevisionProvenance, SessionDeletionInventory,
     SessionDeletionReceipt, SessionSpeaker, SpeakerDiarization, SpeakerDiarizationTrack,
     SpeakerDiarizationTrackInput, SpeakerLabelOrigin, TranscriptDocumentSegment,
-    TranscriptExportContext, TranscriptSearchHit, TranscriptSpeakerAssignment,
+    TranscriptExportContext, TranscriptProvenance, TranscriptProvenanceRange, TranscriptSearchHit,
+    TranscriptSpeakerAssignment,
 };
 
 pub struct CoarseMediaOpenReceipt {

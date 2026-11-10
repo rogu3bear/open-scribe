@@ -1153,6 +1153,55 @@ fn a_live_draft_during_recording_stays_unselected_and_leaves_the_media() {
     assert_eq!(after, before);
 }
 
+#[test]
+fn live_draft_provenance_names_the_stored_run_and_hides_a_superseded_draft() {
+    let temp = TempDir::new().unwrap();
+    let mut store = SessionStore::open(temp.path()).unwrap();
+    let (session, sources) = recording_pair(&mut store);
+    let microphone = &sources[0];
+    assert!(store.transcript_provenance(&session).unwrap().is_empty());
+    let superseded = store
+        .commit_live_draft_window(&live_window(
+            &session,
+            &microphone.track_id,
+            0,
+            1_000_000_000,
+            "provisional meadow",
+        ))
+        .unwrap();
+    store
+        .commit_live_draft_window(&live_window(
+            &session,
+            &microphone.track_id,
+            500_000_000,
+            1_500_000_000,
+            "provisional cedar",
+        ))
+        .unwrap();
+    let provenance = store.transcript_provenance(&session).unwrap();
+    assert_eq!(provenance.len(), 1);
+    assert!(provenance.iter().all(|item| item.revision_id != superseded));
+    let item = &provenance[0];
+    assert_eq!(item.track_id, microphone.track_id);
+    assert_eq!(item.engine, "fixture-engine");
+    assert_eq!(item.engine_version, "1");
+    assert_eq!(item.model_id, "fixture-model");
+    assert_eq!(item.model_sha256, "a".repeat(64));
+    assert_eq!(item.input_digest, "live-unsealed");
+    assert_eq!(item.run_state, "complete");
+    assert_eq!(item.finality, "draft");
+    assert_eq!(
+        item.ranges,
+        vec![super::TranscriptProvenanceRange {
+            start_nanoseconds: 500_000_000,
+            end_nanoseconds: 1_500_000_000,
+        }]
+    );
+    let rendered = format!("{item:?}");
+    assert!(!rendered.contains("identical"));
+    assert!(!rendered.contains("deterministic"));
+}
+
 fn live_window(
     session: &SessionId,
     track: &str,

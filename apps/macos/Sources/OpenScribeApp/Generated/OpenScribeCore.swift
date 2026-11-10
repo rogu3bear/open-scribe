@@ -2057,6 +2057,12 @@ public protocol NativeTranscriptLibraryProtocol: AnyObject, Sendable {
    */
   func importPortablePackage(packagePath: String) throws -> NativePackageImportReceipt
 
+  /**
+   * Readable revisions only. The result names the stored engine, model
+   * revision, input digest, run state, and evidence ranges.
+   */
+  func inspectProvenance(sessionId: String) throws -> [NativeTranscriptProvenance]
+
   func namedSpeakers(sessionId: String) throws -> [NativeNamedTranscriptSpeaker]
 
   /**
@@ -2519,6 +2525,21 @@ open class NativeTranscriptLibrary: NativeTranscriptLibraryProtocol, @unchecked 
         uniffi_open_scribe_uniffi_fn_method_nativetranscriptlibrary_import_portable_package(
           self.uniffiCloneHandle(),
           FfiConverterString.lower(packagePath), uniffiCallStatus
+        )
+      })
+  }
+
+  /**
+   * Readable revisions only. The result names the stored engine, model
+   * revision, input digest, run state, and evidence ranges.
+   */
+  open func inspectProvenance(sessionId: String) throws -> [NativeTranscriptProvenance] {
+    return try FfiConverterSequenceTypeNativeTranscriptProvenance.lift(
+      try rustCallWithError(FfiConverterTypeNativeStorageError_lift) {
+        uniffiCallStatus in
+        uniffi_open_scribe_uniffi_fn_method_nativetranscriptlibrary_inspect_provenance(
+          self.uniffiCloneHandle(),
+          FfiConverterString.lower(sessionId), uniffiCallStatus
         )
       })
   }
@@ -8151,6 +8172,154 @@ public func FfiConverterTypeNativeTranscriptExportReceipt_lower(
   return FfiConverterTypeNativeTranscriptExportReceipt.lower(value)
 }
 
+/// Stored identity of one readable model revision. Repeating the model is not
+/// claimed to produce the same words.
+public struct NativeTranscriptProvenance: Equatable, Hashable {
+  public let revisionId: String
+  public let trackId: String
+  public let engine: String
+  public let engineVersion: String
+  public let modelId: String
+  public let modelSha256: String
+  public let inputDigest: String
+  public let runState: String
+  public let finality: String
+  public let ranges: [NativeTranscriptProvenanceRange]
+
+  // Default memberwise initializers are never public by default, so we
+  // declare one manually.
+  public init(
+    revisionId: String, trackId: String, engine: String, engineVersion: String, modelId: String,
+    modelSha256: String, inputDigest: String, runState: String, finality: String,
+    ranges: [NativeTranscriptProvenanceRange]
+  ) {
+    self.revisionId = revisionId
+    self.trackId = trackId
+    self.engine = engine
+    self.engineVersion = engineVersion
+    self.modelId = modelId
+    self.modelSha256 = modelSha256
+    self.inputDigest = inputDigest
+    self.runState = runState
+    self.finality = finality
+    self.ranges = ranges
+  }
+
+}
+
+#if compiler(>=6)
+  extension NativeTranscriptProvenance: Sendable {}
+#endif
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeNativeTranscriptProvenance: FfiConverterRustBuffer {
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws
+    -> NativeTranscriptProvenance
+  {
+    return
+      try NativeTranscriptProvenance(
+        revisionId: FfiConverterString.read(from: &buf),
+        trackId: FfiConverterString.read(from: &buf),
+        engine: FfiConverterString.read(from: &buf),
+        engineVersion: FfiConverterString.read(from: &buf),
+        modelId: FfiConverterString.read(from: &buf),
+        modelSha256: FfiConverterString.read(from: &buf),
+        inputDigest: FfiConverterString.read(from: &buf),
+        runState: FfiConverterString.read(from: &buf),
+        finality: FfiConverterString.read(from: &buf),
+        ranges: FfiConverterSequenceTypeNativeTranscriptProvenanceRange.read(from: &buf)
+      )
+  }
+
+  public static func write(_ value: NativeTranscriptProvenance, into buf: inout [UInt8]) {
+    FfiConverterString.write(value.revisionId, into: &buf)
+    FfiConverterString.write(value.trackId, into: &buf)
+    FfiConverterString.write(value.engine, into: &buf)
+    FfiConverterString.write(value.engineVersion, into: &buf)
+    FfiConverterString.write(value.modelId, into: &buf)
+    FfiConverterString.write(value.modelSha256, into: &buf)
+    FfiConverterString.write(value.inputDigest, into: &buf)
+    FfiConverterString.write(value.runState, into: &buf)
+    FfiConverterString.write(value.finality, into: &buf)
+    FfiConverterSequenceTypeNativeTranscriptProvenanceRange.write(value.ranges, into: &buf)
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeTranscriptProvenance_lift(_ buf: RustBuffer) throws
+  -> NativeTranscriptProvenance
+{
+  return try FfiConverterTypeNativeTranscriptProvenance.lift(buf)
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeTranscriptProvenance_lower(_ value: NativeTranscriptProvenance)
+  -> RustBuffer
+{
+  return FfiConverterTypeNativeTranscriptProvenance.lower(value)
+}
+
+public struct NativeTranscriptProvenanceRange: Equatable, Hashable {
+  public let startNanoseconds: Int64
+  public let endNanoseconds: Int64
+
+  // Default memberwise initializers are never public by default, so we
+  // declare one manually.
+  public init(startNanoseconds: Int64, endNanoseconds: Int64) {
+    self.startNanoseconds = startNanoseconds
+    self.endNanoseconds = endNanoseconds
+  }
+
+}
+
+#if compiler(>=6)
+  extension NativeTranscriptProvenanceRange: Sendable {}
+#endif
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeNativeTranscriptProvenanceRange: FfiConverterRustBuffer {
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws
+    -> NativeTranscriptProvenanceRange
+  {
+    return
+      try NativeTranscriptProvenanceRange(
+        startNanoseconds: FfiConverterInt64.read(from: &buf),
+        endNanoseconds: FfiConverterInt64.read(from: &buf)
+      )
+  }
+
+  public static func write(_ value: NativeTranscriptProvenanceRange, into buf: inout [UInt8]) {
+    FfiConverterInt64.write(value.startNanoseconds, into: &buf)
+    FfiConverterInt64.write(value.endNanoseconds, into: &buf)
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeTranscriptProvenanceRange_lift(_ buf: RustBuffer) throws
+  -> NativeTranscriptProvenanceRange
+{
+  return try FfiConverterTypeNativeTranscriptProvenanceRange.lift(buf)
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeTranscriptProvenanceRange_lower(
+  _ value: NativeTranscriptProvenanceRange
+) -> RustBuffer {
+  return FfiConverterTypeNativeTranscriptProvenanceRange.lower(value)
+}
+
 public struct NativeTranscriptSearchHit: Equatable, Hashable {
   public let sessionId: String
   public let sessionTitle: String
@@ -13046,6 +13215,60 @@ private struct FfiConverterSequenceTypeNativeTimelineSegment: FfiConverterRustBu
 #if swift(>=5.8)
   @_documentation(visibility: private)
 #endif
+private struct FfiConverterSequenceTypeNativeTranscriptProvenance: FfiConverterRustBuffer {
+  typealias SwiftType = [NativeTranscriptProvenance]
+
+  public static func write(_ value: [NativeTranscriptProvenance], into buf: inout [UInt8]) {
+    let len = Int32(value.count)
+    writeInt(&buf, len)
+    for item in value {
+      FfiConverterTypeNativeTranscriptProvenance.write(item, into: &buf)
+    }
+  }
+
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws
+    -> [NativeTranscriptProvenance]
+  {
+    let len: Int32 = try readInt(&buf)
+    var seq = [NativeTranscriptProvenance]()
+    seq.reserveCapacity(Int(len))
+    for _ in 0..<len {
+      seq.append(try FfiConverterTypeNativeTranscriptProvenance.read(from: &buf))
+    }
+    return seq
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+private struct FfiConverterSequenceTypeNativeTranscriptProvenanceRange: FfiConverterRustBuffer {
+  typealias SwiftType = [NativeTranscriptProvenanceRange]
+
+  public static func write(_ value: [NativeTranscriptProvenanceRange], into buf: inout [UInt8]) {
+    let len = Int32(value.count)
+    writeInt(&buf, len)
+    for item in value {
+      FfiConverterTypeNativeTranscriptProvenanceRange.write(item, into: &buf)
+    }
+  }
+
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws
+    -> [NativeTranscriptProvenanceRange]
+  {
+    let len: Int32 = try readInt(&buf)
+    var seq = [NativeTranscriptProvenanceRange]()
+    seq.reserveCapacity(Int(len))
+    for _ in 0..<len {
+      seq.append(try FfiConverterTypeNativeTranscriptProvenanceRange.read(from: &buf))
+    }
+    return seq
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
 private struct FfiConverterSequenceTypeNativeTranscriptSearchHit: FfiConverterRustBuffer {
   typealias SwiftType = [NativeTranscriptSearchHit]
 
@@ -13746,6 +13969,10 @@ private let initializationResult: InitializationResult = {
   }
   if uniffi_open_scribe_uniffi_checksum_method_nativetranscriptlibrary_import_portable_package()
     != 22468
+  {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_open_scribe_uniffi_checksum_method_nativetranscriptlibrary_inspect_provenance() != 2124
   {
     return InitializationResult.apiChecksumMismatch
   }

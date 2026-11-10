@@ -1111,6 +1111,10 @@ private final class TranscriptTimingLibraryFake: NativeTranscriptLibrary, @unche
     return .final
   }
 
+  override func inspectProvenance(sessionId: String) throws -> [NativeTranscriptProvenance] {
+    []
+  }
+
   override func document(sessionId: String) throws -> [NativeTranscriptSegment] {
     lock.withLock { reads += 1 }
     let snapshot = [

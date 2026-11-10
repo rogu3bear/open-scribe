@@ -28,6 +28,28 @@ pub enum NativeTranscriptExportFormat {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct NativeTranscriptProvenanceRange {
+    pub start_nanoseconds: i64,
+    pub end_nanoseconds: i64,
+}
+
+/// Stored identity of one readable model revision. Repeating the model is not
+/// claimed to produce the same words.
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct NativeTranscriptProvenance {
+    pub revision_id: String,
+    pub track_id: String,
+    pub engine: String,
+    pub engine_version: String,
+    pub model_id: String,
+    pub model_sha256: String,
+    pub input_digest: String,
+    pub run_state: String,
+    pub finality: String,
+    pub ranges: Vec<NativeTranscriptProvenanceRange>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
 pub struct NativeTranscriptSegment {
     pub revision_id: String,
     pub track_id: String,
@@ -195,6 +217,40 @@ impl NativeTranscriptLibrary {
                 speaker_named_by_user: segment.speaker_origin == SpeakerLabelOrigin::Human,
                 named_speaker_id: segment.named_speaker_id,
                 finality: segment.finality,
+            })
+            .collect())
+    }
+
+    /// Readable revisions only. The result names the stored engine, model
+    /// revision, input digest, run state, and evidence ranges.
+    pub fn inspect_provenance(
+        &self,
+        session_id: String,
+    ) -> Result<Vec<NativeTranscriptProvenance>, NativeStorageError> {
+        let provenance = self
+            .library()?
+            .provenance(&SessionId(session_id))
+            .map_err(map_storage_error)?;
+        Ok(provenance
+            .into_iter()
+            .map(|item| NativeTranscriptProvenance {
+                revision_id: item.revision_id,
+                track_id: item.track_id,
+                engine: item.engine,
+                engine_version: item.engine_version,
+                model_id: item.model_id,
+                model_sha256: item.model_sha256,
+                input_digest: item.input_digest,
+                run_state: item.run_state,
+                finality: item.finality,
+                ranges: item
+                    .ranges
+                    .into_iter()
+                    .map(|range| NativeTranscriptProvenanceRange {
+                        start_nanoseconds: range.start_nanoseconds,
+                        end_nanoseconds: range.end_nanoseconds,
+                    })
+                    .collect(),
             })
             .collect())
     }

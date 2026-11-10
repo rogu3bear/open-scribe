@@ -21,7 +21,8 @@ use open_scribe_store::{
     ClaimNavigation, ContextDetail, ContextEventRecord, ConversationReviewMetadata,
     NamedTranscriptSpeaker, ResolvedEvidence, SessionDeletionInventory, SessionDeletionReceipt,
     SessionSpeaker, SessionStore, SpeakerDiarization, SpeakerDiarizationTrackInput, StoreError,
-    TranscriptDocumentSegment, TranscriptSearchHit, TranscriptSpeakerAssignment,
+    TranscriptDocumentSegment, TranscriptProvenance, TranscriptSearchHit,
+    TranscriptSpeakerAssignment,
 };
 use open_scribe_types::SessionId;
 use std::path::Path;
@@ -58,6 +59,13 @@ impl TranscriptLibrary {
         session: &SessionId,
     ) -> Result<Vec<TranscriptDocumentSegment>, StoreError> {
         self.store.readable_transcript(session)
+    }
+
+    /// The stored engine, model revision, input scope, run state, and evidence
+    /// ranges for the readable transcript. This does not claim that repeating
+    /// the model produces the same words.
+    pub fn provenance(&self, session: &SessionId) -> Result<Vec<TranscriptProvenance>, StoreError> {
+        self.store.transcript_provenance(session)
     }
 
     pub fn speakers(&self, session: &SessionId) -> Result<Vec<SessionSpeaker>, StoreError> {

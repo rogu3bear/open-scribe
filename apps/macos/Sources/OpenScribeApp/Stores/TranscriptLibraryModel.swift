@@ -41,6 +41,11 @@ final class TranscriptLibraryModel: ObservableObject {
   /// Plain review sentence when voice clustering is unavailable. Nil when the
   /// session has no such decision.
   @Published private(set) var speakerDiarizationText: String?
+  /// Stored engine, model revision, input scope, run state, and evidence
+  /// ranges for the readable transcript.
+  @Published private(set) var provenance: [NativeTranscriptProvenance] = []
+  /// Nil when no model revision is readable.
+  @Published private(set) var provenanceText: String?
   /// The claim whose evidence is open, and the passage that citation highlights.
   @Published private(set) var focusedClaim: ClaimReviewFocus?
   @Published private(set) var claimHighlightSegmentId: String?
@@ -205,6 +210,8 @@ final class TranscriptLibraryModel: ObservableObject {
       speakers = snapshot.speakers
       namedSpeakers = snapshot.namedSpeakers
       speakerDiarizationText = snapshot.speakerDiarizationText
+      provenance = snapshot.provenance
+      provenanceText = Self.provenanceText(for: snapshot.provenance)
       reviewMetadata = snapshot.metadata
       audioOptions = snapshot.audioOptions
       contextDetail = snapshot.context
@@ -725,6 +732,8 @@ final class TranscriptLibraryModel: ObservableObject {
     speakers = []
     namedSpeakers = []
     speakerDiarizationText = nil
+    provenance = []
+    provenanceText = nil
     reviewMetadata = nil
     audioOptions = nil
     contextDetail = nil
@@ -734,6 +743,20 @@ final class TranscriptLibraryModel: ObservableObject {
     claimHighlightSegmentId = nil
     claimEvidenceOpen = false
     report(message)
+  }
+
+  /// Names the stored run. The last sentence refuses a determinism claim.
+  nonisolated static func provenanceText(for records: [NativeTranscriptProvenance]) -> String? {
+    guard !records.isEmpty else { return nil }
+    let lines = records.map { record in
+      let ranges = record.ranges.map { range in
+        "\(range.startNanoseconds)-\(range.endNanoseconds) ns"
+      }.joined(separator: ", ")
+      return
+        "Engine \(record.engine) \(record.engineVersion). Model \(record.modelId), revision \(record.modelSha256). Input \(record.inputDigest). Run \(record.runState). Finality \(record.finality). Evidence \(ranges)."
+    }
+    return lines.joined(separator: "\n")
+      + "\nOpen Scribe does not claim that running this model again produces the same words."
   }
 
   /// The sentence shown when clustering stayed unavailable. Any other state
@@ -809,6 +832,7 @@ private struct TranscriptDocumentSnapshot: Sendable {
   let events: [NativeContextEvent]
   let claimsJSON: String
   let speakerDiarizationText: String?
+  let provenance: [NativeTranscriptProvenance]
 
   init(library: NativeTranscriptLibrary, sessionId: String, isUntimed: Bool) throws {
     availability = isUntimed ? .unavailable : try library.availability(sessionId: sessionId)
@@ -829,6 +853,7 @@ private struct TranscriptDocumentSnapshot: Sendable {
     context = try? library.contextDetail(sessionId: sessionId)
     events = (try? library.contextEvents(sessionId: sessionId)) ?? []
     claimsJSON = try library.effectiveDerivedClaims(sessionId: sessionId)
+    provenance = isUntimed ? [] : try library.inspectProvenance(sessionId: sessionId)
     let diarization: NativeSpeakerDiarization?
     if isUntimed {
       diarization = try? library.prepareSpeakerDiarization(sessionId: sessionId)

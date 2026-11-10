@@ -455,6 +455,30 @@ pub struct TranscriptRevisionSummary {
     pub finality: String,
 }
 
+/// One evidence span of a readable revision.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TranscriptProvenanceRange {
+    pub start_nanoseconds: i64,
+    pub end_nanoseconds: i64,
+}
+
+/// Stored facts for a transcript the reader can see. A superseded draft is
+/// omitted with the text it no longer shows. Nothing here says another run of
+/// the same model must produce the same words.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TranscriptProvenance {
+    pub revision_id: String,
+    pub track_id: String,
+    pub engine: String,
+    pub engine_version: String,
+    pub model_id: String,
+    pub model_sha256: String,
+    pub input_digest: String,
+    pub run_state: String,
+    pub finality: String,
+    pub ranges: Vec<TranscriptProvenanceRange>,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct TranscriptSegmentView {
     pub revision_id: String,
@@ -1414,6 +1438,73 @@ impl SessionStore {
             })?
             .collect::<Result<_, _>>()?;
         Ok(revisions)
+    }
+
+    /// Provenance of the readable transcript. The order matches the reader.
+    /// Each row is the engine, model revision, input digest, run state, and
+    /// evidence ranges already stored for that revision.
+    pub fn transcript_provenance(
+        &self,
+        session: &SessionId,
+    ) -> Result<Vec<TranscriptProvenance>, StoreError> {
+        let readable = self.readable_transcript(session)?;
+        let mut statement = self.connection.prepare(
+            "SELECT revisions.track_id, revisions.finality, runs.engine, runs.engine_version,
+                    runs.model_id, runs.model_sha256, runs.input_digest, runs.state
+             FROM transcript_revisions AS revisions
+             JOIN transcription_runs AS runs ON runs.id = revisions.run_id
+             WHERE revisions.session_id = ?1 AND revisions.id = ?2",
+        )?;
+        let mut provenance: Vec<TranscriptProvenance> = Vec::new();
+        for segment in readable {
+            if let Some(existing) = provenance
+                .iter_mut()
+                .find(|item| item.revision_id == segment.revision_id)
+            {
+                existing.ranges.push(TranscriptProvenanceRange {
+                    start_nanoseconds: segment.start_nanoseconds,
+                    end_nanoseconds: segment.end_nanoseconds,
+                });
+                continue;
+            }
+            let (
+                track_id,
+                finality,
+                engine,
+                engine_version,
+                model_id,
+                model_sha256,
+                input_digest,
+                run_state,
+            ) = statement.query_row(params![session.0, segment.revision_id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, String>(6)?,
+                    row.get::<_, String>(7)?,
+                ))
+            })?;
+            provenance.push(TranscriptProvenance {
+                revision_id: segment.revision_id,
+                track_id,
+                engine,
+                engine_version,
+                model_id,
+                model_sha256,
+                input_digest,
+                run_state,
+                finality,
+                ranges: vec![TranscriptProvenanceRange {
+                    start_nanoseconds: segment.start_nanoseconds,
+                    end_nanoseconds: segment.end_nanoseconds,
+                }],
+            });
+        }
+        Ok(provenance)
     }
 
     /// True when a Draft revision is still waiting for a final range.
