@@ -3336,6 +3336,231 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
     withExtendedLifetime(drag) {}
   }
 
+  /// A Finder-format file URL dropped on the hosted library imports when the
+  /// banner button is pressed. Typing in the sidebar field and pressing the
+  /// match opens that passage. The pasteboard carries the public types Finder
+  /// writes and no item provider. The test does not call `stageDroppedAudio`,
+  /// `confirmPendingAudioImport`, `search`, or `playTranscriptSearchHit`.
+  /// Set `OPEN_SCRIBE_WHISPER_MODEL` and `OPEN_SCRIBE_WHISPER_SPEECH_M4A`
+  /// (`TEST_RUNNER_` prefix under xcodebuild).
+  func testHostedFinderFileDropOpensTheSearchHit() async throws {
+    let environment = ProcessInfo.processInfo.environment
+    guard let modelPath = environment["OPEN_SCRIBE_WHISPER_MODEL"],
+      let speechPath = environment["OPEN_SCRIBE_WHISPER_SPEECH_M4A"]
+    else {
+      throw XCTSkip(
+        "Set OPEN_SCRIBE_WHISPER_MODEL and OPEN_SCRIBE_WHISPER_SPEECH_M4A for the hosted drop.")
+    }
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "open-scribe-finder-search-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let source = root.appendingPathComponent("Finder search.m4a")
+    try FileManager.default.copyItem(at: URL(fileURLWithPath: speechPath), to: source)
+    let original = try Data(contentsOf: source)
+    let modelURL = URL(fileURLWithPath: modelPath)
+    let modelBytes = try XCTUnwrap(modelURL.resourceValues(forKeys: [.fileSizeKey]).fileSize)
+    let importRoot = root.appendingPathComponent("Library", isDirectory: true)
+    try FileManager.default.createDirectory(at: importRoot, withIntermediateDirectories: false)
+    let player = RecoveredAudioPlayerFake()
+    let recovery = RecoveredSessionController(
+      recoveryFactory: {
+        try NativeRecordingPreparation.open(managedRoot: importRoot.path)
+      },
+      importedPlaybackLeaseProvider: { sessionId in
+        try NativeRecordingPreparation.open(managedRoot: importRoot.path)
+          .leaseImportedPlayback(sessionId: sessionId)
+      },
+      player: player
+    )
+    let live = LiveMicrophoneRecordingController(managedRoot: importRoot)
+    live.isLaunchRecoveryPending = { !recovery.captureSafetyComplete }
+    let store = RuntimeLibraryStore(
+      managedRoot: importRoot,
+      isLaunchRecoveryPending: { !recovery.captureSafetyComplete })
+    let speech = SpeechTranscriptionModel(managedRoot: importRoot)
+    let pressure = SystemPressureMonitor(libraryRoot: importRoot, samplesAutomatically: false)
+    let defaults = UserDefaults(
+      suiteName: "OpenScribe.Proof.FinderDropSearch.\(UUID().uuidString)")!
+    let scheduler = TranscriptionScheduler(
+      managedRoot: importRoot, speech: speech, store: store, liveRecording: live,
+      recovery: recovery, pressure: pressure, defaults: defaults)
+    recovery.recoverOnLaunch()
+    await recovery.waitForLaunchRecovery()
+    XCTAssertTrue(recovery.captureSafetyComplete)
+    await speech.refreshAndWait()
+    XCTAssertEqual(speech.readiness, .absent)
+    scheduler.reconsider()
+    let idle = await waitUntil(timeoutNanoseconds: 5_000_000_000) {
+      scheduler.queue.isEmpty && scheduler.runningSessionId == nil && scheduler.hold == nil
+    }
+    XCTAssertTrue(idle, "queue=\(scheduler.queue) hold=\(String(describing: scheduler.hold))")
+    let adapter = ImportedMediaAuthorityAdapter(
+      startSecurityScope: { _ in true },
+      stopSecurityScope: { _ in },
+      canBeginImport: { live.canStart },
+      importer: { title, url in
+        try store.importManagedAudio(title: title, sourceURL: url)
+      }
+    )
+    let transcripts = TranscriptLibraryModel(managedRoot: importRoot)
+    let navigation = MainWorkspaceNavigation()
+    let view = ContentView(
+      store: store,
+      importedMediaAuthority: adapter,
+      liveRecording: live,
+      recoveredSessions: recovery,
+      transcripts: transcripts,
+      speech: speech,
+      scheduler: scheduler,
+      pressure: pressure,
+      context: ContextScopeModel(
+        binding: { nil },
+        frames: IdleContextFrames(),
+        permissionCheck: { .denied },
+        permissionRequest: { .denied },
+        topology: { [] }
+      ),
+      navigation: navigation
+    )
+    let host = NSHostingView(rootView: view)
+    host.sizingOptions = []
+    let window = NSWindow(
+      contentRect: NSRect(x: 0, y: 0, width: 1100, height: 720),
+      styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    window.contentView = host
+    window.setContentSize(NSSize(width: 1100, height: 720))
+    host.frame = window.contentLayoutRect
+    if #available(macOS 14, *) {
+      NSApplication.shared.activate()
+    }
+    window.makeKeyAndOrderFront(nil)
+    window.orderFrontRegardless()
+    defer { window.close() }
+    let ready = await waitUntil(timeoutNanoseconds: 5_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      window.displayIfNeeded()
+      return self.dropDestination(in: host) != nil && self.hostedSearchField(in: host) != nil
+    }
+    let destination = try XCTUnwrap(self.dropDestination(in: host))
+    let field = try XCTUnwrap(self.hostedSearchField(in: host))
+    XCTAssertTrue(ready && window.contentView === host && field.isDescendant(of: host))
+    XCTAssertEqual(destination.accessibilityIdentifier(), "Audio drop")
+    XCTAssertNil(self.bannerImportButton(in: host))
+    XCTAssertTrue(self.hostedResultButtons(containing: "recording", in: host).isEmpty)
+    let location = destination.convert(
+      NSPoint(x: destination.bounds.midX, y: destination.bounds.midY), to: nil)
+    let drag = FinderFileDrag(fileURL: source, window: window, location: location)
+    defer { drag.draggingPasteboard.releaseGlobally() }
+    XCTAssertTrue(drag.wroteFileURL)
+    XCTAssertTrue(drag.draggingPasteboard.types?.contains(.fileURL) == true)
+    XCTAssertEqual(
+      drag.draggingPasteboard.propertyList(
+        forType: NSPasteboard.PasteboardType("NSFilenamesPboardType")) as? [String],
+      [source.path])
+    let entered = destinationDragOperation("draggingEntered:", on: destination, info: drag)
+    let updated = destinationDragOperation("draggingUpdated:", on: destination, info: drag)
+    let prepared = destinationDragAccepted("prepareForDragOperation:", on: destination, info: drag)
+    let performed = destinationDragAccepted("performDragOperation:", on: destination, info: drag)
+    destinationDragEnded("concludeDragOperation:", on: destination, info: drag)
+    destinationDragEnded("draggingEnded:", on: destination, info: drag)
+    XCTAssertFalse(drag.didEnumerateItems)
+    XCTAssertNotEqual(updated == 0 ? entered : updated, 0)
+    XCTAssertTrue(prepared && performed)
+    let staged = await waitUntil(timeoutNanoseconds: 5_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      window.displayIfNeeded()
+      return adapter.pendingAudioImport?.urls == [source]
+        && self.bannerImportButton(in: host) != nil
+    }
+    XCTAssertTrue(staged && window.contentView === host, self.bannerProbe(in: host).joined(separator: "\n"))
+    let confirm = try XCTUnwrap(self.bannerImportButton(in: host))
+    XCTAssertTrue(confirm.isDescendant(of: host))
+    confirm.performClick(nil)
+    let imported = await waitUntil(timeoutNanoseconds: 15_000_000_000) {
+      adapter.phase == .succeeded && adapter.importedSessionId != nil
+    }
+    XCTAssertTrue(imported, "phase=\(adapter.phase) message=\(adapter.statusMessage ?? "nil")")
+    XCTAssertNil(adapter.pendingAudioImport)
+    XCTAssertEqual(try Data(contentsOf: source), original)
+    let sessionId = try XCTUnwrap(adapter.importedSessionId)
+    let queued = await waitUntil(timeoutNanoseconds: 15_000_000_000) {
+      scheduler.queue.map(\.sessionId) == [sessionId] && scheduler.hold == .noSpeechModel
+        && scheduler.runningSessionId == nil && speech.transcribingSessionId == nil
+    }
+    XCTAssertTrue(
+      queued,
+      "queue=\(scheduler.queue.map(\.sessionId)) hold=\(String(describing: scheduler.hold))"
+    )
+    let record = try XCTUnwrap(speech.models.first { $0.modelId == "whisper-small.en-q5_1" })
+    let installed = await speech.install(record, from: modelURL)
+    XCTAssertTrue(installed, speech.message ?? "")
+    let finished = await waitUntil(timeoutNanoseconds: 180_000_000_000) {
+      if case .finished = scheduler.state(for: sessionId) { return true }
+      return false
+    }
+    XCTAssertTrue(
+      finished,
+      "state=\(String(describing: scheduler.state(for: sessionId))) hold=\(String(describing: scheduler.hold)) running=\(String(describing: scheduler.runningSessionId)) message=\(speech.message ?? "")"
+    )
+    XCTAssertNil(recovery.playingSessionId)
+    XCTAssertNil(player.importedReceipt)
+    let listed = await waitUntil(timeoutNanoseconds: 5_000_000_000) {
+      store.savedSessions.contains { $0.sessionId == sessionId && $0.playableMedia?.isPlayable == true }
+    }
+    XCTAssertTrue(listed, "saved=\(store.savedSessions.map(\.sessionId))")
+    let queryField = try XCTUnwrap(self.hostedSearchField(in: host))
+    XCTAssertTrue(queryField.isDescendant(of: host))
+    queryField.stringValue = "recording"
+    let matched = await waitUntil(timeoutNanoseconds: 10_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      window.displayIfNeeded()
+      return self.hostedResultButtons(containing: "recording", in: host).contains {
+        ($0.identifier?.rawValue ?? "").hasPrefix(sessionId + "#")
+      }
+    }
+    XCTAssertTrue(
+      matched && window.contentView === host,
+      "results=\(transcripts.searchResults.map(\.effectiveText)) message=\(transcripts.message ?? "nil")"
+    )
+    let match = try XCTUnwrap(
+      self.hostedResultButtons(containing: "recording", in: host).first {
+        ($0.identifier?.rawValue ?? "").hasPrefix(sessionId + "#")
+      })
+    XCTAssertTrue(match.isDescendant(of: host))
+    let key = try XCTUnwrap(match.identifier?.rawValue)
+    match.performClick(nil)
+    let playing = await waitUntil(timeoutNanoseconds: 5_000_000_000) {
+      recovery.playingSessionId == sessionId && player.importedReceipt?.isEmpty == false
+    }
+    let hit = transcripts.searchResults.first { "\($0.sessionId)#\($0.sequence)" == key }
+    XCTAssertTrue(
+      playing,
+      "playing=\(recovery.playingSessionId ?? "nil") error=\(recovery.errorMessage ?? "nil") start=\(String(describing: player.importedStartNanoseconds)) hit=\(String(describing: hit?.startNanoseconds))"
+    )
+    let opened = try XCTUnwrap(hit)
+    XCTAssertEqual(opened.sessionId, sessionId)
+    XCTAssertTrue(opened.effectiveText.localizedCaseInsensitiveContains("recording"))
+    XCTAssertGreaterThan(opened.endNanoseconds, opened.startNanoseconds)
+    XCTAssertEqual(navigation.selectedSessionId, sessionId)
+    XCTAssertEqual(recovery.activePlaybackSessionId, sessionId)
+    XCTAssertEqual(player.importedStartNanoseconds, opened.startNanoseconds)
+    XCTAssertNotNil(player.retainedLease)
+    XCTAssertNil(recovery.errorMessage)
+    XCTAssertEqual(try Data(contentsOf: source), original)
+    XCTAssertEqual(try modelURL.resourceValues(forKeys: [.fileSizeKey]).fileSize, modelBytes)
+    withExtendedLifetime(store) {}
+    withExtendedLifetime(live) {}
+    withExtendedLifetime(recovery) {}
+    withExtendedLifetime(player) {}
+    withExtendedLifetime(speech) {}
+    withExtendedLifetime(scheduler) {}
+    withExtendedLifetime(pressure) {}
+    withExtendedLifetime(window) {}
+    withExtendedLifetime(drag) {}
+  }
+
   /// A confirmed drop is transcribed by the automatic queue. Typing in the
   /// sidebar field and pressing the match opens that passage. The test does
   /// not call `stageDroppedAudio`, `confirmPendingAudioImport`, `search`, or
