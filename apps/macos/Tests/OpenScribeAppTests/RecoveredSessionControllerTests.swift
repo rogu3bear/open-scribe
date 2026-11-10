@@ -2022,6 +2022,109 @@ final class RecoveredSessionControllerTests: RecoveredSessionTestCase {
     withExtendedLifetime((model, store, library)) {}
   }
 
+  /// A stored decision appears under Decisions. Intelligence stays off and
+  /// writes nothing, so no Loose End is invented.
+  func testHostedStructuredMemoryShowsTheStoredDecisionWhileIntelligenceIsOff() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "open-scribe-structured-memory-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let package = root.appendingPathComponent("Stored.openscribe")
+    let export = await exportStoredFinalPackage(to: package)
+    XCTAssertEqual(export.status, 0, String(export.log.suffix(2_000)))
+
+    let managed = root.appendingPathComponent("Library", isDirectory: true)
+    let library = try NativeTranscriptLibrary.open(managedRoot: managed.path)
+    let imported = try library.importPortablePackage(packagePath: package.path)
+    let segments = try library.document(sessionId: imported.sessionId)
+    let alpha = try XCTUnwrap(segments.first { $0.sequence == 0 })
+    XCTAssertEqual(alpha.finality, "final")
+    let supporting = try library.citeTranscriptSegment(
+      sessionId: imported.sessionId, revisionId: alpha.revisionId, sequence: alpha.sequence)
+    let inputDigest = String(repeating: "d", count: 64)
+    let claimText = "The team kept the recorder on this machine."
+    let delta = """
+      {"schema":"open-scribe.meeting-memory-delta/v1","model_run_id":"run-memory-1","input_manifest_digest":"\(inputDigest)","session_id":"\(imported.sessionId)","base_revision":"0","operations":[{"op":"propose_claim","operation_id":"op-memory","kind":"decision","text":"\(claimText)","status":"agreed","supporting":[\(supporting)],"contradicting":[]}]}
+      """
+    let receipt = try library.ingestMeetingMemoryDelta(deltaJson: delta)
+    let receiptObject = try XCTUnwrap(
+      try JSONSerialization.jsonObject(with: Data(receipt.utf8)) as? [String: Any])
+    let operations = try XCTUnwrap(receiptObject["operations"] as? [[String: Any]])
+    let operation = try XCTUnwrap(operations.first)
+    XCTAssertEqual(operation["outcome"] as? String, "accepted", receipt)
+    let claimId = try XCTUnwrap(operation["claim_id"] as? String)
+
+    let store = RuntimeLibraryStore(managedRoot: managed, refreshesImmediately: false)
+    store.refresh()
+    let listed = await waitUntil {
+      store.savedSessions.contains { $0.sessionId == imported.sessionId }
+    }
+    XCTAssertTrue(listed, "saved=\(store.savedSessions.map(\.sessionId))")
+    let presentation = try XCTUnwrap(
+      store.savedSessions.first { $0.sessionId == imported.sessionId })
+    XCTAssertNil(presentation.transcriptionUnavailableReason)
+
+    let model = TranscriptLibraryModel(library: library)
+    let review = VStack(alignment: .leading, spacing: 12) {
+      TranscriptSection(
+        session: presentation,
+        transcripts: model,
+        speech: SpeechTranscriptionModel(preview: []),
+        scheduler: TranscriptionScheduler.inert(),
+        canSeek: false,
+        onSeek: { _ in }
+      )
+      InterpretationSection(transcripts: model)
+    }.frame(width: 720, height: 820)
+    let host = NSHostingView(rootView: review)
+    host.sizingOptions = []
+    let window = NSWindow(
+      contentRect: NSRect(x: 0, y: 0, width: 720, height: 820),
+      styleMask: [.titled, .closable], backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    window.contentView = host
+    window.setContentSize(NSSize(width: 720, height: 820))
+    host.frame = window.contentLayoutRect
+    window.makeKeyAndOrderFront(nil)
+    window.orderFrontRegardless()
+    defer { window.close() }
+
+    let shown = await waitUntil(timeoutNanoseconds: 5_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      window.displayIfNeeded()
+      guard let interpretation = self.readout(labeled: "Interpretation", in: host),
+        let memory = self.readout(labeled: "Structured memory", in: host)
+      else { return false }
+      return interpretation.stringValue == "Intelligence off"
+        && !memory.isHidden && memory.frame.height > 1 && memory.isDescendant(of: host)
+        && memory.stringValue.contains("Decisions. \(claimText).")
+    }
+    XCTAssertTrue(shown && window.contentView === host, self.hostedControlProbe(in: host))
+    let interpretation = try XCTUnwrap(self.readout(labeled: "Interpretation", in: host))
+    let memory = try XCTUnwrap(self.readout(labeled: "Structured memory", in: host))
+    XCTAssertEqual(interpretation.stringValue, "Intelligence off")
+    let memoryText = memory.stringValue
+    XCTAssertTrue(memoryText.contains("Decisions. \(claimText)."))
+    XCTAssertTrue(memoryText.contains("Status agreed."))
+    XCTAssertTrue(memoryText.contains("Producer model run."))
+    XCTAssertTrue(memoryText.contains("Model run run-memory-1."))
+    XCTAssertTrue(memoryText.contains("Evidence supporting 1, contradicting 0."))
+    XCTAssertTrue(memoryText.contains("Id \(claimId)."))
+    XCTAssertFalse(memoryText.contains("Loose End"))
+    XCTAssertFalse(memoryText.contains("Open loops"))
+    XCTAssertFalse(memoryText.contains("People"))
+    XCTAssertEqual(model.derivedClaims.count, 1)
+    XCTAssertEqual(model.derivedClaims.first?.text, claimText)
+    let refusal = model.refuseLocalIntelligence()
+    XCTAssertEqual(refusal.readout, interpretation.stringValue)
+    XCTAssertEqual(refusal.mode, "disabled")
+    XCTAssertEqual(refusal.claimsWritten, 0)
+    XCTAssertNil(refusal.engine)
+    XCTAssertEqual(model.derivedClaims.count, 1)
+    XCTAssertEqual(StructuredMemory.text(for: model.derivedClaims), memoryText)
+    withExtendedLifetime((model, store, library)) {}
+  }
+
   private func readout(labeled label: String, in root: NSView) -> NSTextField? {
     if let field = root as? NSTextField, field.accessibilityLabel() == label {
       return field

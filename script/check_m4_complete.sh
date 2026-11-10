@@ -133,6 +133,57 @@ trash_gap='system_trash_deletion_runtime,'
 if [[ "$trash_source_qualified" == 1 ]]; then
 	trash_gap=''
 fi
+# Disabled local intelligence and stored meeting memory are source checks.
+# A copied script whose repo lacks those proofs keeps both names. Neither
+# check is a candidate receipt or a claim that a local model exists.
+intelligence_source_qualified=0
+if source_has_markers \
+	"$repo_root/apps/macos/Tests/OpenScribeAppTests/RecoveredSessionControllerTests.swift" \
+	'testHostedStructuredMemoryShowsTheStoredDecisionWhileIntelligenceIsOff' \
+	'refuseLocalIntelligence' \
+	'Intelligence off' \
+	'claimsWritten' \
+	'ingestMeetingMemoryDelta' &&
+	source_has_markers \
+		"$repo_root/apps/macos/Sources/OpenScribeApp/Stores/TranscriptLibraryModel.swift" \
+		'func refuseLocalIntelligence()' \
+		'readout: "Intelligence off"' \
+		'claimsWritten: 0' \
+		'mode: "disabled"' &&
+	source_has_markers \
+		"$repo_root/apps/macos/Sources/OpenScribeApp/Views/TranscriptSection.swift" \
+		'struct InterpretationSection' \
+		'refuseLocalIntelligence()' \
+		'label: "Structured memory"'; then
+	intelligence_source_qualified=1
+fi
+intelligence_gap=''
+if [[ "$intelligence_source_qualified" != 1 ]]; then
+	intelligence_gap=',local_intelligence'
+fi
+memory_source_qualified=0
+if source_has_markers \
+	"$repo_root/apps/macos/Tests/OpenScribeAppTests/RecoveredSessionControllerTests.swift" \
+	'testHostedStructuredMemoryShowsTheStoredDecisionWhileIntelligenceIsOff' \
+	'Decisions.' \
+	'Loose End' \
+	'Structured memory' &&
+	source_has_markers \
+		"$repo_root/apps/macos/Sources/OpenScribeApp/Stores/TranscriptLibraryModel.swift" \
+		'static func text(for claims: [DerivedClaimSummary])' \
+		'case "decision": "Decisions"' \
+		'case "open_loop", "loose_end": "Open loops"' \
+		'This does not create a claim.' &&
+	source_has_markers \
+		"$repo_root/apps/macos/Sources/OpenScribeApp/Views/TranscriptSection.swift" \
+		'StructuredMemory.text(for:' \
+		'label: "Structured memory"'; then
+	memory_source_qualified=1
+fi
+memory_gap=''
+if [[ "$memory_source_qualified" != 1 ]]; then
+	memory_gap=',structured_memory'
+fi
 for mode in synthetic live-context; do
 	if has_local_only "$mode"; then qualified_modes+=("$mode"); fi
 done
@@ -157,7 +208,11 @@ printf '%s\n' \
 	'provider_source_plane=committed_source_not_candidate_receipt' \
 	"trash_source_qualified=$trash_source_qualified" \
 	'trash_source_plane=committed_source_not_candidate_receipt' \
-	"missing=${missing_prefix}${provider_gap}${trash_gap}${diagnostics_gap}capability_true_website_equality,local_intelligence,structured_memory" \
+	"intelligence_source_qualified=$intelligence_source_qualified" \
+	'intelligence_source_plane=committed_source_not_candidate_receipt' \
+	"memory_source_qualified=$memory_source_qualified" \
+	'memory_source_plane=committed_source_not_candidate_receipt' \
+	"missing=${missing_prefix}${provider_gap}${trash_gap}${diagnostics_gap}capability_true_website_equality${intelligence_gap}${memory_gap}" \
 	'protected=provider_credentials,production_deployment' \
 	'next=qualify every missing boundary on the candidate; local-only mode does not admit release or optional context it did not exercise' >&2
 exit 1

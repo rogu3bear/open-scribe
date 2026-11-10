@@ -574,9 +574,17 @@ struct InterpretationSection: View {
 
   var body: some View {
     let refusal = transcripts.refuseLocalIntelligence()
-    ProvenanceReadout(label: "Interpretation", text: refusal.readout)
+    VStack(alignment: .leading, spacing: ScribeSpacing.related) {
+      ProvenanceReadout(label: "Interpretation", text: refusal.readout)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .fixedSize(horizontal: false, vertical: true)
+      ProvenanceReadout(
+        label: "Structured memory",
+        text: StructuredMemory.text(for: transcripts.derivedClaims)
+      )
       .frame(maxWidth: .infinity, alignment: .leading)
       .fixedSize(horizontal: false, vertical: true)
+    }
   }
 }
 

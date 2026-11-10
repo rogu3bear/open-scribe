@@ -1016,6 +1016,52 @@ private struct TranscriptDocumentSnapshot: Sendable {
   }
 }
 
+/// Stored claims grouped into meeting-memory sections. Empty sections are
+/// omitted. This does not create a claim.
+enum StructuredMemory {
+  nonisolated static func text(for claims: [DerivedClaimSummary]) -> String? {
+    let lines = claims.compactMap(line(for:))
+    guard !lines.isEmpty else { return nil }
+    return lines.joined(separator: "\n")
+  }
+
+  nonisolated static func line(for claim: DerivedClaimSummary) -> String? {
+    guard let heading = heading(forKind: claim.kind) else { return nil }
+    let producerName = claim.producer ?? ""
+    let producer =
+      switch producerName {
+      case "model_run": "Producer model run"
+      case "human": "Producer human"
+      default: "Producer unknown"
+      }
+    var line = "\(heading). \(claim.text). Status \(claim.status). \(producer)."
+    if let run = claim.modelRunId, !run.isEmpty {
+      line += " Model run \(run)."
+    }
+    line +=
+      " Evidence supporting \(claim.supportingCount), contradicting \(claim.contradictingCount)."
+    if let adjudication = claim.adjudication, !adjudication.isEmpty {
+      line += " Adjudication \(adjudication)."
+    }
+    line += " Id \(claim.claimId)."
+    return line
+  }
+
+  /// People and documents have no stored claim kind, so they are not invented.
+  nonisolated static func heading(forKind kind: String) -> String? {
+    switch kind {
+    case "fact": "Facts"
+    case "decision": "Decisions"
+    case "commitment": "Commitments"
+    case "question": "Questions"
+    case "open_loop", "loose_end": "Open loops"
+    case "topic": "Topics"
+    case "number_or_term": "Numbers"
+    default: nil
+    }
+  }
+}
+
 struct ClaimReviewFocus: Equatable {
   let claimId: String
   let revisionId: String
