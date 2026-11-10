@@ -1147,6 +1147,157 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
     XCTAssertEqual(try Data(contentsOf: source), original)
   }
 
+  /// After confirmation, the dropped file follows the untranscribed playback,
+  /// speaker, search, correction, and export journey. No speech model is installed.
+  func testAConfirmedDropPlaysRenamesAndExportsWithoutChangingTheOriginal() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "open-scribe-drop-journey-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let source = root.appendingPathComponent("Dropped memo.m4a")
+    do {
+      let file = try AVAudioFile(
+        forWriting: source,
+        settings: [
+          AVFormatIDKey: kAudioFormatAppleLossless,
+          AVSampleRateKey: 48_000.0,
+          AVNumberOfChannelsKey: 1,
+          AVEncoderBitDepthHintKey: 16,
+        ])
+      let buffer = try XCTUnwrap(
+        AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: 48_000))
+      buffer.frameLength = 48_000
+      let channel = try XCTUnwrap(buffer.floatChannelData?[0])
+      for frame in 0..<48_000 {
+        channel[frame] = frame < 24_000 ? 0.25 : -0.5
+      }
+      try file.write(from: buffer)
+    }
+    let original = try Data(contentsOf: source)
+    let importRoot = root.appendingPathComponent("Library", isDirectory: true)
+    try FileManager.default.createDirectory(at: importRoot, withIntermediateDirectories: false)
+    let store = RuntimeLibraryStore(managedRoot: importRoot, refreshesImmediately: false)
+    let adapter = ImportedMediaAuthorityAdapter(
+      startSecurityScope: { _ in true },
+      stopSecurityScope: { _ in },
+      importer: { title, url in
+        try store.importManagedAudio(title: title, sourceURL: url)
+      }
+    )
+    let preparation = try NativeRecordingPreparation.open(managedRoot: importRoot.path)
+    adapter.stageDroppedAudio([source])
+    XCTAssertEqual(adapter.phase, .idle)
+    XCTAssertTrue(try preparation.runtimeLibrarySnapshot().savedSessions.isEmpty)
+    XCTAssertEqual(try Data(contentsOf: source), original)
+
+    adapter.confirmPendingAudioImport()
+    await assertEventually { adapter.phase == .succeeded }
+    let sessionId = try XCTUnwrap(adapter.importedSessionId)
+    XCTAssertEqual(try Data(contentsOf: source), original)
+    let native = try XCTUnwrap(
+      try preparation.runtimeLibrarySnapshot().savedSessions.first { $0.sessionId == sessionId })
+    let session = RuntimeSessionPresentation(native: native)
+    XCTAssertFalse(session.hasCaptureTimeline)
+    XCTAssertEqual(session.playableMedia?.isPlayable, true)
+
+    let library = try NativeTranscriptLibrary.open(managedRoot: importRoot.path)
+    let model = TranscriptLibraryModel(library: library)
+    await model.load(sessionId: sessionId)
+    XCTAssertEqual(model.availability, .unavailable)
+    XCTAssertEqual(model.availabilityText, "No transcript yet.")
+    XCTAssertEqual(model.segments, [])
+    XCTAssertEqual(model.speakers.first?.label, "Unknown speaker")
+    XCTAssertEqual(model.speakers.first?.namedByUser, false)
+    let trackId = try XCTUnwrap(model.speakers.first?.trackId)
+    let renamed = await model.renameSpeaker(trackId: trackId, label: " Dana ")
+    XCTAssertTrue(renamed, model.message ?? "")
+    XCTAssertEqual(model.speakers.first?.label, "Dana")
+    let restoredName = await model.renameSpeaker(trackId: trackId, label: nil)
+    XCTAssertTrue(restoredName, model.message ?? "")
+    XCTAssertEqual(model.speakers.first?.label, "Unknown speaker")
+    XCTAssertEqual(model.speakers.first?.namedByUser, false)
+    let decision = try library.prepareSpeakerDiarization(sessionId: sessionId)
+    XCTAssertEqual(decision.clusteringState, "unavailable")
+    XCTAssertEqual(decision.reason, "no calibrated diarization model")
+    XCTAssertEqual(decision.tracks.first?.labelOrigin, "source_default")
+    XCTAssertTrue(try library.search(query: "memo", sessionId: sessionId, limit: 20).isEmpty)
+    XCTAssertNotEqual(correctionRefusal(library, sessionId: sessionId), "accepted")
+    XCTAssertEqual(model.segments, [])
+
+    let later: Int64 = 500_000_000
+    let player = RecoveredAudioPlayer(outputMode: .silent)
+    for start in [Int64(0), later] {
+      let lease = try preparation.leaseImportedPlayback(sessionId: sessionId)
+      try await player.playImported(
+        receipt: lease.playbackPath(), retaining: lease, generation: UUID(),
+        startNanoseconds: start)
+      player.stop()
+      withExtendedLifetime(lease) {}
+    }
+    let beginningSample: Float
+    let laterSample: Float
+    do {
+      let lease = try preparation.leaseImportedPlayback(sessionId: sessionId)
+      let receipt = try RecoveredPlaybackDescriptorReceipt(serialized: lease.playbackPath())
+      let decoder = try CallbackCAFDecoder(
+        source: try VerifiedDescriptorPlaybackSource.prepare(receipt: receipt),
+        fileTypeHint: receipt.fileTypeHint, onClose: {})
+      let beginning = try XCTUnwrap(decoder.read(maximumFrames: 1))
+      beginningSample = beginning.floatChannelData?[0][0] ?? 0
+      try decoder.seek(toFrame: 24_000)
+      let secondHalf = try XCTUnwrap(decoder.read(maximumFrames: 1))
+      laterSample = secondHalf.floatChannelData?[0][0] ?? 0
+      decoder.close()
+      withExtendedLifetime(lease) {}
+    }
+    XCTAssertEqual(beginningSample, 0.25, accuracy: 0.001)
+    XCTAssertEqual(laterSample, -0.5, accuracy: 0.001)
+    let recorded = RecoveredAudioPlayerFake()
+    let controller = RecoveredSessionController(
+      recoveryFactory: { RecoveryPreparationFake() },
+      importedPlaybackLeaseProvider: { id in
+        try preparation.leaseImportedPlayback(sessionId: id)
+      },
+      player: recorded)
+    controller.play(session, startNanoseconds: later)
+    await assertEventually { controller.playingSessionId == session.sessionId }
+    XCTAssertNil(controller.errorMessage)
+    XCTAssertEqual(recorded.importedStartNanoseconds, later)
+    controller.stopPlayback()
+
+    let managedCopy = try XCTUnwrap(importedAudioFile(under: importRoot))
+    let exported = root.appendingPathComponent("Exported.m4a")
+    let exportedOriginal = await model.export(.original, to: exported)
+    XCTAssertTrue(exportedOriginal, model.message ?? "")
+    XCTAssertEqual(try Data(contentsOf: exported), try Data(contentsOf: managedCopy))
+    let refusedMix = await model.export(.validatedMix, to: root.appendingPathComponent("Mix.m4a"))
+    XCTAssertFalse(refusedMix)
+    XCTAssertTrue(model.messageIsFailure)
+    let markdown = root.appendingPathComponent("Dropped.md")
+    let wroteTranscript = await model.export(format: .markdown, to: markdown)
+    XCTAssertTrue(wroteTranscript, model.message ?? "")
+    XCTAssertFalse(model.messageIsFailure)
+    XCTAssertGreaterThan(try Data(contentsOf: markdown).count, 0)
+    XCTAssertEqual(model.availability, .unavailable)
+    XCTAssertEqual(try Data(contentsOf: source), original)
+    withExtendedLifetime(preparation) {}
+  }
+
+  private func importedAudioFile(under root: URL) throws -> URL? {
+    let sessions = root.appendingPathComponent("Sessions")
+    guard
+      let enumerator = FileManager.default.enumerator(
+        at: sessions, includingPropertiesForKeys: [.isRegularFileKey])
+    else { return nil }
+    for case let url as URL in enumerator {
+      guard url.pathExtension == "m4a" else { continue }
+      if try url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile == true {
+        return url
+      }
+    }
+    return nil
+  }
+
   private func waitUntil(
     timeoutNanoseconds: UInt64 = 3_000_000_000,
     _ predicate: () -> Bool
