@@ -233,10 +233,14 @@ final class ContextScopeModel: ObservableObject {
     }
   }
 
-  func pause() { perform(.pause(reason: .user), stopFirst: true) }
+  func pause() { perform(.pause(reason: .user), stopFirst: true, keepPermissionWatch: true) }
 
   func resume() {
     permission = permissionCheck()
+    guard permission == .granted else {
+      stopForPermissionLoss()
+      return
+    }
     perform(.resume(permission: permission), stopFirst: false)
   }
 
@@ -249,9 +253,11 @@ final class ContextScopeModel: ObservableObject {
     worker.offer(request)
   }
 
-  private func perform(_ action: NativeContextAction, stopFirst: Bool) {
+  private func perform(
+    _ action: NativeContextAction, stopFirst: Bool, keepPermissionWatch: Bool = false
+  ) {
     guard let binding = bindingSource() else { return }
-    if stopFirst { stopSampling() }
+    if stopFirst { stopSampling(keepPermissionWatch: keepPermissionWatch) }
     do {
       apply(try binding.preparation.contextAction(sessionId: binding.sessionId, action: action))
       report(nil)
@@ -315,20 +321,25 @@ final class ContextScopeModel: ObservableObject {
       while !Task.isCancelled {
         try? await Task.sleep(nanoseconds: 2_000_000_000)
         guard let self, !Task.isCancelled else { return }
-        if self.permissionCheck() != .granted { self.stopForPermissionLoss() }
+        if self.permissionCheck() != .granted {
+          self.stopForPermissionLoss()
+          return
+        }
       }
     }
   }
 
   /// Stops the sampler and, unless told otherwise, invalidates local work.
-  private func stopSampling(invalidate: Bool = true) {
+  private func stopSampling(invalidate: Bool = true, keepPermissionWatch: Bool = false) {
     sampler?.cancel()
     sampler = nil
-    monitor?.cancel()
-    monitor = nil
     pointerTimer?.invalidate()
     pointerTimer = nil
     dwell.reset()
+    if !keepPermissionWatch {
+      monitor?.cancel()
+      monitor = nil
+    }
     if invalidate { worker.invalidate() }
   }
 
@@ -429,7 +440,7 @@ final class ContextScopeModel: ObservableObject {
       ) { [weak self] _ in
         MainActor.assumeIsolated {
           guard let self, self.isActive else { return }
-          self.perform(.pause(reason: .screenLocked), stopFirst: true)
+          self.perform(.pause(reason: .screenLocked), stopFirst: true, keepPermissionWatch: true)
           self.report("Context paused while the screen is locked.")
         }
       })
@@ -447,13 +458,17 @@ final class ContextScopeModel: ObservableObject {
     if scope.request.targets.contains(where: { !present.contains($0.platformId) }) {
       fail(.displayRemoved, message: "A watched display was disconnected. Context stopped; audio recording continues.")
     } else if scope.condition == .active {
-      perform(.pause(reason: .topologyChanged), stopFirst: true)
+      perform(.pause(reason: .topologyChanged), stopFirst: true, keepPermissionWatch: true)
       report("The display arrangement changed. Context is paused until you confirm a scope.")
     }
   }
 
   private func stopForPermissionLoss() {
-    fail(.permissionLost, message: "Screen Recording permission was turned off. Context stopped; audio recording continues.")
+    permission = permissionCheck()
+    fail(
+      .permissionLost,
+      message:
+        "Screen Recording permission was turned off. Context stopped; audio recording continues.")
   }
 
   private func fail(_ reason: NativeContextFailureReason, message: String) {

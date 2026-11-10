@@ -439,6 +439,52 @@ final class ContextTests: XCTestCase {
     withExtendedLifetime(fixture.writer) {}
   }
 
+  /// The live permission watch and a paused Resume both record permission loss.
+  /// Audio recording stays open.
+  func testLiveScreenPermissionLossStopsContextAndLeavesTheRecording() async throws {
+    let fixture = try RecordingFixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let permission = ScreenPermissionStub()
+    permission.grant()
+    let model = ContextScopeModel(
+      binding: { fixture.binding }, frames: FrameScript(), recognize: { _ in [] },
+      permissionCheck: { permission.current },
+      permissionRequest: { permission.current },
+      topology: { RecordingFixture.displays })
+    model.selection = ContextSelection(mode: .followPointer)
+    XCTAssertTrue(model.authorize())
+    XCTAssertEqual(model.current?.condition, .active)
+
+    permission.set(.denied)
+    let deadline = Date().addingTimeInterval(4)
+    while model.current?.reason != "permission_lost", Date() < deadline {
+      try await Task.sleep(for: .milliseconds(50))
+    }
+    XCTAssertEqual(model.current?.condition, .failed)
+    XCTAssertEqual(model.current?.reason, "permission_lost")
+    XCTAssertEqual(
+      model.message,
+      "Screen Recording permission was turned off. Context stopped; audio recording continues.")
+    XCTAssertEqual(model.permission, .denied)
+    XCTAssertEqual(
+      try fixture.preparation.recorderDetail(sessionId: fixture.sessionId).lifecycle, "recording")
+
+    permission.grant()
+    XCTAssertTrue(model.authorize())
+    model.pause()
+    XCTAssertEqual(model.current?.condition, .paused)
+    permission.set(.denied)
+    model.resume()
+    XCTAssertEqual(model.current?.condition, .failed)
+    XCTAssertEqual(model.current?.reason, "permission_lost")
+    XCTAssertEqual(
+      model.message,
+      "Screen Recording permission was turned off. Context stopped; audio recording continues.")
+    XCTAssertEqual(
+      try fixture.preparation.recorderDetail(sessionId: fixture.sessionId).lifecycle, "recording")
+    withExtendedLifetime(fixture.writer) {}
+  }
+
   func testDeclaredParticipantsAndTopicGrantNoScope() throws {
     let fixture = try RecordingFixture()
     defer { try? FileManager.default.removeItem(at: fixture.root) }
@@ -593,5 +639,6 @@ private final class ScreenPermissionStub: @unchecked Sendable {
   private let lock = NSLock()
   private var state = NativeScreenPermission.denied
   var current: NativeScreenPermission { lock.withLock { state } }
-  func grant() { lock.withLock { state = .granted } }
+  func grant() { set(.granted) }
+  func set(_ state: NativeScreenPermission) { lock.withLock { self.state = state } }
 }
