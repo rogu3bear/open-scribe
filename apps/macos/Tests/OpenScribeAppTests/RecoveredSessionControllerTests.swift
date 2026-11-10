@@ -2669,6 +2669,219 @@ final class RecoveredSessionControllerTests: RecoveredSessionTestCase {
     XCTAssertEqual(try Data(contentsOf: trashedNote), exportedNote)
   }
 
+  /// The hosted Trash button asks, and Cancel on that same banner leaves the
+  /// conversation. The test does not call `requestDeletion`, `cancelDeletion`,
+  /// or `confirmDeletion`.
+  func testHostedDeletionCancelLeavesTheConversation() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "open-scribe-hosted-delete-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let package = root.appendingPathComponent("Stored.openscribe")
+    let export = await exportStoredFinalPackage(to: package)
+    XCTAssertEqual(export.status, 0, String(export.log.suffix(2_000)))
+
+    let managed = root.appendingPathComponent("Library", isDirectory: true)
+    let library = try NativeTranscriptLibrary.open(managedRoot: managed.path)
+    let receipt = try library.importPortablePackage(packagePath: package.path)
+    let segments = try library.document(sessionId: receipt.sessionId)
+    let alpha = try XCTUnwrap(segments.first { $0.sequence == 0 })
+    let bravo = try XCTUnwrap(segments.first { $0.sequence == 1 })
+    let supporting = try library.citeTranscriptSegment(
+      sessionId: receipt.sessionId, revisionId: alpha.revisionId, sequence: alpha.sequence)
+    let contradicting = try library.citeTranscriptSegment(
+      sessionId: receipt.sessionId, revisionId: bravo.revisionId, sequence: bravo.sequence)
+    try library.insertDerivedClaim(
+      claimJson: citedClaimJSON(
+        sessionId: receipt.sessionId, supporting: supporting, contradicting: contradicting))
+    let sessionDirectory = managed.appendingPathComponent("Sessions", isDirectory: true)
+      .appendingPathComponent(receipt.sessionId, isDirectory: true)
+    let exports = sessionDirectory.appendingPathComponent("exports", isDirectory: true)
+    try FileManager.default.createDirectory(at: exports, withIntermediateDirectories: true)
+    let exportedNote = Data("exported".utf8)
+    try exportedNote.write(to: exports.appendingPathComponent("notes.txt"))
+    let media = try regularFiles(under: sessionDirectory).filter { $0.pathExtension == "caf" }
+    XCTAssertEqual(media.count, 1)
+    let mediaDigest = try digest(of: media[0])
+    let bravoText = bravo.effectiveText
+
+    let model = TranscriptLibraryModel(managedRoot: managed)
+    await model.load(sessionId: receipt.sessionId)
+    XCTAssertEqual(
+      model.derivedClaims.first?.text, "The team agreed to ship the local recorder.")
+    let store = RuntimeLibraryStore(managedRoot: managed, refreshesImmediately: false)
+    store.refresh()
+    let listed = await waitUntil {
+      store.savedSessions.contains { $0.sessionId == receipt.sessionId }
+    }
+    XCTAssertTrue(listed, "saved=\(store.savedSessions.map(\.sessionId))")
+    let navigation = MainWorkspaceNavigation()
+    navigation.select(receipt.sessionId)
+    let live = LiveMicrophoneRecordingController(managedRoot: managed)
+    let playback = RecoveredSessionController(
+      recoveryFactory: { try NativeRecordingPreparation.open(managedRoot: managed.path) },
+      importedPlaybackLeaseProvider: { id in
+        try NativeRecordingPreparation.open(managedRoot: managed.path)
+          .leaseImportedPlayback(sessionId: id)
+      },
+      player: RecoveredAudioPlayerFake())
+    let view = ContentView(
+      store: store,
+      importedMediaAuthority: ImportedMediaAuthorityAdapter(
+        startSecurityScope: { _ in true },
+        stopSecurityScope: { _ in },
+        importer: { _, _ in throw NativeStorageError.InvalidRequest }
+      ),
+      liveRecording: live,
+      recoveredSessions: playback,
+      transcripts: model,
+      speech: SpeechTranscriptionModel(managedRoot: managed),
+      scheduler: TranscriptionScheduler.inert(),
+      pressure: SystemPressureMonitor(libraryRoot: managed, samplesAutomatically: false),
+      context: ContextScopeModel(
+        binding: { nil },
+        frames: IdleClaimContextFrames(),
+        permissionCheck: { .denied },
+        permissionRequest: { .denied },
+        topology: { [] }
+      ),
+      navigation: navigation
+    )
+    let host = NSHostingView(rootView: view)
+    host.sizingOptions = []
+    let window = NSWindow(
+      contentRect: NSRect(x: 0, y: 0, width: 1100, height: 720),
+      styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    window.contentView = host
+    window.setContentSize(NSSize(width: 1100, height: 720))
+    host.frame = window.contentLayoutRect
+    window.makeKeyAndOrderFront(nil)
+    window.orderFrontRegardless()
+    defer { window.close() }
+
+    let offered = await waitUntil(timeoutNanoseconds: 5_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      window.displayIfNeeded()
+      return self.deletionButton(labeled: "Move the selected conversation to Trash", in: host) != nil
+    }
+    let request = self.deletionButton(labeled: "Move the selected conversation to Trash", in: host)
+    XCTAssertTrue(
+      offered && request != nil && window.contentView === host,
+      self.deletionProbe(in: host).joined(separator: "\n"))
+    let trash = try XCTUnwrap(request)
+    XCTAssertTrue(trash.isDescendant(of: host))
+    XCTAssertNil(model.pendingDeletion)
+    trash.performClick(nil)
+
+    let asked = await waitUntil(timeoutNanoseconds: 5_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      window.displayIfNeeded()
+      return model.pendingDeletion?.sessionId == receipt.sessionId
+        && self.deletionButton(labeled: "Cancel deletion", in: host) != nil
+        && self.deletionSummary(in: host) != nil
+    }
+    XCTAssertTrue(
+      asked && window.contentView === host,
+      "\(model.pendingDeletion?.sessionId ?? "nil")\n"
+        + self.deletionProbe(in: host).joined(separator: "\n"))
+    let inventory = try XCTUnwrap(model.pendingDeletion)
+    let summary = try XCTUnwrap(self.deletionSummary(in: host))
+    XCTAssertEqual(summary.stringValue, SessionDeletionSummary.text(inventory))
+    XCTAssertTrue(summary.stringValue.contains("will be moved to Trash"))
+    XCTAssertTrue(summary.stringValue.contains("1 derived item"))
+    XCTAssertTrue(summary.stringValue.contains("correction"))
+    XCTAssertTrue(summary.stringValue.contains("file exported inside the conversation"))
+    XCTAssertTrue(summary.stringValue.contains("Files you exported elsewhere"))
+    XCTAssertTrue(summary.stringValue.contains("Time Machine or other backups"))
+    XCTAssertEqual(try digest(of: media[0]), mediaDigest)
+    XCTAssertTrue(store.savedSessions.contains { $0.sessionId == receipt.sessionId })
+    let cancel = try XCTUnwrap(self.deletionButton(labeled: "Cancel deletion", in: host))
+    XCTAssertTrue(cancel.isDescendant(of: host))
+    cancel.performClick(nil)
+
+    let cleared = await waitUntil(timeoutNanoseconds: 5_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      return model.pendingDeletion == nil
+        && self.deletionButton(labeled: "Cancel deletion", in: host) == nil
+        && self.deletionSummary(in: host) == nil
+    }
+    XCTAssertTrue(cleared && window.contentView === host, model.message ?? "nil")
+    store.refresh()
+    let stillListed = await waitUntil {
+      store.savedSessions.contains { $0.sessionId == receipt.sessionId }
+    }
+    XCTAssertTrue(stillListed)
+    await model.load(sessionId: receipt.sessionId)
+    XCTAssertEqual(
+      model.derivedClaims.first?.text, "The team agreed to ship the local recorder.")
+    let reread = try library.document(sessionId: receipt.sessionId)
+    let rereadBravo = try XCTUnwrap(reread.first { $0.sequence == 1 })
+    XCTAssertEqual(rereadBravo.effectiveText, bravoText)
+    XCTAssertEqual(rereadBravo.corrected, bravo.corrected)
+    XCTAssertEqual(try digest(of: media[0]), mediaDigest)
+    XCTAssertEqual(try Data(contentsOf: exports.appendingPathComponent("notes.txt")), exportedNote)
+    XCTAssertTrue(FileManager.default.fileExists(atPath: media[0].path))
+    XCTAssertNil(self.deletionButton(labeled: "Confirm move to Trash", in: host))
+    XCTAssertTrue(window.contentView === host)
+    withExtendedLifetime((store, live, playback, window, host, library, model)) {}
+  }
+
+  private func deletionButton(labeled label: String, in root: NSView) -> NSButton? {
+    var matched: NSButton?
+    func walk(_ view: NSView) {
+      if matched != nil { return }
+      if let button = view as? NSButton, !(button is NSPopUpButton),
+        button.accessibilityLabel() == label,
+        button.isHidden == false,
+        button.isHiddenOrHasHiddenAncestor == false,
+        button.frame.width > 1,
+        button.frame.height > 1
+      {
+        matched = button
+      }
+      for child in view.subviews { walk(child) }
+    }
+    walk(root)
+    return matched
+  }
+
+  private func deletionSummary(in root: NSView) -> NSTextField? {
+    var matched: NSTextField?
+    func walk(_ view: NSView) {
+      if matched != nil { return }
+      if let field = view as? NSTextField,
+        field.accessibilityLabel() == "Deletion summary",
+        field.isHidden == false,
+        field.isHiddenOrHasHiddenAncestor == false,
+        field.frame.width > 1,
+        field.frame.height > 1
+      {
+        matched = field
+      }
+      for child in view.subviews { walk(child) }
+    }
+    walk(root)
+    return matched
+  }
+
+  private func deletionProbe(in root: NSView) -> [String] {
+    var lines = [String]()
+    func walk(_ view: NSView) {
+      if let button = view as? NSButton, !(button is NSPopUpButton) {
+        lines.append(
+          "button \(button.accessibilityLabel() ?? button.title) hidden=\(button.isHidden) frame=\(button.frame)"
+        )
+      }
+      if let field = view as? NSTextField, field.accessibilityLabel() == "Deletion summary" {
+        lines.append("summary hidden=\(field.isHidden) frame=\(field.frame)")
+      }
+      for child in view.subviews { walk(child) }
+    }
+    walk(root)
+    return lines
+  }
+
   /// Imports have no capture timeline, so claim evidence seeks with
   /// `play(_:startNanoseconds:)`.
   private func seekImported(

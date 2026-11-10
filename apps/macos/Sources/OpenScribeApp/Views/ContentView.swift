@@ -93,27 +93,6 @@ struct ContentView: View {
     .task(id: librarySearch.query) {
       await transcripts.search(librarySearch.query)
     }
-    .confirmationDialog(
-      "Move this conversation to Trash?",
-      isPresented: Binding(
-        get: { transcripts.pendingDeletion != nil },
-        set: { presented in
-          if !presented { Task { await transcripts.cancelDeletion() } }
-        }
-      ),
-      presenting: transcripts.pendingDeletion
-    ) { _ in
-      Button("Move to Trash", role: .destructive) {
-        Task {
-          if await transcripts.confirmDeletion() { store.refresh() }
-        }
-      }
-      Button("Cancel", role: .cancel) {
-        Task { await transcripts.cancelDeletion() }
-      }
-    } message: { inventory in
-      Text(SessionDeletionSummary.text(inventory))
-    }
     .onChange(of: selectedSessionId) { selectedSessionId in
       if MainWorkspaceSelection.shouldStopDetachedPlayback(
         activePlaybackSessionId: recoveredSessions.activePlaybackSessionId,
@@ -144,6 +123,13 @@ struct ContentView: View {
         openSearchHit(hit)
       }
       .frame(maxWidth: .infinity, minHeight: 120, alignment: .topLeading)
+      DeletionRequestMount(
+        store: store, liveRecording: liveRecording, navigation: navigation
+      ) { session in
+        requestDeletion(session)
+      }
+      .frame(maxWidth: .infinity, minHeight: 28, alignment: .leading)
+      .padding(.horizontal, ScribeSpacing.related)
       conversationList
       LibraryActivityFooter(
         scheduler: scheduler, speech: speech, pressure: pressure,
@@ -305,6 +291,20 @@ struct ContentView: View {
     .overlay(alignment: .top) {
       dropConfirmation
     }
+    .overlay(alignment: .bottom) {
+      deletionConfirmation
+    }
+  }
+
+  /// Pending deletion is published after the first layout. A SwiftUI
+  /// confirmation sheet from that change does not appear in the hosting view
+  /// that is already on screen. This strip is created with the first layout.
+  private var deletionConfirmation: some View {
+    DeletionConfirmationMount(transcripts: transcripts) {
+      store.refresh()
+    }
+    .frame(maxWidth: .infinity)
+    .frame(height: 96)
   }
 
   private var dropConfirmation: some View {
@@ -1175,6 +1175,232 @@ private final class SearchResultBanner: NSView {
         "\($0.sessionId)#\($0.sequence)" == key
       }) else { return }
       onOpen?(hit)
+    }
+  }
+}
+
+/// The selected saved conversation can be moved to Trash. The button exists
+/// before a selection so a later library refresh only reveals it.
+private struct DeletionRequestMount: NSViewRepresentable {
+  @ObservedObject var store: RuntimeLibraryStore
+  @ObservedObject var liveRecording: LiveMicrophoneRecordingController
+  @ObservedObject var navigation: MainWorkspaceNavigation
+  let onRequest: (RuntimeSessionPresentation) -> Void
+
+  func makeNSView(context: Context) -> DeletionRequestControl {
+    let view = DeletionRequestControl()
+    view.bind(
+      store: store, liveRecording: liveRecording, navigation: navigation, onRequest: onRequest)
+    return view
+  }
+
+  func updateNSView(_ view: DeletionRequestControl, context: Context) {
+    view.bind(
+      store: store, liveRecording: liveRecording, navigation: navigation, onRequest: onRequest)
+  }
+}
+
+private final class DeletionRequestControl: NSView {
+  private let button = NSButton(title: "Move to Trash…", target: nil, action: nil)
+  private var subscription: AnyCancellable?
+  private var store: RuntimeLibraryStore?
+  private var liveRecording: LiveMicrophoneRecordingController?
+  private var navigation: MainWorkspaceNavigation?
+  private var onRequest: ((RuntimeSessionPresentation) -> Void)?
+
+  override init(frame frameRect: NSRect) {
+    super.init(frame: frameRect)
+    setAccessibilityIdentifier("Delete conversation")
+    button.bezelStyle = .rounded
+    button.setAccessibilityLabel("Move the selected conversation to Trash")
+    button.target = self
+    button.action = #selector(requestDeletion)
+    button.translatesAutoresizingMaskIntoConstraints = false
+    button.isHidden = true
+    addSubview(button)
+    NSLayoutConstraint.activate([
+      button.leadingAnchor.constraint(equalTo: leadingAnchor),
+      button.centerYAnchor.constraint(equalTo: centerYAnchor),
+      button.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor),
+    ])
+  }
+
+  required init?(coder: NSCoder) {
+    nil
+  }
+
+  func bind(
+    store: RuntimeLibraryStore, liveRecording: LiveMicrophoneRecordingController,
+    navigation: MainWorkspaceNavigation, onRequest: @escaping (RuntimeSessionPresentation) -> Void
+  ) {
+    self.onRequest = onRequest
+    let same =
+      self.store === store && self.liveRecording === liveRecording && self.navigation === navigation
+    self.store = store
+    self.liveRecording = liveRecording
+    self.navigation = navigation
+    if !same {
+      let triggers: [AnyPublisher<Void, Never>] = [
+        store.objectWillChange.map { _ in () }.eraseToAnyPublisher(),
+        liveRecording.objectWillChange.map { _ in () }.eraseToAnyPublisher(),
+        navigation.objectWillChange.map { _ in () }.eraseToAnyPublisher(),
+      ]
+      subscription = Publishers.MergeMany(triggers).sink { [weak self] _ in
+        DispatchQueue.main.async { self?.apply() }
+      }
+    }
+    apply()
+  }
+
+  override func hitTest(_ point: NSPoint) -> NSView? {
+    guard button.isHidden == false else { return nil }
+    let hit = super.hitTest(point)
+    return hit === self ? nil : hit
+  }
+
+  private func apply() {
+    let available = selectedDeletableSession() != nil
+    button.isHidden = !available
+    button.isEnabled = available
+    layoutSubtreeIfNeeded()
+  }
+
+  private func selectedDeletableSession() -> RuntimeSessionPresentation? {
+    guard let liveRecording, liveRecording.canStart, let navigation, let store,
+      let sessionId = navigation.selectedSessionId,
+      let session = store.savedSessions.first(where: { $0.sessionId == sessionId }),
+      session.deletionUnavailableReason == nil
+    else { return nil }
+    return session
+  }
+
+  @objc private func requestDeletion() {
+    guard let session = selectedDeletableSession() else { return }
+    let onRequest = onRequest
+    Task { @MainActor in onRequest?(session) }
+  }
+}
+
+/// States the deletion inventory and asks for an explicit move or cancel.
+/// Both controls are created here so a later `pendingDeletion` only unhides them.
+private struct DeletionConfirmationMount: NSViewRepresentable {
+  @ObservedObject var transcripts: TranscriptLibraryModel
+  let onConfirmed: () -> Void
+
+  func makeNSView(context: Context) -> DeletionConfirmationBanner {
+    let view = DeletionConfirmationBanner()
+    view.bind(transcripts, onConfirmed: onConfirmed)
+    return view
+  }
+
+  func updateNSView(_ view: DeletionConfirmationBanner, context: Context) {
+    view.bind(transcripts, onConfirmed: onConfirmed)
+  }
+}
+
+private final class DeletionConfirmationBanner: NSView {
+  private let message = NSTextField(wrappingLabelWithString: "")
+  private let confirmButton = NSButton(title: "Move to Trash", target: nil, action: nil)
+  private let cancelButton = NSButton(title: "Cancel", target: nil, action: nil)
+  private var subscription: AnyCancellable?
+  private var transcripts: TranscriptLibraryModel?
+  private var onConfirmed: (() -> Void)?
+  private var showsConfirmation = false
+
+  override init(frame frameRect: NSRect) {
+    super.init(frame: frameRect)
+    setAccessibilityIdentifier("Deletion confirmation")
+    message.font = .preferredFont(forTextStyle: .callout)
+    message.maximumNumberOfLines = 4
+    message.lineBreakMode = .byWordWrapping
+    message.cell?.truncatesLastVisibleLine = true
+    message.setAccessibilityLabel("Deletion summary")
+    message.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+    confirmButton.bezelStyle = .rounded
+    confirmButton.setAccessibilityLabel("Confirm move to Trash")
+    confirmButton.target = self
+    confirmButton.action = #selector(confirmMove)
+    cancelButton.bezelStyle = .rounded
+    cancelButton.setAccessibilityLabel("Cancel deletion")
+    cancelButton.target = self
+    cancelButton.action = #selector(cancelMove)
+    for item in [message, confirmButton, cancelButton] {
+      item.translatesAutoresizingMaskIntoConstraints = false
+      addSubview(item)
+    }
+    NSLayoutConstraint.activate([
+      message.leadingAnchor.constraint(equalTo: leadingAnchor, constant: ScribeSpacing.standard),
+      message.topAnchor.constraint(equalTo: topAnchor, constant: ScribeSpacing.related),
+      message.bottomAnchor.constraint(
+        lessThanOrEqualTo: bottomAnchor, constant: -ScribeSpacing.related),
+      cancelButton.trailingAnchor.constraint(
+        equalTo: trailingAnchor, constant: -ScribeSpacing.standard),
+      cancelButton.centerYAnchor.constraint(equalTo: centerYAnchor),
+      confirmButton.trailingAnchor.constraint(
+        equalTo: cancelButton.leadingAnchor, constant: -ScribeSpacing.related),
+      confirmButton.centerYAnchor.constraint(equalTo: centerYAnchor),
+      message.trailingAnchor.constraint(
+        lessThanOrEqualTo: confirmButton.leadingAnchor, constant: -ScribeSpacing.related),
+    ])
+    apply(nil)
+  }
+
+  required init?(coder: NSCoder) {
+    nil
+  }
+
+  override var intrinsicContentSize: NSSize {
+    NSSize(width: NSView.noIntrinsicMetric, height: 96)
+  }
+
+  func bind(_ transcripts: TranscriptLibraryModel, onConfirmed: @escaping () -> Void) {
+    self.onConfirmed = onConfirmed
+    guard self.transcripts !== transcripts else { return }
+    self.transcripts = transcripts
+    subscription = transcripts.$pendingDeletion.sink { [weak self] inventory in
+      DispatchQueue.main.async { self?.apply(inventory) }
+    }
+    DispatchQueue.main.async { [weak self] in
+      self?.apply(self?.transcripts?.pendingDeletion)
+    }
+  }
+
+  override func hitTest(_ point: NSPoint) -> NSView? {
+    guard showsConfirmation else { return nil }
+    let hit = super.hitTest(point)
+    return hit === self ? nil : hit
+  }
+
+  override func draw(_ dirtyRect: NSRect) {
+    guard showsConfirmation else { return }
+    NSColor.windowBackgroundColor.setFill()
+    dirtyRect.fill()
+  }
+
+  private func apply(_ inventory: NativeSessionDeletionInventory?) {
+    showsConfirmation = inventory != nil
+    message.isHidden = inventory == nil
+    confirmButton.isHidden = inventory == nil
+    cancelButton.isHidden = inventory == nil
+    message.stringValue = inventory.map { SessionDeletionSummary.text($0) } ?? ""
+    needsDisplay = true
+    layoutSubtreeIfNeeded()
+  }
+
+  @objc private func confirmMove() {
+    let transcripts = transcripts
+    let onConfirmed = onConfirmed
+    Task { @MainActor in
+      if await transcripts?.confirmDeletion() == true {
+        onConfirmed?()
+      }
+    }
+  }
+
+  @objc private func cancelMove() {
+    let transcripts = transcripts
+    Task { @MainActor in
+      await transcripts?.cancelDeletion()
     }
   }
 }
