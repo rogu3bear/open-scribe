@@ -1119,6 +1119,59 @@ final class RecorderPauseResumeTests: XCTestCase {
     XCTAssertEqual(try Self.byteCount(systemPath), systemBytes)
   }
 
+  /// An unrelated process exit leaves capture alone. The selected application's
+  /// exit seals that source, journals the failure, and keeps the microphone.
+  func testSelectedApplicationExitKeepsTheMicrophoneAndRejectsAnotherProcess() async throws {
+    let harness = try PauseHarness()
+    defer { harness.removeFiles() }
+    harness.controller.selectCaptureSource(
+      RecorderCaptureSelection(
+        kind: .applicationAudio, identity: "com.example.call:4242", name: "Proof App",
+        filter: nil, processId: 4242))
+    await harness.controller.start()
+    try await harness.capture()
+    let microphone = try XCTUnwrap(harness.captures.microphones.last)
+    let application = try XCTUnwrap(harness.captures.systems.last)
+    let sessionId = microphone.writer.authorization.sessionId
+    let microphonePath = microphone.writer.authorization.absolutePath
+    let microphoneBytes = try Self.byteCount(microphonePath)
+    XCTAssertGreaterThan(microphoneBytes, 0)
+    XCTAssertEqual(harness.controller.captureSelection.processId, 4242)
+
+    await harness.controller.selectedApplicationExited(processId: 4243)
+    XCTAssertEqual(harness.controller.phase, .capturing)
+    XCTAssertNil(harness.controller.errorMessage)
+    XCTAssertEqual(application.stopCount, 0)
+    XCTAssertEqual(microphone.stopCount, 0)
+    XCTAssertFalse(
+      harness.controller.recorderDetail?.events.contains { $0.kind == "source_failed" } == true)
+
+    await harness.controller.selectedApplicationExited(processId: 4242)
+    XCTAssertEqual(harness.controller.phase, .capturing)
+    XCTAssertEqual(
+      harness.controller.errorMessage,
+      "Selected application audio stopped. Remaining audio is still recording. The selected application exited."
+    )
+    XCTAssertEqual(harness.controller.failureCode, "application-exited")
+    XCTAssertEqual(application.stopCount, 1)
+    XCTAssertEqual(microphone.stopCount, 0)
+    XCTAssertEqual(
+      try harness.preparation.recorderDetail(sessionId: sessionId).lifecycle, "recording")
+    XCTAssertTrue(
+      try harness.preparation.recorderDetail(sessionId: sessionId).events.contains {
+        $0.kind == "source_failed"
+      })
+
+    try microphone.emit(frames: 48_000, hostTime: harness.clock.now, value: 4096)
+    await harness.controller.stop()
+    XCTAssertEqual(harness.controller.phase, .saved)
+    XCTAssertGreaterThanOrEqual(try Self.byteCount(microphonePath), microphoneBytes)
+    _ = try harness.preparation.recoverPlayableSessions()
+    let plan = try harness.preparation.playbackTimeline(sessionId: sessionId)
+    XCTAssertEqual(Set(plan.map(\.trackId)).count, 2)
+    XCTAssertTrue(plan.allSatisfy { $0.sampleCount > 0 })
+  }
+
   /// Add Marker uses the session clock. The saved recording still has the marker
   /// and its source tracks.
   func testAddMarkerStaysOnTheSessionClockAfterTheRecordingIsSaved() async throws {
