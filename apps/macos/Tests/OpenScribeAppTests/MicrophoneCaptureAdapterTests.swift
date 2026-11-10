@@ -1853,8 +1853,9 @@ final class MicrophoneCaptureAdapterTests: XCTestCase {
   }
 
   /// Renaming updates the reviewed label. Clearing the name restores the
-  /// source default. The draft and the capture file stay put. Merge and split
-  /// are not available while clustering is unavailable.
+  /// source default. Each stored name remains in the history. The draft and
+  /// the capture file stay put. Merge and split are not available while
+  /// clustering is unavailable.
   func testRenamingASpeakerRestoresTheSourceDefaultWithoutChangingTheDraft() async throws {
     let fixture = try openedMicrophone(title: "Speaker rename restore")
     var timebase = mach_timebase_info_data_t()
@@ -1896,6 +1897,16 @@ final class MicrophoneCaptureAdapterTests: XCTestCase {
     let speaker = try await MainActor.run { try XCTUnwrap(model.speakers.first) }
     XCTAssertEqual(speaker.label, "Local user")
     XCTAssertFalse(speaker.namedByUser)
+    let initialHistoryRecords = await MainActor.run { model.speakerLabelHistory }
+    let initialHistory = try XCTUnwrap(initialHistoryRecords.first)
+    XCTAssertEqual(initialHistoryRecords.count, 1)
+    XCTAssertEqual(initialHistory.trackId, speaker.trackId)
+    XCTAssertEqual(initialHistory.sourceKind, "microphone")
+    XCTAssertEqual(initialHistory.sourceDefaultLabel, "Local user")
+    XCTAssertTrue(initialHistory.revisions.isEmpty)
+    XCTAssertEqual(
+      TranscriptLibraryModel.speakerLabelHistoryText(for: initialHistory),
+      "Source default: Local user")
     let renamed = await model.renameSpeaker(trackId: speaker.trackId, label: " Dana ")
     let named = await MainActor.run { model.speakers.first }
     XCTAssertTrue(renamed)
@@ -1928,8 +1939,34 @@ final class MicrophoneCaptureAdapterTests: XCTestCase {
     let clearedAgain = await model.renameSpeaker(trackId: speaker.trackId, label: nil)
     XCTAssertTrue(renamedAgain)
     XCTAssertTrue(clearedAgain)
-    let finalLabel = await MainActor.run { model.speakers.first?.label }
-    XCTAssertEqual(finalLabel, "Local user")
+    let reviewed = await MainActor.run {
+      (model.speakers.first?.label, model.speakerLabelHistory)
+    }
+    XCTAssertEqual(reviewed.0, "Local user")
+    let history = try XCTUnwrap(reviewed.1.first)
+    XCTAssertEqual(reviewed.1.count, 1)
+    XCTAssertEqual(history.trackId, speaker.trackId)
+    XCTAssertEqual(history.sourceKind, "microphone")
+    XCTAssertEqual(history.sourceDefaultLabel, "Local user")
+    XCTAssertEqual(
+      history.revisions.map(\.label), ["Dana", "Local user", "Mina", "Local user"])
+    XCTAssertEqual(
+      history.revisions.map(\.origin),
+      [.human, .sourceDefault, .human, .sourceDefault])
+    XCTAssertTrue(history.revisions.allSatisfy { $0.createdAtMs > 0 })
+    XCTAssertTrue(
+      zip(history.revisions, history.revisions.dropFirst()).allSatisfy {
+        $0.createdAtMs <= $1.createdAtMs
+      })
+    XCTAssertEqual(
+      TranscriptLibraryModel.speakerLabelHistoryText(for: history),
+      """
+      Source default: Local user
+      Dana, named by you
+      Local user, source name
+      Mina, named by you
+      Local user, source name
+      """)
     XCTAssertEqual(try Data(contentsOf: mediaURL), sealedMedia)
     XCTAssertTrue(failures.snapshot().isEmpty)
   }

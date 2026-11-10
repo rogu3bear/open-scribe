@@ -88,6 +88,29 @@ pub enum NativeTranscriptSpeakerAssignment {
     Source,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, uniffi::Enum)]
+pub enum NativeSpeakerLabelOrigin {
+    SourceDefault,
+    Human,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct NativeSpeakerLabelRevision {
+    pub label: String,
+    pub origin: NativeSpeakerLabelOrigin,
+    pub created_at_ms: i64,
+}
+
+/// `source_default_label` is derived from the source kind. `revisions` holds
+/// only stored renames, oldest first. An empty list means no rename is stored.
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct NativeSpeakerLabelHistory {
+    pub track_id: String,
+    pub source_kind: String,
+    pub source_default_label: String,
+    pub revisions: Vec<NativeSpeakerLabelRevision>,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
 pub struct NativeSessionSpeaker {
     pub track_id: String,
@@ -270,6 +293,41 @@ impl NativeTranscriptLibrary {
                 source_kind: speaker.source_kind,
                 label: speaker.label,
                 named_by_user: speaker.origin == SpeakerLabelOrigin::Human,
+            })
+            .collect())
+    }
+
+    /// Oldest-first speaker names for each source track. The source default
+    /// is always named. A stored empty label is that source name. A track
+    /// with no stored rename has an empty revision list.
+    pub fn speaker_label_history(
+        &self,
+        session_id: String,
+    ) -> Result<Vec<NativeSpeakerLabelHistory>, NativeStorageError> {
+        let histories = self
+            .library()?
+            .speaker_label_history(&SessionId(session_id))
+            .map_err(map_storage_error)?;
+        Ok(histories
+            .into_iter()
+            .map(|history| NativeSpeakerLabelHistory {
+                track_id: history.track_id,
+                source_kind: history.source_kind,
+                source_default_label: history.source_default_label,
+                revisions: history
+                    .revisions
+                    .into_iter()
+                    .map(|revision| NativeSpeakerLabelRevision {
+                        label: revision.label,
+                        origin: match revision.origin {
+                            SpeakerLabelOrigin::SourceDefault => {
+                                NativeSpeakerLabelOrigin::SourceDefault
+                            }
+                            SpeakerLabelOrigin::Human => NativeSpeakerLabelOrigin::Human,
+                        },
+                        created_at_ms: revision.created_at_ms,
+                    })
+                    .collect(),
             })
             .collect())
     }

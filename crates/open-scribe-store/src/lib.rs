@@ -89,7 +89,8 @@ mod transcript_export;
 pub use transcript_export::{SelectedRevisionProvenance, TranscriptExportContext};
 mod transcript_review;
 pub use transcript_review::{
-    SessionSpeaker, SpeakerLabelOrigin, TranscriptDocumentSegment, TranscriptSearchHit,
+    SessionSpeaker, SpeakerLabelHistory, SpeakerLabelOrigin, SpeakerLabelRevision,
+    TranscriptDocumentSegment, TranscriptSearchHit,
 };
 mod transcript_selection;
 mod transcript_speakers;

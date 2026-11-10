@@ -134,6 +134,26 @@ pub struct SessionSpeaker {
     pub origin: SpeakerLabelOrigin,
 }
 
+/// One stored speaker-name change. A null stored label is presented as the
+/// source default; it is not dropped.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SpeakerLabelRevision {
+    pub label: String,
+    pub origin: SpeakerLabelOrigin,
+    pub created_at_ms: i64,
+}
+
+/// The source-derived name plus every stored rename for one track, oldest first.
+/// A track with no stored rename has an empty `revisions` list. The source
+/// default stays available either way.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SpeakerLabelHistory {
+    pub track_id: String,
+    pub source_kind: String,
+    pub source_default_label: String,
+    pub revisions: Vec<SpeakerLabelRevision>,
+}
+
 /// One readable transcript segment. `finality` is `final` for a selected
 /// revision and `draft` for provisional text no selected Final range covers.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -321,6 +341,70 @@ impl SessionStore {
                 }
             })
             .collect())
+    }
+
+    /// Oldest-first speaker names for every source track.
+    /// `source_default_label` comes from the source kind even when no row
+    /// stores it. A stored null label is one revision of that source default.
+    /// A join row with no `created_at_ms` is a track that has no revision.
+    pub fn speaker_label_history(
+        &self,
+        session: &SessionId,
+    ) -> Result<Vec<SpeakerLabelHistory>, StoreError> {
+        let mut statement = self.connection.prepare(
+            "SELECT tracks.id, sources.kind, adjudications.label, adjudications.created_at_ms
+             FROM tracks
+             JOIN sources ON sources.id = tracks.source_id
+             LEFT JOIN speaker_adjudications AS adjudications
+               ON adjudications.session_id = tracks.session_id
+              AND adjudications.track_id = tracks.id
+              AND adjudications.cluster = ?2
+             WHERE tracks.session_id = ?1
+             ORDER BY tracks.id, adjudications.created_at_ms, adjudications.rowid",
+        )?;
+        let rows = statement
+            .query_map(params![session.0, SOURCE_CLUSTER], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, Option<i64>>(3)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut histories: Vec<SpeakerLabelHistory> = Vec::new();
+        for (track_id, source_kind, stored_label, created_at_ms) in rows {
+            let same_track = histories
+                .last()
+                .is_some_and(|history| history.track_id == track_id);
+            if !same_track {
+                histories.push(SpeakerLabelHistory {
+                    track_id,
+                    source_kind: source_kind.clone(),
+                    source_default_label: default_speaker_label(&source_kind).to_owned(),
+                    revisions: Vec::new(),
+                });
+            }
+            let Some(created_at_ms) = created_at_ms else {
+                continue;
+            };
+            let Some(history) = histories.last_mut() else {
+                continue;
+            };
+            let (label, origin) = match stored_label {
+                Some(label) => (label, SpeakerLabelOrigin::Human),
+                None => (
+                    history.source_default_label.clone(),
+                    SpeakerLabelOrigin::SourceDefault,
+                ),
+            };
+            history.revisions.push(SpeakerLabelRevision {
+                label,
+                origin,
+                created_at_ms,
+            });
+        }
+        Ok(histories)
     }
 
     /// Selected Final text across tracks on the session timeline, with

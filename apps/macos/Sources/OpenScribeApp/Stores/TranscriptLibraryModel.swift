@@ -13,6 +13,8 @@ final class TranscriptLibraryModel: ObservableObject {
   @Published private(set) var transcriptionUnavailableReason: String?
   @Published private(set) var segments: [NativeTranscriptSegment] = []
   @Published private(set) var speakers: [NativeSessionSpeaker] = []
+  /// Source-derived name plus every stored rename, oldest first.
+  @Published private(set) var speakerLabelHistory: [NativeSpeakerLabelHistory] = []
   @Published private(set) var namedSpeakers: [NativeNamedTranscriptSpeaker] = []
   @Published private(set) var reviewMetadata: NativeConversationReviewMetadata?
   @Published private(set) var searchResults: [NativeTranscriptSearchHit] = []
@@ -213,6 +215,7 @@ final class TranscriptLibraryModel: ObservableObject {
       availability = snapshot.availability
       segments = snapshot.segments
       speakers = snapshot.speakers
+      speakerLabelHistory = snapshot.speakerLabelHistory
       namedSpeakers = snapshot.namedSpeakers
       speakerDiarizationText = snapshot.speakerDiarizationText
       provenance = snapshot.provenance
@@ -735,6 +738,7 @@ final class TranscriptLibraryModel: ObservableObject {
     transcriptionUnavailableReason = nil
     segments = []
     speakers = []
+    speakerLabelHistory = []
     namedSpeakers = []
     speakerDiarizationText = nil
     provenance = []
@@ -762,6 +766,23 @@ final class TranscriptLibraryModel: ObservableObject {
     }
     return lines.joined(separator: "\n")
       + "\nOpen Scribe does not claim that running this model again produces the same words."
+  }
+
+  /// Words for the rename sheet. The source default stays on its own line.
+  /// Each stored rename follows, oldest first, and says whether a person
+  /// chose it or the source name was restored.
+  nonisolated static func speakerLabelHistoryText(for history: NativeSpeakerLabelHistory) -> String
+  {
+    var lines = ["Source default: \(history.sourceDefaultLabel)"]
+    for revision in history.revisions {
+      let origin =
+        switch revision.origin {
+        case .sourceDefault: "source name"
+        case .human: "named by you"
+        }
+      lines.append("\(revision.label), \(origin)")
+    }
+    return lines.joined(separator: "\n")
   }
 
   /// The sentence shown when clustering stayed unavailable. Any other state
@@ -830,6 +851,7 @@ private struct TranscriptDocumentSnapshot: Sendable {
   let availability: NativeTranscriptAvailability
   let segments: [NativeTranscriptSegment]
   let speakers: [NativeSessionSpeaker]
+  let speakerLabelHistory: [NativeSpeakerLabelHistory]
   let namedSpeakers: [NativeNamedTranscriptSpeaker]
   let metadata: NativeConversationReviewMetadata?
   let audioOptions: NativeAudioExportOptions?
@@ -846,6 +868,10 @@ private struct TranscriptDocumentSnapshot: Sendable {
       isUntimed
       ? (try? library.speakers(sessionId: sessionId)) ?? []
       : try library.speakers(sessionId: sessionId)
+    speakerLabelHistory =
+      isUntimed
+      ? (try? library.speakerLabelHistory(sessionId: sessionId)) ?? []
+      : try library.speakerLabelHistory(sessionId: sessionId)
     namedSpeakers =
       isUntimed
       ? (try? library.namedSpeakers(sessionId: sessionId)) ?? []

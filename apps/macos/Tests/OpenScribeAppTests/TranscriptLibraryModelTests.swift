@@ -1164,6 +1164,10 @@ private final class TranscriptTimingLibraryFake: NativeTranscriptLibrary, @unche
     ]
   }
 
+  override func speakerLabelHistory(sessionId: String) throws -> [NativeSpeakerLabelHistory] {
+    []
+  }
+
   override func prepareSpeakerDiarization(sessionId: String) throws -> NativeSpeakerDiarization {
     NativeSpeakerDiarization(
       runId: "fixture-run", algorithmId: "topology-before-clustering-v1",

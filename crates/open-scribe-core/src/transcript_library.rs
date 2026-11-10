@@ -20,9 +20,9 @@ use open_scribe_evidence::{AdjudicationAction, DerivedClaim, EvidenceRef};
 use open_scribe_store::{
     ClaimNavigation, ContextDetail, ContextEventRecord, ConversationReviewMetadata,
     NamedTranscriptSpeaker, ResolvedEvidence, SessionDeletionInventory, SessionDeletionReceipt,
-    SessionSpeaker, SessionStore, SpeakerDiarization, SpeakerDiarizationTrackInput, StoreError,
-    TranscriptDocumentSegment, TranscriptProvenance, TranscriptSearchHit,
-    TranscriptSpeakerAssignment,
+    SessionSpeaker, SessionStore, SpeakerDiarization, SpeakerDiarizationTrackInput,
+    SpeakerLabelHistory, StoreError, TranscriptDocumentSegment, TranscriptProvenance,
+    TranscriptSearchHit, TranscriptSpeakerAssignment,
 };
 use open_scribe_types::SessionId;
 use std::path::Path;
@@ -81,6 +81,15 @@ impl TranscriptLibrary {
 
     pub fn speakers(&self, session: &SessionId) -> Result<Vec<SessionSpeaker>, StoreError> {
         self.store.session_speakers(session)
+    }
+
+    /// Oldest-first speaker names for each source track, including the
+    /// source-derived name and every stored rename.
+    pub fn speaker_label_history(
+        &self,
+        session: &SessionId,
+    ) -> Result<Vec<SpeakerLabelHistory>, StoreError> {
+        self.store.speaker_label_history(session)
     }
 
     /// Records source topology for this review and leaves voice clustering

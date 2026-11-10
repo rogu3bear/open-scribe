@@ -2093,6 +2093,13 @@ public protocol NativeTranscriptLibraryProtocol: AnyObject, Sendable {
   func search(query: String, sessionId: String?, limit: UInt32) throws
     -> [NativeTranscriptSearchHit]
 
+  /**
+   * Oldest-first speaker names for each source track. The source default
+   * is always named. A stored empty label is that source name. A track
+   * with no stored rename has an empty revision list.
+   */
+  func speakerLabelHistory(sessionId: String) throws -> [NativeSpeakerLabelHistory]
+
   func speakers(sessionId: String) throws -> [NativeSessionSpeaker]
 
 }
@@ -2640,6 +2647,22 @@ open class NativeTranscriptLibrary: NativeTranscriptLibraryProtocol, @unchecked 
           FfiConverterString.lower(query),
           FfiConverterOptionString.lower(sessionId),
           FfiConverterUInt32.lower(limit), uniffiCallStatus
+        )
+      })
+  }
+
+  /**
+   * Oldest-first speaker names for each source track. The source default
+   * is always named. A stored empty label is that source name. A track
+   * with no stored rename has an empty revision list.
+   */
+  open func speakerLabelHistory(sessionId: String) throws -> [NativeSpeakerLabelHistory] {
+    return try FfiConverterSequenceTypeNativeSpeakerLabelHistory.lift(
+      try rustCallWithError(FfiConverterTypeNativeStorageError_lift) {
+        uniffiCallStatus in
+        uniffi_open_scribe_uniffi_fn_method_nativetranscriptlibrary_speaker_label_history(
+          self.uniffiCloneHandle(),
+          FfiConverterString.lower(sessionId), uniffiCallStatus
         )
       })
   }
@@ -7861,6 +7884,133 @@ public func FfiConverterTypeNativeSpeakerDiarizationTrack_lower(
   return FfiConverterTypeNativeSpeakerDiarizationTrack.lower(value)
 }
 
+/// `source_default_label` is derived from the source kind. `revisions` holds
+/// only stored renames, oldest first. An empty list means no rename is stored.
+public struct NativeSpeakerLabelHistory: Equatable, Hashable {
+  public let trackId: String
+  public let sourceKind: String
+  public let sourceDefaultLabel: String
+  public let revisions: [NativeSpeakerLabelRevision]
+
+  // Default memberwise initializers are never public by default, so we
+  // declare one manually.
+  public init(
+    trackId: String, sourceKind: String, sourceDefaultLabel: String,
+    revisions: [NativeSpeakerLabelRevision]
+  ) {
+    self.trackId = trackId
+    self.sourceKind = sourceKind
+    self.sourceDefaultLabel = sourceDefaultLabel
+    self.revisions = revisions
+  }
+
+}
+
+#if compiler(>=6)
+  extension NativeSpeakerLabelHistory: Sendable {}
+#endif
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeNativeSpeakerLabelHistory: FfiConverterRustBuffer {
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws
+    -> NativeSpeakerLabelHistory
+  {
+    return
+      try NativeSpeakerLabelHistory(
+        trackId: FfiConverterString.read(from: &buf),
+        sourceKind: FfiConverterString.read(from: &buf),
+        sourceDefaultLabel: FfiConverterString.read(from: &buf),
+        revisions: FfiConverterSequenceTypeNativeSpeakerLabelRevision.read(from: &buf)
+      )
+  }
+
+  public static func write(_ value: NativeSpeakerLabelHistory, into buf: inout [UInt8]) {
+    FfiConverterString.write(value.trackId, into: &buf)
+    FfiConverterString.write(value.sourceKind, into: &buf)
+    FfiConverterString.write(value.sourceDefaultLabel, into: &buf)
+    FfiConverterSequenceTypeNativeSpeakerLabelRevision.write(value.revisions, into: &buf)
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeSpeakerLabelHistory_lift(_ buf: RustBuffer) throws
+  -> NativeSpeakerLabelHistory
+{
+  return try FfiConverterTypeNativeSpeakerLabelHistory.lift(buf)
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeSpeakerLabelHistory_lower(_ value: NativeSpeakerLabelHistory)
+  -> RustBuffer
+{
+  return FfiConverterTypeNativeSpeakerLabelHistory.lower(value)
+}
+
+public struct NativeSpeakerLabelRevision: Equatable, Hashable {
+  public let label: String
+  public let origin: NativeSpeakerLabelOrigin
+  public let createdAtMs: Int64
+
+  // Default memberwise initializers are never public by default, so we
+  // declare one manually.
+  public init(label: String, origin: NativeSpeakerLabelOrigin, createdAtMs: Int64) {
+    self.label = label
+    self.origin = origin
+    self.createdAtMs = createdAtMs
+  }
+
+}
+
+#if compiler(>=6)
+  extension NativeSpeakerLabelRevision: Sendable {}
+#endif
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeNativeSpeakerLabelRevision: FfiConverterRustBuffer {
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws
+    -> NativeSpeakerLabelRevision
+  {
+    return
+      try NativeSpeakerLabelRevision(
+        label: FfiConverterString.read(from: &buf),
+        origin: FfiConverterTypeNativeSpeakerLabelOrigin.read(from: &buf),
+        createdAtMs: FfiConverterInt64.read(from: &buf)
+      )
+  }
+
+  public static func write(_ value: NativeSpeakerLabelRevision, into buf: inout [UInt8]) {
+    FfiConverterString.write(value.label, into: &buf)
+    FfiConverterTypeNativeSpeakerLabelOrigin.write(value.origin, into: &buf)
+    FfiConverterInt64.write(value.createdAtMs, into: &buf)
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeSpeakerLabelRevision_lift(_ buf: RustBuffer) throws
+  -> NativeSpeakerLabelRevision
+{
+  return try FfiConverterTypeNativeSpeakerLabelRevision.lift(buf)
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeSpeakerLabelRevision_lower(_ value: NativeSpeakerLabelRevision)
+  -> RustBuffer
+{
+  return FfiConverterTypeNativeSpeakerLabelRevision.lower(value)
+}
+
 public struct NativeSpeechModel: Equatable, Hashable {
   public let modelId: String
   public let profile: String
@@ -11398,6 +11548,68 @@ public func FfiConverterTypeNativeSourceFailureReason_lower(_ value: NativeSourc
   return FfiConverterTypeNativeSourceFailureReason.lower(value)
 }
 
+public enum NativeSpeakerLabelOrigin: Equatable, Hashable {
+
+  case sourceDefault
+  case human
+
+}
+
+#if compiler(>=6)
+  extension NativeSpeakerLabelOrigin: Sendable {}
+#endif
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeNativeSpeakerLabelOrigin: FfiConverterRustBuffer {
+  typealias SwiftType = NativeSpeakerLabelOrigin
+
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws
+    -> NativeSpeakerLabelOrigin
+  {
+    let variant: Int32 = try readInt(&buf)
+    switch variant {
+
+    case 1: return .sourceDefault
+
+    case 2: return .human
+
+    default: throw UniffiInternalError.unexpectedEnumCase
+    }
+  }
+
+  public static func write(_ value: NativeSpeakerLabelOrigin, into buf: inout [UInt8]) {
+    switch value {
+
+    case .sourceDefault:
+      writeInt(&buf, Int32(1))
+
+    case .human:
+      writeInt(&buf, Int32(2))
+
+    }
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeSpeakerLabelOrigin_lift(_ buf: RustBuffer) throws
+  -> NativeSpeakerLabelOrigin
+{
+  return try FfiConverterTypeNativeSpeakerLabelOrigin.lift(buf)
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeSpeakerLabelOrigin_lower(_ value: NativeSpeakerLabelOrigin)
+  -> RustBuffer
+{
+  return FfiConverterTypeNativeSpeakerLabelOrigin.lower(value)
+}
+
 public
   enum NativeSpeechError: Swift.Error, Equatable, Hashable, Foundation.LocalizedError
 {
@@ -13161,6 +13373,60 @@ private struct FfiConverterSequenceTypeNativeSpeakerDiarizationTrack: FfiConvert
 #if swift(>=5.8)
   @_documentation(visibility: private)
 #endif
+private struct FfiConverterSequenceTypeNativeSpeakerLabelHistory: FfiConverterRustBuffer {
+  typealias SwiftType = [NativeSpeakerLabelHistory]
+
+  public static func write(_ value: [NativeSpeakerLabelHistory], into buf: inout [UInt8]) {
+    let len = Int32(value.count)
+    writeInt(&buf, len)
+    for item in value {
+      FfiConverterTypeNativeSpeakerLabelHistory.write(item, into: &buf)
+    }
+  }
+
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws
+    -> [NativeSpeakerLabelHistory]
+  {
+    let len: Int32 = try readInt(&buf)
+    var seq = [NativeSpeakerLabelHistory]()
+    seq.reserveCapacity(Int(len))
+    for _ in 0..<len {
+      seq.append(try FfiConverterTypeNativeSpeakerLabelHistory.read(from: &buf))
+    }
+    return seq
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+private struct FfiConverterSequenceTypeNativeSpeakerLabelRevision: FfiConverterRustBuffer {
+  typealias SwiftType = [NativeSpeakerLabelRevision]
+
+  public static func write(_ value: [NativeSpeakerLabelRevision], into buf: inout [UInt8]) {
+    let len = Int32(value.count)
+    writeInt(&buf, len)
+    for item in value {
+      FfiConverterTypeNativeSpeakerLabelRevision.write(item, into: &buf)
+    }
+  }
+
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws
+    -> [NativeSpeakerLabelRevision]
+  {
+    let len: Int32 = try readInt(&buf)
+    var seq = [NativeSpeakerLabelRevision]()
+    seq.reserveCapacity(Int(len))
+    for _ in 0..<len {
+      seq.append(try FfiConverterTypeNativeSpeakerLabelRevision.read(from: &buf))
+    }
+    return seq
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
 private struct FfiConverterSequenceTypeNativeSpeechModel: FfiConverterRustBuffer {
   typealias SwiftType = [NativeSpeechModel]
 
@@ -14001,6 +14267,11 @@ private let initializationResult: InitializationResult = {
     return InitializationResult.apiChecksumMismatch
   }
   if uniffi_open_scribe_uniffi_checksum_method_nativetranscriptlibrary_search() != 62936 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_open_scribe_uniffi_checksum_method_nativetranscriptlibrary_speaker_label_history()
+    != 42636
+  {
     return InitializationResult.apiChecksumMismatch
   }
   if uniffi_open_scribe_uniffi_checksum_method_nativetranscriptlibrary_speakers() != 62351 {

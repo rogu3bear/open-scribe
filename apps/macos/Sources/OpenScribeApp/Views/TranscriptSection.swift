@@ -486,6 +486,17 @@ struct TranscriptSection: View {
       Text("This names everyone heard on this source. It does not identify individual voices.")
         .font(.callout)
         .foregroundStyle(.secondary)
+      if let history = transcripts.speakerLabelHistory.first(where: {
+        $0.trackId == speaker.trackId
+      }) {
+        Text("Name history")
+          .font(.callout.weight(.semibold))
+        Text(TranscriptLibraryModel.speakerLabelHistoryText(for: history))
+          .font(.callout)
+          .foregroundStyle(.secondary)
+          .fixedSize(horizontal: false, vertical: true)
+          .textSelection(.enabled)
+      }
       TextField("Name", text: $draftLabel)
         .textFieldStyle(.roundedBorder)
       sheetFailure

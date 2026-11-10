@@ -320,6 +320,90 @@ fn speakers_default_from_source_topology_and_renames_are_append_only() {
 }
 
 #[test]
+fn speaker_label_history_keeps_each_rename_and_the_source_default() {
+    let (mut fixture, _) = transcribed(["alpha", "bravo"]);
+    let (session, track) = (fixture.session.clone(), fixture.track.clone());
+    let before = fixture.store.speaker_label_history(&session).unwrap();
+    assert_eq!(before.len(), 1);
+    assert_eq!(before[0].track_id, track);
+    assert_eq!(before[0].source_kind, "imported_audio");
+    assert_eq!(before[0].source_default_label, "Unknown speaker");
+    assert!(before[0].revisions.is_empty());
+
+    fixture
+        .store
+        .rename_speaker(&session, &track, Some(" Dana "))
+        .unwrap();
+    let named = fixture.store.speaker_label_history(&session).unwrap();
+    assert_eq!(named[0].source_default_label, "Unknown speaker");
+    assert_eq!(named[0].revisions.len(), 1);
+    assert_eq!(named[0].revisions[0].label, "Dana");
+    assert_eq!(named[0].revisions[0].origin, SpeakerLabelOrigin::Human);
+    assert!(named[0].revisions[0].created_at_ms > 0);
+
+    fixture
+        .store
+        .rename_speaker(&session, &track, None)
+        .unwrap();
+    fixture
+        .store
+        .rename_speaker(&session, &track, Some("Mina"))
+        .unwrap();
+    fixture
+        .store
+        .rename_speaker(&session, &track, None)
+        .unwrap();
+
+    let history = fixture.store.speaker_label_history(&session).unwrap();
+    assert_eq!(
+        history[0]
+            .revisions
+            .iter()
+            .map(|revision| (revision.label.as_str(), revision.origin))
+            .collect::<Vec<_>>(),
+        [
+            ("Dana", SpeakerLabelOrigin::Human),
+            ("Unknown speaker", SpeakerLabelOrigin::SourceDefault),
+            ("Mina", SpeakerLabelOrigin::Human),
+            ("Unknown speaker", SpeakerLabelOrigin::SourceDefault),
+        ]
+    );
+    assert!(
+        history[0]
+            .revisions
+            .windows(2)
+            .all(|pair| pair[0].created_at_ms <= pair[1].created_at_ms)
+    );
+    assert_eq!(
+        fixture.store.session_speakers(&session).unwrap()[0].label,
+        "Unknown speaker"
+    );
+    assert_eq!(
+        fixture.store.session_speakers(&session).unwrap()[0].origin,
+        SpeakerLabelOrigin::SourceDefault
+    );
+    let document = fixture.store.transcript_document(&session).unwrap();
+    assert_eq!(
+        document
+            .iter()
+            .map(|segment| segment.verbatim_text.as_str())
+            .collect::<Vec<_>>(),
+        ["alpha", "bravo"]
+    );
+    let stored: i64 = fixture
+        .store
+        .connection
+        .query_row("SELECT COUNT(*) FROM speaker_adjudications", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(stored, 4);
+
+    let reopened = SessionStore::open(&fixture.root).unwrap();
+    assert_eq!(reopened.speaker_label_history(&session).unwrap(), history);
+}
+
+#[test]
 fn migration_indexes_selections_committed_before_the_search_index() {
     let (fixture, _) = transcribed(["alpha", "bravo"]);
     fixture
