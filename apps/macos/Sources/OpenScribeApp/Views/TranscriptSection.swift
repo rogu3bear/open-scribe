@@ -19,11 +19,8 @@ struct TranscriptSection: View {
   var playbackPosition: () -> TranscriptPlaybackPosition? = { nil }
   var onFollowPlayback: (String) -> Void = { _ in }
 
-  @State private var editing: NativeTranscriptSegment?
-  @State private var draftText = ""
   @State private var renaming: NativeSessionSpeaker?
   @State private var draftLabel = ""
-  @State private var editRequest = UUID()
   @State private var renameRequest = UUID()
   @State private var showingModels = false
   @State private var showingReprocessConfirmation = false
@@ -84,13 +81,7 @@ struct TranscriptSection: View {
         TranscriptReader(
           sessionId: session.sessionId, transcripts: transcripts, canSeek: canSeek,
           isPlaybackActive: isPlaybackActive, playbackPosition: playbackPosition,
-          onSeek: onSeek,
-          onCorrect: { segment in
-            editRequest = UUID()
-            draftText = segment.effectiveText
-            transcripts.dismissMessage()
-            editing = segment
-          }, onFollowPlayback: onFollowPlayback
+          onSeek: onSeek, onFollowPlayback: onFollowPlayback
         )
         .id(session.sessionId)
         DisclosureGroup("Audio source labels") {
@@ -112,9 +103,6 @@ struct TranscriptSection: View {
         + ":\(session.transcript.state.rawValue):\(session.transcript.documentVersion)"
     ) {
       await transcripts.load(session: session)
-    }
-    .sheet(item: $editing) { segment in
-      correctionSheet(segment)
     }
     .sheet(item: $renaming) { speaker in
       renameSheet(speaker)
@@ -444,42 +432,6 @@ struct TranscriptSection: View {
     }
   }
 
-  private func correctionSheet(_ segment: NativeTranscriptSegment) -> some View {
-    VStack(alignment: .leading, spacing: ScribeSpacing.compact) {
-      Text("Correct Transcript Text")
-        .scribeSectionHeading(.title2.weight(.semibold))
-      Text("The machine reading is kept. Your correction is shown and searched instead.")
-        .font(.callout)
-        .foregroundStyle(.secondary)
-      Text("Machine reading: \(segment.verbatimText)")
-        .font(.callout)
-        .textSelection(.enabled)
-      TextEditor(text: $draftText)
-        .frame(minHeight: 90)
-        .accessibilityLabel("Corrected text")
-      sheetFailure
-      HStack {
-        if segment.corrected {
-          Button("Restore Machine Reading") {
-            saveCorrection(segment, text: nil)
-          }
-          .disabled(transcripts.isEditing)
-        }
-        Spacer()
-        SheetActionButtons(
-          confirmTitle: "Save",
-          isConfirmationDisabled: transcripts.isEditing || transcripts.isLoading
-            || draftText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-          cancel: { editing = nil },
-          confirm: {
-            saveCorrection(segment, text: draftText)
-          })
-      }
-    }
-    .padding(ScribeSpacing.standard)
-    .frame(width: 460)
-  }
-
   private func renameSheet(_ speaker: NativeSessionSpeaker) -> some View {
     VStack(alignment: .leading, spacing: ScribeSpacing.compact) {
       Text("Rename Speaker")
@@ -521,17 +473,6 @@ struct TranscriptSection: View {
     }
     .padding(ScribeSpacing.standard)
     .frame(width: 400)
-  }
-
-  private func saveCorrection(_ segment: NativeTranscriptSegment, text: String?) {
-    let request = editRequest
-    Task {
-      if await transcripts.correct(segment, text: text, in: session.sessionId),
-        editRequest == request
-      {
-        editing = nil
-      }
-    }
   }
 
   private func saveSourceName(_ speaker: NativeSessionSpeaker, label: String?) {

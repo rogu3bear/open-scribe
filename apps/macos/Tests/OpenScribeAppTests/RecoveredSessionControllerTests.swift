@@ -1365,6 +1365,186 @@ final class RecoveredSessionControllerTests: RecoveredSessionTestCase {
     withExtendedLifetime((store, live, playback, player, window, host, library)) {}
   }
 
+  /// The pencil beside a stored passage opens the correction editor in the same
+  /// host. Save replaces the reading, Cancel leaves it, and Restore returns the
+  /// machine text. The test does not call correct.
+  func testHostedTranscriptCorrectionSavesCancelsAndRestores() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "open-scribe-hosted-correction-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let package = root.appendingPathComponent("Stored.openscribe")
+    let export = await exportStoredFinalPackage(to: package)
+    XCTAssertEqual(export.status, 0, String(export.log.suffix(2_000)))
+    let packageMedia = try regularFiles(under: package.appendingPathComponent("media"))
+    XCTAssertEqual(packageMedia.count, 1)
+    let packageDigest = try digest(of: packageMedia[0])
+
+    let managed = root.appendingPathComponent("Library", isDirectory: true)
+    let library = try NativeTranscriptLibrary.open(managedRoot: managed.path)
+    let receipt = try library.importPortablePackage(packagePath: package.path)
+    let stored = try library.document(sessionId: receipt.sessionId)
+    let alpha = try XCTUnwrap(stored.first { $0.sequence == 0 })
+    let bravo = try XCTUnwrap(stored.first { $0.sequence == 1 })
+    XCTAssertEqual(alpha.finality, "final")
+    XCTAssertFalse(alpha.corrected)
+    XCTAssertEqual(alpha.effectiveText, alpha.verbatimText)
+    XCTAssertEqual(bravo.finality, "final")
+    XCTAssertTrue(bravo.corrected)
+    XCTAssertEqual(bravo.effectiveText, "bravo corrected")
+    XCTAssertNotEqual(bravo.effectiveText, bravo.verbatimText)
+    XCTAssertGreaterThan(bravo.startNanoseconds, alpha.endNanoseconds)
+    let alphaText = alpha.effectiveText
+    let bravoVerbatim = bravo.verbatimText
+    let bravoStamp = TranscriptSection.timestamp(bravo.startNanoseconds)
+    let correctLabel = ConversationControlLabels.correctAccessibility(stamp: bravoStamp)
+    let libraryMedia = try regularFiles(under: managed.appendingPathComponent("Sessions"))
+      .filter { $0.pathExtension == "caf" }
+    XCTAssertEqual(libraryMedia.count, 1)
+    XCTAssertEqual(try digest(of: libraryMedia[0]), packageDigest)
+
+    let model = TranscriptLibraryModel(managedRoot: managed)
+    await model.load(sessionId: receipt.sessionId)
+    XCTAssertNil(model.message)
+    XCTAssertEqual(model.segments.first { $0.sequence == bravo.sequence }?.effectiveText, "bravo corrected")
+    let store = RuntimeLibraryStore(managedRoot: managed, refreshesImmediately: false)
+    store.refresh()
+    let listed = await waitUntil {
+      store.savedSessions.contains { $0.sessionId == receipt.sessionId }
+    }
+    XCTAssertTrue(listed, "saved=\(store.savedSessions.map(\.sessionId))")
+    let navigation = MainWorkspaceNavigation()
+    navigation.select(receipt.sessionId)
+    let player = RecoveredAudioPlayerFake()
+    let playback = RecoveredSessionController(
+      recoveryFactory: { try NativeRecordingPreparation.open(managedRoot: managed.path) },
+      importedPlaybackLeaseProvider: { id in
+        try NativeRecordingPreparation.open(managedRoot: managed.path)
+          .leaseImportedPlayback(sessionId: id)
+      },
+      player: player)
+    let live = LiveMicrophoneRecordingController(managedRoot: managed)
+    let view = ContentView(
+      store: store,
+      importedMediaAuthority: ImportedMediaAuthorityAdapter(
+        startSecurityScope: { _ in true },
+        stopSecurityScope: { _ in },
+        importer: { _, _ in throw NativeStorageError.InvalidRequest }
+      ),
+      liveRecording: live,
+      recoveredSessions: playback,
+      transcripts: model,
+      speech: SpeechTranscriptionModel(managedRoot: managed),
+      scheduler: TranscriptionScheduler.inert(),
+      pressure: SystemPressureMonitor(libraryRoot: managed, samplesAutomatically: false),
+      context: ContextScopeModel(
+        binding: { nil },
+        frames: IdleClaimContextFrames(),
+        permissionCheck: { .denied },
+        permissionRequest: { .denied },
+        topology: { [] }
+      ),
+      navigation: navigation
+    )
+    let host = NSHostingView(rootView: view)
+    host.sizingOptions = []
+    let window = NSWindow(
+      contentRect: NSRect(x: 0, y: 0, width: 1100, height: 720),
+      styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    window.contentView = host
+    window.setContentSize(NSSize(width: 1100, height: 720))
+    host.frame = window.contentLayoutRect
+    window.makeKeyAndOrderFront(nil)
+    window.orderFrontRegardless()
+    defer { window.close() }
+
+    let shown = await waitUntil(timeoutNanoseconds: 5_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      window.displayIfNeeded()
+      return self.claimButton(labeled: correctLabel, in: host) != nil
+    }
+    XCTAssertTrue(shown, self.hostedControlProbe(in: host))
+    XCTAssertTrue(window.contentView === host)
+    let pencil = try XCTUnwrap(self.claimButton(labeled: correctLabel, in: host))
+    XCTAssertTrue(pencil.isDescendant(of: host))
+    pencil.performClick(nil)
+    let editor = await waitUntil(timeoutNanoseconds: 5_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      return self.hostedField(labeled: "Corrected text", in: host) != nil
+        && self.claimButton(labeled: "Save correction", in: host) != nil
+        && self.claimButton(labeled: "Cancel correction", in: host) != nil
+        && self.claimButton(labeled: "Restore Machine Reading", in: host) != nil
+    }
+    XCTAssertTrue(editor && window.contentView === host, self.hostedControlProbe(in: host))
+    let field = try XCTUnwrap(self.hostedField(labeled: "Corrected text", in: host))
+    XCTAssertEqual(field.stringValue, "bravo corrected")
+    XCTAssertTrue(
+      self.hostedField(labeled: "Machine reading", in: host)?.stringValue.contains(bravoVerbatim)
+        == true)
+    field.stringValue = "   "
+    let blocked = try XCTUnwrap(self.claimButton(labeled: "Save correction", in: host))
+    XCTAssertFalse(blocked.isEnabled, self.hostedControlProbe(in: host))
+    field.stringValue = "bravo revised"
+    let save = try XCTUnwrap(self.claimButton(labeled: "Save correction", in: host))
+    XCTAssertTrue(save.isEnabled && save.isDescendant(of: host))
+    save.performClick(nil)
+    let revised = "bravo revised"
+    let saved = await waitUntil(timeoutNanoseconds: 5_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      let passage = model.segments.first { $0.sequence == bravo.sequence }
+      return passage?.effectiveText == revised && passage?.corrected == true
+        && passage?.verbatimText == bravoVerbatim
+        && self.hostedField(labeled: "Corrected text", in: host) == nil
+    }
+    XCTAssertTrue(saved && window.contentView === host, self.hostedControlProbe(in: host))
+    XCTAssertEqual(model.segments.first { $0.sequence == alpha.sequence }?.effectiveText, alphaText)
+    XCTAssertFalse(model.segments.first { $0.sequence == alpha.sequence }?.corrected ?? true)
+
+    let again = try XCTUnwrap(self.claimButton(labeled: correctLabel, in: host))
+    XCTAssertTrue(again.isDescendant(of: host))
+    again.performClick(nil)
+    let reopened = await waitUntil(timeoutNanoseconds: 5_000_000_000) {
+      self.hostedField(labeled: "Corrected text", in: host)?.stringValue == revised
+        && self.claimButton(labeled: "Cancel correction", in: host) != nil
+    }
+    XCTAssertTrue(reopened, self.hostedControlProbe(in: host))
+    let dirty = try XCTUnwrap(self.hostedField(labeled: "Corrected text", in: host))
+    dirty.stringValue = "bravo discarded"
+    let cancel = try XCTUnwrap(self.claimButton(labeled: "Cancel correction", in: host))
+    XCTAssertTrue(cancel.isEnabled && cancel.isDescendant(of: host))
+    cancel.performClick(nil)
+    let cancelled = await waitUntil(timeoutNanoseconds: 5_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      return self.hostedField(labeled: "Corrected text", in: host) == nil
+        && model.segments.first { $0.sequence == bravo.sequence }?.effectiveText == revised
+    }
+    XCTAssertTrue(cancelled && window.contentView === host, self.hostedControlProbe(in: host))
+
+    let restorePencil = try XCTUnwrap(self.claimButton(labeled: correctLabel, in: host))
+    restorePencil.performClick(nil)
+    let restoreShown = await waitUntil(timeoutNanoseconds: 5_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      return self.claimButton(labeled: "Restore Machine Reading", in: host) != nil
+    }
+    XCTAssertTrue(restoreShown, self.hostedControlProbe(in: host))
+    let restore = try XCTUnwrap(self.claimButton(labeled: "Restore Machine Reading", in: host))
+    XCTAssertTrue(restore.isEnabled && restore.isDescendant(of: host))
+    restore.performClick(nil)
+    let restored = await waitUntil(timeoutNanoseconds: 5_000_000_000) {
+      let passage = model.segments.first { $0.sequence == bravo.sequence }
+      return passage?.effectiveText == bravoVerbatim && passage?.corrected == false
+        && passage?.verbatimText == bravoVerbatim
+        && self.hostedField(labeled: "Corrected text", in: host) == nil
+    }
+    XCTAssertTrue(restored && window.contentView === host, self.hostedControlProbe(in: host))
+    for media in libraryMedia {
+      XCTAssertEqual(try digest(of: media), packageDigest)
+    }
+    XCTAssertEqual(try digest(of: packageMedia[0]), packageDigest)
+    withExtendedLifetime((store, live, playback, player, window, host, library)) {}
+  }
+
   /// A stored final is cited after import. Opening that evidence highlights the
   /// loaded passage, and the imported player seeks to its audio interval.
   /// Confirm, correct, and reject write a review. Leaving the claim unresolved
@@ -1871,6 +2051,9 @@ final class RecoveredSessionControllerTests: RecoveredSessionTestCase {
       }
       if view.accessibilityIdentifier() == "Transcript matches" {
         lines.append("matches frame=\(view.frame) hidden=\(view.isHidden)")
+      }
+      if view.accessibilityIdentifier() == "Correct transcript text" {
+        lines.append("correction frame=\(view.frame) hidden=\(view.isHidden)")
       }
       for child in view.subviews { walk(child) }
     }

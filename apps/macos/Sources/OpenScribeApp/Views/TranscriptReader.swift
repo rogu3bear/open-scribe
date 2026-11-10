@@ -17,11 +17,11 @@ struct TranscriptReader: View {
   let isPlaybackActive: Bool
   let playbackPosition: () -> TranscriptPlaybackPosition?
   let onSeek: (Int64) -> Void
-  let onCorrect: (NativeTranscriptSegment) -> Void
   let onFollowPlayback: (String) -> Void
   @State private var filter: TranscriptPersonFilter = .all
   @State private var followsPlayback = true
   @StateObject private var speakerActions = SpeakerActionController()
+  @StateObject private var correctionActions = CorrectionActionController()
   @State private var query = ""
   @FocusState private var isSearchFocused: Bool
   @AppStorage(TranscriptTextScale.storageKey) private var storedTranscriptTextScale =
@@ -60,6 +60,10 @@ struct TranscriptReader: View {
         transcripts: transcripts, actions: speakerActions, sessionId: sessionId
       )
       .frame(maxWidth: .infinity, minHeight: 150, alignment: .topLeading)
+      CorrectionActionMount(
+        transcripts: transcripts, actions: correctionActions, sessionId: sessionId
+      )
+      .frame(maxWidth: .infinity, minHeight: 140, alignment: .topLeading)
       if isPlaybackActive {
         // Only the active reader ticks. No library-wide publisher, frame
         // callback, ASR work, or file decoding runs on this display timer.
@@ -284,15 +288,17 @@ struct TranscriptReader: View {
       .frame(maxWidth: 500, alignment: .leading)
       Spacer(minLength: ScribeSpacing.related)
       if !isDraft {
-        Button {
+        PassageCorrectionMount(
+          actions: correctionActions,
+          revisionId: segment.revisionId,
+          sequence: segment.sequence,
+          stamp: stamp
+        ) {
           followsPlayback = false
-          onCorrect(segment)
-        } label: {
-          Image(systemName: "pencil")
+          transcripts.dismissMessage()
         }
-        .buttonStyle(.borderless)
+        .frame(minWidth: 72, minHeight: 18, alignment: .leading)
         .help("Correct text")
-        .accessibilityLabel(ConversationControlLabels.correctAccessibility(stamp: stamp))
       }
     }
     .padding(.vertical, ScribeSpacing.tight)
@@ -333,6 +339,21 @@ private final class SpeakerActionController: ObservableObject {
   func close() {
     passageId = nil
     personId = nil
+  }
+}
+
+/// The passage whose text is being corrected. The editor subscribes to this
+/// directly, so opening it does not wait for a later SwiftUI sheet.
+@MainActor
+private final class CorrectionActionController: ObservableObject {
+  @Published var segmentId: String?
+
+  func begin(_ id: String) {
+    segmentId = id
+  }
+
+  func close() {
+    segmentId = nil
   }
 }
 
@@ -905,5 +926,288 @@ private final class SpeakerActionBanner: NSView, NSTextFieldDelegate {
     guard let id = sender.identifier?.rawValue else { return }
     let actions = actions
     Task { @MainActor in actions?.beginPerson(id) }
+  }
+}
+
+/// The pencil beside one passage. It is created with that passage.
+private struct PassageCorrectionMount: NSViewRepresentable {
+  let actions: CorrectionActionController
+  let revisionId: String
+  let sequence: UInt32
+  let stamp: String
+  let onBegin: @MainActor () -> Void
+
+  func makeNSView(context: Context) -> PassageCorrectionControl {
+    let view = PassageCorrectionControl()
+    view.bind(
+      actions: actions, revisionId: revisionId, sequence: sequence, stamp: stamp, onBegin: onBegin)
+    return view
+  }
+
+  func updateNSView(_ view: PassageCorrectionControl, context: Context) {
+    view.bind(
+      actions: actions, revisionId: revisionId, sequence: sequence, stamp: stamp, onBegin: onBegin)
+  }
+}
+
+private final class PassageCorrectionControl: NSView {
+  private let button = NSButton(title: "Correct", target: nil, action: nil)
+  private var actions: CorrectionActionController?
+  private var onBegin: (@MainActor () -> Void)?
+  private var revisionId = ""
+  private var sequence: UInt32 = 0
+
+  override init(frame frameRect: NSRect) {
+    super.init(frame: frameRect)
+    button.bezelStyle = .inline
+    button.isBordered = false
+    button.font = .systemFont(ofSize: NSFont.systemFontSize)
+    button.target = self
+    button.action = #selector(correct)
+    button.translatesAutoresizingMaskIntoConstraints = false
+    addSubview(button)
+    NSLayoutConstraint.activate([
+      button.leadingAnchor.constraint(equalTo: leadingAnchor),
+      button.trailingAnchor.constraint(equalTo: trailingAnchor),
+      button.topAnchor.constraint(equalTo: topAnchor),
+      button.bottomAnchor.constraint(equalTo: bottomAnchor),
+      button.widthAnchor.constraint(greaterThanOrEqualToConstant: 72),
+      button.heightAnchor.constraint(greaterThanOrEqualToConstant: 18),
+    ])
+  }
+
+  required init?(coder: NSCoder) {
+    nil
+  }
+
+  override var intrinsicContentSize: NSSize {
+    NSSize(width: 72, height: 18)
+  }
+
+  func bind(
+    actions: CorrectionActionController,
+    revisionId: String,
+    sequence: UInt32,
+    stamp: String,
+    onBegin: @escaping @MainActor () -> Void
+  ) {
+    self.actions = actions
+    self.onBegin = onBegin
+    self.revisionId = revisionId
+    self.sequence = sequence
+    button.setAccessibilityLabel(ConversationControlLabels.correctAccessibility(stamp: stamp))
+    button.identifier = NSUserInterfaceItemIdentifier("\(revisionId)#\(sequence)")
+  }
+
+  @objc private func correct() {
+    let id = "\(revisionId)#\(sequence)"
+    let actions = actions
+    let onBegin = onBegin
+    Task { @MainActor in
+      onBegin?()
+      actions?.begin(id)
+    }
+  }
+}
+
+/// Correct, cancel, or restore one passage. The controls exist before the
+/// pencil is clicked; a click only fills this hosting view.
+private struct CorrectionActionMount: NSViewRepresentable {
+  @ObservedObject var transcripts: TranscriptLibraryModel
+  let actions: CorrectionActionController
+  let sessionId: String
+
+  func makeNSView(context: Context) -> CorrectionActionBanner {
+    let view = CorrectionActionBanner()
+    view.bind(transcripts: transcripts, actions: actions, sessionId: sessionId)
+    return view
+  }
+
+  func updateNSView(_ view: CorrectionActionBanner, context: Context) {
+    view.bind(transcripts: transcripts, actions: actions, sessionId: sessionId)
+  }
+}
+
+private final class CorrectionActionBanner: NSView, NSTextFieldDelegate {
+  private let title = NSTextField(labelWithString: "Correct Transcript Text")
+  private let machine = NSTextField(labelWithString: "")
+  private let field = SpeakerReviewField(string: "")
+  private let saveButton = NSButton(title: "Save", target: nil, action: nil)
+  private let cancelButton = NSButton(title: "Cancel", target: nil, action: nil)
+  private let restoreButton = NSButton(title: "Restore Machine Reading", target: nil, action: nil)
+  private var subscription: AnyCancellable?
+  private var transcripts: TranscriptLibraryModel?
+  private var actions: CorrectionActionController?
+  private var sessionId = ""
+  private var appliedTarget: String?
+
+  override init(frame frameRect: NSRect) {
+    super.init(frame: frameRect)
+    setAccessibilityIdentifier("Correct transcript text")
+    title.font = .systemFont(ofSize: NSFont.systemFontSize, weight: .semibold)
+    title.setAccessibilityLabel("Correct Transcript Text")
+    machine.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+    machine.textColor = .secondaryLabelColor
+    machine.lineBreakMode = .byTruncatingTail
+    machine.setAccessibilityLabel("Machine reading")
+    field.placeholderString = "Corrected text"
+    field.setAccessibilityLabel("Corrected text")
+    field.isEditable = true
+    field.isBezeled = true
+    field.bezelStyle = .roundedBezel
+    field.delegate = self
+    field.onValue = { [weak self] in self?.refreshEnabled() }
+    saveButton.setAccessibilityLabel("Save correction")
+    cancelButton.setAccessibilityLabel("Cancel correction")
+    restoreButton.setAccessibilityLabel("Restore Machine Reading")
+    for button in [saveButton, cancelButton, restoreButton] {
+      button.bezelStyle = .rounded
+      button.target = self
+    }
+    saveButton.action = #selector(saveCorrection)
+    cancelButton.action = #selector(cancelCorrection)
+    restoreButton.action = #selector(restoreMachineReading)
+    let column = NSStackView(views: [
+      title, machine, field, saveButton, cancelButton, restoreButton,
+    ])
+    column.orientation = .vertical
+    column.alignment = .leading
+    column.spacing = ScribeSpacing.related
+    column.translatesAutoresizingMaskIntoConstraints = false
+    addSubview(column)
+    NSLayoutConstraint.activate([
+      column.leadingAnchor.constraint(equalTo: leadingAnchor),
+      column.topAnchor.constraint(equalTo: topAnchor),
+      column.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor),
+      field.widthAnchor.constraint(greaterThanOrEqualToConstant: 240),
+    ])
+    for control in [title, machine, field, saveButton, cancelButton, restoreButton] {
+      control.setContentCompressionResistancePriority(.required, for: .vertical)
+    }
+    apply()
+  }
+
+  required init?(coder: NSCoder) {
+    nil
+  }
+
+  override var intrinsicContentSize: NSSize {
+    NSSize(width: NSView.noIntrinsicMetric, height: 140)
+  }
+
+  func bind(
+    transcripts: TranscriptLibraryModel, actions: CorrectionActionController, sessionId: String
+  ) {
+    let same =
+      self.transcripts === transcripts && self.actions === actions && self.sessionId == sessionId
+    self.transcripts = transcripts
+    self.actions = actions
+    self.sessionId = sessionId
+    if !same {
+      let triggers: [AnyPublisher<Void, Never>] = [
+        transcripts.objectWillChange.map { _ in () }.eraseToAnyPublisher(),
+        actions.$segmentId.map { _ in () }.eraseToAnyPublisher(),
+      ]
+      subscription = Publishers.MergeMany(triggers).sink { [weak self] _ in
+        DispatchQueue.main.async { self?.apply() }
+      }
+    }
+    apply()
+  }
+
+  override func hitTest(_ point: NSPoint) -> NSView? {
+    let hit = super.hitTest(point)
+    guard let hit, hit !== self else { return nil }
+    if hit is NSPopUpButton { return nil }
+    if hit is NSButton || hit is NSTextField { return hit }
+    return nil
+  }
+
+  func controlTextDidChange(_ obj: Notification) {
+    refreshEnabled()
+  }
+
+  private func apply() {
+    guard let transcripts, let actions else { return }
+    guard let segmentId = actions.segmentId,
+      let segment = transcripts.segments.first(where: { $0.id == segmentId }),
+      transcripts.sessionId == sessionId
+    else {
+      hideEditor()
+      return
+    }
+    if appliedTarget != segment.id {
+      field.stringValue = segment.effectiveText
+      appliedTarget = segment.id
+    }
+    title.isHidden = false
+    machine.isHidden = false
+    machine.stringValue = "Machine reading: \(segment.verbatimText)"
+    field.isHidden = false
+    saveButton.isHidden = false
+    cancelButton.isHidden = false
+    restoreButton.isHidden = !segment.corrected
+    refreshEnabled()
+    layoutSubtreeIfNeeded()
+  }
+
+  private func hideEditor() {
+    title.isHidden = true
+    machine.isHidden = true
+    field.isHidden = true
+    saveButton.isHidden = true
+    cancelButton.isHidden = true
+    restoreButton.isHidden = true
+    appliedTarget = nil
+    layoutSubtreeIfNeeded()
+  }
+
+  private func refreshEnabled() {
+    let sessionMatches = transcripts?.sessionId == sessionId
+    let editing = transcripts?.isEditing ?? true
+    let text = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+    saveButton.isEnabled = !saveButton.isHidden && sessionMatches && !editing && !text.isEmpty
+    cancelButton.isEnabled = !cancelButton.isHidden && sessionMatches && !editing
+    restoreButton.isEnabled = !restoreButton.isHidden && sessionMatches && !editing
+  }
+
+  @objc private func saveCorrection() {
+    let text = field.stringValue
+    guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+    let transcripts = transcripts
+    let actions = actions
+    let sessionId = sessionId
+    let segmentId = actions?.segmentId
+    Task { @MainActor in
+      guard let transcripts, let actions, transcripts.sessionId == sessionId,
+        !transcripts.isEditing,
+        let segmentId,
+        let segment = transcripts.segments.first(where: { $0.id == segmentId })
+      else { return }
+      let saved = await transcripts.correct(segment, text: text, in: sessionId)
+      if saved { actions.close() }
+    }
+  }
+
+  @objc private func cancelCorrection() {
+    let actions = actions
+    Task { @MainActor in actions?.close() }
+  }
+
+  @objc private func restoreMachineReading() {
+    let transcripts = transcripts
+    let actions = actions
+    let sessionId = sessionId
+    let segmentId = actions?.segmentId
+    Task { @MainActor in
+      guard let transcripts, let actions, transcripts.sessionId == sessionId,
+        !transcripts.isEditing,
+        let segmentId,
+        let segment = transcripts.segments.first(where: { $0.id == segmentId }),
+        segment.corrected
+      else { return }
+      let saved = await transcripts.correct(segment, text: nil, in: sessionId)
+      if saved { actions.close() }
+    }
   }
 }

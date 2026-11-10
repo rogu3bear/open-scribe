@@ -49,7 +49,7 @@ final class TranscriptLibraryModelTests: XCTestCase {
         let view = TranscriptReader(
           sessionId: "review-fixture", transcripts: model, canSeek: true,
           isPlaybackActive: false, playbackPosition: { nil }, onSeek: { _ in },
-          onCorrect: { _ in }, onFollowPlayback: { _ in }
+          onFollowPlayback: { _ in }
         )
         .padding(20)
         .frame(width: width)
