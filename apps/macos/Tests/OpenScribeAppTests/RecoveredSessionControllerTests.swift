@@ -1983,6 +1983,176 @@ final class RecoveredSessionControllerTests: RecoveredSessionTestCase {
     withExtendedLifetime((store, live, playback, player, window, host)) {}
   }
 
+  /// A transcript query narrows the speaker-review strip to the matching passage.
+  /// Clearing the query restores the other passage's controls. The audio stays unchanged.
+  func testHostedSpeakerReviewFollowsTheTranscriptQuery() async throws {
+    let suite = "OpenScribe.Proof.ReviewQuery.\(UUID().uuidString)"
+    let preferences = try XCTUnwrap(UserDefaults(suiteName: suite))
+    defer { preferences.removePersistentDomain(forName: suite) }
+
+    let root = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
+      .appendingPathComponent("open-scribe-review-query-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let package = root.appendingPathComponent("Stored.openscribe")
+    let export = await exportStoredFinalPackage(to: package)
+    XCTAssertEqual(export.status, 0, String(export.log.suffix(2_000)))
+    let packageMedia = try regularFiles(under: package.appendingPathComponent("media"))
+    XCTAssertEqual(packageMedia.count, 1)
+    let packageDigest = try digest(of: packageMedia[0])
+
+    let managed = root.appendingPathComponent("Library", isDirectory: true)
+    let library = try NativeTranscriptLibrary.open(managedRoot: managed.path)
+    let receipt = try library.importPortablePackage(packagePath: package.path)
+    let model = TranscriptLibraryModel(managedRoot: managed)
+    await model.load(sessionId: receipt.sessionId)
+    let alpha = try XCTUnwrap(model.segments.first { $0.effectiveText == "alpha" && !$0.corrected })
+    let bravo = try XCTUnwrap(model.segments.first { $0.effectiveText == "bravo corrected" })
+    XCTAssertNotEqual(alpha.id, bravo.id)
+    func nameLabel(_ segment: NativeTranscriptSegment) -> String {
+      ConversationControlLabels.nameSpeakerAccessibility(
+        stamp: TranscriptSection.timestamp(segment.startNanoseconds), label: segment.speakerLabel)
+    }
+    func correctLabel(_ segment: NativeTranscriptSegment) -> String {
+      ConversationControlLabels.correctAccessibility(
+        stamp: TranscriptSection.timestamp(segment.startNanoseconds))
+    }
+    let alphaName = nameLabel(alpha)
+    let bravoName = nameLabel(bravo)
+    let alphaCorrect = correctLabel(alpha)
+    let bravoCorrect = correctLabel(bravo)
+    XCTAssertNotEqual(alphaName, bravoName)
+    XCTAssertNotEqual(alphaCorrect, bravoCorrect)
+    let libraryMedia = try regularFiles(under: managed.appendingPathComponent("Sessions"))
+      .filter { $0.pathExtension == "caf" }
+    XCTAssertEqual(libraryMedia.count, 1)
+    XCTAssertEqual(try digest(of: libraryMedia[0]), packageDigest)
+
+    let store = RuntimeLibraryStore(managedRoot: managed, refreshesImmediately: false)
+    store.refresh()
+    let listed = await waitUntil {
+      store.savedSessions.contains { $0.sessionId == receipt.sessionId }
+    }
+    XCTAssertTrue(listed, "saved=\(store.savedSessions.map(\.sessionId))")
+    let navigation = MainWorkspaceNavigation()
+    navigation.select(receipt.sessionId)
+    let player = RecoveredAudioPlayerFake()
+    let playback = RecoveredSessionController(
+      recoveryFactory: { try NativeRecordingPreparation.open(managedRoot: managed.path) },
+      importedPlaybackLeaseProvider: { id in
+        try NativeRecordingPreparation.open(managedRoot: managed.path)
+          .leaseImportedPlayback(sessionId: id)
+      },
+      player: player)
+    let live = LiveMicrophoneRecordingController(managedRoot: managed)
+    let view = ContentView(
+      store: store,
+      importedMediaAuthority: ImportedMediaAuthorityAdapter(
+        startSecurityScope: { _ in true },
+        stopSecurityScope: { _ in },
+        importer: { _, _ in throw NativeStorageError.InvalidRequest }
+      ),
+      liveRecording: live,
+      recoveredSessions: playback,
+      transcripts: model,
+      speech: SpeechTranscriptionModel(managedRoot: managed),
+      scheduler: TranscriptionScheduler.inert(),
+      pressure: SystemPressureMonitor(libraryRoot: managed, samplesAutomatically: false),
+      context: ContextScopeModel(
+        binding: { nil },
+        frames: IdleClaimContextFrames(),
+        permissionCheck: { .denied },
+        permissionRequest: { .denied },
+        topology: { [] }
+      ),
+      navigation: navigation
+    ).defaultAppStorage(preferences)
+    let host = NSHostingView(rootView: view)
+    host.sizingOptions = []
+    let window = NSWindow(
+      contentRect: NSRect(x: 0, y: 0, width: 1100, height: 720),
+      styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    window.contentView = host
+    window.setContentSize(NSSize(width: 1100, height: 720))
+    host.frame = window.contentLayoutRect
+    window.makeKeyAndOrderFront(nil)
+    window.orderFrontRegardless()
+    defer { window.close() }
+
+    let shown = await waitUntil(timeoutNanoseconds: 8_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      window.displayIfNeeded()
+      return self.claimButton(labeled: alphaName, in: host) != nil
+        && self.claimButton(labeled: bravoName, in: host) != nil
+        && self.claimButton(labeled: alphaCorrect, in: host) != nil
+        && self.claimButton(labeled: bravoCorrect, in: host) != nil
+        && self.claimButton(labeled: ConversationControlLabels.findInTranscript, in: host) != nil
+    }
+    XCTAssertTrue(shown && window.contentView === host, self.hostedControlProbe(in: host))
+    let find = try XCTUnwrap(
+      self.claimButton(labeled: ConversationControlLabels.findInTranscript, in: host))
+    XCTAssertTrue(window.makeFirstResponder(find))
+    let event = try XCTUnwrap(
+      NSEvent.keyEvent(
+        with: .keyDown, location: .zero, modifierFlags: .command,
+        timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+        context: nil, characters: "f", charactersIgnoringModifiers: "f", isARepeat: false,
+        keyCode: 3))
+    XCTAssertTrue(find.performKeyEquivalent(with: event))
+    let focused = await waitUntil(timeoutNanoseconds: 5_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      window.displayIfNeeded()
+      return self.searchField(in: host)?.currentEditor() != nil
+    }
+    let editor = try XCTUnwrap(
+      self.searchField(in: host)?.currentEditor() as? NSTextView, "search field did not focus")
+    XCTAssertTrue(focused)
+    editor.selectAll(nil)
+    editor.insertText("alpha", replacementRange: editor.selectedRange())
+    let typedField = try XCTUnwrap(self.searchField(in: host))
+    typedField.stringValue = editor.string
+
+    func pump(until predicate: () -> Bool) async -> Bool {
+      let started = DispatchTime.now().uptimeNanoseconds
+      while DispatchTime.now().uptimeNanoseconds - started < 5_000_000_000 {
+        let turned = self.expectation(description: "review query")
+        DispatchQueue.main.async { turned.fulfill() }
+        await self.fulfillment(of: [turned], timeout: 1)
+        host.layoutSubtreeIfNeeded()
+        window.displayIfNeeded()
+        if predicate() { return true }
+      }
+      return false
+    }
+    let narrowed = await pump {
+      self.hostedString(containing: "1 matching passage", in: host)
+        && self.claimButton(labeled: alphaName, in: host) != nil
+        && self.claimButton(labeled: alphaCorrect, in: host) != nil
+        && self.claimButton(labeled: bravoName, in: host) == nil
+        && self.claimButton(labeled: bravoCorrect, in: host) == nil
+    }
+    XCTAssertTrue(narrowed, self.hostedControlProbe(in: host))
+    let clear = try XCTUnwrap(
+      self.claimButton(labeled: ConversationControlLabels.clearTranscriptSearch, in: host))
+    XCTAssertTrue(clear.isDescendant(of: host))
+    clear.performClick(nil)
+    let restored = await pump {
+      let field = self.searchField(in: host)
+      return field?.stringValue.isEmpty == true
+        && !self.hostedString(containing: "1 matching passage", in: host)
+        && self.claimButton(labeled: alphaName, in: host) != nil
+        && self.claimButton(labeled: bravoName, in: host) != nil
+        && self.claimButton(labeled: alphaCorrect, in: host) != nil
+        && self.claimButton(labeled: bravoCorrect, in: host) != nil
+    }
+    XCTAssertTrue(restored, self.hostedControlProbe(in: host))
+    XCTAssertEqual(model.segments.first { $0.id == alpha.id }?.effectiveText, "alpha")
+    XCTAssertEqual(model.segments.first { $0.id == bravo.id }?.effectiveText, "bravo corrected")
+    XCTAssertEqual(try digest(of: libraryMedia[0]), packageDigest)
+    withExtendedLifetime((store, live, playback, player, window, host)) {}
+  }
+
   /// Two restored conversations keep a final passage and a corrected passage.
   /// The library search the sidebar uses returns both, and each match opens
   /// at that passage's audio time.
