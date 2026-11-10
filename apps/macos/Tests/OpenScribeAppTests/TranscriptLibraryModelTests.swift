@@ -533,6 +533,44 @@ final class TranscriptLibraryModelTests: XCTestCase {
     withExtendedLifetime(capture) {}
   }
 
+  /// `systemTrash` is the mover production deletion uses. The returned Trash
+  /// URL is the only item this test removes.
+  func testSystemTrashMovesADirectoryAndDeletesTheReturnedTrashURL() throws {
+    let source = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "open-scribe-system-trash-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
+    let payload = Data("open-scribe system trash proof".utf8)
+    try payload.write(to: source.appendingPathComponent("clip.caf"))
+    var trashed: URL?
+    defer {
+      if let trashed, Self.isMovedTrashDirectory(trashed) {
+        try? FileManager.default.removeItem(at: trashed)
+      }
+      try? FileManager.default.removeItem(at: source)
+    }
+
+    let resulting = try TranscriptLibraryModel.systemTrash(source)
+    trashed = resulting
+    XCTAssertFalse(FileManager.default.fileExists(atPath: source.path))
+    let destination = try XCTUnwrap(resulting)
+    XCTAssertTrue(Self.isMovedTrashDirectory(destination))
+    XCTAssertNotEqual(destination.standardizedFileURL, source.standardizedFileURL)
+    XCTAssertEqual(try Data(contentsOf: destination.appendingPathComponent("clip.caf")), payload)
+
+    try FileManager.default.removeItem(at: destination)
+    trashed = nil
+    XCTAssertFalse(FileManager.default.fileExists(atPath: destination.path))
+  }
+
+  /// True only for the directory `trashItem` moved, never the Trash folder itself.
+  private static func isMovedTrashDirectory(_ url: URL) -> Bool {
+    let name = url.lastPathComponent
+    guard name != ".Trash", name != "Trash", name.hasPrefix("open-scribe-system-trash-") else {
+      return false
+    }
+    return FileManager.default.fileExists(atPath: url.appendingPathComponent("clip.caf").path)
+  }
+
   func testDeletionStatesItsScopeAndOnlyCompletesAfterTrash() async throws {
     let (root, sessionId, capture) = try capturedSession()
     defer { try? FileManager.default.removeItem(at: root) }
