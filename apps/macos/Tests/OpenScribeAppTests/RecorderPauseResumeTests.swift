@@ -834,6 +834,46 @@ final class RecorderPauseResumeTests: XCTestCase {
       ["normal", "warning", "normal", "critical"])
   }
 
+  /// Add Marker uses the session clock. The saved recording still has the marker
+  /// and its source tracks.
+  func testAddMarkerStaysOnTheSessionClockAfterTheRecordingIsSaved() async throws {
+    let harness = try PauseHarness()
+    defer { harness.removeFiles() }
+    await harness.controller.start()
+    try await harness.capture()
+    let sessionId = try XCTUnwrap(harness.captures.microphones.last).writer.authorization.sessionId
+    XCTAssertTrue(harness.controller.canMark)
+
+    harness.controller.addMarker(label: "Decision")
+    XCTAssertNil(harness.controller.errorMessage)
+    let live = try XCTUnwrap(
+      harness.controller.recorderDetail?.events.last { $0.kind == "marker_added" })
+    XCTAssertEqual(live.label, "Decision")
+    XCTAssertGreaterThan(live.sessionNanoseconds, 0)
+
+    await harness.controller.stop(pausing: true)
+    XCTAssertEqual(harness.controller.phase, .paused)
+    XCTAssertTrue(harness.controller.canMark)
+    harness.controller.addMarker(label: "While paused")
+    XCTAssertNil(harness.controller.errorMessage)
+
+    await harness.controller.stop()
+    XCTAssertEqual(harness.controller.phase, .saved)
+    let detail = try harness.preparation.recorderDetail(sessionId: sessionId)
+    let markers = detail.events.filter { $0.kind == "marker_added" }
+    XCTAssertEqual(markers.map(\.label), ["Decision", "While paused"])
+    XCTAssertGreaterThan(markers[0].sessionNanoseconds, 0)
+    XCTAssertGreaterThanOrEqual(markers[1].sessionNanoseconds, markers[0].sessionNanoseconds)
+    let reopened = try NativeRecordingPreparation.open(managedRoot: harness.root.path)
+    XCTAssertEqual(
+      try reopened.recorderDetail(sessionId: sessionId).events.filter { $0.kind == "marker_added" }
+        .map(\.label),
+      ["Decision", "While paused"])
+    let plan = try reopened.playbackTimeline(sessionId: sessionId)
+    XCTAssertEqual(Set(plan.map(\.trackId)).count, 2)
+    XCTAssertTrue(plan.allSatisfy { $0.sampleCount > 0 })
+  }
+
   /// F7: rotation reserves the successor before opening and sealing. A failure at
   /// any of those steps must abandon the reserved successor durably so the
   /// remaining source keeps recording and Stop still finalizes; the UI never

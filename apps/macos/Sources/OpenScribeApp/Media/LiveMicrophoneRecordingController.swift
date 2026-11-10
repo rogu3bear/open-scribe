@@ -1389,7 +1389,7 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
     do {
       recorderDetail = try preparation.recorderAction(
         sessionId: activeSessionId,
-        action: .marker(hostTime: mach_absolute_time(), label: label))
+        action: .marker(hostTime: hostTime(), label: label))
     } catch { errorMessage = "The marker could not be saved." }
   }
 
