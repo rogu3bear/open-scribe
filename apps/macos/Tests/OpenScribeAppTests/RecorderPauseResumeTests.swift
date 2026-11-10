@@ -1119,6 +1119,68 @@ final class RecorderPauseResumeTests: XCTestCase {
     XCTAssertEqual(try Self.byteCount(systemPath), systemBytes)
   }
 
+  /// Segment rotation reads the real volume, not the injected probe. Below the
+  /// reserve it journals critical storage and refuses the successor. The first
+  /// segment stays in place.
+  func testSegmentRotationBelowTheReserveRefusesTheSuccessorAndKeepsAudio() async throws {
+    let volume = try DedicatedExhaustionVolume()
+    defer { volume.close() }
+    let harness = try PauseHarness(managedRoot: volume.mediaRoot)
+    defer { harness.removeFiles() }
+    harness.storage.set(2 * 1024 * 1024 * 1024)
+    await harness.controller.start()
+    try await harness.capture()
+    let microphone = try XCTUnwrap(harness.captures.microphones.last)
+    let sessionId = microphone.writer.authorization.sessionId
+    let microphonePath = microphone.writer.authorization.absolutePath
+    let systemPath = try XCTUnwrap(harness.captures.systems.last).writer.authorization.absolutePath
+    let microphoneBytes = try Self.byteCount(microphonePath)
+    let systemBytes = try Self.byteCount(systemPath)
+    let generation = microphone.writer.authorization.writerGeneration
+    XCTAssertGreaterThan(microphoneBytes, 0)
+    XCTAssertGreaterThan(systemBytes, 0)
+    XCTAssertEqual(generation, 1)
+
+    harness.storage.set(nil)
+    let available = try RecorderStorage.availableBytes(at: volume.volume.path)
+    XCTAssertLessThan(available, 512 * 1024 * 1024)
+    harness.clock.advance(seconds: 2)
+    try microphone.emit(frames: 480, hostTime: harness.clock.now, value: 4096)
+    var terminal = false
+    for _ in 0..<1_000 {
+      let phase = harness.controller.phase
+      if (phase == .saved || phase == .failed), harness.controller.errorMessage != nil {
+        terminal = true
+        break
+      }
+      try await Task.sleep(nanoseconds: 10_000_000)
+    }
+    XCTAssertTrue(
+      terminal,
+      "phase \(harness.controller.phase.rawValue) message \(harness.controller.errorMessage ?? "nil")"
+    )
+    XCTAssertEqual(
+      harness.controller.errorMessage,
+      "Recording stopped because storage reached its reserve. Existing audio was preserved.")
+    XCTAssertEqual(microphone.writer.authorization.writerGeneration, generation)
+    XCTAssertFalse(
+      FileManager.default.fileExists(
+        atPath: harness.root.appendingPathComponent(".capture-journal-reserve-v1").path))
+    XCTAssertGreaterThanOrEqual(try Self.byteCount(microphonePath), microphoneBytes)
+    XCTAssertGreaterThanOrEqual(try Self.byteCount(systemPath), systemBytes)
+
+    let reopened = try NativeRecordingPreparation.open(managedRoot: harness.root.path)
+    _ = try reopened.recoverPlayableSessions()
+    let detail = try reopened.recorderDetail(sessionId: sessionId)
+    XCTAssertEqual(detail.storageLevel, "critical")
+    XCTAssertEqual(
+      detail.events.filter { $0.kind == "storage_observed" }.map(\.label).last, "critical")
+    let plan = try reopened.playbackTimeline(sessionId: sessionId)
+    XCTAssertEqual(plan.count, 2, "rotation must not open a successor segment")
+    XCTAssertTrue(plan.allSatisfy { $0.sampleCount > 0 })
+    XCTAssertEqual(microphone.writer.authorization.writerGeneration, generation)
+  }
+
   /// An unrelated process exit leaves capture alone. The selected application's
   /// exit seals that source, journals the failure, and keeps the microphone.
   func testSelectedApplicationExitKeepsTheMicrophoneAndRejectsAnotherProcess() async throws {
