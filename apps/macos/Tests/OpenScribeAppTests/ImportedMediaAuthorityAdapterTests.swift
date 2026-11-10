@@ -2625,6 +2625,121 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
     withExtendedLifetime(window) {}
   }
 
+  /// The toolbar Record key equivalent starts the shipped recorder. The test
+  /// sends that equivalent through the button. It does not call `start` or
+  /// `performClick`. A different shortcut leaves the recorder idle.
+  func testHostedToolbarRecordKeyEquivalentStartsPreparationWithBothSources() async throws {
+    let harness = try PauseHarness()
+    defer { harness.removeFiles() }
+    let store = RuntimeLibraryStore(managedRoot: harness.root, refreshesImmediately: false)
+    let adapter = ImportedMediaAuthorityAdapter(
+      canBeginImport: { harness.controller.canStart },
+      importer: { title, url in
+        try store.importManagedAudio(title: title, sourceURL: url)
+      }
+    )
+    let view = ContentView(
+      store: store,
+      importedMediaAuthority: adapter,
+      liveRecording: harness.controller,
+      recoveredSessions: RecoveredSessionController(
+        recoveryFactory: {
+          try NativeRecordingPreparation.open(managedRoot: harness.root.path)
+        },
+        importedPlaybackLeaseProvider: { sessionId in
+          try NativeRecordingPreparation.open(managedRoot: harness.root.path)
+            .leaseImportedPlayback(sessionId: sessionId)
+        },
+        player: RecoveredAudioPlayerFake()
+      ),
+      transcripts: TranscriptLibraryModel(managedRoot: harness.root),
+      speech: SpeechTranscriptionModel(managedRoot: harness.root),
+      scheduler: TranscriptionScheduler.inert(),
+      pressure: SystemPressureMonitor(libraryRoot: harness.root, samplesAutomatically: false),
+      context: ContextScopeModel(
+        binding: { nil },
+        frames: IdleContextFrames(),
+        permissionCheck: { .denied },
+        permissionRequest: { .denied },
+        topology: { [] }
+      ),
+      navigation: MainWorkspaceNavigation()
+    )
+    let host = NSHostingView(rootView: view)
+    host.sizingOptions = []
+    let window = NSWindow(
+      contentRect: NSRect(x: 0, y: 0, width: 1100, height: 720),
+      styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    window.contentView = host
+    window.setContentSize(NSSize(width: 1100, height: 720))
+    host.frame = window.contentLayoutRect
+    window.makeKeyAndOrderFront(nil)
+    window.orderFrontRegardless()
+    defer { window.close() }
+    let ready = await waitUntil(timeoutNanoseconds: 5_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      window.displayIfNeeded()
+      return self.toolbarRecordButton(in: window) != nil
+    }
+    let record = try XCTUnwrap(self.toolbarRecordButton(in: window))
+    XCTAssertTrue(ready && window.contentView === host)
+    XCTAssertTrue(record.isEnabled)
+    XCTAssertEqual(record.title, ConversationControlLabels.record)
+    XCTAssertEqual(record.accessibilityLabel(), ConversationControlLabels.record)
+    XCTAssertEqual(record.accessibilityIdentifier(), "Toolbar record")
+    XCTAssertEqual(record.keyEquivalent, "r")
+    XCTAssertEqual(record.keyEquivalentModifierMask, [.command, .shift])
+    XCTAssertEqual(harness.controller.phase, .idle)
+    XCTAssertEqual(harness.captures.microphones.count, 0)
+    XCTAssertEqual(harness.captures.systems.count, 0)
+    let other = try XCTUnwrap(
+      self.keyDownEvent(
+        characters: "s", unmodified: "s", modifiers: [.command, .shift], keyCode: 1, window: window)
+    )
+    XCTAssertFalse(record.performKeyEquivalent(with: other))
+    XCTAssertEqual(harness.controller.phase, .idle)
+    XCTAssertEqual(harness.captures.microphones.count, 0)
+    XCTAssertEqual(harness.captures.systems.count, 0)
+    let event = try XCTUnwrap(
+      self.keyDownEvent(
+        characters: "R", unmodified: "r", modifiers: [.command, .shift], keyCode: 15, window: window)
+    )
+    let handled = record.performKeyEquivalent(with: event)
+    XCTAssertTrue(
+      handled,
+      "key=\(window.isKeyWindow) active=\(NSApp.isActive) equivalent=\(record.keyEquivalent)")
+    let started = await waitUntil(timeoutNanoseconds: 8_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      return harness.controller.phase == .starting
+        && harness.captures.microphones.count == 1
+        && harness.captures.systems.count == 1
+    }
+    XCTAssertTrue(started, harness.controller.errorMessage ?? harness.controller.phase.rawValue)
+    XCTAssertEqual(harness.controller.statusText, "Starting microphone + system audio…")
+    XCTAssertEqual(
+      harness.controller.sourceSelectionPresentation.summary, "Microphone + Mac system audio")
+    XCTAssertFalse(harness.controller.canStart)
+    XCTAssertTrue(harness.controller.canStop)
+    let current = try XCTUnwrap(harness.preparation.runtimeLibrarySnapshot().currentSession)
+    XCTAssertEqual(current.lifecycle, "preparing")
+    let session = RuntimeSessionPresentation(native: current)
+    XCTAssertEqual(session.sources.map(\.name), ["Mac microphone", "Mac system audio"])
+    XCTAssertEqual(session.sources.map(\.stateText), ["Ready", "Ready"])
+    let preparingMenu = MenuBarLabel.presentation(
+      session: session,
+      snapshotStale: false,
+      livePhase: harness.controller.phase,
+      liveStatus: harness.controller.statusText)
+    XCTAssertFalse(preparingMenu.text.hasPrefix("Recording"))
+    XCTAssertFalse(preparingMenu.accessibilityText.hasPrefix("Recording"))
+    XCTAssertEqual(record.accessibilityLabel(), ConversationControlLabels.record)
+    XCTAssertTrue(window.contentView === host)
+    withExtendedLifetime(store) {}
+    withExtendedLifetime(harness) {}
+    withExtendedLifetime(window) {}
+  }
+
   /// Pressing Stop and Save in the toolbar seals both sources into one saved
   /// conversation. The test clicks Record, delivers one durable sample on each
   /// source, then clicks Stop. It does not call `start` or `stop`.
@@ -5231,6 +5346,23 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
     }
     walk(root)
     return matched
+  }
+
+  private func keyDownEvent(
+    characters: String, unmodified: String, modifiers: NSEvent.ModifierFlags, keyCode: UInt16,
+    window: NSWindow
+  ) -> NSEvent? {
+    NSEvent.keyEvent(
+      with: .keyDown,
+      location: .zero,
+      modifierFlags: modifiers,
+      timestamp: ProcessInfo.processInfo.systemUptime,
+      windowNumber: window.windowNumber,
+      context: nil,
+      characters: characters,
+      charactersIgnoringModifiers: unmodified,
+      isARepeat: false,
+      keyCode: keyCode)
   }
 
   private func toolbarRecordButton(in window: NSWindow) -> NSButton? {
