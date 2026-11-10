@@ -1,3 +1,5 @@
+import CryptoKit
+import Darwin
 import Foundation
 import XCTest
 
@@ -196,5 +198,180 @@ final class LaunchConfigurationTests: XCTestCase {
     checkpoint.release.signal()
     let result = try await task.value
     XCTAssertEqual(result, "committed", "cancellation must reconcile an already committed mutation")
+  }
+
+  /// The shipped verification app reaches the preparation checkpoint, stops, and
+  /// is killed by this test. Relaunch recovers an interrupted session and does
+  /// not invent audio or a second journal.
+  func testKillPreparationStopsBeforeMediaAndRecoversInterrupted() async throws {
+    let base = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
+      .appendingPathComponent("open-scribe-kill-preparation-\(UUID().uuidString)", isDirectory: true)
+    let proof = base.appendingPathComponent("proof", isDirectory: true)
+    let media = proof.appendingPathComponent("media", isDirectory: true)
+    try FileManager.default.createDirectory(at: media, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: base) }
+    var child: Process?
+    defer {
+      if let child, child.isRunning {
+        kill(pid_t(child.processIdentifier), SIGKILL)
+        child.waitUntilExit()
+      }
+    }
+
+    let capture = try Self.launchVerificationApp(
+      arguments: [
+        "--m1-injected-proof-root", proof.path,
+        "--m1-proof-media-root", media.path,
+        "--m1-injected-case", "kill-preparation",
+      ],
+      standardOutput: proof.appendingPathComponent("app-out.log"),
+      standardError: proof.appendingPathComponent("app-err.log"))
+    child = capture
+    let checkpointURL = proof.appendingPathComponent("checkpoint.json")
+    let reached = await Self.waitForFile(checkpointURL, seconds: 45, process: capture)
+    guard reached else {
+      XCTFail(Self.launchFailure("preparation checkpoint was not reached", proof: proof, process: capture))
+      return
+    }
+    let stopped = await Self.waitUntil(seconds: 5) { Self.processIsStopped(capture) }
+    XCTAssertTrue(stopped, Self.launchFailure("process did not stop at the checkpoint", proof: proof, process: capture))
+    let checkpoint = try JSONSerialization.jsonObject(with: Data(contentsOf: checkpointURL)) as? [String: Any]
+    let sessionId = try XCTUnwrap(checkpoint?["session_id"] as? String)
+    XCTAssertEqual(checkpoint?["phase"] as? String, "preparation")
+    XCTAssertEqual((checkpoint?["pid"] as? NSNumber)?.int32Value, capture.processIdentifier)
+    XCTAssertFalse(FileManager.default.fileExists(atPath: proof.appendingPathComponent("proof-error").path))
+    XCTAssertEqual(try Self.cafPaths(under: media), [])
+    let journal = media.appendingPathComponent("Sessions/\(sessionId)/recovery.jsonl")
+    let journalBeforeKill = try Data(contentsOf: journal)
+    XCTAssertFalse(String(decoding: journalBeforeKill, as: UTF8.self).contains("recording_started"))
+
+    kill(pid_t(capture.processIdentifier), SIGKILL)
+    capture.waitUntilExit()
+    child = nil
+    XCTAssertEqual(capture.terminationReason, .uncaughtSignal)
+    XCTAssertEqual(capture.terminationStatus, SIGKILL)
+
+    let firstRecovery = try Self.launchVerificationApp(
+      arguments: [
+        "--m1-injected-recovery-root", proof.path,
+        "--m1-proof-media-root", media.path,
+      ],
+      standardOutput: proof.appendingPathComponent("recovery-out.log"),
+      standardError: proof.appendingPathComponent("recovery-err.log"))
+    child = firstRecovery
+    let recoveryURL = proof.appendingPathComponent("recovery.json")
+    let recovered = await Self.waitForFile(recoveryURL, seconds: 45, process: firstRecovery)
+    guard recovered else {
+      XCTFail(Self.launchFailure("recovery did not report", proof: proof, process: firstRecovery))
+      return
+    }
+    firstRecovery.waitUntilExit()
+    child = nil
+    XCTAssertEqual(firstRecovery.terminationStatus, 0)
+    XCTAssertFalse(FileManager.default.fileExists(atPath: proof.appendingPathComponent("proof-error").path))
+    let firstReport = try Data(contentsOf: recoveryURL)
+    let report = try JSONSerialization.jsonObject(with: firstReport) as? [String: Any]
+    XCTAssertEqual(report?["result"] as? String, "INJECTED_RECOVERY_GREEN")
+    XCTAssertEqual(report?["session_id"] as? String, sessionId)
+    XCTAssertEqual(report?["lifecycle"] as? String, "interrupted")
+    XCTAssertEqual(report?["visible_lifecycle"] as? String, "interrupted")
+    XCTAssertEqual((report?["rendered_frames"] as? NSNumber)?.intValue, 0)
+    let preparation = try NativeRecordingPreparation.open(managedRoot: media.path)
+    let detail = try preparation.recorderDetail(sessionId: sessionId)
+    XCTAssertEqual(detail.lifecycle, "interrupted")
+    let kinds = try Self.journalKinds(journal)
+    XCTAssertFalse(kinds.contains("recording_started"))
+    XCTAssertTrue(kinds.contains("session_interrupted"), kinds.joined(separator: ","))
+    XCTAssertEqual(try Self.cafPaths(under: media), [])
+    let journalAfterRecovery = SHA256.hash(data: try Data(contentsOf: journal))
+
+    let secondRecovery = try Self.launchVerificationApp(
+      arguments: [
+        "--m1-injected-recovery-root", proof.path,
+        "--m1-proof-media-root", media.path,
+      ],
+      standardOutput: proof.appendingPathComponent("recovery-second-out.log"),
+      standardError: proof.appendingPathComponent("recovery-second-err.log"))
+    child = secondRecovery
+    let sawSecond = await Self.waitUntil(seconds: 45) { secondRecovery.isRunning == false }
+    XCTAssertTrue(sawSecond, Self.launchFailure("second recovery did not exit", proof: proof, process: secondRecovery))
+    secondRecovery.waitUntilExit()
+    child = nil
+    XCTAssertEqual(secondRecovery.terminationStatus, 0)
+    XCTAssertEqual(try Data(contentsOf: recoveryURL), firstReport)
+    XCTAssertEqual(SHA256.hash(data: try Data(contentsOf: journal)), journalAfterRecovery)
+    XCTAssertFalse(FileManager.default.fileExists(atPath: proof.appendingPathComponent("proof-error").path))
+  }
+
+  private static func launchVerificationApp(
+    arguments: [String], standardOutput: URL, standardError: URL
+  ) throws -> Process {
+    FileManager.default.createFile(atPath: standardOutput.path, contents: nil)
+    FileManager.default.createFile(atPath: standardError.path, contents: nil)
+    let process = Process()
+    process.executableURL = try XCTUnwrap(Bundle.main.executableURL)
+    process.arguments = arguments
+    var environment = ProcessInfo.processInfo.environment
+    for key in [
+      "XCTestConfigurationFilePath", "XCTestBundlePath", "OPEN_SCRIBE_TEST_HOST",
+      "OPEN_SCRIBE_PROOF_ROOT", "OPEN_SCRIBE_PROOF_PREFERENCES",
+    ] {
+      environment.removeValue(forKey: key)
+    }
+    process.environment = environment
+    process.standardOutput = try FileHandle(forWritingTo: standardOutput)
+    process.standardError = try FileHandle(forWritingTo: standardError)
+    try process.run()
+    return process
+  }
+
+  private static func waitForFile(_ url: URL, seconds: Double, process: Process) async -> Bool {
+    await waitUntil(seconds: seconds) {
+      FileManager.default.fileExists(atPath: url.path) || process.isRunning == false
+    } && FileManager.default.fileExists(atPath: url.path)
+  }
+
+  private static func waitUntil(seconds: Double, _ predicate: () -> Bool) async -> Bool {
+    let deadline = ContinuousClock.now.advanced(by: .seconds(seconds))
+    while ContinuousClock.now < deadline {
+      if predicate() { return true }
+      try? await Task.sleep(for: .milliseconds(50))
+    }
+    return predicate()
+  }
+
+  private static func processIsStopped(_ process: Process) -> Bool {
+    let probe = Process()
+    probe.executableURL = URL(fileURLWithPath: "/bin/ps")
+    probe.arguments = ["-p", "\(process.processIdentifier)", "-o", "state="]
+    let pipe = Pipe()
+    probe.standardOutput = pipe
+    probe.standardError = FileHandle.nullDevice
+    guard (try? probe.run()) != nil else { return false }
+    probe.waitUntilExit()
+    let text = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+    return probe.terminationStatus == 0 && text.contains("T")
+  }
+
+  private static func journalKinds(_ url: URL) throws -> [String] {
+    try String(contentsOf: url, encoding: .utf8).split(separator: "\n").map { line in
+      let record = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any])
+      return try XCTUnwrap(record["event_kind"] as? String)
+    }
+  }
+
+  private static func cafPaths(under root: URL) throws -> [String] {
+    guard let enumerator = FileManager.default.enumerator(
+      at: root, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles])
+    else { return [] }
+    return enumerator.compactMap { ($0 as? URL)?.path }.filter { $0.hasSuffix(".caf") }.sorted()
+  }
+
+  private static func launchFailure(_ reason: String, proof: URL, process: Process) -> String {
+    let errorURL = proof.appendingPathComponent("proof-error")
+    let proofError = (try? String(contentsOf: errorURL, encoding: .utf8)) ?? "none"
+    let appError = (try? String(contentsOf: proof.appendingPathComponent("app-err.log"), encoding: .utf8)) ?? ""
+    let recoveryError = (try? String(contentsOf: proof.appendingPathComponent("recovery-err.log"), encoding: .utf8)) ?? ""
+    return "\(reason) running=\(process.isRunning) status=\(process.terminationStatus) proof_error=\(proofError) app_err=\(appError) recovery_err=\(recoveryError)"
   }
 }
