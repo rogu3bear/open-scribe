@@ -1729,6 +1729,139 @@ final class RecorderPauseResumeTests: XCTestCase {
       lifecycle: session.lifecycle, health: session.health, failureCount: failures.count)
   }
 
+  /// Two saved recordings reopen from the library. Each can be found, named,
+  /// and played, and the rows show date, duration, source status, and
+  /// transcript status.
+  func testSavedConversationsReopenWithDateDurationSourcesAndTranscriptStatus() async throws {
+    let saved = try await saveTwoConversations()
+    defer { try? FileManager.default.removeItem(at: saved.root) }
+    let microphoneBytes = try saved.microphonePaths.map(Self.byteCount)
+    let systemBytes = try saved.systemPaths.map(Self.byteCount)
+
+    let first = try await reopenLibrary(saved)
+    XCTAssertNil(first.store.currentSession)
+    XCTAssertEqual(first.store.savedSessions.map(\.sessionId).sorted(), saved.sessionIds.sorted())
+    let shorter = try XCTUnwrap(first.store.savedSessions.min { $0.elapsedSeconds < $1.elapsedSeconds })
+    let longer = try XCTUnwrap(first.store.savedSessions.max { $0.elapsedSeconds < $1.elapsedSeconds })
+    XCTAssertNotEqual(shorter.sessionId, longer.sessionId)
+    XCTAssertGreaterThan(longer.elapsedSeconds, shorter.elapsedSeconds)
+    XCTAssertNotEqual(shorter.timerText, longer.timerText)
+    for session in [shorter, longer] {
+      XCTAssertEqual(session.lifecycle, "ready_for_review")
+      XCTAssertTrue(session.title.hasPrefix("Conversation "))
+      XCTAssertNotEqual(ConversationIdentityPresentation.title(session.title), session.title)
+      XCTAssertGreaterThan(session.elapsedSeconds, 0)
+      XCTAssertFalse(session.timerText.isEmpty)
+      XCTAssertEqual(
+        Set(session.sources.map(\.name)), ["Mac microphone", "Mac system audio"])
+      XCTAssertTrue(session.sources.allSatisfy { $0.stateText == "Saved" })
+      XCTAssertEqual(session.transcript.statusText, "No transcript yet")
+      XCTAssertEqual(session.statusText, "Saved locally")
+      XCTAssertTrue(session.hasCaptureTimeline)
+      XCTAssertNil(session.playableMedia)
+      let timeline = try first.preparation.playbackTimeline(sessionId: session.sessionId)
+      XCTAssertEqual(Set(timeline.map(\.trackId)).count, 2)
+      XCTAssertTrue(timeline.allSatisfy { $0.sampleCount > 0 })
+    }
+    let playableSamples = try saved.sessionIds.map { sessionId in
+      try first.preparation.playbackTimeline(sessionId: sessionId).map(\.sampleCount)
+    }
+
+    let renamed = await first.store.rename(sessionId: longer.sessionId, title: "Reviewed meeting")
+    XCTAssertEqual(renamed, "Reviewed meeting")
+    for _ in 0..<50 where first.store.savedSessions.first(where: { $0.sessionId == longer.sessionId })?.title
+      != "Reviewed meeting"
+    {
+      try await Task.sleep(nanoseconds: 10_000_000)
+    }
+    XCTAssertEqual(
+      first.store.savedSessions.first { $0.sessionId == longer.sessionId }?.title,
+      "Reviewed meeting")
+    XCTAssertEqual(
+      first.store.savedSessions.first { $0.sessionId == shorter.sessionId }?.title,
+      shorter.title)
+    XCTAssertEqual(
+      try saved.sessionIds.map { sessionId in
+        try first.preparation.playbackTimeline(sessionId: sessionId).map(\.sampleCount)
+      },
+      playableSamples)
+    XCTAssertEqual(try saved.microphonePaths.map(Self.byteCount), microphoneBytes)
+    XCTAssertEqual(try saved.systemPaths.map(Self.byteCount), systemBytes)
+
+    let second = try await reopenLibrary(saved)
+    XCTAssertEqual(
+      second.store.savedSessions.map(\.sessionId).sorted(), saved.sessionIds.sorted())
+    XCTAssertEqual(
+      second.store.savedSessions.first { $0.sessionId == longer.sessionId }?.title,
+      "Reviewed meeting")
+    XCTAssertEqual(
+      second.store.savedSessions.first { $0.sessionId == shorter.sessionId }?.title,
+      shorter.title)
+    XCTAssertEqual(
+      try saved.sessionIds.map { sessionId in
+        try second.preparation.playbackTimeline(sessionId: sessionId).map(\.sampleCount)
+      },
+      playableSamples)
+    XCTAssertEqual(try saved.microphonePaths.map(Self.byteCount), microphoneBytes)
+    XCTAssertEqual(try saved.systemPaths.map(Self.byteCount), systemBytes)
+  }
+
+  private struct SavedLibrary {
+    let root: URL
+    let sessionIds: [String]
+    let microphonePaths: [String]
+    let systemPaths: [String]
+  }
+
+  private struct ReopenedLibrary {
+    let preparation: NativeRecordingPreparation
+    let store: RuntimeLibraryStore
+  }
+
+  private func saveTwoConversations() async throws -> SavedLibrary {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+      UUID().uuidString, isDirectory: true)
+    let harness = try PauseHarness(managedRoot: root)
+    var sessionIds: [String] = []
+    var microphonePaths: [String] = []
+    var systemPaths: [String] = []
+    for repeats in 1...2 {
+      await harness.controller.start()
+      for _ in 0..<repeats {
+        try await harness.capture()
+      }
+      let microphone = try XCTUnwrap(harness.captures.microphones.last)
+      let system = try XCTUnwrap(harness.captures.systems.last)
+      sessionIds.append(microphone.writer.authorization.sessionId)
+      microphonePaths.append(microphone.writer.authorization.absolutePath)
+      systemPaths.append(system.writer.authorization.absolutePath)
+      await harness.controller.stop()
+      XCTAssertEqual(harness.controller.phase, .saved, harness.controller.errorMessage ?? "")
+      for _ in 0..<500 where harness.controller.statusText.hasSuffix("…") {
+        try await Task.sleep(nanoseconds: 10_000_000)
+      }
+      XCTAssertTrue(harness.controller.canStart)
+    }
+    return SavedLibrary(
+      root: root, sessionIds: sessionIds, microphonePaths: microphonePaths,
+      systemPaths: systemPaths)
+  }
+
+  private func reopenLibrary(_ saved: SavedLibrary) async throws -> ReopenedLibrary {
+    let preparation = try NativeRecordingPreparation.open(managedRoot: saved.root.path)
+    let store = RuntimeLibraryStore(
+      snapshotProvider: { try preparation.runtimeLibrarySnapshot() },
+      renameProvider: { sessionId, title in
+        try preparation.renameSession(sessionId: sessionId, title: title)
+      },
+      announce: { _ in },
+      startsPolling: false)
+    for _ in 0..<50 where store.savedSessions.count < saved.sessionIds.count {
+      try await Task.sleep(nanoseconds: 10_000_000)
+    }
+    return ReopenedLibrary(preparation: preparation, store: store)
+  }
+
   /// Add Marker uses the session clock. The saved recording still has the marker
   /// and its source tracks.
   func testAddMarkerStaysOnTheSessionClockAfterTheRecordingIsSaved() async throws {
