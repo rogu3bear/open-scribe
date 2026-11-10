@@ -1597,6 +1597,198 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
     withExtendedLifetime(pressure) {}
   }
 
+  /// After the automatic queue transcribes a confirmed drop, the same session
+  /// plays, accepts a speaker rename and a correction, searches both the
+  /// machine text and the correction, and exports them. The test does not call
+  /// `transcribe` itself.
+  func testATranscribedDropPlaysRenamesSearchesCorrectsAndExports() async throws {
+    let environment = ProcessInfo.processInfo.environment
+    guard let modelPath = environment["OPEN_SCRIBE_WHISPER_MODEL"],
+      let speechPath = environment["OPEN_SCRIBE_WHISPER_SPEECH_M4A"]
+    else {
+      throw XCTSkip(
+        "Set OPEN_SCRIBE_WHISPER_MODEL and OPEN_SCRIBE_WHISPER_SPEECH_M4A for the queued import.")
+    }
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "open-scribe-drop-review-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let source = root.appendingPathComponent("Dropped memo.m4a")
+    try FileManager.default.copyItem(at: URL(fileURLWithPath: speechPath), to: source)
+    let original = try Data(contentsOf: source)
+    let modelURL = URL(fileURLWithPath: modelPath)
+    let modelBytes = try XCTUnwrap(modelURL.resourceValues(forKeys: [.fileSizeKey]).fileSize)
+    let importRoot = root.appendingPathComponent("Library", isDirectory: true)
+    try FileManager.default.createDirectory(at: importRoot, withIntermediateDirectories: false)
+    let recovery = RecoveredSessionController(managedRoot: importRoot)
+    let live = LiveMicrophoneRecordingController(managedRoot: importRoot)
+    live.isLaunchRecoveryPending = { !recovery.captureSafetyComplete }
+    let store = RuntimeLibraryStore(
+      managedRoot: importRoot,
+      isLaunchRecoveryPending: { !recovery.captureSafetyComplete })
+    let speech = SpeechTranscriptionModel(managedRoot: importRoot)
+    let pressure = SystemPressureMonitor(libraryRoot: importRoot)
+    let defaults = UserDefaults(
+      suiteName: "OpenScribe.Proof.DropReview.\(UUID().uuidString)")!
+    let scheduler = TranscriptionScheduler(
+      managedRoot: importRoot, speech: speech, store: store, liveRecording: live,
+      recovery: recovery, pressure: pressure, defaults: defaults)
+    recovery.recoverOnLaunch()
+    await recovery.waitForLaunchRecovery()
+    XCTAssertTrue(recovery.captureSafetyComplete)
+    await speech.refreshAndWait()
+    XCTAssertEqual(speech.readiness, .absent)
+    scheduler.reconsider()
+    let idle = await waitUntil(timeoutNanoseconds: 5_000_000_000) {
+      scheduler.queue.isEmpty && scheduler.runningSessionId == nil && scheduler.hold == nil
+    }
+    XCTAssertTrue(idle, "queue=\(scheduler.queue) hold=\(String(describing: scheduler.hold))")
+
+    let adapter = ImportedMediaAuthorityAdapter(
+      startSecurityScope: { _ in true },
+      stopSecurityScope: { _ in },
+      canBeginImport: { live.canStart },
+      importer: { title, url in
+        try store.importManagedAudio(title: title, sourceURL: url)
+      }
+    )
+    adapter.stageDroppedAudio([source])
+    adapter.confirmPendingAudioImport()
+    await assertEventually { adapter.phase == .succeeded }
+    let sessionId = try XCTUnwrap(adapter.importedSessionId)
+    let queued = await waitUntil(timeoutNanoseconds: 15_000_000_000) {
+      scheduler.queue.map(\.sessionId) == [sessionId] && scheduler.hold == .noSpeechModel
+        && scheduler.runningSessionId == nil
+    }
+    XCTAssertTrue(queued, "hold=\(String(describing: scheduler.hold))")
+    let managedCopy = try XCTUnwrap(importedAudioFile(under: importRoot))
+    let managedBefore = try Data(contentsOf: managedCopy)
+    let record = try XCTUnwrap(speech.models.first { $0.modelId == "whisper-small.en-q5_1" })
+    let installed = await speech.install(record, from: modelURL)
+    XCTAssertTrue(installed, speech.message ?? "")
+    let finished = await waitUntil(timeoutNanoseconds: 180_000_000_000) {
+      if case .finished = scheduler.state(for: sessionId) { return true }
+      return false
+    }
+    XCTAssertTrue(
+      finished,
+      "state=\(String(describing: scheduler.state(for: sessionId))) message=\(speech.message ?? "")"
+    )
+
+    let transcripts = TranscriptLibraryModel(managedRoot: importRoot)
+    await transcripts.load(sessionId: sessionId)
+    XCTAssertEqual(transcripts.availability, .final)
+    let machine = try XCTUnwrap(
+      transcripts.segments.first {
+        $0.effectiveText.localizedCaseInsensitiveContains("recording safe")
+      })
+    await transcripts.search("recording")
+    let hit = try XCTUnwrap(
+      transcripts.searchResults.first {
+        $0.sessionId == sessionId && $0.effectiveText.localizedCaseInsensitiveContains("recording")
+      })
+    XCTAssertGreaterThan(hit.endNanoseconds, hit.startNanoseconds)
+
+    let preparation = try NativeRecordingPreparation.open(managedRoot: importRoot.path)
+    let saved = try XCTUnwrap(
+      try preparation.runtimeLibrarySnapshot().savedSessions.first { $0.sessionId == sessionId })
+    let session = RuntimeSessionPresentation(native: saved)
+    XCTAssertEqual(session.playableMedia?.isPlayable, true)
+    let player = RecoveredAudioPlayer(outputMode: .silent)
+    let playback = RecoveredSessionController(
+      recoveryFactory: { try NativeRecordingPreparation.open(managedRoot: importRoot.path) },
+      importedPlaybackLeaseProvider: { id in
+        try NativeRecordingPreparation.open(managedRoot: importRoot.path)
+          .leaseImportedPlayback(sessionId: id)
+      },
+      player: player)
+    playback.play(session, startNanoseconds: hit.startNanoseconds)
+    await assertEventually { playback.playingSessionId == sessionId }
+    XCTAssertNil(playback.errorMessage)
+    playback.stopPlayback()
+
+    let beginning = try sampleImported(preparation: preparation, sessionId: sessionId, frame: 0)
+    let later = try sampleImported(preparation: preparation, sessionId: sessionId, frame: 24_000)
+    XCTAssertEqual(beginning.count, later.count)
+    XCTAssertGreaterThan(beginning.count, 1)
+    XCTAssertNotEqual(beginning, later)
+    XCTAssertFalse(beginning.allSatisfy { $0 == 0 } && later.allSatisfy { $0 == 0 })
+
+    let renamed = await transcripts.renameSpeaker(trackId: machine.trackId, label: " Dana ")
+    XCTAssertTrue(renamed, transcripts.message ?? "")
+    let named = try XCTUnwrap(transcripts.segments.first { $0.sequence == machine.sequence })
+    XCTAssertEqual(named.speakerLabel, "Dana")
+    XCTAssertTrue(named.speakerNamedByUser)
+    XCTAssertEqual(named.verbatimText, machine.verbatimText)
+    let savedCorrection = await transcripts.correct(named, text: "The recording stays on this Mac.")
+    XCTAssertTrue(savedCorrection, transcripts.message ?? "")
+    let corrected = try XCTUnwrap(transcripts.segments.first { $0.sequence == machine.sequence })
+    XCTAssertEqual(corrected.verbatimText, machine.verbatimText)
+    XCTAssertEqual(corrected.effectiveText, "The recording stays on this Mac.")
+    XCTAssertTrue(corrected.corrected)
+    XCTAssertEqual(corrected.speakerLabel, "Dana")
+    await transcripts.search("stays on this Mac")
+    XCTAssertTrue(
+      transcripts.searchResults.contains {
+        $0.sessionId == sessionId
+          && $0.effectiveText.localizedCaseInsensitiveContains("stays on this Mac")
+      })
+
+    let markdown = root.appendingPathComponent("Dropped.md")
+    let wroteMarkdown = await transcripts.export(format: .markdown, to: markdown)
+    XCTAssertTrue(wroteMarkdown, transcripts.message ?? "")
+    let markdownText = try String(contentsOf: markdown, encoding: .utf8)
+    XCTAssertTrue(markdownText.localizedCaseInsensitiveContains("Dana"))
+    XCTAssertTrue(markdownText.localizedCaseInsensitiveContains("stays on this Mac"))
+    let jsonURL = root.appendingPathComponent("Dropped.json")
+    let wroteJSON = await transcripts.export(format: .transcriptJson, to: jsonURL)
+    XCTAssertTrue(wroteJSON, transcripts.message ?? "")
+    let document = try XCTUnwrap(
+      JSONSerialization.jsonObject(with: Data(contentsOf: jsonURL)) as? [String: Any])
+    let exportedSegments = try XCTUnwrap(document["segments"] as? [[String: Any]])
+    let exported = try XCTUnwrap(
+      exportedSegments.first {
+        ($0["effective_text"] as? String) == "The recording stays on this Mac."
+      })
+    XCTAssertEqual(exported["verbatim_text"] as? String, machine.verbatimText)
+    XCTAssertNotEqual(exported["verbatim_text"] as? String, exported["effective_text"] as? String)
+    let exportedAudio = root.appendingPathComponent("Exported.m4a")
+    let wroteAudio = await transcripts.export(.original, to: exportedAudio)
+    XCTAssertTrue(wroteAudio, transcripts.message ?? "")
+    XCTAssertEqual(try Data(contentsOf: exportedAudio), managedBefore)
+    XCTAssertEqual(try Data(contentsOf: managedCopy), managedBefore)
+    XCTAssertEqual(try Data(contentsOf: source), original)
+    XCTAssertEqual(try modelURL.resourceValues(forKeys: [.fileSizeKey]).fileSize, modelBytes)
+    withExtendedLifetime(scheduler) {}
+    withExtendedLifetime(store) {}
+    withExtendedLifetime(live) {}
+    withExtendedLifetime(recovery) {}
+    withExtendedLifetime(speech) {}
+    withExtendedLifetime(pressure) {}
+    withExtendedLifetime(playback) {}
+    withExtendedLifetime(player) {}
+  }
+
+  private func sampleImported(
+    preparation: NativeRecordingPreparation, sessionId: String, frame: Int64
+  ) throws -> [Float] {
+    let lease = try preparation.leaseImportedPlayback(sessionId: sessionId)
+    let serialized = lease.playbackPath()
+    XCTAssertTrue(serialized.hasPrefix("v3;"), serialized)
+    let receipt = try RecoveredPlaybackDescriptorReceipt(serialized: serialized)
+    let source = try VerifiedDescriptorPlaybackSource.prepare(receipt: receipt)
+    let decoder = try CallbackCAFDecoder(
+      source: source, fileTypeHint: receipt.fileTypeHint, onClose: {})
+    defer { decoder.close() }
+    if frame > 0 { try decoder.seek(toFrame: frame) }
+    let buffer = try XCTUnwrap(decoder.read(maximumFrames: 256))
+    XCTAssertEqual(buffer.format.channelCount, 2)
+    let samples = Array(
+      UnsafeBufferPointer(start: buffer.floatChannelData![0], count: Int(buffer.frameLength)))
+    withExtendedLifetime(lease) {}
+    return samples
+  }
+
   private func importedAudioFile(under root: URL) throws -> URL? {
     let sessions = root.appendingPathComponent("Sessions")
     guard
