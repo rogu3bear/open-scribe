@@ -1467,6 +1467,132 @@ final class MicrophoneCaptureAdapterTests: XCTestCase {
     XCTAssertEqual(try Data(contentsOf: mediaURL), sealedMedia)
   }
 
+  /// A saved draft stays readable when voice clustering cannot name the speaker.
+  /// The user's source-speaker name leaves the words, the transcript run, and the capture file in place.
+  func testManualSpeakerReviewKeepsTheReadableDraftWhenClusteringIsUnavailable() async throws {
+    let fixture = try openedMicrophone(title: "Speaker review")
+    var timebase = mach_timebase_info_data_t()
+    XCTAssertEqual(mach_timebase_info(&timebase), KERN_SUCCESS)
+    try fixture.controller.anchorCaptureClock(
+      sessionId: fixture.authorization.sessionId,
+      hostAnchor: mach_absolute_time(),
+      numerator: timebase.numer,
+      denominator: timebase.denom)
+    let backend = FakeMicrophoneBackend(inputFormat: fixture.format)
+    let adapter = MicrophoneCaptureAdapter(
+      backend: backend,
+      writer: fixture.writer,
+      identity: MicrophoneCaptureIdentity(authorization: fixture.authorization)
+    )
+    adapter.installProvisionalDraftAdmission(
+      preparation: fixture.controller,
+      hypothesis: { _, _ in provisionalFixture("provisional meadow") },
+      windowFrames: 480,
+      overlapFrames: 96
+    )
+    let failures = try startAndConfirm(
+      adapter: adapter, backend: backend, controller: fixture.controller, format: fixture.format)
+    backend.emit(try microphoneFrames(fixture.format, 384), hostTime: 20)
+    adapter.waitForAcceptedAudio()
+    adapter.waitForProvisionalDraftAdmission()
+    let stoppedAt = adapter.stop() ?? 20
+    let sealed = try fixture.controller.sealSegment(
+      receipt: try fixture.writer.sealSegmentReceipt(finalSampleHostTime: max(stoppedAt, 20)))
+    XCTAssertTrue(sealed.segmentSealed)
+    let sessionId = fixture.authorization.sessionId
+    let mediaURL = URL(fileURLWithPath: fixture.authorization.absolutePath)
+    let sealedMedia = try Data(contentsOf: mediaURL)
+    let saved = try XCTUnwrap(
+      fixture.controller.runtimeLibrarySnapshot().savedSessions.first { $0.sessionId == sessionId })
+    let presentation = RuntimeSessionPresentation(native: saved)
+    XCTAssertNil(presentation.transcriptionUnavailableReason)
+    let library = try NativeTranscriptLibrary.open(managedRoot: fixture.root.path)
+    let model = await MainActor.run { TranscriptLibraryModel(library: library) }
+    await model.load(session: presentation)
+    let before = await MainActor.run {
+      (
+        model.availability, model.availabilityText, model.speakerDiarizationText,
+        model.speakers, model.segments, model.message, model.messageIsFailure
+      )
+    }
+    XCTAssertEqual(before.0, .draft)
+    XCTAssertEqual(before.1, "Draft — a Final transcript does not cover every range yet")
+    XCTAssertEqual(
+      before.2,
+      "Speakers follow the audio source. Voice diarization is unavailable without a calibrated model."
+    )
+    let speaker = try XCTUnwrap(before.3.first)
+    XCTAssertEqual(speaker.sourceKind, "microphone")
+    XCTAssertEqual(speaker.label, "Local user")
+    XCTAssertFalse(speaker.namedByUser)
+    let passage = try XCTUnwrap(before.4.first)
+    XCTAssertEqual(before.4.map(\.effectiveText), ["provisional meadow"])
+    XCTAssertEqual(before.4.map(\.verbatimText), ["provisional meadow"])
+    XCTAssertEqual(passage.finality, "draft")
+    XCTAssertEqual(passage.speakerLabel, "Local user")
+    XCTAssertFalse(passage.speakerNamedByUser)
+    XCTAssertFalse(passage.corrected)
+    XCTAssertNil(before.5)
+    XCTAssertFalse(before.6)
+    let decision = try library.prepareSpeakerDiarization(sessionId: sessionId)
+    XCTAssertFalse(decision.inserted)
+    XCTAssertEqual(decision.clusteringState, "unavailable")
+    XCTAssertEqual(decision.reason, "no calibrated diarization model")
+    XCTAssertEqual(decision.tracks.count, 1)
+    XCTAssertEqual(decision.tracks[0].sourceKind, "microphone")
+    XCTAssertEqual(decision.tracks[0].disposition, "topology")
+    XCTAssertEqual(decision.tracks[0].label, "Local user")
+    XCTAssertEqual(decision.tracks[0].labelOrigin, "source_default")
+    let provenance = try library.inspectProvenance(sessionId: sessionId)
+    XCTAssertEqual(provenance.map(\.revisionId), [passage.revisionId])
+    XCTAssertEqual(provenance.map(\.finality), ["draft"])
+    let detail = try fixture.controller.recorderDetail(sessionId: sessionId)
+    XCTAssertEqual(detail.lifecycle, "ready_for_review")
+    XCTAssertFalse(detail.events.contains { $0.kind == "source_failed" })
+    let sessions = try fixture.controller.runtimeLibrarySnapshot().savedSessions.map(\.sessionId)
+
+    let renamed = await model.renameSpeaker(trackId: speaker.trackId, label: " Dana ")
+    let after = await MainActor.run {
+      (
+        model.availability, model.availabilityText, model.speakerDiarizationText,
+        model.speakers, model.segments, model.message, model.messageIsFailure
+      )
+    }
+    XCTAssertTrue(renamed)
+    XCTAssertNil(after.5)
+    XCTAssertFalse(after.6)
+    XCTAssertEqual(after.0, .draft)
+    XCTAssertEqual(after.1, before.1)
+    XCTAssertEqual(after.2, before.2)
+    XCTAssertEqual(after.4.map(\.revisionId), [passage.revisionId])
+    XCTAssertEqual(after.4.map(\.effectiveText), ["provisional meadow"])
+    XCTAssertEqual(after.4.map(\.verbatimText), ["provisional meadow"])
+    XCTAssertEqual(after.4.map(\.finality), ["draft"])
+    XCTAssertEqual(after.4.map(\.corrected), [false])
+    XCTAssertEqual(after.4.first?.speakerLabel, "Dana")
+    XCTAssertEqual(after.4.first?.speakerNamedByUser, true)
+    XCTAssertEqual(after.3.first?.trackId, speaker.trackId)
+    XCTAssertEqual(after.3.first?.label, "Dana")
+    XCTAssertEqual(after.3.first?.namedByUser, true)
+    XCTAssertEqual(after.3.first?.sourceKind, "microphone")
+    let reviewed = try library.prepareSpeakerDiarization(sessionId: sessionId)
+    XCTAssertFalse(reviewed.inserted)
+    XCTAssertNotEqual(reviewed.runId, decision.runId)
+    XCTAssertEqual(reviewed.clusteringState, "unavailable")
+    XCTAssertEqual(reviewed.reason, "no calibrated diarization model")
+    XCTAssertEqual(reviewed.tracks[0].disposition, "topology")
+    XCTAssertEqual(reviewed.tracks[0].label, "Dana")
+    XCTAssertEqual(reviewed.tracks[0].labelOrigin, "human")
+    XCTAssertEqual(try library.inspectProvenance(sessionId: sessionId), provenance)
+    let savedDetail = try fixture.controller.recorderDetail(sessionId: sessionId)
+    XCTAssertEqual(savedDetail.lifecycle, "ready_for_review")
+    XCTAssertFalse(savedDetail.events.contains { $0.kind == "source_failed" })
+    XCTAssertEqual(
+      try fixture.controller.runtimeLibrarySnapshot().savedSessions.map(\.sessionId), sessions)
+    XCTAssertEqual(try Data(contentsOf: mediaURL), sealedMedia)
+    XCTAssertTrue(failures.snapshot().isEmpty)
+  }
+
   private func openedMicrophone(title: String) throws -> OpenedMicrophone {
     let root = FileManager.default.temporaryDirectory
       .appendingPathComponent("open-scribe-microphone-tests", isDirectory: true)
