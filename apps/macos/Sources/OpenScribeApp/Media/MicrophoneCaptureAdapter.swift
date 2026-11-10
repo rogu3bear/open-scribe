@@ -322,8 +322,9 @@ final class MicrophoneCaptureAdapter: @unchecked Sendable {
 
   /// Installs admission of sealed provisional windows. `hypothesis` is nil in
   /// the shipped app until a real recognizer supplies text. A nil or empty
-  /// hypothesis does not create transcript words. The writer queue only counts
-  /// accepted frames; the store call runs on the queue's own serial queue.
+  /// hypothesis does not create transcript words. A sealed window whose
+  /// accepted frames are all silent is not admitted. The writer queue only
+  /// counts accepted frames; the store call runs on the queue's own serial queue.
   func installProvisionalDraftAdmission(
     preparation: NativeRecordingPreparationProtocol,
     hypothesis: ProvisionalHypothesisProvider? = nil,
@@ -483,7 +484,8 @@ final class MicrophoneCaptureAdapter: @unchecked Sendable {
           let writtenFrames = try self.writer.writeCapturedBuffer(copy, hostTime: hostTime)
           guard writtenFrames > 0 else { return }
           self.recordWrittenProgress(UInt64(writtenFrames))
-          self.noteProvisionalAudio(writtenFrames)
+          let silent = writtenFrames == copy.frameLength && bufferIsSilent(copy)
+          self.noteProvisionalAudio(writtenFrames, silent: silent)
           self.stateLock.lock()
           self.lastWrittenSampleHostTime = hostTime
           let shouldReport = self.started && self.acceptingCallbacks && !self.firstSampleReported
@@ -549,9 +551,9 @@ final class MicrophoneCaptureAdapter: @unchecked Sendable {
     return lastHostTime
   }
 
-  private func noteProvisionalAudio(_ writtenFrames: AVAudioFrameCount) {
+  private func noteProvisionalAudio(_ writtenFrames: AVAudioFrameCount, silent: Bool) {
     let queue = provisionalLock.withLock { provisionalQueue }
-    queue?.accept(writtenFrames: writtenFrames)
+    queue?.accept(writtenFrames: writtenFrames, silent: silent)
   }
 
   private func recordCallbackProgress() {
@@ -712,7 +714,9 @@ private struct ProvisionalWindow {
 /// Counts accepted capture frames and admits at most two sealed windows.
 /// The writer queue returns after the count. A commit, if the hypothesis has
 /// text, happens on `commitQueue`. A third sealed window drops the oldest
-/// window that has not started. Dropped audio stays in the capture file.
+/// window that has not started. Dropped audio stays in the capture file. A
+/// window whose accepted frames are all silent is not admitted, so the
+/// hypothesis cannot invent speech for that interval.
 final class ProvisionalDraftQueue: @unchecked Sendable {
   static let captureSampleRate: UInt64 = 48_000
   static let defaultWindowFrames: UInt64 = 576_000
@@ -734,6 +738,7 @@ final class ProvisionalDraftQueue: @unchecked Sendable {
   private let stateLock = NSLock()
   private var acceptedFrames: UInt64 = 0
   private var nextWindowStartFrames: UInt64 = 0
+  private var sampleRuns: [SampleRun] = []
   private var pending: [ProvisionalWindow] = []
   private var inFlight = 0
 
@@ -762,16 +767,28 @@ final class ProvisionalDraftQueue: @unchecked Sendable {
     return Int64(wholeSeconds * 1_000_000_000 + remainder * 1_000_000_000 / captureSampleRate)
   }
 
-  func accept(writtenFrames: AVAudioFrameCount) {
+  func accept(writtenFrames: AVAudioFrameCount, silent: Bool) {
     guard writtenFrames > 0, hopFrames > 0 else { return }
-    acceptedFrames += UInt64(writtenFrames)
+    let count = UInt64(writtenFrames)
+    let start = acceptedFrames
+    acceptedFrames += count
+    if var last = sampleRuns.last, last.silent == silent, last.endFrames == start {
+      last.endFrames = acceptedFrames
+      sampleRuns[sampleRuns.count - 1] = last
+    } else {
+      sampleRuns.append(
+        SampleRun(startFrames: start, endFrames: acceptedFrames, silent: silent))
+    }
     var sealed: [ProvisionalWindow] = []
     while acceptedFrames >= nextWindowStartFrames + windowFrames {
-      let start = nextWindowStartFrames
-      let end = start + windowFrames
-      sealed.append(ProvisionalWindow(startFrames: start, endFrames: end))
+      let windowStart = nextWindowStartFrames
+      let windowEnd = windowStart + windowFrames
+      if !windowIsSilent(startFrames: windowStart, endFrames: windowEnd) {
+        sealed.append(ProvisionalWindow(startFrames: windowStart, endFrames: windowEnd))
+      }
       nextWindowStartFrames += hopFrames
     }
+    sampleRuns.removeAll { $0.endFrames <= nextWindowStartFrames }
     guard !sealed.isEmpty else { return }
     schedule(sealed)
   }
@@ -847,4 +864,79 @@ final class ProvisionalDraftQueue: @unchecked Sendable {
     guard !overflow else { return nil }
     return sum
   }
+
+  /// A window is silent only when every accepted frame in it belongs to a
+  /// silent run. A gap or any non-silent sample keeps the window admissible.
+  private func windowIsSilent(startFrames: UInt64, endFrames: UInt64) -> Bool {
+    guard endFrames > startFrames else { return false }
+    var cursor = startFrames
+    for run in sampleRuns {
+      if run.endFrames <= cursor { continue }
+      if run.startFrames > cursor { return false }
+      if run.startFrames >= endFrames { break }
+      if !run.silent { return false }
+      cursor = min(run.endFrames, endFrames)
+      if cursor >= endFrames { return true }
+    }
+    return false
+  }
+}
+
+private struct SampleRun {
+  var startFrames: UInt64
+  var endFrames: UInt64
+  var silent: Bool
+}
+
+/// Exact digital silence in the buffer that was written. Any other sample,
+/// or a format this scan does not know, stays admissible as speech.
+private func bufferIsSilent(_ buffer: AVAudioPCMBuffer) -> Bool {
+  let frames = Int(buffer.frameLength)
+  guard frames > 0 else { return true }
+  let channels = Int(buffer.format.channelCount)
+  guard channels > 0 else { return false }
+  switch buffer.format.commonFormat {
+  case .pcmFormatInt16:
+    guard let samples = buffer.int16ChannelData else { return false }
+    return pcmSamplesAreSilent(samples, channels: channels, frames: frames, format: buffer.format) {
+      $0 == 0
+    }
+  case .pcmFormatInt32:
+    guard let samples = buffer.int32ChannelData else { return false }
+    return pcmSamplesAreSilent(samples, channels: channels, frames: frames, format: buffer.format) {
+      $0 == 0
+    }
+  case .pcmFormatFloat32:
+    guard let samples = buffer.floatChannelData else { return false }
+    return pcmSamplesAreSilent(samples, channels: channels, frames: frames, format: buffer.format) {
+      $0 == 0
+    }
+  default:
+    return false
+  }
+}
+
+private func pcmSamplesAreSilent<Sample>(
+  _ samples: UnsafePointer<UnsafeMutablePointer<Sample>>,
+  channels: Int,
+  frames: Int,
+  format: AVAudioFormat,
+  isZero: (Sample) -> Bool
+) -> Bool {
+  if format.isInterleaved {
+    let stride = channels
+    for frame in 0..<frames {
+      for channel in 0..<channels where !isZero(samples[0][frame * stride + channel]) {
+        return false
+      }
+    }
+    return true
+  }
+  for channel in 0..<channels {
+    let channelSamples = samples[channel]
+    for frame in 0..<frames where !isZero(channelSamples[frame]) {
+      return false
+    }
+  }
+  return true
 }

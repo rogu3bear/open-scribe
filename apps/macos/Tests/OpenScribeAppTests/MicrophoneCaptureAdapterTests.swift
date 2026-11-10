@@ -1131,6 +1131,81 @@ final class MicrophoneCaptureAdapterTests: XCTestCase {
     _ = adapter.stop()
   }
 
+  /// Silence stays in the capture file. A window that is only silence does not
+  /// become transcript text, and it does not journal source loss.
+  func testQuietIntervalStaysOnTheCaptureTimelineWithoutInventingSpeech() throws {
+    let fixture = try openedMicrophone(title: "Quiet interval")
+    var timebase = mach_timebase_info_data_t()
+    XCTAssertEqual(mach_timebase_info(&timebase), KERN_SUCCESS)
+    let anchor = mach_absolute_time()
+    try fixture.controller.anchorCaptureClock(
+      sessionId: fixture.authorization.sessionId,
+      hostAnchor: anchor,
+      numerator: timebase.numer,
+      denominator: timebase.denom)
+    let speechHost = anchor + AVAudioTime.hostTime(forSeconds: 0.02)
+    let quietHost = anchor + AVAudioTime.hostTime(forSeconds: 0.04)
+    let backend = FakeMicrophoneBackend(inputFormat: fixture.format)
+    let adapter = MicrophoneCaptureAdapter(
+      backend: backend,
+      writer: fixture.writer,
+      identity: MicrophoneCaptureIdentity(authorization: fixture.authorization)
+    )
+    adapter.installProvisionalDraftAdmission(
+      preparation: fixture.controller,
+      hypothesis: { start, _ in provisionalFixture("spoken \(start)") },
+      windowFrames: 480,
+      overlapFrames: 96
+    )
+    let failures = try startAndConfirm(
+      adapter: adapter, backend: backend, controller: fixture.controller, format: fixture.format,
+      firstHostTime: speechHost)
+    backend.emit(try microphoneFrames(fixture.format, 384), hostTime: speechHost &+ 1)
+    adapter.waitForAcceptedAudio()
+    adapter.waitForProvisionalDraftAdmission()
+    backend.emit(try silentMicrophoneFrames(fixture.format, 768), hostTime: quietHost)
+    adapter.waitForAcceptedAudio()
+    adapter.waitForProvisionalDraftAdmission()
+
+    let sessionId = fixture.authorization.sessionId
+    XCTAssertEqual(
+      try fixture.controller.readableDraftTexts(sessionId: sessionId),
+      ["spoken 8000000"])
+    let detail = try fixture.controller.recorderDetail(sessionId: sessionId)
+    XCTAssertEqual(detail.lifecycle, "recording")
+    XCTAssertFalse(detail.events.contains { $0.kind == "source_failed" })
+    let current = try XCTUnwrap(fixture.controller.runtimeLibrarySnapshot().currentSession)
+    XCTAssertEqual(current.sessionId, sessionId)
+    XCTAssertEqual(current.lifecycle, "recording")
+    XCTAssertNil(current.interruptionReason)
+    XCTAssertTrue(current.hasCaptureTimeline)
+    let microphone = try XCTUnwrap(current.sources.first { $0.kind == .microphone })
+    XCTAssertEqual(microphone.lifecycle, "capturing")
+    XCTAssertTrue(failures.snapshot().isEmpty)
+    try assertQuietInterval(in: fixture.authorization, speechFrames: 480, quietFrames: 768)
+
+    let stoppedAt = adapter.stop() ?? quietHost
+    let sealed = try fixture.controller.sealSegment(
+      receipt: try fixture.writer.sealSegmentReceipt(finalSampleHostTime: max(stoppedAt, quietHost)))
+    XCTAssertTrue(sealed.segmentSealed)
+    let savedDetail = try fixture.controller.recorderDetail(sessionId: sessionId)
+    XCTAssertEqual(savedDetail.lifecycle, "ready_for_review")
+    XCTAssertFalse(savedDetail.events.contains { $0.kind == "source_failed" })
+    let plan = try fixture.controller.playbackTimeline(sessionId: sessionId)
+    XCTAssertEqual(plan.count, 1)
+    let segment = try XCTUnwrap(plan.first)
+    XCTAssertEqual(segment.sampleCount, 1_248)
+    XCTAssertEqual(segment.gapNanoseconds, 0)
+    XCTAssertEqual(segment.channels, 1)
+    let saved = try XCTUnwrap(
+      fixture.controller.runtimeLibrarySnapshot().savedSessions.first { $0.sessionId == sessionId })
+    XCTAssertTrue(saved.hasCaptureTimeline)
+    XCTAssertEqual(
+      try fixture.controller.readableDraftTexts(sessionId: sessionId),
+      ["spoken 8000000"])
+    try assertQuietInterval(in: fixture.authorization, speechFrames: 480, quietFrames: 768)
+  }
+
   func testAThirdProvisionalWindowDropsTheOldestPendingOneAndKeepsAudio() throws {
     let fixture = try openedMicrophone(title: "Bounded live draft")
     let backend = FakeMicrophoneBackend(inputFormat: fixture.format)
@@ -1426,7 +1501,8 @@ final class MicrophoneCaptureAdapterTests: XCTestCase {
     adapter: MicrophoneCaptureAdapter,
     backend: FakeMicrophoneBackend,
     controller: NativeRecordingPreparation,
-    format: AVAudioFormat
+    format: AVAudioFormat,
+    firstHostTime: UInt64 = 10
   ) throws -> FailureBox {
     let receipts = ReceiptBox()
     let failures = FailureBox()
@@ -1438,7 +1514,7 @@ final class MicrophoneCaptureAdapterTests: XCTestCase {
       },
       onFailure: { failures.append($0) }
     )
-    backend.emit(try microphoneFrames(format, 96), hostTime: 10)
+    backend.emit(try microphoneFrames(format, 96), hostTime: firstHostTime)
     wait(for: [firstSample], timeout: 2)
     let evidence = try controller.acceptFirstSample(
       receipt: try XCTUnwrap(receipts.snapshot().first))
@@ -1472,6 +1548,45 @@ private func microphoneFrames(_ format: AVAudioFormat, _ frames: AVAudioFrameCou
     samples[frame] = Int16((frame % 32) + 1)
   }
   return buffer
+}
+
+private func silentMicrophoneFrames(_ format: AVAudioFormat, _ frames: AVAudioFrameCount) throws
+  -> AVAudioPCMBuffer
+{
+  let buffer = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frames))
+  buffer.frameLength = frames
+  let samples = try XCTUnwrap(buffer.int16ChannelData?[0])
+  samples.update(repeating: 0, count: Int(frames))
+  return buffer
+}
+
+private func assertQuietInterval(
+  in authorization: NativeMediaOpenAuthorization,
+  speechFrames: Int,
+  quietFrames: Int,
+  file: StaticString = #filePath,
+  line: UInt = #line
+) throws {
+  let audio = try AVAudioFile(
+    forReading: URL(fileURLWithPath: authorization.absolutePath),
+    commonFormat: .pcmFormatInt16,
+    interleaved: false)
+  let total = speechFrames + quietFrames
+  XCTAssertGreaterThanOrEqual(audio.length, Int64(total), file: file, line: line)
+  let capacity = AVAudioFrameCount(total)
+  let decoded = try XCTUnwrap(
+    AVAudioPCMBuffer(pcmFormat: audio.processingFormat, frameCapacity: capacity),
+    file: file, line: line)
+  try audio.read(into: decoded, frameCount: capacity)
+  XCTAssertEqual(decoded.frameLength, capacity, file: file, line: line)
+  let samples = try XCTUnwrap(decoded.int16ChannelData?[0], file: file, line: line)
+  XCTAssertEqual(samples[0], 1, file: file, line: line)
+  XCTAssertEqual(samples[speechFrames - 1], 32, file: file, line: line)
+  var quiet = 0
+  for frame in speechFrames..<total where samples[frame] == 0 {
+    quiet += 1
+  }
+  XCTAssertEqual(quiet, quietFrames, file: file, line: line)
 }
 
 private func provisionalFixture(
