@@ -23,6 +23,48 @@ final class SpeechTranscriptionModelTests: XCTestCase {
     FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
   }
 
+  private struct PlayableImport: Equatable {
+    let byteLength: UInt64
+    let digestSha256: String
+  }
+
+  private func playableImport(
+    _ preparation: NativeRecordingPreparation, sessionId: String
+  ) throws -> PlayableImport {
+    let lease = try preparation.leaseImportedPlayback(sessionId: sessionId)
+    let receipt = try ImportedPlaybackDescriptorReceipt(serialized: lease.playbackPath())
+    _ = try AnonymousImportedPlaybackSnapshot.copy(from: receipt)
+    return PlayableImport(byteLength: receipt.byteLength, digestSha256: receipt.digestSha256)
+  }
+
+  private func writeRecoverableCaf(frames: Int) throws -> Data {
+    var data = Data()
+    data.append(contentsOf: [0x63, 0x61, 0x66, 0x66, 0x00, 0x01, 0x00, 0x00])
+    data.append(contentsOf: Array("desc".utf8))
+    appendBig(Int64(32), to: &data)
+    appendBig(Double(48_000).bitPattern, to: &data)
+    data.append(contentsOf: Array("lpcm".utf8))
+    for value in [UInt32(2), 2, 1, 1, 16] {
+      appendBig(value, to: &data)
+    }
+    data.append(contentsOf: Array("data".utf8))
+    appendBig(Int64(-1), to: &data)
+    appendBig(UInt32(0), to: &data)
+    for frame in 0..<frames {
+      let sample = Int16(((frame % 997) - 498) * 31)
+      appendLittle(sample, to: &data)
+    }
+    return data
+  }
+
+  private func appendBig(_ value: some FixedWidthInteger, to data: inout Data) {
+    withUnsafeBytes(of: value.bigEndian) { data.append(contentsOf: $0) }
+  }
+
+  private func appendLittle(_ value: some FixedWidthInteger, to data: inout Data) {
+    withUnsafeBytes(of: value.littleEndian) { data.append(contentsOf: $0) }
+  }
+
   func testAFreshLibraryListsTheCatalogAndRefusesAWrongFile() async throws {
     let root = temporaryRoot()
     defer { try? FileManager.default.removeItem(at: root) }
@@ -48,6 +90,65 @@ final class SpeechTranscriptionModelTests: XCTestCase {
     let transcribed = await speech.transcribe(sessionId: "any")
     XCTAssertFalse(transcribed, "nothing runs without a verified model")
     XCTAssertNil(speech.transcribingSessionId)
+  }
+
+  func testOpeningAPlayableConversationWithoutASpeechModelKeepsPlayback() async throws {
+    let root = temporaryRoot()
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let source = root.appendingPathComponent("Interview.caf")
+    let original = try writeRecoverableCaf(frames: 960)
+    try original.write(to: source, options: .atomic)
+    let libraryRoot = root.appendingPathComponent("Library", isDirectory: true)
+    let preparation = try NativeRecordingPreparation.open(managedRoot: libraryRoot.path)
+    let imported = try preparation.importRecoverableCaf(
+      title: "Interview", sourcePath: source.path)
+    let playback = try playableImport(preparation, sessionId: imported.sessionId)
+    XCTAssertGreaterThan(playback.byteLength, 0)
+
+    let speech = SpeechTranscriptionModel(managedRoot: libraryRoot)
+    await speech.refreshAndWait()
+    XCTAssertEqual(
+      speech.models.map(\.modelId), ["whisper-small.en-q5_1", "whisper-small-q5_1"])
+    XCTAssertTrue(speech.models.allSatisfy { !$0.installed })
+    XCTAssertNil(speech.installedModel)
+
+    let saved = try XCTUnwrap(
+      preparation.runtimeLibrarySnapshot().savedSessions.first {
+        $0.sessionId == imported.sessionId
+      })
+    let session = RuntimeSessionPresentation(native: saved)
+    XCTAssertEqual(session.lifecycle, "ready_for_review")
+    XCTAssertNil(session.transcriptionUnavailableReason)
+    XCTAssertNil(session.deletionUnavailableReason)
+    let transcripts = TranscriptLibraryModel(managedRoot: libraryRoot)
+    await transcripts.load(session: session)
+    XCTAssertEqual(transcripts.availability, .unavailable)
+    XCTAssertTrue(transcripts.segments.isEmpty)
+    XCTAssertTrue(
+      TranscriptSection.showsInstallSpeechModel(session: session, speech: speech))
+    XCTAssertEqual(
+      TranscriptSection.statusLine(session: session, transcripts: transcripts, speech: speech),
+      TranscriptSection.speechModelUnavailableStatus)
+    XCTAssertEqual(TranscriptSection.installSpeechModelTitle, "Set Up Transcription…")
+
+    let library = RuntimeLibraryStore(managedRoot: libraryRoot)
+    let renamed = await library.rename(sessionId: imported.sessionId, title: "Interview notes")
+    XCTAssertEqual(renamed, "Interview notes")
+    let renamedSession = try XCTUnwrap(
+      NativeRecordingPreparation.open(managedRoot: libraryRoot.path).runtimeLibrarySnapshot()
+        .savedSessions.first { $0.sessionId == imported.sessionId })
+    XCTAssertEqual(renamedSession.title, "Interview notes")
+
+    let refused = await speech.transcribe(sessionId: imported.sessionId)
+    XCTAssertFalse(refused)
+    XCTAssertEqual(speech.message, "No verified speech model is installed.")
+    XCTAssertNil(speech.installedModel)
+    await transcripts.load(session: session)
+    XCTAssertEqual(transcripts.availability, .unavailable)
+    XCTAssertTrue(transcripts.segments.isEmpty)
+    XCTAssertEqual(try playableImport(preparation, sessionId: imported.sessionId), playback)
+    XCTAssertEqual(try Data(contentsOf: source), original)
   }
 
   func testAnExplicitDownloadRefusesAShortCatalogFileAndLeavesARecording() async throws {

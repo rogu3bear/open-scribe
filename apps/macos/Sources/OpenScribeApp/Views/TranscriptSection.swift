@@ -204,9 +204,32 @@ struct TranscriptSection: View {
     }
   }
 
+  /// Opens the speech-model sheet. Shown when the catalog has no installed model.
+  static let installSpeechModelTitle = "Set Up Transcription…"
+
+  /// Opening a playable conversation with no installed model. Playback and
+  /// conversation management stay available; this line is the transcript status.
+  static let speechModelUnavailableStatus =
+    "Transcription is unavailable until a speech model is installed on this Mac."
+
+  /// The catalog has been read and none of its models are installed.
+  static func showsInstallSpeechModel(
+    session: RuntimeSessionPresentation, speech: SpeechTranscriptionModel
+  ) -> Bool {
+    session.transcriptionUnavailableReason == nil
+      && speech.catalogWarning == nil
+      && !speech.isRefreshing
+      && speech.installedModel == nil
+      && speech.models.contains { !$0.installed }
+  }
+
   /// What the transcript line says: the library's committed state, with the
   /// plain-words reason when the latest run ended without a transcript.
-  private var availabilityText: String {
+  static func statusLine(
+    session: RuntimeSessionPresentation,
+    transcripts: TranscriptLibraryModel,
+    speech: SpeechTranscriptionModel
+  ) -> String {
     if session.transcript.state == .final, session.transcript.attempt == .failed {
       return "The reviewed transcript remains selected. Replacement transcription failed. "
         + RuntimeTranscriptPresentation.failureText(session.transcript.attemptFailure)
@@ -216,7 +239,16 @@ struct TranscriptSection: View {
         + RuntimeTranscriptPresentation.failureText(session.transcript.failureClass)
         + " The recorded audio is unaffected."
     }
+    if showsInstallSpeechModel(session: session, speech: speech),
+      transcripts.availability == .unavailable
+    {
+      return speechModelUnavailableStatus
+    }
     return transcripts.availabilityText
+  }
+
+  private var availabilityText: String {
+    Self.statusLine(session: session, transcripts: transcripts, speech: speech)
   }
 
   /// Transcription runs on this Mac only after a verified model is installed.
@@ -291,7 +323,7 @@ struct TranscriptSection: View {
             .fixedSize(horizontal: false, vertical: true)
           }
         } else {
-          Button("Set Up Transcription…") {
+          Button(Self.installSpeechModelTitle) {
             speech.dismissMessage()
             showingModels = true
           }
