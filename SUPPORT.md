@@ -90,9 +90,12 @@ See [model authority](docs/models/README.md).
 ## Installation, removal and documents
 
 Use [isolated contributor qualification](CONTRIBUTING.md). The local
-`install_app.sh` and `uninstall_app.sh` tools change installed bytes, Launch
-Services registration and development privacy decisions. They are not routine
-troubleshooting/source checks; invoke them only when intending those effects.
+`install_app.sh` replaces the installed app and signs it with the local
+Developer ID so a microphone grant for `app.open-scribe.dev` survives the next
+build of that same identity. Screen Recording can still ask again after the
+executable changes. `uninstall_app.sh` still clears both grants. An unsigned
+Xcode product named `OpenScribeApp.app` is a different privacy client. Neither
+tool is a routine source check; invoke one only when intending that effect.
 Uninstall preserves the ordinary library; Trash, backups, exports and original
 imports remain separate.
 
