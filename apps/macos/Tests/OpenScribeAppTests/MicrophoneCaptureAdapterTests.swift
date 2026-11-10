@@ -1,7 +1,9 @@
+import AppKit
 import AVFoundation
 import CoreMedia
 import Darwin
 import ScreenCaptureKit
+import SwiftUI
 import XCTest
 
 @testable import OpenScribeApp
@@ -1726,6 +1728,106 @@ final class MicrophoneCaptureAdapterTests: XCTestCase {
     XCTAssertEqual(try Data(contentsOf: mediaURL), sealedMedia)
   }
 
+  /// The transcript section shows the stored run. The test reads that field.
+  /// It does not call `load` or `provenanceText`.
+  @MainActor
+  func testHostedReviewReadsModelProvenanceWithoutClaimingIdenticalOutput() async throws {
+    let fixture = try openedMicrophone(title: "Hosted provenance")
+    var timebase = mach_timebase_info_data_t()
+    XCTAssertEqual(mach_timebase_info(&timebase), KERN_SUCCESS)
+    try fixture.controller.anchorCaptureClock(
+      sessionId: fixture.authorization.sessionId,
+      hostAnchor: mach_absolute_time(),
+      numerator: timebase.numer,
+      denominator: timebase.denom)
+    let backend = FakeMicrophoneBackend(inputFormat: fixture.format)
+    let adapter = MicrophoneCaptureAdapter(
+      backend: backend,
+      writer: fixture.writer,
+      identity: MicrophoneCaptureIdentity(authorization: fixture.authorization)
+    )
+    let digest = String(repeating: "b", count: 64)
+    adapter.installProvisionalDraftAdmission(
+      preparation: fixture.controller,
+      hypothesis: { _, _ in provisionalFixture("provisional meadow", digest: digest) },
+      windowFrames: 480,
+      overlapFrames: 96
+    )
+    let failures = try startAndConfirm(
+      adapter: adapter, backend: backend, controller: fixture.controller, format: fixture.format)
+    backend.emit(try microphoneFrames(fixture.format, 384), hostTime: 20)
+    adapter.waitForAcceptedAudio()
+    adapter.waitForProvisionalDraftAdmission()
+    let stoppedAt = adapter.stop() ?? 20
+    let sealed = try fixture.controller.sealSegment(
+      receipt: try fixture.writer.sealSegmentReceipt(finalSampleHostTime: max(stoppedAt, 20)))
+    XCTAssertTrue(sealed.segmentSealed)
+    let mediaURL = URL(fileURLWithPath: fixture.authorization.absolutePath)
+    let sealedMedia = try Data(contentsOf: mediaURL)
+    let saved = try XCTUnwrap(
+      fixture.controller.runtimeLibrarySnapshot().savedSessions.first {
+        $0.sessionId == fixture.authorization.sessionId
+      })
+    let presentation = RuntimeSessionPresentation(native: saved)
+    XCTAssertNil(presentation.transcriptionUnavailableReason)
+    let library = try NativeTranscriptLibrary.open(managedRoot: fixture.root.path)
+    let inspected = try library.inspectProvenance(sessionId: fixture.authorization.sessionId)
+    let item = try XCTUnwrap(inspected.first)
+    let evidence = try XCTUnwrap(item.ranges.first)
+
+    let model = TranscriptLibraryModel(library: library)
+    let section = TranscriptSection(
+      session: presentation,
+      transcripts: model,
+      speech: SpeechTranscriptionModel(preview: []),
+      scheduler: TranscriptionScheduler.inert(),
+      canSeek: false,
+      onSeek: { _ in }
+    ).frame(width: 720, height: 420)
+    let host = NSHostingView(rootView: section)
+    host.sizingOptions = []
+    let window = NSWindow(
+      contentRect: NSRect(x: 0, y: 0, width: 720, height: 420),
+      styleMask: [.titled, .closable], backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    window.contentView = host
+    window.setContentSize(NSSize(width: 720, height: 420))
+    host.frame = window.contentLayoutRect
+    window.makeKeyAndOrderFront(nil)
+    window.orderFrontRegardless()
+    defer { window.close() }
+
+    let shown = await waitUntil(timeoutNanoseconds: 5_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      window.displayIfNeeded()
+      guard let field = self.provenanceField(in: host) else { return false }
+      return !field.isHidden && field.frame.width > 1 && field.frame.height > 1
+        && field.stringValue.contains("does not claim")
+        && field.isDescendant(of: host)
+    }
+    let field = try XCTUnwrap(self.provenanceField(in: host))
+    XCTAssertTrue(shown && window.contentView === host && field.isDescendant(of: host))
+    let visible = field.stringValue
+    XCTAssertTrue(visible.contains("Engine \(item.engine) \(item.engineVersion)."))
+    XCTAssertTrue(visible.contains("Model \(item.modelId), revision \(item.modelSha256)."))
+    XCTAssertEqual(item.modelSha256, digest)
+    XCTAssertTrue(visible.contains("Input \(item.inputDigest)."))
+    XCTAssertTrue(visible.contains("Run \(item.runState)."))
+    XCTAssertTrue(visible.contains("Finality \(item.finality)."))
+    XCTAssertTrue(
+      visible.contains("Evidence \(evidence.startNanoseconds)-\(evidence.endNanoseconds) ns."))
+    XCTAssertTrue(
+      visible.hasSuffix(
+        "Open Scribe does not claim that running this model again produces the same words."))
+    XCTAssertFalse(visible.localizedCaseInsensitiveContains("identical"))
+    XCTAssertFalse(visible.localizedCaseInsensitiveContains("deterministic"))
+    XCTAssertFalse(visible.contains("provisional meadow"))
+    XCTAssertTrue(failures.snapshot().isEmpty)
+    XCTAssertEqual(try Data(contentsOf: mediaURL), sealedMedia)
+    withExtendedLifetime(model) {}
+    withExtendedLifetime(adapter) {}
+  }
+
   /// A saved draft stays readable when voice clustering cannot name the speaker.
   /// The user's source-speaker name leaves the words, the transcript run, and the capture file in place.
   func testManualSpeakerReviewKeepsTheReadableDraftWhenClusteringIsUnavailable() async throws {
@@ -1969,6 +2071,29 @@ final class MicrophoneCaptureAdapterTests: XCTestCase {
       """)
     XCTAssertEqual(try Data(contentsOf: mediaURL), sealedMedia)
     XCTAssertTrue(failures.snapshot().isEmpty)
+  }
+
+  @MainActor
+  private func provenanceField(in root: NSView) -> NSTextField? {
+    if let field = root as? NSTextField, field.accessibilityLabel() == "Model provenance" {
+      return field
+    }
+    for subview in root.subviews {
+      if let found = provenanceField(in: subview) { return found }
+    }
+    return nil
+  }
+
+  @MainActor
+  private func waitUntil(
+    timeoutNanoseconds: UInt64 = 3_000_000_000, _ body: @MainActor () -> Bool
+  ) async -> Bool {
+    let deadline = DispatchTime.now().uptimeNanoseconds + timeoutNanoseconds
+    while DispatchTime.now().uptimeNanoseconds < deadline {
+      if body() { return true }
+      try? await Task.sleep(nanoseconds: 50_000_000)
+    }
+    return body()
   }
 
   private func openedMicrophone(title: String) throws -> OpenedMicrophone {

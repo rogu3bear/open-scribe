@@ -63,14 +63,12 @@ struct TranscriptSection: View {
             .foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
         }
-        if session.transcriptionUnavailableReason == nil, let provenance = transcripts.provenanceText
-        {
-          Text(provenance)
-            .font(.callout)
-            .foregroundStyle(.secondary)
-            .fixedSize(horizontal: false, vertical: true)
-        }
       }
+      ProvenanceReadout(
+        text: session.transcriptionUnavailableReason == nil ? transcripts.provenanceText : nil
+      )
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .fixedSize(horizontal: false, vertical: true)
       if showsTranscriptionControls {
         transcriptionControls
       }
@@ -603,6 +601,63 @@ struct ClaimReviewSection: View {
     }
     parts.append(claim.text)
     return parts.joined(separator: ". ")
+  }
+}
+
+/// The stored run, shown with the transcript section. The field exists on the
+/// first layout and fills when the section loads provenance.
+private struct ProvenanceReadout: NSViewRepresentable {
+  let text: String?
+
+  func makeNSView(context: Context) -> ProvenanceReadoutControl {
+    let view = ProvenanceReadoutControl()
+    view.apply(text)
+    return view
+  }
+
+  func updateNSView(_ view: ProvenanceReadoutControl, context: Context) {
+    view.apply(text)
+  }
+}
+
+private final class ProvenanceReadoutControl: NSView {
+  private let field = NSTextField(wrappingLabelWithString: "")
+
+  override init(frame frameRect: NSRect) {
+    super.init(frame: frameRect)
+    field.font = .preferredFont(forTextStyle: .callout)
+    field.textColor = .secondaryLabelColor
+    field.setAccessibilityLabel("Model provenance")
+    field.setAccessibilityRole(.staticText)
+    field.isSelectable = true
+    field.maximumNumberOfLines = 0
+    field.cell?.wraps = true
+    field.cell?.isScrollable = false
+    field.translatesAutoresizingMaskIntoConstraints = false
+    addSubview(field)
+    NSLayoutConstraint.activate([
+      field.leadingAnchor.constraint(equalTo: leadingAnchor),
+      field.trailingAnchor.constraint(equalTo: trailingAnchor),
+      field.topAnchor.constraint(equalTo: topAnchor),
+      field.bottomAnchor.constraint(equalTo: bottomAnchor),
+    ])
+  }
+
+  required init?(coder: NSCoder) { nil }
+
+  override var intrinsicContentSize: NSSize {
+    guard !field.isHidden else { return NSSize(width: NSView.noIntrinsicMetric, height: 0) }
+    field.preferredMaxLayoutWidth = 680
+    let height = max(field.intrinsicContentSize.height, 28)
+    return NSSize(width: NSView.noIntrinsicMetric, height: height)
+  }
+
+  func apply(_ text: String?) {
+    let shown = text ?? ""
+    field.stringValue = shown
+    field.isHidden = shown.isEmpty
+    field.preferredMaxLayoutWidth = 680
+    invalidateIntrinsicContentSize()
   }
 }
 
