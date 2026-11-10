@@ -237,6 +237,7 @@ fn managed_caf_import_preserves_original_and_enters_the_existing_library() {
 
     assert!(evidence.ready_for_review);
     assert!(evidence.original_untouched);
+    assert!(!evidence.repeated_source);
     assert_eq!(evidence.sample_count, 960);
     assert_eq!(evidence.digest_sha256.len(), 64);
     assert_eq!(fs::read(&source_path).unwrap(), original);
@@ -287,6 +288,62 @@ fn managed_caf_import_preserves_original_and_enters_the_existing_library() {
             .unwrap(),
         0
     );
+}
+
+#[test]
+fn a_repeated_import_keeps_a_separate_conversation_and_the_first_bytes() {
+    let temp = TempDir::new().unwrap();
+    let source_path = temp.path().join("donella-review.caf");
+    write_recoverable_caf(&source_path, 960);
+    let original = fs::read(&source_path).unwrap();
+    let mut store = SessionStore::open(temp.path().join("Open Scribe")).unwrap();
+    let first = store
+        .import_recoverable_caf(ImportMediaRequest {
+            title: "Donella review".to_owned(),
+            source_path: source_path.clone(),
+        })
+        .unwrap();
+    let second = store
+        .import_recoverable_caf(ImportMediaRequest {
+            title: "Donella review again".to_owned(),
+            source_path,
+        })
+        .unwrap();
+
+    assert!(!first.repeated_source);
+    assert!(second.repeated_source);
+    assert_ne!(first.session_id, second.session_id);
+    assert_eq!(first.digest_sha256, second.digest_sha256);
+    assert_eq!(
+        fs::read(temp.path().join("donella-review.caf")).unwrap(),
+        original
+    );
+    let first_copy = store
+        .session_directory(&first.session_id.0)
+        .unwrap()
+        .join(&first.relative_path);
+    let second_copy = store
+        .session_directory(&second.session_id.0)
+        .unwrap()
+        .join(&second.relative_path);
+    assert_eq!(fs::read(first_copy).unwrap(), original);
+    assert_eq!(fs::read(second_copy).unwrap(), original);
+    let snapshot = store.runtime_library_snapshot().unwrap();
+    assert_eq!(snapshot.saved_sessions.len(), 2);
+    let first_saved = snapshot
+        .saved_sessions
+        .iter()
+        .find(|session| session.session_id == first.session_id)
+        .unwrap();
+    let second_saved = snapshot
+        .saved_sessions
+        .iter()
+        .find(|session| session.session_id == second.session_id)
+        .unwrap();
+    assert_eq!(first_saved.title, "Donella review");
+    assert_eq!(second_saved.title, "Donella review again");
+    assert_eq!(first_saved.lifecycle, "ready_for_review");
+    assert_eq!(second_saved.lifecycle, "ready_for_review");
 }
 
 #[test]

@@ -267,7 +267,7 @@ final class RuntimeLibraryStore: ObservableObject {
       guard evidence.originalUntouched, evidence.readyForReview else {
         throw RuntimeLibraryStoreError.importEvidenceRejected
       }
-      Task { @MainActor [weak self] in self?.refresh() }
+      publishImportedAudio(evidence)
       return evidence
     }
     guard let original = prepared.original else {
@@ -280,7 +280,7 @@ final class RuntimeLibraryStore: ObservableObject {
     guard evidence.originalUntouched, evidence.readyForReview else {
       throw RuntimeLibraryStoreError.importEvidenceRejected
     }
-    Task { @MainActor [weak self] in self?.refresh() }
+    publishImportedAudio(evidence)
     return evidence
   }
 
@@ -308,10 +308,21 @@ final class RuntimeLibraryStore: ObservableObject {
     guard evidence.originalUntouched, evidence.readyForReview else {
       throw RuntimeLibraryStoreError.importEvidenceRejected
     }
+    publishImportedAudio(evidence)
+    return evidence
+  }
+
+  nonisolated private func publishImportedAudio(_ evidence: NativeImportedMediaEvidence) {
+    let repeatedSource = evidence.repeatedSource
     Task { @MainActor [weak self] in
       self?.refresh()
+      guard repeatedSource else { return }
+      self?.report(
+        edit:
+          "This audio is already in the library. Open Scribe saved a separate conversation and left the existing one unchanged.",
+        failure: false
+      )
     }
-    return evidence
   }
 
   private func noteSnapshotIfChanged(

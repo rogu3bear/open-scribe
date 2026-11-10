@@ -4606,13 +4606,14 @@ public struct NativeImportedMediaEvidence: Equatable, Hashable {
   public let lastJournalSequence: UInt64
   public let originalUntouched: Bool
   public let readyForReview: Bool
+  public let repeatedSource: Bool
 
   // Default memberwise initializers are never public by default, so we
   // declare one manually.
   public init(
     sessionId: String, relativePath: String, byteLength: UInt64, sampleCount: UInt64,
     digestSha256: String, journalVersion: UInt32, lastJournalSequence: UInt64,
-    originalUntouched: Bool, readyForReview: Bool
+    originalUntouched: Bool, readyForReview: Bool, repeatedSource: Bool
   ) {
     self.sessionId = sessionId
     self.relativePath = relativePath
@@ -4623,6 +4624,7 @@ public struct NativeImportedMediaEvidence: Equatable, Hashable {
     self.lastJournalSequence = lastJournalSequence
     self.originalUntouched = originalUntouched
     self.readyForReview = readyForReview
+    self.repeatedSource = repeatedSource
   }
 
 }
@@ -4648,7 +4650,8 @@ public struct FfiConverterTypeNativeImportedMediaEvidence: FfiConverterRustBuffe
         journalVersion: FfiConverterUInt32.read(from: &buf),
         lastJournalSequence: FfiConverterUInt64.read(from: &buf),
         originalUntouched: FfiConverterBool.read(from: &buf),
-        readyForReview: FfiConverterBool.read(from: &buf)
+        readyForReview: FfiConverterBool.read(from: &buf),
+        repeatedSource: FfiConverterBool.read(from: &buf)
       )
   }
 
@@ -4662,6 +4665,7 @@ public struct FfiConverterTypeNativeImportedMediaEvidence: FfiConverterRustBuffe
     FfiConverterUInt64.write(value.lastJournalSequence, into: &buf)
     FfiConverterBool.write(value.originalUntouched, into: &buf)
     FfiConverterBool.write(value.readyForReview, into: &buf)
+    FfiConverterBool.write(value.repeatedSource, into: &buf)
   }
 }
 

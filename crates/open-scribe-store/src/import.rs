@@ -90,6 +90,8 @@ pub struct ImportedMediaEvidence {
     pub last_journal_sequence: u64,
     pub original_untouched: bool,
     pub ready_for_review: bool,
+    /// Another ready conversation already stores this source digest.
+    pub repeated_source: bool,
 }
 
 /// Open descriptor lease for one revalidated managed media object.
@@ -462,6 +464,8 @@ impl SessionStore {
                 StoreError::IntegrityMismatch("managed import rename was not synchronized")
             })?;
             self.project_import(&prepared.session_id.0, &payload, &journal_record)?;
+            let repeated_source = self
+                .another_ready_import_has_digest(&source.digest_sha256, &prepared.session_id.0)?;
 
             Ok(ImportedMediaEvidence {
                 session_id: prepared.session_id,
@@ -473,6 +477,7 @@ impl SessionStore {
                 last_journal_sequence: journal_record.body.sequence,
                 original_untouched: true,
                 ready_for_review: true,
+                repeated_source,
             })
         })();
 
@@ -768,6 +773,7 @@ impl SessionStore {
             .iter()
             .find(|record| record.body.event_kind == "media_import_staged")
             .ok_or(StoreError::IntegrityMismatch("import evidence is missing"))?;
+        let repeated_source = self.another_ready_import_has_digest(&digest_sha256, session_id)?;
         Ok(ImportedMediaEvidence {
             session_id: SessionId(session_id.to_owned()),
             relative_path,
@@ -780,7 +786,26 @@ impl SessionStore {
             last_journal_sequence: staged.body.sequence,
             original_untouched: true,
             ready_for_review: true,
+            repeated_source,
         })
+    }
+
+    fn another_ready_import_has_digest(
+        &self,
+        digest: &str,
+        session_id: &str,
+    ) -> Result<bool, StoreError> {
+        let count: i64 = self.connection.query_row(
+            "SELECT COUNT(*)
+             FROM imports
+             JOIN sessions ON sessions.id = imports.session_id
+             WHERE imports.source_digest = ?1
+               AND sessions.id != ?2
+               AND sessions.lifecycle = 'ready_for_review'",
+            params![digest, session_id],
+            |row| row.get(0),
+        )?;
+        Ok(count > 0)
     }
 
     pub(super) fn reconcile_import(

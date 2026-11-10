@@ -385,6 +385,78 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
     withExtendedLifetime(lease) {}
   }
 
+  func testRepeatedImportKeepsASeparateConversationAndLeavesTheFirstUnchanged() async throws {
+    let root = FileManager.default.temporaryDirectory
+      .appendingPathComponent(
+        "open-scribe-repeated-import-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let source = root.appendingPathComponent("Stereo memo.m4a")
+    do {
+      let file = try AVAudioFile(
+        forWriting: source,
+        settings: [
+          AVFormatIDKey: kAudioFormatAppleLossless,
+          AVSampleRateKey: 48_000.0,
+          AVNumberOfChannelsKey: 2,
+          AVEncoderBitDepthHintKey: 16,
+        ])
+      let buffer = try XCTUnwrap(
+        AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: 48_000))
+      buffer.frameLength = 48_000
+      let channels = try XCTUnwrap(buffer.floatChannelData)
+      for frame in 0..<48_000 {
+        channels[0][frame] = 0.25
+        channels[1][frame] = -0.125
+      }
+      try file.write(from: buffer)
+    }
+    let original = try Data(contentsOf: source)
+    let managedRoot = root.appendingPathComponent("Library", isDirectory: true)
+    let runtime = RuntimeLibraryStore(managedRoot: managedRoot)
+    let first = try runtime.importManagedAudio(title: "Stereo memo", sourceURL: source)
+    XCTAssertFalse(first.repeatedSource)
+    XCTAssertNil(runtime.editMessage)
+    let second = try runtime.importManagedAudio(title: "Stereo memo again", sourceURL: source)
+    XCTAssertTrue(second.repeatedSource)
+    XCTAssertNotEqual(first.sessionId, second.sessionId)
+    XCTAssertEqual(first.digestSha256, second.digestSha256)
+    XCTAssertEqual(try Data(contentsOf: source), original)
+
+    let reopened = try NativeRecordingPreparation.open(managedRoot: managedRoot.path)
+    let snapshot = try reopened.runtimeLibrarySnapshot()
+    XCTAssertEqual(snapshot.savedSessions.count, 2)
+    let firstSaved = try XCTUnwrap(
+      snapshot.savedSessions.first { $0.sessionId == first.sessionId })
+    let secondSaved = try XCTUnwrap(
+      snapshot.savedSessions.first { $0.sessionId == second.sessionId })
+    XCTAssertEqual(firstSaved.title, "Stereo memo")
+    XCTAssertEqual(secondSaved.title, "Stereo memo again")
+    XCTAssertEqual(firstSaved.lifecycle, "ready_for_review")
+    XCTAssertEqual(secondSaved.lifecycle, "ready_for_review")
+    XCTAssertEqual(firstSaved.playableMedia?.availability, "available")
+    XCTAssertEqual(secondSaved.playableMedia?.availability, "available")
+    for sessionId in [first.sessionId, second.sessionId] {
+      let lease = try reopened.leaseImportedPlayback(sessionId: sessionId)
+      let receipt = try RecoveredPlaybackDescriptorReceipt(serialized: lease.playbackPath())
+      let decoder = try CallbackCAFDecoder(
+        source: try VerifiedDescriptorPlaybackSource.prepare(receipt: receipt),
+        fileTypeHint: receipt.fileTypeHint, onClose: {})
+      defer { decoder.close() }
+      let decoded = try XCTUnwrap(decoder.read(maximumFrames: 4_096))
+      XCTAssertEqual(decoded.format.channelCount, 2)
+      XCTAssertEqual(decoded.floatChannelData?[0][0] ?? 0, 0.25, accuracy: 0.001)
+      XCTAssertEqual(decoded.floatChannelData?[1][0] ?? 0, -0.125, accuracy: 0.001)
+      withExtendedLifetime(lease) {}
+    }
+
+    await assertEventually {
+      runtime.editMessage
+        == "This audio is already in the library. Open Scribe saved a separate conversation and left the existing one unchanged."
+    }
+    XCTAssertFalse(runtime.editMessageIsFailure)
+  }
+
   /// Imported audio seeks inside the compressed media: a position in the
   /// second half decodes the second half's samples.
   func testImportedCompressedAudioSeeksToAPositionInTheMedia() async throws {
@@ -772,7 +844,8 @@ private func acceptedEvidence() -> NativeImportedMediaEvidence {
     journalVersion: 1,
     lastJournalSequence: 5,
     originalUntouched: true,
-    readyForReview: true
+    readyForReview: true,
+    repeatedSource: false
   )
 }
 

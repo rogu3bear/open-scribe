@@ -76,7 +76,7 @@ private struct ImportComponents {
     NativeImportedMediaEvidence(
       sessionId: title, relativePath: "audio/imported/fixture.caf", byteLength: 128,
       sampleCount: 42, digestSha256: String(repeating: "a", count: 64), journalVersion: 1,
-      lastJournalSequence: 5, originalUntouched: true, readyForReview: true)
+      lastJournalSequence: 5, originalUntouched: true, readyForReview: true, repeatedSource: false)
   }
 
   @MainActor private static func selections() -> [URL] {

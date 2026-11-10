@@ -276,6 +276,7 @@ pub struct NativeImportedMediaEvidence {
     pub last_journal_sequence: u64,
     pub original_untouched: bool,
     pub ready_for_review: bool,
+    pub repeated_source: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, uniffi::Record)]
@@ -326,6 +327,7 @@ impl From<open_scribe_core::ImportedMediaEvidence> for NativeImportedMediaEviden
             last_journal_sequence: evidence.last_journal_sequence,
             original_untouched: evidence.original_untouched,
             ready_for_review: evidence.ready_for_review,
+            repeated_source: evidence.repeated_source,
         }
     }
 }
