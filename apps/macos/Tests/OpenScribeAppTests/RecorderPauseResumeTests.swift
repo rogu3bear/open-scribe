@@ -1613,6 +1613,122 @@ final class RecorderPauseResumeTests: XCTestCase {
     XCTAssertEqual(try Self.byteCount(systemPath), systemBytes)
   }
 
+  /// System audio fails through the live controller, then the controller is
+  /// released without stop. Launch recovery discovers both tracks, keeps the
+  /// failed source, and a second launch repeats that result.
+  func testSourceLossThenForcedTerminationRecoversThroughLaunch() async throws {
+    let abandoned = try await abandonRecordingAfterSystemAudioLoss()
+    defer { try? FileManager.default.removeItem(at: abandoned.root) }
+    let systemBytes = try Self.byteCount(abandoned.systemPath)
+    let microphoneBytes = try Self.byteCount(abandoned.microphonePath)
+    XCTAssertGreaterThan(systemBytes, 0)
+    XCTAssertGreaterThan(microphoneBytes, 0)
+
+    let first = RecoveredSessionController(managedRoot: abandoned.root)
+    first.recoverOnLaunch()
+    await first.waitForLaunchRecovery()
+    XCTAssertEqual(first.phase, .available, first.errorMessage ?? "launch recovery failed")
+    XCTAssertTrue(first.captureSafetyComplete)
+    XCTAssertNil(first.errorMessage)
+    XCTAssertTrue(
+      first.recoveryFindings.contains {
+        $0.sessionId == abandoned.sessionId && $0.disposition == .playableMediaRecovered
+      })
+    let recoveredMicrophone = first.sessions.filter { $0.sourceKind == .microphone }
+    let recoveredSystem = first.sessions.filter { $0.sourceKind == .systemAudio }
+    XCTAssertFalse(recoveredMicrophone.isEmpty)
+    XCTAssertFalse(recoveredSystem.isEmpty)
+    XCTAssertTrue(recoveredMicrophone.allSatisfy(\.mediaPreserved))
+    XCTAssertTrue(recoveredSystem.allSatisfy(\.mediaPreserved))
+    XCTAssertTrue(recoveredMicrophone.allSatisfy(\.readyForReview))
+    XCTAssertTrue(recoveredSystem.allSatisfy(\.readyForReview))
+    XCTAssertTrue(recoveredSystem.allSatisfy { $0.sourceDisplayName == "Mac system audio" })
+    XCTAssertGreaterThan(
+      recoveredMicrophone.reduce(UInt64(0)) { $0 + $1.sampleCount },
+      recoveredSystem.reduce(UInt64(0)) { $0 + $1.sampleCount })
+    XCTAssertEqual(try Self.byteCount(abandoned.systemPath), systemBytes)
+    XCTAssertEqual(try Self.byteCount(abandoned.microphonePath), microphoneBytes)
+
+    let loss = try recoveredSourceLoss(abandoned)
+    XCTAssertEqual(loss.label, "Mac system audio")
+    XCTAssertGreaterThan(loss.sessionNanoseconds, 0)
+    XCTAssertEqual(loss.lifecycle, "ready_for_review")
+    XCTAssertEqual(loss.health, "degraded")
+
+    let second = RecoveredSessionController(managedRoot: abandoned.root)
+    second.recoverOnLaunch()
+    await second.waitForLaunchRecovery()
+    XCTAssertEqual(second.phase, .available, second.errorMessage ?? "second launch failed")
+    XCTAssertEqual(
+      second.sessions.map(\.segmentId).sorted(), first.sessions.map(\.segmentId).sorted())
+    XCTAssertEqual(
+      second.sessions.map(\.sampleCount).sorted(), first.sessions.map(\.sampleCount).sorted())
+    let lossAfter = try recoveredSourceLoss(abandoned)
+    XCTAssertEqual(lossAfter.label, loss.label)
+    XCTAssertEqual(lossAfter.sessionNanoseconds, loss.sessionNanoseconds)
+    XCTAssertEqual(lossAfter.failureCount, 1)
+    XCTAssertEqual(try Self.byteCount(abandoned.systemPath), systemBytes)
+    XCTAssertEqual(try Self.byteCount(abandoned.microphonePath), microphoneBytes)
+  }
+
+  private struct AbandonedCapture {
+    let root: URL
+    let sessionId: String
+    let microphonePath: String
+    let systemPath: String
+  }
+
+  private struct RecoveredSourceLoss {
+    let label: String
+    let sessionNanoseconds: Int64
+    let lifecycle: String
+    let health: String
+    let failureCount: Int
+  }
+
+  private func abandonRecordingAfterSystemAudioLoss() async throws -> AbandonedCapture {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+      UUID().uuidString, isDirectory: true)
+    let harness = try PauseHarness(managedRoot: root)
+    await harness.controller.start()
+    try await harness.capture()
+    let microphone = try XCTUnwrap(harness.captures.microphones.last)
+    let system = try XCTUnwrap(harness.captures.systems.last)
+    let sessionId = microphone.writer.authorization.sessionId
+    system.fail(.writerFailed)
+    await settle()
+    XCTAssertEqual(harness.controller.phase, .capturing)
+    XCTAssertEqual(
+      harness.controller.errorMessage,
+      "Mac system audio stopped. Remaining audio is still recording. writerFailed")
+    XCTAssertEqual(system.stopCount, 1)
+    XCTAssertEqual(microphone.stopCount, 0)
+    harness.clock.advance(seconds: 1)
+    try microphone.emit(frames: 48_000, hostTime: harness.clock.now, value: 4096)
+    XCTAssertEqual(microphone.stopCount, 0)
+    return AbandonedCapture(
+      root: root, sessionId: sessionId,
+      microphonePath: microphone.writer.authorization.absolutePath,
+      systemPath: system.writer.authorization.absolutePath)
+  }
+
+  private func recoveredSourceLoss(_ abandoned: AbandonedCapture) throws -> RecoveredSourceLoss {
+    let preparation = try NativeRecordingPreparation.open(managedRoot: abandoned.root.path)
+    let detail = try preparation.recorderDetail(sessionId: abandoned.sessionId)
+    let snapshot = try preparation.runtimeLibrarySnapshot()
+    let session = try XCTUnwrap(
+      snapshot.savedSessions.first { $0.sessionId == abandoned.sessionId } ?? snapshot.currentSession
+    )
+    let system = try XCTUnwrap(session.sources.first { $0.kind == .systemAudio })
+    XCTAssertEqual(system.lifecycle, "failed")
+    XCTAssertEqual(system.displayName, "Mac system audio")
+    let failures = detail.events.filter { $0.kind == "source_failed" }
+    let loss = try XCTUnwrap(failures.first)
+    return RecoveredSourceLoss(
+      label: loss.label, sessionNanoseconds: loss.sessionNanoseconds,
+      lifecycle: session.lifecycle, health: session.health, failureCount: failures.count)
+  }
+
   /// Add Marker uses the session clock. The saved recording still has the marker
   /// and its source tracks.
   func testAddMarkerStaysOnTheSessionClockAfterTheRecordingIsSaved() async throws {
