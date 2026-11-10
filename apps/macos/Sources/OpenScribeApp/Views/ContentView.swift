@@ -1,3 +1,4 @@
+import Combine
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -282,7 +283,6 @@ struct ContentView: View {
   @ViewBuilder
   private var selectedWorkspace: some View {
     VStack(spacing: 0) {
-      dropConfirmation
       statusBanner
       if let selectedSession {
         if selectedSession.sessionId == store.currentSession?.sessionId,
@@ -327,24 +327,15 @@ struct ContentView: View {
       }
     }
     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    .overlay(alignment: .top) {
+      dropConfirmation
+    }
   }
 
-  @ViewBuilder
   private var dropConfirmation: some View {
-    if let pending = importedMediaAuthority.pendingAudioImport {
-      HStack(alignment: .firstTextBaseline, spacing: ScribeSpacing.related) {
-        Text(ImportedMediaAuthorityAdapter.dropConfirmationMessage(urls: pending.urls))
-          .frame(maxWidth: .infinity, alignment: .leading)
-        Button("Import") { importedMediaAuthority.confirmPendingAudioImport() }
-          .accessibilityLabel("Confirm audio import")
-        Button("Cancel") { importedMediaAuthority.cancelPendingAudioImport() }
-          .accessibilityLabel("Cancel audio import")
-      }
-      .font(.callout)
-      .padding(.horizontal, ScribeSpacing.standard)
-      .padding(.vertical, ScribeSpacing.related)
-      .accessibilityElement(children: .contain)
-    }
+    DropConfirmationMount(authority: importedMediaAuthority)
+      .frame(maxWidth: .infinity)
+      .frame(height: 44)
   }
 
   @ViewBuilder
@@ -528,6 +519,121 @@ struct ContentView: View {
     )
   }
 }
+
+/// The library drop sets `pendingAudioImport` while AppKit is still laying out
+/// the destination. A SwiftUI banner computed in that pass does not appear in
+/// the hosting view that received the drop. This strip is created with the
+/// first layout and reveals its own buttons when the pending file changes.
+private struct DropConfirmationMount: NSViewRepresentable {
+  @ObservedObject var authority: ImportedMediaAuthorityAdapter
+
+  func makeNSView(context: Context) -> DropConfirmationBannerView {
+    let view = DropConfirmationBannerView()
+    view.bind(authority)
+    return view
+  }
+
+  func updateNSView(_ view: DropConfirmationBannerView, context: Context) {
+    view.bind(authority)
+  }
+}
+
+private final class DropConfirmationBannerView: NSView {
+  private let message = NSTextField(labelWithString: "")
+  private let importButton = NSButton(title: "Import", target: nil, action: nil)
+  private let cancelButton = NSButton(title: "Cancel", target: nil, action: nil)
+  private var subscription: AnyCancellable?
+  private var authority: ImportedMediaAuthorityAdapter?
+  private var showsConfirmation = false
+
+  override init(frame frameRect: NSRect) {
+    super.init(frame: frameRect)
+    setAccessibilityIdentifier("Drop confirmation")
+    message.lineBreakMode = .byTruncatingMiddle
+    message.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+    message.font = .preferredFont(forTextStyle: .callout)
+    importButton.bezelStyle = .rounded
+    importButton.setAccessibilityLabel("Confirm audio import")
+    importButton.target = self
+    importButton.action = #selector(confirmImport)
+    cancelButton.bezelStyle = .rounded
+    cancelButton.setAccessibilityLabel("Cancel audio import")
+    cancelButton.target = self
+    cancelButton.action = #selector(cancelImport)
+    for item in [message, importButton, cancelButton] {
+      item.translatesAutoresizingMaskIntoConstraints = false
+      addSubview(item)
+    }
+    NSLayoutConstraint.activate([
+      message.leadingAnchor.constraint(equalTo: leadingAnchor, constant: ScribeSpacing.standard),
+      message.centerYAnchor.constraint(equalTo: centerYAnchor),
+      cancelButton.trailingAnchor.constraint(
+        equalTo: trailingAnchor, constant: -ScribeSpacing.standard),
+      cancelButton.centerYAnchor.constraint(equalTo: centerYAnchor),
+      importButton.trailingAnchor.constraint(
+        equalTo: cancelButton.leadingAnchor, constant: -ScribeSpacing.related),
+      importButton.centerYAnchor.constraint(equalTo: centerYAnchor),
+      message.trailingAnchor.constraint(
+        lessThanOrEqualTo: importButton.leadingAnchor, constant: -ScribeSpacing.related),
+    ])
+    apply(nil)
+  }
+
+  required init?(coder: NSCoder) {
+    nil
+  }
+
+  func bind(_ authority: ImportedMediaAuthorityAdapter) {
+    guard self.authority !== authority else { return }
+    self.authority = authority
+    subscription = authority.$pendingAudioImport.sink { [weak self] pending in
+      DispatchQueue.main.async {
+        self?.apply(pending)
+      }
+    }
+    DispatchQueue.main.async { [weak self] in
+      self?.apply(self?.authority?.pendingAudioImport)
+    }
+  }
+
+  override func hitTest(_ point: NSPoint) -> NSView? {
+    guard showsConfirmation else { return nil }
+    let hit = super.hitTest(point)
+    return hit === self ? nil : hit
+  }
+
+  override func draw(_ dirtyRect: NSRect) {
+    guard showsConfirmation else { return }
+    NSColor.windowBackgroundColor.setFill()
+    dirtyRect.fill()
+  }
+
+  private func apply(_ pending: PendingAudioImport?) {
+    showsConfirmation = pending != nil
+    message.isHidden = pending == nil
+    importButton.isHidden = pending == nil
+    cancelButton.isHidden = pending == nil
+    message.stringValue =
+      pending.map { ImportedMediaAuthorityAdapter.dropConfirmationMessage(urls: $0.urls) } ?? ""
+    needsDisplay = true
+    layoutSubtreeIfNeeded()
+  }
+
+  @objc private func confirmImport() {
+    let authority = authority
+    Task { @MainActor in
+      authority?.confirmPendingAudioImport()
+    }
+  }
+
+  @objc private func cancelImport() {
+    let authority = authority
+    Task { @MainActor in
+      authority?.cancelPendingAudioImport()
+    }
+  }
+}
+
 private struct WorkspaceNotice: Identifiable {
   let id: String
   let message: String

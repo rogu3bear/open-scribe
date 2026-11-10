@@ -1994,54 +1994,72 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
     withExtendedLifetime(drag) {}
   }
 
-  /// A file dropped on the hosted library imports when that same window's banner button is pressed.
-  /// The original stays where it is.
+  /// A file dropped on the hosted library imports when that same hosting view's
+  /// banner button is pressed. The imported item then plays, transcribes through
+  /// the automatic queue, and accepts speaker review, search, correction, and
+  /// export. The test does not call `stageDroppedAudio`, `confirmPendingAudioImport`,
+  /// or `transcribe`. Set `OPEN_SCRIBE_WHISPER_MODEL` and
+  /// `OPEN_SCRIBE_WHISPER_SPEECH_M4A` (`TEST_RUNNER_` prefix under xcodebuild).
   func testAHostedDropConfirmedFromTheBannerImportsAndLeavesTheOriginal() async throws {
+    let environment = ProcessInfo.processInfo.environment
+    guard let modelPath = environment["OPEN_SCRIBE_WHISPER_MODEL"],
+      let speechPath = environment["OPEN_SCRIBE_WHISPER_SPEECH_M4A"]
+    else {
+      throw XCTSkip(
+        "Set OPEN_SCRIBE_WHISPER_MODEL and OPEN_SCRIBE_WHISPER_SPEECH_M4A for the hosted drop.")
+    }
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(
       "open-scribe-drop-confirm-\(UUID().uuidString)", isDirectory: true)
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
     defer { try? FileManager.default.removeItem(at: root) }
-    let source = root.appendingPathComponent("Banner confirm.m4a")
-    do {
-      let file = try AVAudioFile(
-        forWriting: source,
-        settings: [
-          AVFormatIDKey: kAudioFormatAppleLossless,
-          AVSampleRateKey: 48_000.0,
-          AVNumberOfChannelsKey: 1,
-          AVEncoderBitDepthHintKey: 16,
-        ])
-      let buffer = try XCTUnwrap(
-        AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: 48_000))
-      buffer.frameLength = 48_000
-      let channel = try XCTUnwrap(buffer.floatChannelData?[0])
-      for frame in 0..<48_000 {
-        channel[frame] = frame < 24_000 ? 0.25 : -0.5
-      }
-      try file.write(from: buffer)
-    }
+    let source = root.appendingPathComponent("Dropped memo.m4a")
+    try FileManager.default.copyItem(at: URL(fileURLWithPath: speechPath), to: source)
     let original = try Data(contentsOf: source)
+    let modelURL = URL(fileURLWithPath: modelPath)
+    let modelBytes = try XCTUnwrap(modelURL.resourceValues(forKeys: [.fileSizeKey]).fileSize)
     let importRoot = root.appendingPathComponent("Library", isDirectory: true)
     try FileManager.default.createDirectory(at: importRoot, withIntermediateDirectories: false)
-    let store = RuntimeLibraryStore(managedRoot: importRoot, refreshesImmediately: false)
+    let recovery = RecoveredSessionController(managedRoot: importRoot)
+    let live = LiveMicrophoneRecordingController(managedRoot: importRoot)
+    live.isLaunchRecoveryPending = { !recovery.captureSafetyComplete }
+    let store = RuntimeLibraryStore(
+      managedRoot: importRoot,
+      isLaunchRecoveryPending: { !recovery.captureSafetyComplete })
+    let speech = SpeechTranscriptionModel(managedRoot: importRoot)
+    let pressure = SystemPressureMonitor(libraryRoot: importRoot)
+    let defaults = UserDefaults(
+      suiteName: "OpenScribe.Proof.HostedDrop.\(UUID().uuidString)")!
+    let scheduler = TranscriptionScheduler(
+      managedRoot: importRoot, speech: speech, store: store, liveRecording: live,
+      recovery: recovery, pressure: pressure, defaults: defaults)
+    recovery.recoverOnLaunch()
+    await recovery.waitForLaunchRecovery()
+    XCTAssertTrue(recovery.captureSafetyComplete)
+    await speech.refreshAndWait()
+    XCTAssertEqual(speech.readiness, .absent)
+    scheduler.reconsider()
+    let idle = await waitUntil(timeoutNanoseconds: 5_000_000_000) {
+      scheduler.queue.isEmpty && scheduler.runningSessionId == nil && scheduler.hold == nil
+    }
+    XCTAssertTrue(idle, "queue=\(scheduler.queue) hold=\(String(describing: scheduler.hold))")
     let adapter = ImportedMediaAuthorityAdapter(
       startSecurityScope: { _ in true },
       stopSecurityScope: { _ in },
+      canBeginImport: { live.canStart },
       importer: { title, url in
         try store.importManagedAudio(title: title, sourceURL: url)
       }
     )
-    let live = LiveMicrophoneRecordingController(managedRoot: importRoot)
-    let recovery = RecoveredSessionController(managedRoot: importRoot)
+    let transcripts = TranscriptLibraryModel(managedRoot: importRoot)
     let view = ContentView(
       store: store,
       importedMediaAuthority: adapter,
       liveRecording: live,
       recoveredSessions: recovery,
-      transcripts: TranscriptLibraryModel(managedRoot: importRoot),
-      speech: SpeechTranscriptionModel(managedRoot: importRoot),
-      scheduler: TranscriptionScheduler.inert(),
-      pressure: SystemPressureMonitor(libraryRoot: importRoot, samplesAutomatically: false),
+      transcripts: transcripts,
+      speech: speech,
+      scheduler: scheduler,
+      pressure: pressure,
       context: ContextScopeModel(
         binding: { nil },
         frames: IdleContextFrames(),
@@ -2072,6 +2090,7 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
     }
     let destination = try XCTUnwrap(dropDestination(in: host))
     XCTAssertTrue(shown, "class=\(type(of: destination))")
+    XCTAssertNil(bannerImportButton(in: host))
     let location = destination.convert(
       NSPoint(x: destination.bounds.midX, y: destination.bounds.midY), to: nil)
     let drag = AudioFileDrag(fileURL: source, window: window, location: location)
@@ -2095,42 +2114,141 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
     )
     XCTAssertEqual(adapter.phase, .idle)
     XCTAssertTrue(store.savedSessions.isEmpty)
-    // The drop host keeps its first AppKit body. Hiding this same window and
-    // installing a new view lets that view's first body show the banner at
-    // the full library size. A second window is not required.
-    window.orderOut(nil)
-    let bannerHost = NSHostingView(rootView: view)
-    bannerHost.sizingOptions = []
-    window.contentView = bannerHost
-    window.setContentSize(NSSize(width: 1100, height: 720))
-    bannerHost.frame = window.contentLayoutRect
-    window.makeKeyAndOrderFront(nil)
-    window.orderFrontRegardless()
-    let banner = await waitUntilRendered(bannerHost, window: window) {
-      settledBannerConfirmProxy(in: bannerHost) != nil
+    XCTAssertTrue(window.contentView === host)
+    let banner = await waitUntilPumped(host, window: window) {
+      bannerImportButton(in: host) != nil
     }
-    let proxy = settledBannerConfirmProxy(in: bannerHost)
+    let button = bannerImportButton(in: host)
     XCTAssertTrue(
-      banner && proxy != nil,
-      "key=\(window.isKeyWindow) bounds=\(bannerHost.bounds) pending=\(String(describing: adapter.pendingAudioImport?.urls)) proxies=\(focusProxyProbe(in: bannerHost))"
+      banner && button != nil && window.contentView === host,
+      "key=\(window.isKeyWindow) bounds=\(host.bounds) pending=\(String(describing: adapter.pendingAudioImport?.urls)) banner=\(bannerProbe(in: host)) proxies=\(focusProxyProbe(in: host))"
     )
-    let button = try XCTUnwrap(proxy)
-    XCTAssertTrue(button.window === window)
+    let control = try XCTUnwrap(button)
+    XCTAssertTrue(control.isDescendant(of: host))
+    XCTAssertTrue(control.window === window)
+    XCTAssertFalse(control.isHidden)
     window.displayIfNeeded()
-    click(button)
+    click(control)
     let imported = await waitUntil { adapter.phase == .succeeded }
     XCTAssertTrue(
       imported,
-      "phase=\(adapter.phase) frame=\(button.frame) pending=\(String(describing: adapter.pendingAudioImport))"
+      "phase=\(adapter.phase) frame=\(control.frame) pending=\(String(describing: adapter.pendingAudioImport))"
     )
     XCTAssertNil(adapter.pendingAudioImport)
     XCTAssertNotNil(adapter.importedSessionId)
     XCTAssertEqual(try Data(contentsOf: source), original)
+    let sessionId = try XCTUnwrap(adapter.importedSessionId)
+    let queued = await waitUntil(timeoutNanoseconds: 15_000_000_000) {
+      scheduler.queue.map(\.sessionId) == [sessionId] && scheduler.hold == .noSpeechModel
+        && scheduler.runningSessionId == nil && speech.transcribingSessionId == nil
+    }
+    XCTAssertTrue(
+      queued,
+      "queue=\(scheduler.queue.map(\.sessionId)) hold=\(String(describing: scheduler.hold))"
+    )
+    XCTAssertEqual(scheduler.queue.first?.requestedByUser, false)
+    let managedCopy = try XCTUnwrap(importedAudioFile(under: importRoot))
+    let managedBefore = try Data(contentsOf: managedCopy)
+    let record = try XCTUnwrap(speech.models.first { $0.modelId == "whisper-small.en-q5_1" })
+    let installed = await speech.install(record, from: modelURL)
+    XCTAssertTrue(installed, speech.message ?? "")
+    let finished = await waitUntil(timeoutNanoseconds: 180_000_000_000) {
+      if case .finished = scheduler.state(for: sessionId) { return true }
+      return false
+    }
+    XCTAssertTrue(
+      finished,
+      "state=\(String(describing: scheduler.state(for: sessionId))) hold=\(String(describing: scheduler.hold)) running=\(String(describing: scheduler.runningSessionId)) message=\(speech.message ?? "")"
+    )
+    await transcripts.load(sessionId: sessionId)
+    XCTAssertEqual(transcripts.availability, .final)
+    let machine = try XCTUnwrap(
+      transcripts.segments.first {
+        $0.effectiveText.localizedCaseInsensitiveContains("recording safe")
+      })
+    await transcripts.search("recording")
+    let hit = try XCTUnwrap(
+      transcripts.searchResults.first {
+        $0.sessionId == sessionId && $0.effectiveText.localizedCaseInsensitiveContains("recording")
+      })
+    XCTAssertGreaterThan(hit.endNanoseconds, hit.startNanoseconds)
+    let preparation = try NativeRecordingPreparation.open(managedRoot: importRoot.path)
+    let saved = try XCTUnwrap(
+      try preparation.runtimeLibrarySnapshot().savedSessions.first { $0.sessionId == sessionId })
+    let session = RuntimeSessionPresentation(native: saved)
+    XCTAssertEqual(session.playableMedia?.isPlayable, true)
+    let player = RecoveredAudioPlayer(outputMode: .silent)
+    let playback = RecoveredSessionController(
+      recoveryFactory: { try NativeRecordingPreparation.open(managedRoot: importRoot.path) },
+      importedPlaybackLeaseProvider: { id in
+        try NativeRecordingPreparation.open(managedRoot: importRoot.path)
+          .leaseImportedPlayback(sessionId: id)
+      },
+      player: player)
+    playback.play(session, startNanoseconds: hit.startNanoseconds)
+    await assertEventually { playback.playingSessionId == sessionId }
+    XCTAssertNil(playback.errorMessage)
+    playback.stopPlayback()
+    let beginning = try sampleImported(preparation: preparation, sessionId: sessionId, frame: 0)
+    let later = try sampleImported(preparation: preparation, sessionId: sessionId, frame: 24_000)
+    XCTAssertEqual(beginning.count, later.count)
+    XCTAssertGreaterThan(beginning.count, 1)
+    XCTAssertNotEqual(beginning, later)
+    XCTAssertFalse(beginning.allSatisfy { $0 == 0 } && later.allSatisfy { $0 == 0 })
+    let renamed = await transcripts.renameSpeaker(trackId: machine.trackId, label: " Dana ")
+    XCTAssertTrue(renamed, transcripts.message ?? "")
+    let named = try XCTUnwrap(transcripts.segments.first { $0.sequence == machine.sequence })
+    XCTAssertEqual(named.speakerLabel, "Dana")
+    XCTAssertTrue(named.speakerNamedByUser)
+    XCTAssertEqual(named.verbatimText, machine.verbatimText)
+    let savedCorrection = await transcripts.correct(named, text: "The recording stays on this Mac.")
+    XCTAssertTrue(savedCorrection, transcripts.message ?? "")
+    let corrected = try XCTUnwrap(transcripts.segments.first { $0.sequence == machine.sequence })
+    XCTAssertEqual(corrected.verbatimText, machine.verbatimText)
+    XCTAssertEqual(corrected.effectiveText, "The recording stays on this Mac.")
+    XCTAssertTrue(corrected.corrected)
+    XCTAssertEqual(corrected.speakerLabel, "Dana")
+    await transcripts.search("stays on this Mac")
+    XCTAssertTrue(
+      transcripts.searchResults.contains {
+        $0.sessionId == sessionId
+          && $0.effectiveText.localizedCaseInsensitiveContains("stays on this Mac")
+      })
+    let markdown = root.appendingPathComponent("Dropped.md")
+    let wroteMarkdown = await transcripts.export(format: .markdown, to: markdown)
+    XCTAssertTrue(wroteMarkdown, transcripts.message ?? "")
+    let markdownText = try String(contentsOf: markdown, encoding: .utf8)
+    XCTAssertTrue(markdownText.localizedCaseInsensitiveContains("Dana"))
+    XCTAssertTrue(markdownText.localizedCaseInsensitiveContains("stays on this Mac"))
+    let jsonURL = root.appendingPathComponent("Dropped.json")
+    let wroteJSON = await transcripts.export(format: .transcriptJson, to: jsonURL)
+    XCTAssertTrue(wroteJSON, transcripts.message ?? "")
+    let document = try XCTUnwrap(
+      JSONSerialization.jsonObject(with: Data(contentsOf: jsonURL)) as? [String: Any])
+    let exportedSegments = try XCTUnwrap(document["segments"] as? [[String: Any]])
+    let exported = try XCTUnwrap(
+      exportedSegments.first {
+        ($0["effective_text"] as? String) == "The recording stays on this Mac."
+      })
+    XCTAssertEqual(exported["verbatim_text"] as? String, machine.verbatimText)
+    XCTAssertNotEqual(exported["verbatim_text"] as? String, exported["effective_text"] as? String)
+    let exportedAudio = root.appendingPathComponent("Exported.m4a")
+    let wroteAudio = await transcripts.export(.original, to: exportedAudio)
+    XCTAssertTrue(wroteAudio, transcripts.message ?? "")
+    XCTAssertEqual(try Data(contentsOf: exportedAudio), managedBefore)
+    XCTAssertEqual(try Data(contentsOf: managedCopy), managedBefore)
+    XCTAssertEqual(try Data(contentsOf: source), original)
+    XCTAssertEqual(try modelURL.resourceValues(forKeys: [.fileSizeKey]).fileSize, modelBytes)
     withExtendedLifetime(store) {}
     withExtendedLifetime(live) {}
     withExtendedLifetime(recovery) {}
     withExtendedLifetime(window) {}
     withExtendedLifetime(drag) {}
+    withExtendedLifetime(scheduler) {}
+    withExtendedLifetime(speech) {}
+    withExtendedLifetime(pressure) {}
+    withExtendedLifetime(playback) {}
+    withExtendedLifetime(player) {}
   }
 
   private func dropDestination(in root: NSView) -> NSView? {
@@ -2210,6 +2328,47 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
       }
     }
     return leftBannerConfirmProxy(in: root)
+  }
+
+  /// The AppKit Import button the drop host reveals after a file is staged.
+  private func bannerImportButton(in root: NSView) -> NSButton? {
+    var matched: NSButton?
+    func walk(_ view: NSView) {
+      if matched != nil { return }
+      if let button = view as? NSButton,
+        button.accessibilityLabel() == confirmControlLabel,
+        button.isHidden == false,
+        button.frame.width > 1,
+        button.frame.height > 1
+      {
+        matched = button
+      }
+      for child in view.subviews {
+        walk(child)
+      }
+    }
+    walk(root)
+    return matched
+  }
+
+  private func bannerProbe(in root: NSView) -> [String] {
+    var lines: [String] = []
+    func walk(_ view: NSView) {
+      let name = String(describing: type(of: view))
+      if name.contains("DropConfirmation") || view.accessibilityIdentifier() == "Drop confirmation"
+        || view is NSButton
+      {
+        let label = (view as? NSButton)?.accessibilityLabel() ?? ""
+        lines.append(
+          "\(name) frame=\(view.frame) hidden=\(view.isHidden) label=\(label) id=\(view.accessibilityIdentifier() ?? "")"
+        )
+      }
+      for child in view.subviews {
+        walk(child)
+      }
+    }
+    walk(root)
+    return lines
   }
 
   /// The banner's Import button is the left of the two wide focus proxies at the
@@ -2387,26 +2546,20 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
     return nil
   }
 
-  private func renderHostedFrame(_ host: NSHostingView<ContentView>, window: NSWindow) {
-    host._renderForTest(interval: 1.0 / 60.0)
-    for _ in 0..<4 {
-      if host._renderAsyncForTest(interval: 1.0 / 60.0) == false { break }
-    }
-    window.displayIfNeeded()
-  }
-
-  private func waitUntilRendered(
-    _ host: NSHostingView<ContentView>,
+  /// Turns the main queue without laying the host out again. A layout pass
+  /// during the drop discards the banner; the later turn has to mount it.
+  private func waitUntilPumped(
+    _ host: NSView,
     window: NSWindow,
     timeoutNanoseconds: UInt64 = 5_000_000_000,
     _ predicate: () -> Bool
   ) async -> Bool {
     let started = DispatchTime.now().uptimeNanoseconds
     while true {
-      let turned = expectation(description: "hosted frame")
+      let turned = expectation(description: "hosted turn")
       DispatchQueue.main.async { turned.fulfill() }
       await fulfillment(of: [turned], timeout: 1)
-      renderHostedFrame(host, window: window)
+      window.displayIfNeeded()
       if predicate() { return true }
       if DispatchTime.now().uptimeNanoseconds - started >= timeoutNanoseconds {
         return false
