@@ -1147,9 +1147,8 @@ private struct EmptyConversationWorkspace: View {
       .multilineTextAlignment(.center)
       .frame(maxWidth: 440)
       HStack {
-        Button("Record", systemImage: "record.circle", action: onRecord)
-          .disabled(!canRecord)
-          .buttonStyle(.borderedProminent)
+        RecordStartMount(enabled: canRecord, onRecord: onRecord)
+          .frame(width: 120, height: 32)
         if let onOpenPackage {
           Button("Portable Package…", action: onOpenPackage)
             .disabled(!canImport)
@@ -1160,6 +1159,61 @@ private struct EmptyConversationWorkspace: View {
     .padding(32)
     .frame(maxWidth: .infinity, maxHeight: .infinity)
     .accessibilityElement(children: .contain)
+  }
+}
+
+/// The empty library's Record control. The button is created with the first
+/// layout and calls the same start the toolbar uses.
+private struct RecordStartMount: NSViewRepresentable {
+  let enabled: Bool
+  let onRecord: () -> Void
+
+  func makeNSView(context: Context) -> RecordStartControl {
+    let view = RecordStartControl()
+    view.bind(enabled: enabled, onRecord: onRecord)
+    return view
+  }
+
+  func updateNSView(_ view: RecordStartControl, context: Context) {
+    view.bind(enabled: enabled, onRecord: onRecord)
+  }
+}
+
+private final class RecordStartControl: NSView {
+  private let button = NSButton(
+    title: ConversationControlLabels.record, target: nil, action: nil)
+  private var onRecord: (() -> Void)?
+
+  override init(frame frameRect: NSRect) {
+    super.init(frame: frameRect)
+    setAccessibilityIdentifier("Record conversation")
+    button.bezelStyle = .rounded
+    button.controlSize = .large
+    button.setAccessibilityLabel(ConversationControlLabels.record)
+    button.setAccessibilityIdentifier("Record conversation")
+    button.target = self
+    button.action = #selector(record)
+    button.translatesAutoresizingMaskIntoConstraints = false
+    addSubview(button)
+    NSLayoutConstraint.activate([
+      button.leadingAnchor.constraint(equalTo: leadingAnchor),
+      button.centerYAnchor.constraint(equalTo: centerYAnchor),
+      button.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor),
+    ])
+  }
+
+  required init?(coder: NSCoder) {
+    nil
+  }
+
+  func bind(enabled: Bool, onRecord: @escaping () -> Void) {
+    self.onRecord = onRecord
+    button.isEnabled = enabled
+  }
+
+  @objc private func record() {
+    guard button.isEnabled else { return }
+    onRecord?()
   }
 }
 
