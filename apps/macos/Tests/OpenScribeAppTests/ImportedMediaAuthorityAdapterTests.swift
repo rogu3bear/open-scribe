@@ -2220,6 +2220,106 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
     withExtendedLifetime(window) {}
   }
 
+  /// Pressing Record in the idle menu starts the shipped recorder. The test
+  /// does not call `start`. Both selected sources stay named while preparation
+  /// is still short of Recording.
+  func testHostedMenuBarRecordStartsPreparationWithBothSources() async throws {
+    let harness = try PauseHarness()
+    defer { harness.removeFiles() }
+    let store = RuntimeLibraryStore(managedRoot: harness.root, refreshesImmediately: false)
+    let adapter = ImportedMediaAuthorityAdapter(
+      canBeginImport: { harness.controller.canStart },
+      importer: { title, url in
+        try store.importManagedAudio(title: title, sourceURL: url)
+      }
+    )
+    let menu = MenuBarContent(
+      store: store,
+      importedMediaAuthority: adapter,
+      liveRecording: harness.controller,
+      recoveredSessions: RecoveredSessionController(
+        recoveryFactory: {
+          try NativeRecordingPreparation.open(managedRoot: harness.root.path)
+        },
+        importedPlaybackLeaseProvider: { sessionId in
+          try NativeRecordingPreparation.open(managedRoot: harness.root.path)
+            .leaseImportedPlayback(sessionId: sessionId)
+        },
+        player: RecoveredAudioPlayerFake()
+      ),
+      context: ContextScopeModel(
+        binding: { nil },
+        frames: IdleContextFrames(),
+        permissionCheck: { .denied },
+        permissionRequest: { .denied },
+        topology: { [] }
+      ),
+      navigation: MainWorkspaceNavigation(),
+      scheduler: TranscriptionScheduler.inert(),
+      speech: SpeechTranscriptionModel(managedRoot: harness.root)
+    )
+    let host = NSHostingView(rootView: menu)
+    host.sizingOptions = []
+    let window = NSWindow(
+      contentRect: NSRect(x: 0, y: 0, width: 1100, height: 720),
+      styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    window.contentView = host
+    window.setContentSize(NSSize(width: 1100, height: 720))
+    host.frame = window.contentLayoutRect
+    window.makeKeyAndOrderFront(nil)
+    window.orderFrontRegardless()
+    defer { window.close() }
+    let expectedTitle = MenuBarContent.recordTitle(
+      lifecycle: nil, summary: harness.controller.sourceSelectionPresentation.summary)
+    let ready = await waitUntil(timeoutNanoseconds: 5_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      window.displayIfNeeded()
+      return self.menuBarRecordButton(in: host) != nil
+    }
+    let record = try XCTUnwrap(self.menuBarRecordButton(in: host))
+    XCTAssertTrue(ready && window.contentView === host)
+    XCTAssertTrue(record.isDescendant(of: host))
+    XCTAssertTrue(record.isEnabled)
+    XCTAssertEqual(record.title, expectedTitle)
+    XCTAssertEqual(record.keyEquivalent, "r")
+    XCTAssertEqual(record.keyEquivalentModifierMask, [.command, .shift])
+    XCTAssertEqual(harness.controller.phase, .idle)
+    XCTAssertTrue(harness.controller.canStart)
+    XCTAssertEqual(harness.captures.microphones.count, 0)
+    XCTAssertEqual(harness.captures.systems.count, 0)
+    record.performClick(nil)
+    let started = await waitUntil(timeoutNanoseconds: 8_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      return harness.controller.phase == .starting
+        && harness.captures.microphones.count == 1
+        && harness.captures.systems.count == 1
+    }
+    XCTAssertTrue(started, harness.controller.errorMessage ?? harness.controller.phase.rawValue)
+    XCTAssertEqual(harness.controller.statusText, "Starting microphone + system audio…")
+    XCTAssertEqual(
+      harness.controller.sourceSelectionPresentation.summary, "Microphone + Mac system audio")
+    XCTAssertFalse(harness.controller.canStart)
+    XCTAssertTrue(harness.controller.canStop)
+    let current = try XCTUnwrap(harness.preparation.runtimeLibrarySnapshot().currentSession)
+    XCTAssertEqual(current.lifecycle, "preparing")
+    let session = RuntimeSessionPresentation(native: current)
+    XCTAssertEqual(session.sources.map(\.name), ["Mac microphone", "Mac system audio"])
+    XCTAssertEqual(session.sources.map(\.stateText), ["Ready", "Ready"])
+    let preparingMenu = MenuBarLabel.presentation(
+      session: session,
+      snapshotStale: false,
+      livePhase: harness.controller.phase,
+      liveStatus: harness.controller.statusText)
+    XCTAssertFalse(preparingMenu.text.hasPrefix("Recording"))
+    XCTAssertFalse(preparingMenu.accessibilityText.hasPrefix("Recording"))
+    XCTAssertTrue(window.contentView === host)
+    withExtendedLifetime(store) {}
+    withExtendedLifetime(menu) {}
+    withExtendedLifetime(harness) {}
+    withExtendedLifetime(window) {}
+  }
+
   /// Pressing Audio Files… imports the file the chooser returns. The shipped
   /// default chooser is the open panel. This test supplies one file, presses
   /// the button, and does not call `chooseAndImport` or open the panel.
@@ -3383,6 +3483,25 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
   }
 
   private let playConversationLabel = "Play conversation audio"
+
+  private func menuBarRecordButton(in root: NSView) -> NSButton? {
+    var matched: NSButton?
+    func walk(_ view: NSView) {
+      if matched != nil { return }
+      if let button = view as? NSButton, !(button is NSPopUpButton),
+        button.accessibilityIdentifier() == "Menu bar record",
+        button.isHidden == false,
+        button.isHiddenOrHasHiddenAncestor == false,
+        button.frame.width > 1,
+        button.frame.height > 1
+      {
+        matched = button
+      }
+      for child in view.subviews { walk(child) }
+    }
+    walk(root)
+    return matched
+  }
 
   private func recordConversationButton(in root: NSView) -> NSButton? {
     var matched: NSButton?

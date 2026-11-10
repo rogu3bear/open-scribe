@@ -82,20 +82,19 @@ struct MenuBarContent: View {
         .accessibilityLabel(activity)
     }
     if liveRecording.canStart {
-      Button(
-        Self.recordTitle(
+      MenuBarRecordMount(
+        title: Self.recordTitle(
           lifecycle: store.currentSession?.lifecycle,
-          summary: liveRecording.sourceSelectionPresentation.summary)
-      ) {
-        Task {
-          await liveRecording.start()
-          store.refresh()
+          summary: liveRecording.sourceSelectionPresentation.summary),
+        enabled: recordActionEnabled,
+        onRecord: {
+          Task {
+            await liveRecording.start()
+            store.refresh()
+          }
         }
-      }
-      .disabled(!recordActionEnabled)
-      .keyboardShortcut(
-        ConversationControlLabels.recordShortcut.key,
-        modifiers: ConversationControlLabels.recordShortcut.modifiers)
+      )
+      .frame(width: 420, height: 32, alignment: .leading)
     }
     if liveRecording.canStop {
       Button(ConversationControlLabels.stopAndSave) {
@@ -207,6 +206,73 @@ struct MenuBarContent: View {
     case .failed: liveRecording.statusText
     default: liveRecording.readinessText
     }
+  }
+}
+
+/// The menu bar's idle Record control. The button is created with the first
+/// layout and calls the same start the menu action used.
+private struct MenuBarRecordMount: NSViewRepresentable {
+  let title: String
+  let enabled: Bool
+  let onRecord: () -> Void
+
+  func makeNSView(context: Context) -> MenuBarRecordControl {
+    let view = MenuBarRecordControl()
+    view.bind(title: title, enabled: enabled, onRecord: onRecord)
+    return view
+  }
+
+  func updateNSView(_ view: MenuBarRecordControl, context: Context) {
+    view.bind(title: title, enabled: enabled, onRecord: onRecord)
+  }
+}
+
+private final class MenuBarRecordControl: NSView {
+  private let button = NSButton(title: "", target: nil, action: nil)
+  private var onRecord: (() -> Void)?
+
+  override init(frame frameRect: NSRect) {
+    super.init(frame: frameRect)
+    setAccessibilityIdentifier("Menu bar record")
+    button.bezelStyle = .rounded
+    button.setAccessibilityIdentifier("Menu bar record")
+    let shortcut = ConversationControlLabels.recordShortcut
+    button.keyEquivalent = String(shortcut.key.character)
+    button.keyEquivalentModifierMask = Self.modifierMask(shortcut.modifiers)
+    button.target = self
+    button.action = #selector(record)
+    button.translatesAutoresizingMaskIntoConstraints = false
+    addSubview(button)
+    NSLayoutConstraint.activate([
+      button.leadingAnchor.constraint(equalTo: leadingAnchor),
+      button.centerYAnchor.constraint(equalTo: centerYAnchor),
+      button.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor),
+    ])
+  }
+
+  required init?(coder: NSCoder) {
+    nil
+  }
+
+  func bind(title: String, enabled: Bool, onRecord: @escaping () -> Void) {
+    self.onRecord = onRecord
+    button.title = title
+    button.setAccessibilityLabel(title)
+    button.isEnabled = enabled
+  }
+
+  @objc private func record() {
+    guard button.isEnabled else { return }
+    onRecord?()
+  }
+
+  private static func modifierMask(_ modifiers: EventModifiers) -> NSEvent.ModifierFlags {
+    var mask: NSEvent.ModifierFlags = []
+    if modifiers.contains(.command) { mask.insert(.command) }
+    if modifiers.contains(.shift) { mask.insert(.shift) }
+    if modifiers.contains(.option) { mask.insert(.option) }
+    if modifiers.contains(.control) { mask.insert(.control) }
+    return mask
   }
 }
 
