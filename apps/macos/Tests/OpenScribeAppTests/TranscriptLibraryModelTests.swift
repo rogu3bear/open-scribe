@@ -735,6 +735,157 @@ final class TranscriptLibraryModelTests: XCTestCase {
     withExtendedLifetime(capture) {}
   }
 
+  /// `systemTrash` moves the session directory after deletion has begun, and
+  /// the test stops before `completeDeletion`. The next launch recovery is
+  /// what removes the conversation. That recovery stores no Trash URL. The
+  /// URL returned by `systemTrash` is the only item removed.
+  func testLaunchRecoverySettlesASystemTrashMoveThatStoppedBeforeCompletion() async throws {
+    let (root, sessionId, capture) = try capturedSession()
+    var trashedSession: URL?
+    defer {
+      if let trashedSession, self.removableSystemTrashChild(trashedSession, sessionId: sessionId) {
+        try? FileManager.default.removeItem(at: trashedSession)
+      }
+      try? FileManager.default.removeItem(at: root)
+    }
+
+    let directory: URL
+    let relativeMedia: String
+    let mediaDigest: String
+    do {
+      let library = try NativeTranscriptLibrary.open(managedRoot: root.path)
+      let model = TranscriptLibraryModel(library: library)
+      await model.requestDeletion(sessionId: sessionId)
+      let inventory = try XCTUnwrap(model.pendingDeletion)
+      XCTAssertEqual(inventory.sessionId, sessionId)
+      XCTAssertGreaterThan(inventory.mediaFiles, 0)
+      directory = URL(fileURLWithPath: inventory.directoryPath, isDirectory: true)
+      let media = try self.firstAudioFile(under: directory)
+      relativeMedia = try self.pathRelative(to: directory, file: media)
+      mediaDigest = try self.sha256Hex(of: media)
+      let moved = try TranscriptLibraryModel.systemTrash(directory)
+      trashedSession = moved
+      XCTAssertFalse(FileManager.default.fileExists(atPath: directory.path))
+      let destination = try XCTUnwrap(moved)
+      XCTAssertTrue(self.removableSystemTrashChild(destination, sessionId: sessionId))
+      XCTAssertEqual(
+        try self.sha256Hex(of: destination.appendingPathComponent(relativeMedia)), mediaDigest)
+      let stillListed = try NativeRecordingPreparation.open(managedRoot: root.path)
+      XCTAssertTrue(
+        try stillListed.runtimeLibrarySnapshot().savedSessions.contains { $0.sessionId == sessionId },
+        "the move alone does not remove the conversation")
+    }
+
+    let recovery = RecoveredSessionController(managedRoot: root)
+    recovery.recoverOnLaunch()
+    await recovery.waitForLaunchRecovery()
+    XCTAssertTrue(recovery.captureSafetyComplete)
+    XCTAssertEqual(recovery.phase, .none)
+    XCTAssertFalse(recovery.sessions.contains { $0.sessionId == sessionId })
+    XCTAssertNil(recovery.errorMessage)
+
+    let preparation = try NativeRecordingPreparation.open(managedRoot: root.path)
+    XCTAssertFalse(
+      try preparation.runtimeLibrarySnapshot().savedSessions.contains { $0.sessionId == sessionId })
+    let receipt = try self.deletionSettlement(managedRoot: root, sessionId: sessionId)
+    XCTAssertEqual(receipt.receipts, 1)
+    XCTAssertEqual(receipt.intents, 0)
+    XCTAssertEqual(receipt.reference, "", "launch recovery completes without the Trash URL")
+    let destination = try XCTUnwrap(trashedSession)
+    XCTAssertEqual(
+      try self.sha256Hex(of: destination.appendingPathComponent(relativeMedia)), mediaDigest)
+    XCTAssertFalse(FileManager.default.fileExists(atPath: directory.path))
+
+    let again = RecoveredSessionController(managedRoot: root)
+    again.recoverOnLaunch()
+    await again.waitForLaunchRecovery()
+    XCTAssertTrue(again.captureSafetyComplete)
+    XCTAssertEqual(again.phase, .none)
+    let repeated = try self.deletionSettlement(managedRoot: root, sessionId: sessionId)
+    XCTAssertEqual(repeated.receipts, 1)
+    XCTAssertEqual(repeated.intents, 0)
+    XCTAssertEqual(repeated.reference, "")
+    XCTAssertEqual(
+      try self.sha256Hex(of: destination.appendingPathComponent(relativeMedia)), mediaDigest)
+
+    try FileManager.default.removeItem(at: destination)
+    trashedSession = nil
+    XCTAssertFalse(FileManager.default.fileExists(atPath: destination.path))
+    withExtendedLifetime(capture) {}
+  }
+
+  /// True only for the directory `systemTrash` returned, never the Trash folder.
+  private func removableSystemTrashChild(_ url: URL, sessionId: String) -> Bool {
+    let resolved = url.resolvingSymlinksInPath().standardizedFileURL
+    let name = resolved.lastPathComponent
+    guard name == sessionId || name.hasPrefix("\(sessionId) ") else { return false }
+    guard name != ".Trash", name != "Trash" else { return false }
+    guard resolved.deletingLastPathComponent().lastPathComponent == ".Trash" else { return false }
+    return FileManager.default.fileExists(atPath: resolved.path)
+  }
+
+  private func firstAudioFile(under directory: URL) throws -> URL {
+    guard
+      let enumerator = FileManager.default.enumerator(
+        at: directory, includingPropertiesForKeys: [.isRegularFileKey], options: [.skipsHiddenFiles]
+      )
+    else { throw CocoaError(.fileReadNoSuchFile) }
+    var matches: [URL] = []
+    for case let url as URL in enumerator where url.pathExtension == "caf" {
+      matches.append(url)
+    }
+    guard let first = matches.sorted(by: { $0.path < $1.path }).first else {
+      throw CocoaError(.fileReadNoSuchFile)
+    }
+    return first
+  }
+
+  private func pathRelative(to directory: URL, file: URL) throws -> String {
+    let base = directory.standardizedFileURL.path
+    let full = file.standardizedFileURL.path
+    let prefix = base.hasSuffix("/") ? base : base + "/"
+    guard full.hasPrefix(prefix) else { throw CocoaError(.fileReadInvalidFileName) }
+    return String(full.dropFirst(prefix.count))
+  }
+
+  private func sha256Hex(of url: URL) throws -> String {
+    SHA256.hash(data: try Data(contentsOf: url)).map { String(format: "%02x", $0) }.joined()
+  }
+
+  private func deletionSettlement(managedRoot: URL, sessionId: String) throws -> (
+    reference: String, receipts: Int, intents: Int
+  ) {
+    let allowed = CharacterSet(charactersIn: "0123456789abcdefABCDEF-")
+    guard sessionId.count == 36, sessionId.unicodeScalars.allSatisfy(allowed.contains) else {
+      throw CocoaError(.fileReadInvalidFileName)
+    }
+    let database = managedRoot.appendingPathComponent("Library.sqlite3")
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/usr/bin/sqlite3")
+    process.arguments = [
+      database.path,
+      """
+      SELECT ifnull((SELECT trash_reference FROM deletion_receipts \
+      WHERE session_id = '\(sessionId)' LIMIT 1), '') || '|' || \
+      (SELECT COUNT(*) FROM deletion_receipts WHERE session_id = '\(sessionId)') || '|' || \
+      (SELECT COUNT(*) FROM session_deletion_intents WHERE session_id = '\(sessionId)');
+      """,
+    ]
+    let output = Pipe()
+    process.standardOutput = output
+    process.standardError = Pipe()
+    try process.run()
+    process.waitUntilExit()
+    guard process.terminationStatus == 0 else { throw CocoaError(.fileReadCorruptFile) }
+    let text = String(data: output.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
+      .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    let parts = text.split(separator: "|", omittingEmptySubsequences: false).map(String.init)
+    guard parts.count == 3, let receipts = Int(parts[1]), let intents = Int(parts[2]) else {
+      throw CocoaError(.fileReadCorruptFile)
+    }
+    return (parts[0], receipts, intents)
+  }
+
   func testCancelDeletionKeepsAudioTranscriptAndCorrections() async throws {
     let (root, sessionId, capture) = try capturedSession()
     defer { try? FileManager.default.removeItem(at: root) }
