@@ -15,7 +15,8 @@ cd "$fixture"
 git init -q
 printf '/candidate/\n/log\n/script/\n' >.gitignore
 mkdir script
-cp "$script_dir/candidate.sh" "$script_dir/check_m1_complete.sh" "$script_dir/check_m4_complete.sh" script/
+cp "$script_dir/candidate.sh" "$script_dir/check_m1_complete.sh" "$script_dir/check_m2_complete.sh" \
+	"$script_dir/check_m4_complete.sh" script/
 printf 'committed input\n' >source.txt
 git add .gitignore source.txt
 git -c user.name='Candidate fixture' -c user.email='fixture@example.invalid' \
@@ -229,6 +230,121 @@ mv "$local_receipt" "$local_receipt.saved"
 ln -s "$local_receipt.saved" "$local_receipt"
 check_local_completion ''
 printf '%s\n' 'M4_COMPLETE_RECEIPT_TEST_GREEN cases=11'
+# M2 admits a name only from a receipt bound to this candidate. The five
+# behavior receipts alone stay HOLD while any unqualified source is unbound.
+m2_missing_all='live_draft_transcript,speaker_diarization,in_app_model_download_and_removal,compressed_import_package_restore,two_hour_package_round_trip'
+m2_source_all='local_whisper_final_transcription,speaker_correction,search,transcript_audio_synchronization_for_capture_timelines,imported_audio_seek,compressed_m4a_transcription_via_decoded_companion,transcript_text_exports,audio_exports,session_manifest,portable_package_writer_and_verifier,portable_package_import_round_trip_for_pcm_sessions'
+m2_behaviors=(
+	live_draft_transcript
+	speaker_diarization
+	in_app_model_download_and_removal
+	compressed_import_package_restore
+	two_hour_package_round_trip
+)
+m2_sources=(
+	local_whisper_final_transcription
+	speaker_correction
+	search
+	transcript_audio_synchronization_for_capture_timelines
+	imported_audio_seek
+	compressed_m4a_transcription_via_decoded_companion
+	transcript_text_exports
+	audio_exports
+	session_manifest
+	portable_package_writer_and_verifier
+	portable_package_import_round_trip_for_pcm_sessions
+)
+m2_marker() {
+	printf 'M2_%s_GREEN' "$(printf '%s' "$1" | tr '[:lower:]' '[:upper:]')"
+}
+write_m2_behavior() {
+	local name="$1" root="$candidate_root/m2-$1.fixture" log receipt
+	log="$root/harness.log"
+	receipt="$candidate_root/m2-$name.json"
+	mkdir -p "$root"
+	printf '%s\ncandidate_record_sha256=%s\n' "$(m2_marker "$name")" "$candidate_record_digest" >"$log"
+	jq -n --arg candidate "$candidate_record_digest" --arg name "$name" --arg root "$root" \
+		--arg digest "$(candidate_sha256 "$log")" \
+		'{schema:1, candidate_sha256:$candidate, behavior:$name, proof_root:$root,
+		  log_sha256:$digest, result:"M2_BEHAVIOR_GREEN", release_admission:false}' >"$receipt"
+}
+expect_m2() {
+	local status="$1" marker="$2" missing="$3" unqualified="$4" behaviors="$5" source="$6" result=0
+	if [[ "$status" == no-candidate ]]; then
+		bash "$fixture/script/check_m2_complete.sh" >"$fixture/log" 2>&1 || result=$?
+		[[ "$result" == 1 ]]
+	elif [[ "$status" == hold ]]; then
+		bash "$fixture/script/check_m2_complete.sh" --candidate "$candidate_record" >"$fixture/log" 2>&1 || result=$?
+		[[ "$result" == 1 ]]
+	else
+		bash "$fixture/script/check_m2_complete.sh" --candidate "$candidate_record" >"$fixture/log" 2>&1 || result=$?
+		[[ "$result" == 0 ]]
+	fi
+	rg -Fxq "$marker" "$fixture/log"
+	rg -Fxq "missing=$missing" "$fixture/log"
+	rg -Fxq "unqualified_source=$unqualified" "$fixture/log"
+	rg -Fxq "qualified_behaviors=$behaviors" "$fixture/log"
+	rg -Fxq "qualified_source=$source" "$fixture/log"
+	rg -Fxq 'release_admission=false' "$fixture/log"
+}
+expect_m2 no-candidate 'M2_COMPLETE_HOLD' "$m2_missing_all" "$m2_source_all" '' ''
+expect_m2 hold 'M2_COMPLETE_HOLD' "$m2_missing_all" "$m2_source_all" '' ''
+write_m2_behavior live_draft_transcript
+live_receipt="$(cat "$candidate_root/m2-live_draft_transcript.json")"
+live_log="$(cat "$candidate_root/m2-live_draft_transcript.fixture/harness.log")"
+live_root="$candidate_root/m2-live_draft_transcript.fixture"
+expect_m2 hold 'M2_COMPLETE_HOLD' \
+	'speaker_diarization,in_app_model_download_and_removal,compressed_import_package_restore,two_hour_package_round_trip' \
+	"$m2_source_all" live_draft_transcript ''
+jq '.candidate_sha256 = "another-build"' <<<"$live_receipt" >"$candidate_root/m2-live_draft_transcript.json"
+expect_m2 hold 'M2_COMPLETE_HOLD' "$m2_missing_all" "$m2_source_all" '' ''
+printf '%s\n' "$live_receipt" >"$candidate_root/m2-live_draft_transcript.json"
+printf 'changed\n' >>"$live_root/harness.log"
+expect_m2 hold 'M2_COMPLETE_HOLD' "$m2_missing_all" "$m2_source_all" '' ''
+printf 'candidate_record_sha256=%s\n' "$candidate_record_digest" >"$live_root/harness.log"
+jq --arg digest "$(candidate_sha256 "$live_root/harness.log")" '.log_sha256 = $digest' \
+	<<<"$live_receipt" >"$candidate_root/m2-live_draft_transcript.json"
+expect_m2 hold 'M2_COMPLETE_HOLD' "$m2_missing_all" "$m2_source_all" '' ''
+printf '%s\n' "$live_log" >"$live_root/harness.log"
+printf '%s\n' "$live_receipt" >"$candidate_root/m2-live_draft_transcript.json"
+mv "$candidate_root/m2-live_draft_transcript.json" "$candidate_root/m2-live_draft_transcript.json.saved"
+ln -s "$candidate_root/m2-live_draft_transcript.json.saved" "$candidate_root/m2-live_draft_transcript.json"
+expect_m2 hold 'M2_COMPLETE_HOLD' "$m2_missing_all" "$m2_source_all" '' ''
+rm "$candidate_root/m2-live_draft_transcript.json"
+mv "$candidate_root/m2-live_draft_transcript.json.saved" "$candidate_root/m2-live_draft_transcript.json"
+jq '.release_admission = true' <<<"$live_receipt" >"$candidate_root/m2-live_draft_transcript.json"
+expect_m2 hold 'M2_COMPLETE_HOLD' "$m2_missing_all" "$m2_source_all" '' ''
+jq '.result = "M2_COMPLETE_GREEN"' <<<"$live_receipt" >"$candidate_root/m2-live_draft_transcript.json"
+expect_m2 hold 'M2_COMPLETE_HOLD' "$m2_missing_all" "$m2_source_all" '' ''
+printf '%s\n' "$live_receipt" >"$candidate_root/m2-live_draft_transcript.json"
+mv "$live_root" "$live_root.saved"
+ln -s "$live_root.saved" "$live_root"
+expect_m2 hold 'M2_COMPLETE_HOLD' "$m2_missing_all" "$m2_source_all" '' ''
+rm "$live_root"
+mv "$live_root.saved" "$live_root"
+expect_m2 hold 'M2_COMPLETE_HOLD' \
+	'speaker_diarization,in_app_model_download_and_removal,compressed_import_package_restore,two_hour_package_round_trip' \
+	"$m2_source_all" live_draft_transcript ''
+for name in "${m2_behaviors[@]}"; do
+	[[ "$name" == live_draft_transcript ]] || write_m2_behavior "$name"
+done
+expect_m2 hold 'M2_COMPLETE_HOLD' '' "$m2_source_all" "$m2_missing_all" ''
+for name in "${m2_sources[@]}"; do
+	write_m2_behavior "$name"
+done
+expect_m2 green 'M2_COMPLETE_GREEN' '' '' "$m2_missing_all" "$m2_source_all"
+if rg -Fxq 'M2_COMPLETE_HOLD' "$fixture/log"; then
+	printf 'CANDIDATE_TEST_RED: hold survived a complete M2 receipt set\n' >&2
+	exit 1
+fi
+printf 'altered diagnostic\n' >>"$candidate_root/m2-search.fixture/harness.log"
+expect_m2 hold 'M2_COMPLETE_HOLD' '' search "$m2_missing_all" \
+	'local_whisper_final_transcription,speaker_correction,transcript_audio_synchronization_for_capture_timelines,imported_audio_seek,compressed_m4a_transcription_via_decoded_companion,transcript_text_exports,audio_exports,session_manifest,portable_package_writer_and_verifier,portable_package_import_round_trip_for_pcm_sessions'
+rm "$candidate_root/m2-two_hour_package_round_trip.json"
+expect_m2 hold 'M2_COMPLETE_HOLD' two_hour_package_round_trip search \
+	'live_draft_transcript,speaker_diarization,in_app_model_download_and_removal,compressed_import_package_restore' \
+	'local_whisper_final_transcription,speaker_correction,transcript_audio_synchronization_for_capture_timelines,imported_audio_seek,compressed_m4a_transcription_via_decoded_companion,transcript_text_exports,audio_exports,session_manifest,portable_package_writer_and_verifier,portable_package_import_round_trip_for_pcm_sessions'
+printf '%s\n' 'M2_COMPLETE_RECEIPT_TEST_GREEN cases=14'
 checks_contents="$(cat "$candidate_root/checks.json")"
 jq '.candidate_sha256 = "another-build"' <<<"$checks_contents" >"$candidate_root/checks.json"
 expect_rejection checks-from-another-build candidate_require_checks
