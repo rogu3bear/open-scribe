@@ -39,6 +39,14 @@ struct SettingsView: View {
 
   var body: some View {
     Form {
+      Section("Release") {
+        let release = ReleaseCapabilityClaims.load()
+        Text(release.noPublicRelease)
+          .font(.callout)
+        ForEach(release.capabilities, id: \.id) { claim in
+          LabeledContent(claim.terminology, value: claim.publicLabel)
+        }
+      }
       Section("Transcription") {
         Toggle("Transcribe new recordings automatically", isOn: $scheduler.isAutomatic)
         Toggle("Pause automatic transcription", isOn: $scheduler.isPaused)

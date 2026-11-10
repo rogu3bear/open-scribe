@@ -3334,6 +3334,70 @@ public func FfiConverterTypeNativeAuthorizedPart_lower(_ value: NativeAuthorized
   return FfiConverterTypeNativeAuthorizedPart.lower(value)
 }
 
+/// One capability the product may name, with the exclusion words for its maturity.
+public struct NativeCapabilityClaim: Equatable, Hashable {
+  public let id: String
+  public let terminology: String
+  public let maturity: String
+  public let publicLabel: String
+
+  // Default memberwise initializers are never public by default, so we
+  // declare one manually.
+  public init(id: String, terminology: String, maturity: String, publicLabel: String) {
+    self.id = id
+    self.terminology = terminology
+    self.maturity = maturity
+    self.publicLabel = publicLabel
+  }
+
+}
+
+#if compiler(>=6)
+  extension NativeCapabilityClaim: Sendable {}
+#endif
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeNativeCapabilityClaim: FfiConverterRustBuffer {
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws
+    -> NativeCapabilityClaim
+  {
+    return
+      try NativeCapabilityClaim(
+        id: FfiConverterString.read(from: &buf),
+        terminology: FfiConverterString.read(from: &buf),
+        maturity: FfiConverterString.read(from: &buf),
+        publicLabel: FfiConverterString.read(from: &buf)
+      )
+  }
+
+  public static func write(_ value: NativeCapabilityClaim, into buf: inout [UInt8]) {
+    FfiConverterString.write(value.id, into: &buf)
+    FfiConverterString.write(value.terminology, into: &buf)
+    FfiConverterString.write(value.maturity, into: &buf)
+    FfiConverterString.write(value.publicLabel, into: &buf)
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeCapabilityClaim_lift(_ buf: RustBuffer) throws
+  -> NativeCapabilityClaim
+{
+  return try FfiConverterTypeNativeCapabilityClaim.lift(buf)
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeCapabilityClaim_lower(_ value: NativeCapabilityClaim)
+  -> RustBuffer
+{
+  return FfiConverterTypeNativeCapabilityClaim.lower(value)
+}
+
 public struct NativeClaimNavigation: Equatable, Hashable {
   public let claimId: String
   public let revisionId: String
@@ -6548,6 +6612,60 @@ public func FfiConverterTypeNativeRecoveryFinding_lower(_ value: NativeRecoveryF
   -> RustBuffer
 {
   return FfiConverterTypeNativeRecoveryFinding.lower(value)
+}
+
+/// The release sentence and the checked capability rows. No row is invented here.
+public struct NativeReleaseClaims: Equatable, Hashable {
+  public let noPublicRelease: String
+  public let capabilities: [NativeCapabilityClaim]
+
+  // Default memberwise initializers are never public by default, so we
+  // declare one manually.
+  public init(noPublicRelease: String, capabilities: [NativeCapabilityClaim]) {
+    self.noPublicRelease = noPublicRelease
+    self.capabilities = capabilities
+  }
+
+}
+
+#if compiler(>=6)
+  extension NativeReleaseClaims: Sendable {}
+#endif
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeNativeReleaseClaims: FfiConverterRustBuffer {
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws
+    -> NativeReleaseClaims
+  {
+    return
+      try NativeReleaseClaims(
+        noPublicRelease: FfiConverterString.read(from: &buf),
+        capabilities: FfiConverterSequenceTypeNativeCapabilityClaim.read(from: &buf)
+      )
+  }
+
+  public static func write(_ value: NativeReleaseClaims, into buf: inout [UInt8]) {
+    FfiConverterString.write(value.noPublicRelease, into: &buf)
+    FfiConverterSequenceTypeNativeCapabilityClaim.write(value.capabilities, into: &buf)
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeReleaseClaims_lift(_ buf: RustBuffer) throws
+  -> NativeReleaseClaims
+{
+  return try FfiConverterTypeNativeReleaseClaims.lift(buf)
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeReleaseClaims_lower(_ value: NativeReleaseClaims) -> RustBuffer {
+  return FfiConverterTypeNativeReleaseClaims.lower(value)
 }
 
 public struct NativeResolvedEvidence: Equatable, Hashable {
@@ -13131,6 +13249,33 @@ private struct FfiConverterSequenceTypeNativeAuthorizedPart: FfiConverterRustBuf
 #if swift(>=5.8)
   @_documentation(visibility: private)
 #endif
+private struct FfiConverterSequenceTypeNativeCapabilityClaim: FfiConverterRustBuffer {
+  typealias SwiftType = [NativeCapabilityClaim]
+
+  public static func write(_ value: [NativeCapabilityClaim], into buf: inout [UInt8]) {
+    let len = Int32(value.count)
+    writeInt(&buf, len)
+    for item in value {
+      FfiConverterTypeNativeCapabilityClaim.write(item, into: &buf)
+    }
+  }
+
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws
+    -> [NativeCapabilityClaim]
+  {
+    let len: Int32 = try readInt(&buf)
+    var seq = [NativeCapabilityClaim]()
+    seq.reserveCapacity(Int(len))
+    for _ in 0..<len {
+      seq.append(try FfiConverterTypeNativeCapabilityClaim.read(from: &buf))
+    }
+    return seq
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
 private struct FfiConverterSequenceTypeNativeClaimTarget: FfiConverterRustBuffer {
   typealias SwiftType = [NativeClaimTarget]
 
@@ -14057,6 +14202,16 @@ public func nativeImportPolicy() -> NativeImportPolicy {
       )
     })
 }
+/// Returns the embedded capability registry for product surfaces.
+public func nativeReleaseClaims() -> NativeReleaseClaims {
+  return try! FfiConverterTypeNativeReleaseClaims_lift(
+    try! rustCall {
+      uniffiCallStatus in
+      uniffi_open_scribe_uniffi_fn_func_native_release_claims(
+        uniffiCallStatus
+      )
+    })
+}
 /// Returns the current M0 capability posture as one coarse query.
 public func nativeStatus() -> NativeStatus {
   return try! FfiConverterTypeNativeStatus_lift(
@@ -14221,6 +14376,9 @@ private let initializationResult: InitializationResult = {
     return InitializationResult.apiChecksumMismatch
   }
   if uniffi_open_scribe_uniffi_checksum_func_native_import_policy() != 25979 {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_open_scribe_uniffi_checksum_func_native_release_claims() != 64082 {
     return InitializationResult.apiChecksumMismatch
   }
   if uniffi_open_scribe_uniffi_checksum_func_native_status() != 55397 {

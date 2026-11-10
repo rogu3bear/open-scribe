@@ -706,6 +706,56 @@ pub const fn status_snapshot() -> CoreStatus {
 /// manifest without compiling or executing code.
 pub const RUNTIME_CAPABILITY_MANIFEST_JSON: &str = include_str!("../runtime-capabilities.v1.json");
 
+/// The sentence a product surface shows while no signed release exists.
+pub const NO_PUBLIC_RELEASE: &str = "No public release is available.";
+
+/// One checked capability and the words a public surface may show for it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CapabilityClaim {
+    pub id: String,
+    pub terminology: String,
+    pub maturity: String,
+    pub public_label: String,
+}
+
+/// Words for a maturity. `Available` is reserved for a signed release that
+/// proved the capability. Every other value stays visibly excluded.
+#[must_use]
+pub fn public_capability_label(maturity: &str) -> &'static str {
+    match maturity {
+        "Available" => "Available",
+        "Fixture" => "Development fixture — not available to users",
+        _ => "Unavailable",
+    }
+}
+
+/// Reads the embedded registry. A manifest that cannot be read yields no
+/// claims, so a broken registry cannot invent an Available capability.
+#[must_use]
+pub fn capability_claims() -> Vec<CapabilityClaim> {
+    let Ok(manifest) = serde_json::from_str::<serde_json::Value>(RUNTIME_CAPABILITY_MANIFEST_JSON)
+    else {
+        return Vec::new();
+    };
+    let Some(capabilities) = manifest["capabilities"].as_array() else {
+        return Vec::new();
+    };
+    capabilities
+        .iter()
+        .filter_map(|capability| {
+            let id = capability["id"].as_str()?.to_owned();
+            let terminology = capability["terminology"].as_str()?.to_owned();
+            let maturity = capability["maturity"].as_str()?.to_owned();
+            Some(CapabilityClaim {
+                id,
+                terminology,
+                maturity: maturity.clone(),
+                public_label: public_capability_label(&maturity).to_owned(),
+            })
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -761,5 +811,29 @@ mod tests {
         assert!(capabilities.iter().any(|capability| {
             capability["id"] == "optional-intelligence" && capability["maturity"] == "Unavailable"
         }));
+    }
+
+    #[test]
+    fn runtime_capabilities_stay_excluded_without_a_signed_release() {
+        let claims = capability_claims();
+
+        assert_eq!(claims.len(), 8);
+        assert!(claims.iter().all(|claim| claim.maturity != "Available"));
+        assert!(claims.iter().all(|claim| claim.public_label != "Available"));
+        let transcript = claims
+            .iter()
+            .find(|claim| claim.id == "local-transcription")
+            .unwrap();
+        assert_eq!(transcript.terminology, "Transcript");
+        assert_eq!(transcript.public_label, "Unavailable");
+        let recording = claims
+            .iter()
+            .find(|claim| claim.id == "multi-source-recording")
+            .unwrap();
+        assert_eq!(
+            recording.public_label,
+            "Development fixture — not available to users"
+        );
+        assert_eq!(NO_PUBLIC_RELEASE, "No public release is available.");
     }
 }

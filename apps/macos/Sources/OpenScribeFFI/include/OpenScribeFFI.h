@@ -1005,6 +1005,13 @@ RustBuffer uniffi_open_scribe_uniffi_fn_func_native_import_policy(
 
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_FN_FUNC_NATIVE_RELEASE_CLAIMS
+#define UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_FN_FUNC_NATIVE_RELEASE_CLAIMS
+RustBuffer uniffi_open_scribe_uniffi_fn_func_native_release_claims(
+    RustCallStatus *_Nonnull out_status
+
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_FN_FUNC_NATIVE_STATUS
 #define UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_FN_FUNC_NATIVE_STATUS
 RustBuffer uniffi_open_scribe_uniffi_fn_func_native_status(
@@ -1356,6 +1363,12 @@ uint16_t uniffi_open_scribe_uniffi_checksum_func_native_fixture_catalog(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_CHECKSUM_FUNC_NATIVE_IMPORT_POLICY
 #define UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_CHECKSUM_FUNC_NATIVE_IMPORT_POLICY
 uint16_t uniffi_open_scribe_uniffi_checksum_func_native_import_policy(void
+
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_CHECKSUM_FUNC_NATIVE_RELEASE_CLAIMS
+#define UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_CHECKSUM_FUNC_NATIVE_RELEASE_CLAIMS
+uint16_t uniffi_open_scribe_uniffi_checksum_func_native_release_claims(void
 
 );
 #endif

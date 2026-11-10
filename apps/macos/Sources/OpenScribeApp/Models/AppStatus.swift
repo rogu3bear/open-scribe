@@ -19,3 +19,11 @@ enum RustStatusSource {
         )
     }
 }
+
+/// The release sentence and capability rows Settings shows. The words come
+/// from the embedded Rust registry.
+enum ReleaseCapabilityClaims {
+    static func load() -> NativeReleaseClaims {
+        nativeReleaseClaims()
+    }
+}

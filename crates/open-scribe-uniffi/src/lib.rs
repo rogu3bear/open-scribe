@@ -29,6 +29,39 @@ pub fn native_status() -> NativeStatus {
     }
 }
 
+/// One capability the product may name, with the exclusion words for its maturity.
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct NativeCapabilityClaim {
+    pub id: String,
+    pub terminology: String,
+    pub maturity: String,
+    pub public_label: String,
+}
+
+/// The release sentence and the checked capability rows. No row is invented here.
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct NativeReleaseClaims {
+    pub no_public_release: String,
+    pub capabilities: Vec<NativeCapabilityClaim>,
+}
+
+/// Returns the embedded capability registry for product surfaces.
+#[uniffi::export]
+pub fn native_release_claims() -> NativeReleaseClaims {
+    NativeReleaseClaims {
+        no_public_release: open_scribe_core::NO_PUBLIC_RELEASE.to_owned(),
+        capabilities: open_scribe_core::capability_claims()
+            .into_iter()
+            .map(|claim| NativeCapabilityClaim {
+                id: claim.id,
+                terminology: claim.terminology,
+                maturity: claim.maturity,
+                public_label: claim.public_label,
+            })
+            .collect(),
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, uniffi::Enum)]
 pub enum NativeMediaSourceKind {
     Microphone,
@@ -1656,6 +1689,27 @@ mod tests {
         assert_eq!(status.persistence, "Durable local audio and recovery");
         assert_eq!(status.capture, "Development microphone + system audio");
         assert_eq!(status.intelligence, "Not implemented");
+    }
+
+    #[test]
+    fn native_release_claims_exclude_every_unproved_capability() {
+        let release = native_release_claims();
+
+        assert_eq!(release.no_public_release, "No public release is available.");
+        assert_eq!(release.capabilities.len(), 8);
+        assert!(
+            release
+                .capabilities
+                .iter()
+                .all(|claim| claim.public_label != "Available")
+        );
+        assert!(
+            release
+                .capabilities
+                .iter()
+                .any(|claim| claim.id == "local-transcription"
+                    && claim.public_label == "Unavailable")
+        );
     }
 
     #[test]
