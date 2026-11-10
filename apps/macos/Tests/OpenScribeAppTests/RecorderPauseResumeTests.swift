@@ -1058,6 +1058,78 @@ final class RecorderPauseResumeTests: XCTestCase {
       ["normal", "warning"])
   }
 
+  /// A marker taken during capture remains after a storage warning, and stop
+  /// still validates the stereo mix without changing the source tracks.
+  func testStorageWarningKeepsTheDurableMarkerAndValidatesTheStereoMix() async throws {
+    let harness = try PauseHarness()
+    defer { harness.removeFiles() }
+    harness.storage.set(4 * 1024 * 1024 * 1024)
+    await harness.controller.start()
+    try await harness.capture()
+    let microphone = try XCTUnwrap(harness.captures.microphones.last)
+    let system = try XCTUnwrap(harness.captures.systems.last)
+    let sessionId = microphone.writer.authorization.sessionId
+    let microphonePath = microphone.writer.authorization.absolutePath
+    let systemPath = system.writer.authorization.absolutePath
+
+    harness.controller.addMarker(label: "Boundary")
+    XCTAssertNil(harness.controller.errorMessage)
+    let liveMarker = try XCTUnwrap(
+      harness.controller.recorderDetail?.events.last { $0.kind == "marker_added" })
+    XCTAssertEqual(liveMarker.label, "Boundary")
+    XCTAssertGreaterThan(liveMarker.sessionNanoseconds, 0)
+
+    harness.storage.set(768 * 1024 * 1024)
+    await harness.controller.checkStorage()
+    XCTAssertEqual(harness.controller.phase, .capturing)
+    XCTAssertEqual(harness.controller.recorderDetail?.storageLevel, "warning")
+    XCTAssertEqual(
+      harness.controller.recorderDetail?.events.last { $0.kind == "marker_added" }?.label,
+      "Boundary")
+    let microphoneBytes = try Self.byteCount(microphonePath)
+    let systemBytes = try Self.byteCount(systemPath)
+    XCTAssertGreaterThan(microphoneBytes, 0)
+    XCTAssertGreaterThan(systemBytes, 0)
+
+    await harness.controller.stop()
+    XCTAssertEqual(harness.controller.phase, .saved, harness.controller.errorMessage ?? "")
+    var settled = false
+    for _ in 0..<1_000 {
+      if harness.controller.mixdownStatus == "Recording saved with verified stereo mix" {
+        settled = true
+        break
+      }
+      try await Task.sleep(nanoseconds: 10_000_000)
+    }
+    XCTAssertTrue(settled, "mixdown did not finish: \(harness.controller.mixdownStatus ?? "nil")")
+
+    let mix = try XCTUnwrap(try harness.preparation.validatedMixdown(sessionId: sessionId))
+    XCTAssertEqual(mix.digestSha256.count, 64)
+    XCTAssertGreaterThan(mix.decodedFrameCount, 0)
+    let mixURL =
+      harness.root
+      .appendingPathComponent("Sessions", isDirectory: true)
+      .appendingPathComponent(sessionId, isDirectory: true)
+      .appendingPathComponent(mix.relativePath)
+    let decoded = try AVAudioFile(forReading: mixURL)
+    XCTAssertEqual(decoded.fileFormat.channelCount, 2)
+    XCTAssertEqual(decoded.fileFormat.streamDescription.pointee.mFormatID, kAudioFormatMPEG4AAC)
+    XCTAssertEqual(try Self.byteCount(microphonePath), microphoneBytes)
+    XCTAssertEqual(try Self.byteCount(systemPath), systemBytes)
+
+    let reopened = try NativeRecordingPreparation.open(managedRoot: harness.root.path)
+    let detail = try reopened.recorderDetail(sessionId: sessionId)
+    XCTAssertEqual(detail.lifecycle, "ready_for_review")
+    XCTAssertEqual(detail.storageLevel, "warning")
+    XCTAssertEqual(
+      detail.events.filter { $0.kind == "marker_added" }.map(\.label), ["Boundary"])
+    XCTAssertEqual(
+      try reopened.validatedMixdown(sessionId: sessionId)?.digestSha256, mix.digestSha256)
+    let plan = try reopened.playbackTimeline(sessionId: sessionId)
+    XCTAssertEqual(Set(plan.map(\.trackId)).count, 2)
+    XCTAssertTrue(plan.allSatisfy { $0.sampleCount > 0 })
+  }
+
   /// A real CAF write on a dedicated full volume journals critical storage
   /// before recovery, and the source audio already written stays in place.
   func testFullVolumeWriteJournalsCriticalStorageAndKeepsSourceAudio() async throws {
