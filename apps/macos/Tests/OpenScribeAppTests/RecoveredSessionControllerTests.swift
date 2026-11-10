@@ -2044,6 +2044,219 @@ final class RecoveredSessionControllerTests: RecoveredSessionTestCase {
     withExtendedLifetime((store, live, playback, player, window, host)) {}
   }
 
+  /// Supporting evidence re-reads the effective claims. A later revise of a
+  /// rejected claim stays out of the review, and a different accepted claim
+  /// appears only after that click. The test does not call `load` or
+  /// `openClaimEvidence` after the later delta.
+  func testHostedClaimEvidenceReloadsTheHumanClaimAfterALaterModelDelta() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "open-scribe-claim-reload-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let package = root.appendingPathComponent("Stored.openscribe")
+    let export = await exportStoredFinalPackage(to: package)
+    XCTAssertEqual(export.status, 0, String(export.log.suffix(2_000)))
+    let packageMedia = try regularFiles(under: package.appendingPathComponent("media"))
+    XCTAssertEqual(packageMedia.count, 1)
+    let packageDigest = try digest(of: packageMedia[0])
+
+    let managed = root.appendingPathComponent("Library", isDirectory: true)
+    let library = try NativeTranscriptLibrary.open(managedRoot: managed.path)
+    let receipt = try library.importPortablePackage(packagePath: package.path)
+    let segments = try library.document(sessionId: receipt.sessionId)
+    let alpha = try XCTUnwrap(segments.first { $0.sequence == 0 })
+    let supporting = try library.citeTranscriptSegment(
+      sessionId: receipt.sessionId, revisionId: alpha.revisionId, sequence: alpha.sequence)
+    let original = "The team agreed to ship the local recorder."
+    let humanText = "The team deferred the remote recorder."
+    let rejectedText = "The team agreed to upload every recording."
+    let question = "Who owns the recorder?"
+    let inputDigest = String(repeating: "b", count: 64)
+    let proposed = """
+      {"schema":"open-scribe.meeting-memory-delta/v1","model_run_id":"run-claim-1","input_manifest_digest":"\(inputDigest)","session_id":\(Self.jsonString(receipt.sessionId)),"base_revision":"0","operations":[{"op":"propose_claim","operation_id":"op-propose","kind":"decision","text":\(Self.jsonString(original)),"status":"agreed","supporting":[\(supporting)],"contradicting":[]}]}
+      """
+    let proposedReceipt = try library.ingestMeetingMemoryDelta(deltaJson: proposed)
+    let proposedObject = try XCTUnwrap(
+      try JSONSerialization.jsonObject(with: Data(proposedReceipt.utf8)) as? [String: Any])
+    let proposedOperations = try XCTUnwrap(proposedObject["operations"] as? [[String: Any]])
+    let proposedOperation = try XCTUnwrap(proposedOperations.first)
+    XCTAssertEqual(proposedOperation["outcome"] as? String, "accepted", proposedReceipt)
+    let claimId = try XCTUnwrap(proposedOperation["claim_id"] as? String)
+
+    let model = TranscriptLibraryModel(library: library)
+    await model.load(sessionId: receipt.sessionId)
+    XCTAssertEqual(model.derivedClaims.map(\.text), [original])
+    XCTAssertNil(model.derivedClaims.first?.adjudication)
+
+    let store = RuntimeLibraryStore(managedRoot: managed, refreshesImmediately: false)
+    store.refresh()
+    let listed = await waitUntil {
+      store.savedSessions.contains { $0.sessionId == receipt.sessionId }
+    }
+    XCTAssertTrue(listed, "saved=\(store.savedSessions.map(\.sessionId))")
+    let navigation = MainWorkspaceNavigation()
+    navigation.select(receipt.sessionId)
+    let player = RecoveredAudioPlayerFake()
+    let playback = RecoveredSessionController(
+      recoveryFactory: { try NativeRecordingPreparation.open(managedRoot: managed.path) },
+      importedPlaybackLeaseProvider: { id in
+        try NativeRecordingPreparation.open(managedRoot: managed.path)
+          .leaseImportedPlayback(sessionId: id)
+      },
+      player: player)
+    let live = LiveMicrophoneRecordingController(managedRoot: managed)
+    let view = ContentView(
+      store: store,
+      importedMediaAuthority: ImportedMediaAuthorityAdapter(
+        startSecurityScope: { _ in true },
+        stopSecurityScope: { _ in },
+        importer: { _, _ in throw NativeStorageError.InvalidRequest }
+      ),
+      liveRecording: live,
+      recoveredSessions: playback,
+      transcripts: model,
+      speech: SpeechTranscriptionModel(managedRoot: managed),
+      scheduler: TranscriptionScheduler.inert(),
+      pressure: SystemPressureMonitor(libraryRoot: managed, samplesAutomatically: false),
+      context: ContextScopeModel(
+        binding: { nil },
+        frames: IdleClaimContextFrames(),
+        permissionCheck: { .denied },
+        permissionRequest: { .denied },
+        topology: { [] }
+      ),
+      navigation: navigation
+    )
+    let host = NSHostingView(rootView: view)
+    host.sizingOptions = []
+    let window = NSWindow(
+      contentRect: NSRect(x: 0, y: 0, width: 1100, height: 1200),
+      styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    window.contentView = host
+    window.setContentSize(NSSize(width: 1100, height: 1200))
+    host.frame = window.contentLayoutRect
+    window.makeKeyAndOrderFront(nil)
+    window.orderFrontRegardless()
+    defer { window.close() }
+
+    let shown = await waitUntil(timeoutNanoseconds: 5_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      window.displayIfNeeded()
+      let memory = self.readout(labeled: "Structured memory", in: host)?.stringValue ?? ""
+      return self.claimButton(labeled: "Supporting evidence, 1", in: host) != nil
+        && memory.contains("Decisions. \(original).")
+        && self.readout(labeled: "Interpretation", in: host)?.stringValue == "Intelligence off"
+    }
+    XCTAssertTrue(
+      shown && window.contentView === host,
+      "memory=\(self.readout(labeled: "Structured memory", in: host)?.stringValue ?? "missing") buttons=\(self.claimButtonProbe(in: host))"
+    )
+    let field = try XCTUnwrap(self.claimCorrectionField(in: host))
+    field.stringValue = humanText
+    let correct = try XCTUnwrap(self.claimButton(labeled: "Correct claim", in: host))
+    correct.performClick(nil)
+    let corrected = await waitUntil(timeoutNanoseconds: 5_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      window.displayIfNeeded()
+      let memory = self.readout(labeled: "Structured memory", in: host)?.stringValue ?? ""
+      return model.derivedClaims.first?.text == humanText
+        && model.derivedClaims.first?.adjudication == "corrected"
+        && memory.contains(humanText)
+        && memory.contains("Adjudication corrected.")
+    }
+    XCTAssertTrue(
+      corrected,
+      self.readout(labeled: "Structured memory", in: host)?.stringValue ?? "missing memory")
+
+    let reject = try XCTUnwrap(self.claimButton(labeled: "Reject claim", in: host))
+    reject.performClick(nil)
+    let rejected = await waitUntil(timeoutNanoseconds: 5_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      window.displayIfNeeded()
+      let memory = self.readout(labeled: "Structured memory", in: host)?.stringValue ?? ""
+      return model.derivedClaims.first?.adjudication == "rejected"
+        && model.derivedClaims.first?.text == humanText
+        && memory.contains("Adjudication rejected.")
+        && memory.contains(humanText)
+    }
+    XCTAssertTrue(
+      rejected,
+      self.readout(labeled: "Structured memory", in: host)?.stringValue ?? "missing memory")
+    XCTAssertFalse(
+      (self.readout(labeled: "Structured memory", in: host)?.stringValue ?? "").contains(question))
+
+    let baseRevision = try library.meetingMemoryRevision(sessionId: receipt.sessionId)
+    let laterDigest = String(repeating: "e", count: 64)
+    let later = """
+      {"schema":"open-scribe.meeting-memory-delta/v1","model_run_id":"run-later-1","input_manifest_digest":"\(laterDigest)","session_id":\(Self.jsonString(receipt.sessionId)),"base_revision":\(Self.jsonString(baseRevision)),"operations":[{"op":"revise_claim","operation_id":"op-revise","claim_id":\(Self.jsonString(claimId)),"kind":"decision","text":\(Self.jsonString(rejectedText)),"status":"agreed","supporting":[\(supporting)],"contradicting":[]},{"op":"propose_claim","operation_id":"op-other","kind":"question","text":\(Self.jsonString(question)),"status":"open","supporting":[\(supporting)],"contradicting":[]}]}
+      """
+    let laterReceipt = try library.ingestMeetingMemoryDelta(deltaJson: later)
+    let laterObject = try XCTUnwrap(
+      try JSONSerialization.jsonObject(with: Data(laterReceipt.utf8)) as? [String: Any])
+    let laterOperations = try XCTUnwrap(laterObject["operations"] as? [[String: Any]])
+    let revise = try XCTUnwrap(laterOperations.first { $0["operation_id"] as? String == "op-revise" })
+    XCTAssertEqual(revise["outcome"] as? String, "rejected", laterReceipt)
+    XCTAssertEqual(revise["reason"] as? String, "human adjudication stays in effect")
+    let other = try XCTUnwrap(laterOperations.first { $0["operation_id"] as? String == "op-other" })
+    XCTAssertEqual(other["outcome"] as? String, "accepted", laterReceipt)
+    XCTAssertNotEqual(other["claim_id"] as? String, claimId)
+    let appearedEarly = await waitUntil(timeoutNanoseconds: 400_000_000) {
+      host.layoutSubtreeIfNeeded()
+      window.displayIfNeeded()
+      let memory = self.readout(labeled: "Structured memory", in: host)?.stringValue ?? ""
+      return memory.contains(question) || model.derivedClaims.contains { $0.text == question }
+    }
+    XCTAssertFalse(
+      appearedEarly,
+      "the new claim appeared before Supporting evidence was clicked: \(self.readout(labeled: "Structured memory", in: host)?.stringValue ?? "")"
+    )
+    XCTAssertEqual(model.derivedClaims.map(\.text), [humanText])
+    XCTAssertFalse(
+      (self.readout(labeled: "Structured memory", in: host)?.stringValue ?? "").contains(rejectedText))
+    let supportLabels = self.claimButtonProbe(in: host).filter {
+      $0.contains("label=Supporting evidence, 1 ")
+    }
+    XCTAssertEqual(supportLabels.count, 1, supportLabels.joined(separator: "\n"))
+    let support = try XCTUnwrap(self.claimButton(labeled: "Supporting evidence, 1", in: host))
+    XCTAssertTrue(support.isDescendant(of: host))
+    support.performClick(nil)
+    let reloaded = await waitUntil(timeoutNanoseconds: 5_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      window.displayIfNeeded()
+      let memory = self.readout(labeled: "Structured memory", in: host)?.stringValue ?? ""
+      let fields = self.claimCorrectionFields(in: host)
+      return model.claimHighlightSegmentId == alpha.id
+        && player.importedStartNanoseconds == alpha.startNanoseconds
+        && playback.playingSessionId == receipt.sessionId
+        && memory.contains(humanText)
+        && memory.contains("Questions. \(question).")
+        && !memory.contains(rejectedText)
+        && fields.contains { $0.stringValue == humanText }
+        && !fields.contains { $0.stringValue.contains(rejectedText) }
+    }
+    let memory = self.readout(labeled: "Structured memory", in: host)?.stringValue ?? "missing"
+    XCTAssertTrue(reloaded, memory)
+    XCTAssertEqual(model.focusedClaim?.claimId, claimId)
+    XCTAssertEqual(model.focusedClaim?.text, humanText)
+    XCTAssertEqual(model.focusedClaim?.adjudication, "rejected")
+    XCTAssertEqual(self.readout(labeled: "Interpretation", in: host)?.stringValue, "Intelligence off")
+    XCTAssertEqual(model.derivedClaims.map(\.text).sorted(), [humanText, question].sorted())
+    XCTAssertFalse(model.derivedClaims.contains { $0.text == rejectedText })
+    let refusal = model.refuseLocalIntelligence()
+    XCTAssertEqual(refusal.readout, "Intelligence off")
+    XCTAssertEqual(refusal.claimsWritten, 0)
+    XCTAssertNil(refusal.engine)
+    XCTAssertEqual(model.derivedClaims.count, 2)
+    XCTAssertTrue(window.contentView === host)
+    let libraryMedia = try regularFiles(under: managed.appendingPathComponent("Sessions"))
+      .filter { $0.pathExtension == "caf" }
+    XCTAssertEqual(libraryMedia.count, 1)
+    XCTAssertEqual(try digest(of: libraryMedia[0]), packageDigest)
+    XCTAssertEqual(try digest(of: packageMedia[0]), packageDigest)
+    withExtendedLifetime((store, live, playback, player, window, host)) {}
+  }
+
   /// Speaker assignment and a stored model claim show their own runs. The test
   /// reads those fields. It cites a selected final. It does not call `load`
   /// or the provenance formatters.
@@ -2315,6 +2528,18 @@ final class RecoveredSessionControllerTests: RecoveredSessionTestCase {
     }
     walk(root)
     return matched
+  }
+
+  private func claimCorrectionFields(in root: NSView) -> [NSTextField] {
+    var fields: [NSTextField] = []
+    func walk(_ view: NSView) {
+      if let field = view as? NSTextField, field.accessibilityLabel() == "Corrected claim text" {
+        fields.append(field)
+      }
+      for child in view.subviews { walk(child) }
+    }
+    walk(root)
+    return fields
   }
 
   private func claimCorrectionField(in root: NSView) -> NSTextField? {

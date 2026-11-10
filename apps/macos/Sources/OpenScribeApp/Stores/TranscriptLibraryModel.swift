@@ -520,19 +520,27 @@ final class TranscriptLibraryModel: ObservableObject {
     }
   }
 
-  /// Opens one side of a claim. The returned audio position is what the view
-  /// seeks. The highlighted passage is the loaded segment with that revision
-  /// and range. A missing side explains itself and does not seek.
+  /// Opens one side of a claim and re-reads the effective claims. The returned
+  /// audio position is what the view seeks. The highlighted passage is the
+  /// loaded segment with that revision and range. A later model revision does
+  /// not replace a human adjudication already in that list. A missing side
+  /// explains itself and does not seek.
   func openClaimEvidence(claimId: String, side: String) async -> Int64? {
     guard let expectedSession = sessionId, side == "supporting" || side == "contradicting" else {
       return nil
     }
     do {
       let library = try await readyLibrary()
-      let navigation = try await StructuredNativeIO.read {
-        try library.navigateDerivedClaim(sessionId: expectedSession, claimId: claimId)
+      let loaded = try await StructuredNativeIO.read {
+        let navigation = try library.navigateDerivedClaim(
+          sessionId: expectedSession, claimId: claimId)
+        let claimsJSON = try library.effectiveDerivedClaims(sessionId: expectedSession)
+        return (navigation, claimsJSON)
       }
       guard !Task.isCancelled, sessionId == expectedSession else { return nil }
+      let claims = try Self.decodeClaims(loaded.1)
+      derivedClaims = claims
+      let navigation = loaded.0
       focusedClaim = ClaimReviewFocus(
         claimId: navigation.claimId, revisionId: navigation.revisionId, text: navigation.text,
         adjudication: navigation.adjudication)
