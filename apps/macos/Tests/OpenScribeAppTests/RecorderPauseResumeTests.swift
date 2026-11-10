@@ -1862,6 +1862,65 @@ final class RecorderPauseResumeTests: XCTestCase {
     return ReopenedLibrary(preparation: preparation, store: store)
   }
 
+  /// Recording stays unclaimed until both required sources have durable media.
+  /// The microphone's file remains, and the later system sample is what enters
+  /// Recording.
+  func testRecordingWaitsUntilEveryRequiredSourceHasDurableMedia() async throws {
+    let harness = try PauseHarness()
+    defer { harness.removeFiles() }
+    await harness.controller.start()
+    let microphone = try XCTUnwrap(harness.captures.microphones.last)
+    let system = try XCTUnwrap(harness.captures.systems.last)
+    let sessionId = microphone.writer.authorization.sessionId
+    XCTAssertEqual(
+      harness.controller.sourceSelectionPresentation.summary, "Microphone + Mac system audio")
+
+    try microphone.emit(frames: 48_000, hostTime: harness.clock.now, value: 8192)
+    await settle()
+    let microphoneBytes = try Self.byteCount(microphone.writer.authorization.absolutePath)
+    XCTAssertGreaterThan(microphoneBytes, 0)
+    XCTAssertEqual(harness.controller.phase, .starting)
+    XCTAssertEqual(harness.controller.statusText, "Starting microphone + system audio…")
+    XCTAssertEqual(
+      try harness.preparation.recorderDetail(sessionId: sessionId).lifecycle, "preparing")
+    let waiting = try XCTUnwrap(
+      harness.preparation.runtimeLibrarySnapshot().currentSession)
+    XCTAssertEqual(waiting.lifecycle, "preparing")
+    let waitingMenu = MenuBarLabel.presentation(
+      session: RuntimeSessionPresentation(native: waiting),
+      snapshotStale: false,
+      livePhase: harness.controller.phase,
+      liveStatus: harness.controller.statusText)
+    XCTAssertFalse(waitingMenu.text.hasPrefix("Recording"))
+    XCTAssertFalse(waitingMenu.accessibilityText.hasPrefix("Recording"))
+    XCTAssertEqual(
+      harness.controller.sourceSelectionPresentation.summary, "Microphone + Mac system audio")
+
+    try system.emit(frames: 48_000, hostTime: harness.clock.now, value: 16384)
+    await settle()
+    XCTAssertEqual(harness.controller.phase, .capturing, harness.controller.errorMessage ?? "")
+    XCTAssertEqual(harness.controller.statusText, "Recording microphone + system audio")
+    XCTAssertEqual(
+      try harness.preparation.recorderDetail(sessionId: sessionId).lifecycle, "recording")
+    let recording = try XCTUnwrap(
+      harness.preparation.runtimeLibrarySnapshot().currentSession)
+    XCTAssertEqual(recording.lifecycle, "recording")
+    XCTAssertTrue(recording.journalDurable)
+    XCTAssertTrue(recording.mediaFilesOpen)
+    let recordingMenu = MenuBarLabel.presentation(
+      session: RuntimeSessionPresentation(native: recording),
+      snapshotStale: false,
+      livePhase: harness.controller.phase,
+      liveStatus: harness.controller.statusText)
+    XCTAssertTrue(recordingMenu.text.hasPrefix("Recording"))
+    XCTAssertTrue(recordingMenu.accessibilityText.hasPrefix("Recording"))
+    XCTAssertGreaterThanOrEqual(
+      try Self.byteCount(microphone.writer.authorization.absolutePath), microphoneBytes)
+    XCTAssertGreaterThan(try Self.byteCount(system.writer.authorization.absolutePath), 0)
+    XCTAssertEqual(microphone.stopCount, 0)
+    XCTAssertEqual(system.stopCount, 0)
+  }
+
   /// Add Marker uses the session clock. The saved recording still has the marker
   /// and its source tracks.
   func testAddMarkerStaysOnTheSessionClockAfterTheRecordingIsSaved() async throws {
