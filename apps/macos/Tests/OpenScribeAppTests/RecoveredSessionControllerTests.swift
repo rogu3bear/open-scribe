@@ -1696,6 +1696,124 @@ final class RecoveredSessionControllerTests: RecoveredSessionTestCase {
     withExtendedLifetime((store, live, playback, player, window, host)) {}
   }
 
+  /// A corrected passage can show its stored machine reading and hide it again.
+  /// The correction and the audio stay unchanged.
+  func testHostedMachineReadingShowsTheStoredWords() async throws {
+    let root = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
+      .appendingPathComponent("open-scribe-machine-reading-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let package = root.appendingPathComponent("Stored.openscribe")
+    let export = await exportStoredFinalPackage(to: package)
+    XCTAssertEqual(export.status, 0, String(export.log.suffix(2_000)))
+    let packageMedia = try regularFiles(under: package.appendingPathComponent("media"))
+    XCTAssertEqual(packageMedia.count, 1)
+    let packageDigest = try digest(of: packageMedia[0])
+
+    let managed = root.appendingPathComponent("Library", isDirectory: true)
+    let library = try NativeTranscriptLibrary.open(managedRoot: managed.path)
+    let receipt = try library.importPortablePackage(packagePath: package.path)
+    let stored = try library.document(sessionId: receipt.sessionId)
+    let alpha = try XCTUnwrap(stored.first { $0.sequence == 0 })
+    let bravo = try XCTUnwrap(stored.first { $0.sequence == 1 })
+    XCTAssertFalse(alpha.corrected)
+    XCTAssertTrue(bravo.corrected)
+    XCTAssertEqual(bravo.effectiveText, "bravo corrected")
+    XCTAssertNotEqual(bravo.verbatimText, bravo.effectiveText)
+    let verbatim = bravo.verbatimText
+    let libraryMedia = try regularFiles(under: managed.appendingPathComponent("Sessions"))
+      .filter { $0.pathExtension == "caf" }
+    XCTAssertEqual(libraryMedia.count, 1)
+    XCTAssertEqual(try digest(of: libraryMedia[0]), packageDigest)
+
+    let model = TranscriptLibraryModel(managedRoot: managed)
+    await model.load(sessionId: receipt.sessionId)
+    let store = RuntimeLibraryStore(managedRoot: managed, refreshesImmediately: false)
+    store.refresh()
+    let listed = await waitUntil {
+      store.savedSessions.contains { $0.sessionId == receipt.sessionId }
+    }
+    XCTAssertTrue(listed, "saved=\(store.savedSessions.map(\.sessionId))")
+    let navigation = MainWorkspaceNavigation()
+    navigation.select(receipt.sessionId)
+    let player = RecoveredAudioPlayerFake()
+    let playback = RecoveredSessionController(
+      recoveryFactory: { try NativeRecordingPreparation.open(managedRoot: managed.path) },
+      importedPlaybackLeaseProvider: { id in
+        try NativeRecordingPreparation.open(managedRoot: managed.path)
+          .leaseImportedPlayback(sessionId: id)
+      },
+      player: player)
+    let live = LiveMicrophoneRecordingController(managedRoot: managed)
+    let view = ContentView(
+      store: store,
+      importedMediaAuthority: ImportedMediaAuthorityAdapter(
+        startSecurityScope: { _ in true },
+        stopSecurityScope: { _ in },
+        importer: { _, _ in throw NativeStorageError.InvalidRequest }
+      ),
+      liveRecording: live,
+      recoveredSessions: playback,
+      transcripts: model,
+      speech: SpeechTranscriptionModel(managedRoot: managed),
+      scheduler: TranscriptionScheduler.inert(),
+      pressure: SystemPressureMonitor(libraryRoot: managed, samplesAutomatically: false),
+      context: ContextScopeModel(
+        binding: { nil },
+        frames: IdleClaimContextFrames(),
+        permissionCheck: { .denied },
+        permissionRequest: { .denied },
+        topology: { [] }
+      ),
+      navigation: navigation
+    )
+    let host = NSHostingView(rootView: view)
+    host.sizingOptions = []
+    let window = NSWindow(
+      contentRect: NSRect(x: 0, y: 0, width: 1100, height: 720),
+      styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    window.contentView = host
+    window.setContentSize(NSSize(width: 1100, height: 720))
+    host.frame = window.contentLayoutRect
+    window.makeKeyAndOrderFront(nil)
+    window.orderFrontRegardless()
+    defer { window.close() }
+
+    let shown = await waitUntil(timeoutNanoseconds: 8_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      window.displayIfNeeded()
+      return self.claimButton(labeled: "Corrected · Show machine reading", in: host) != nil
+    }
+    XCTAssertTrue(shown && window.contentView === host, self.hostedControlProbe(in: host))
+    XCTAssertNil(self.hostedField(labeled: "Machine reading", in: host))
+    let show = try XCTUnwrap(
+      self.claimButton(labeled: "Corrected · Show machine reading", in: host))
+    XCTAssertTrue(show.isDescendant(of: host))
+    XCTAssertEqual(show.accessibilityValue() as? String, "collapsed")
+    show.performClick(nil)
+    let opened = await waitUntil(timeoutNanoseconds: 5_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      window.displayIfNeeded()
+      return self.hostedField(labeled: "Machine reading", in: host)?.stringValue == verbatim
+    }
+    XCTAssertTrue(opened, self.hostedControlProbe(in: host))
+    XCTAssertEqual(show.accessibilityValue() as? String, "expanded")
+    show.performClick(nil)
+    let closed = await waitUntil(timeoutNanoseconds: 5_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      window.displayIfNeeded()
+      return self.hostedField(labeled: "Machine reading", in: host) == nil
+        && (show.accessibilityValue() as? String) == "collapsed"
+    }
+    XCTAssertTrue(closed, self.hostedControlProbe(in: host))
+    XCTAssertEqual(
+      model.segments.first { $0.sequence == bravo.sequence }?.effectiveText, "bravo corrected")
+    XCTAssertEqual(model.segments.first { $0.sequence == bravo.sequence }?.verbatimText, verbatim)
+    XCTAssertEqual(try digest(of: libraryMedia[0]), packageDigest)
+    withExtendedLifetime((store, live, playback, player, window, host)) {}
+  }
+
   /// Two restored conversations keep a final passage and a corrected passage.
   /// The library search the sidebar uses returns both, and each match opens
   /// at that passage's audio time.

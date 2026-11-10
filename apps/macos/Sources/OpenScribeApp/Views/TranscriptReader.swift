@@ -132,6 +132,92 @@ private final class TranscriptFindClearControl: NSView {
   }
 }
 
+/// The prior machine reading stays in the passage. Opening it reveals the
+/// stored words without inserting a new SwiftUI view.
+private struct MachineReadingMount: NSViewRepresentable {
+  let available: Bool
+  let verbatim: String
+
+  func makeNSView(context: Context) -> MachineReadingControl {
+    let view = MachineReadingControl()
+    view.bind(available: available, verbatim: verbatim)
+    return view
+  }
+
+  func updateNSView(_ view: MachineReadingControl, context: Context) {
+    view.bind(available: available, verbatim: verbatim)
+  }
+}
+
+private final class MachineReadingControl: NSView {
+  private let button = NSButton(title: "Corrected · Show machine reading", target: nil, action: nil)
+  private let reading = NSTextField(wrappingLabelWithString: "")
+  private var expanded = false
+
+  override init(frame frameRect: NSRect) {
+    super.init(frame: frameRect)
+    button.bezelStyle = .inline
+    button.isBordered = false
+    button.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+    button.contentTintColor = .secondaryLabelColor
+    button.alignment = .left
+    button.setAccessibilityLabel("Corrected · Show machine reading")
+    button.setAccessibilityIdentifier("Corrected · Show machine reading")
+    button.target = self
+    button.action = #selector(toggle)
+    reading.font = .preferredFont(forTextStyle: .caption1)
+    reading.textColor = .secondaryLabelColor
+    reading.maximumNumberOfLines = 4
+    reading.preferredMaxLayoutWidth = 420
+    reading.setAccessibilityLabel("Machine reading")
+    reading.setAccessibilityIdentifier("Machine reading")
+    reading.setContentCompressionResistancePriority(.required, for: .vertical)
+    let column = NSStackView(views: [button, reading])
+    column.orientation = .vertical
+    column.alignment = .leading
+    column.spacing = ScribeSpacing.tight
+    column.detachesHiddenViews = false
+    column.translatesAutoresizingMaskIntoConstraints = false
+    addSubview(column)
+    let readingHeight = reading.heightAnchor.constraint(greaterThanOrEqualToConstant: 16)
+    readingHeight.priority = .defaultHigh
+    NSLayoutConstraint.activate([
+      column.leadingAnchor.constraint(equalTo: leadingAnchor),
+      column.trailingAnchor.constraint(equalTo: trailingAnchor),
+      column.topAnchor.constraint(equalTo: topAnchor),
+      column.bottomAnchor.constraint(lessThanOrEqualTo: bottomAnchor),
+      button.heightAnchor.constraint(greaterThanOrEqualToConstant: 16),
+      readingHeight,
+    ])
+  }
+
+  required init?(coder: NSCoder) { nil }
+
+  override func layout() {
+    super.layout()
+    if bounds.width > 1 {
+      reading.preferredMaxLayoutWidth = bounds.width
+    }
+  }
+
+  func bind(available: Bool, verbatim: String) {
+    if !available { expanded = false }
+    reading.stringValue = verbatim
+    button.isHidden = !available
+    button.isEnabled = available
+    reading.isHidden = !available || !expanded
+    isHidden = !available
+    button.setAccessibilityValue(expanded ? "expanded" : "collapsed")
+  }
+
+  @objc private func toggle() {
+    guard !button.isHidden, button.isEnabled else { return }
+    expanded.toggle()
+    reading.isHidden = !expanded
+    button.setAccessibilityValue(expanded ? "expanded" : "collapsed")
+  }
+}
+
 /// The transcript query. The field publishes its own edits; a SwiftUI binding
 /// does not see the field editor.
 private struct TranscriptFindFieldMount: NSViewRepresentable {
@@ -625,15 +711,8 @@ struct TranscriptReader: View {
             .accessibilityElement(children: .ignore)
             .accessibilityAddTraits(.isStaticText)
             .accessibilityLabel(presentation.spoken)
-          if segment.corrected {
-            DisclosureGroup("Corrected · Show machine reading") {
-              Text(segment.verbatimText)
-                .textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .font(.caption)
-            .foregroundStyle(.secondary)
-          }
+          MachineReadingMount(available: segment.corrected, verbatim: segment.verbatimText)
+            .frame(maxWidth: .infinity, minHeight: segment.corrected ? 64 : 0, alignment: .leading)
         }
         .accessibilityElement(children: .contain)
       }
