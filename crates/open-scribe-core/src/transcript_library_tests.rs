@@ -564,3 +564,112 @@ fn library_loads_a_stored_final_and_a_stored_correction_at_its_audio_interval() 
     assert_ne!(alpha_audio, bravo_audio);
     assert_eq!(file_sha256(&prepared.media), prepared.digest_sha256);
 }
+
+fn digests_under(root: &Path) -> Vec<(String, String)> {
+    let mut pending = vec![root.to_path_buf()];
+    let mut found = Vec::new();
+    while let Some(path) = pending.pop() {
+        for entry in std::fs::read_dir(&path).unwrap() {
+            let child = entry.unwrap().path();
+            if child.is_dir() {
+                pending.push(child);
+            } else {
+                let relative = child
+                    .strip_prefix(root)
+                    .unwrap()
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                found.push((relative, file_sha256(&child)));
+            }
+        }
+    }
+    found.sort();
+    found
+}
+
+/// A stored final and its stored correction leave through the same portable
+/// package the app imports. `OPEN_SCRIBE_STORED_FINAL_PACKAGE` keeps that
+/// package for the macOS player; otherwise it stays in a temporary directory.
+#[test]
+fn stored_final_exports_a_package_the_player_can_import() {
+    let prepared = prepared_transcript();
+    let session = prepared.session.clone();
+    let root = prepared.root.clone();
+    let mut library = TranscriptLibrary::open(&root).unwrap();
+    library
+        .correct_segment(&session, &prepared.revision, 1, Some("  bravo corrected  "))
+        .unwrap();
+    drop(library);
+    let library = TranscriptLibrary::open(&root).unwrap();
+    let stored = library.document(&session).unwrap();
+    let alpha = stored.iter().find(|segment| segment.sequence == 0).unwrap();
+    let bravo = stored.iter().find(|segment| segment.sequence == 1).unwrap();
+    assert_eq!(alpha.finality, "final");
+    assert!(!alpha.corrected);
+    assert_eq!(bravo.finality, "final");
+    assert!(bravo.corrected);
+    assert!(bravo.start_nanoseconds > alpha.end_nanoseconds);
+    let alpha_start = alpha.start_nanoseconds;
+    let bravo_start = bravo.start_nanoseconds;
+    let scratch = TempDir::new().unwrap();
+    let destination = match std::env::var("OPEN_SCRIBE_STORED_FINAL_PACKAGE") {
+        Ok(path) if !path.is_empty() => PathBuf::from(path),
+        _ => scratch.path().join("Stored.openscribe"),
+    };
+    assert!(
+        destination
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| !name.starts_with('.') && name.ends_with(".openscribe"))
+    );
+    assert!(destination.parent().is_some_and(|parent| parent.is_dir()));
+    let summary = library
+        .export_portable_package(&session, &destination)
+        .unwrap();
+    assert_eq!(summary.source_session_id, session.0);
+    assert!(summary.files >= 3);
+    let packaged = digests_under(&destination.join("media"));
+    assert_eq!(packaged.len(), 1);
+    assert_eq!(packaged[0].1, prepared.digest_sha256);
+    assert_eq!(file_sha256(&prepared.media), prepared.digest_sha256);
+
+    let mut restored = TranscriptLibrary::open(scratch.path().join("Other")).unwrap();
+    let receipt = restored.import_portable_package(&destination).unwrap();
+    assert_eq!(receipt.source_session_id, session.0);
+    assert_ne!(receipt.session_id, session);
+    assert_eq!(receipt.media_files, 1);
+    assert_eq!(receipt.transcript_tracks, 1);
+    assert!(matches!(
+        restored.availability(&receipt.session_id).unwrap(),
+        crate::TranscriptAvailability::Final
+    ));
+    let loaded = restored.document(&receipt.session_id).unwrap();
+    let alpha = loaded.iter().find(|segment| segment.sequence == 0).unwrap();
+    let bravo = loaded.iter().find(|segment| segment.sequence == 1).unwrap();
+    assert_eq!(alpha.finality, "final");
+    assert!(!alpha.corrected);
+    assert_eq!(alpha.verbatim_text, "alpha");
+    assert_eq!(alpha.effective_text, "alpha");
+    assert_eq!(alpha.start_nanoseconds, alpha_start);
+    assert_eq!(alpha.speaker_label, "Unknown speaker");
+    assert_eq!(bravo.finality, "final");
+    assert!(bravo.corrected);
+    assert_eq!(bravo.verbatim_text, "bravo");
+    assert_eq!(bravo.effective_text, "bravo corrected");
+    assert_eq!(bravo.start_nanoseconds, bravo_start);
+    assert_eq!(bravo.speaker_label, "Unknown speaker");
+    let found = restored
+        .search("bravo corrected", Some(&receipt.session_id), 10)
+        .unwrap();
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].start_nanoseconds, bravo_start);
+    assert_eq!(found[0].effective_text, "bravo corrected");
+    let restored_media = digests_under(&scratch.path().join("Other/Sessions"));
+    assert!(
+        restored_media
+            .iter()
+            .any(|(_, digest)| digest == &prepared.digest_sha256)
+    );
+    assert_eq!(file_sha256(&prepared.media), prepared.digest_sha256);
+    assert_eq!(digests_under(&destination.join("media")), packaged);
+}

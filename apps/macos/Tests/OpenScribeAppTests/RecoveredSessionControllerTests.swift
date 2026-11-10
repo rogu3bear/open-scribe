@@ -672,4 +672,248 @@ final class RecoveredSessionControllerTests: RecoveredSessionTestCase {
     )
     XCTAssertEqual(controller.errorMessage, "Recovered audio could not be opened for playback.")
   }
+
+  /// A stored final and a stored correction are imported from the portable
+  /// package, then the player opens at each passage's audio interval.
+  func testAStoredFinalOpensThePlayerAtItsAudioIntervalAndSaysFinalOrCorrected() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "open-scribe-stored-final-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let package = root.appendingPathComponent("Stored.openscribe")
+    let export = await exportStoredFinalPackage(to: package)
+    XCTAssertEqual(export.status, 0, String(export.log.suffix(2_000)))
+    let packageMedia = try regularFiles(under: package.appendingPathComponent("media"))
+    XCTAssertEqual(packageMedia.count, 1)
+    let packageDigest = try digest(of: packageMedia[0])
+
+    let managed = root.appendingPathComponent("Library", isDirectory: true)
+    let library = try NativeTranscriptLibrary.open(managedRoot: managed.path)
+    let receipt = try library.importPortablePackage(packagePath: package.path)
+    XCTAssertEqual(receipt.mediaFiles, 1)
+    XCTAssertEqual(receipt.transcriptTracks, 1)
+    XCTAssertEqual(try library.availability(sessionId: receipt.sessionId), .final)
+    let segments = try library.document(sessionId: receipt.sessionId)
+    let alpha = try XCTUnwrap(segments.first { $0.sequence == 0 })
+    let bravo = try XCTUnwrap(segments.first { $0.sequence == 1 })
+    XCTAssertEqual(alpha.finality, "final")
+    XCTAssertFalse(alpha.corrected)
+    XCTAssertEqual(alpha.effectiveText, alpha.verbatimText)
+    XCTAssertEqual(bravo.finality, "final")
+    XCTAssertTrue(bravo.corrected)
+    XCTAssertNotEqual(bravo.effectiveText, bravo.verbatimText)
+    XCTAssertGreaterThan(bravo.startNanoseconds, alpha.endNanoseconds)
+    let alphaSpoken = ConversationControlLabels.passageAccessibility(
+      speaker: alpha.speakerLabel, text: alpha.effectiveText, finality: alpha.finality,
+      corrected: alpha.corrected, isPlaying: false, isCited: false)
+    let bravoSpoken = ConversationControlLabels.passageAccessibility(
+      speaker: bravo.speakerLabel, text: bravo.effectiveText, finality: bravo.finality,
+      corrected: bravo.corrected, isPlaying: false, isCited: false)
+    XCTAssertTrue(alphaSpoken.contains(alpha.effectiveText))
+    XCTAssertTrue(alphaSpoken.contains(" Final."))
+    XCTAssertFalse(alphaSpoken.contains("Draft"))
+    XCTAssertFalse(alphaSpoken.contains("Corrected"))
+    XCTAssertTrue(bravoSpoken.contains(bravo.effectiveText))
+    XCTAssertTrue(bravoSpoken.contains(" Corrected."))
+    XCTAssertFalse(bravoSpoken.contains("Draft"))
+    XCTAssertFalse(bravoSpoken.contains("Final"))
+    let alphaHit = try XCTUnwrap(
+      try library.search(query: alpha.effectiveText, sessionId: receipt.sessionId, limit: 10)
+        .first { $0.sequence == alpha.sequence })
+    let bravoHit = try XCTUnwrap(
+      try library.search(query: bravo.effectiveText, sessionId: receipt.sessionId, limit: 10)
+        .first { $0.sequence == bravo.sequence })
+    XCTAssertEqual(alphaHit.sessionId, receipt.sessionId)
+    XCTAssertEqual(alphaHit.startNanoseconds, alpha.startNanoseconds)
+    XCTAssertEqual(alphaHit.endNanoseconds, alpha.endNanoseconds)
+    XCTAssertEqual(bravoHit.startNanoseconds, bravo.startNanoseconds)
+    XCTAssertEqual(bravoHit.endNanoseconds, bravo.endNanoseconds)
+    XCTAssertEqual(bravoHit.effectiveText, bravo.effectiveText)
+
+    let preparation = try NativeRecordingPreparation.open(managedRoot: managed.path)
+    let native = try XCTUnwrap(
+      try preparation.runtimeLibrarySnapshot().savedSessions.first {
+        $0.sessionId == receipt.sessionId
+      })
+    let session = RuntimeSessionPresentation(native: native)
+    XCTAssertFalse(session.hasCaptureTimeline)
+    XCTAssertEqual(session.playableMedia?.isPlayable, true)
+    let libraryMedia = try regularFiles(under: managed.appendingPathComponent("Sessions"))
+      .filter { $0.pathExtension == "caf" }
+    XCTAssertEqual(libraryMedia.count, 1)
+    XCTAssertEqual(try digest(of: libraryMedia[0]), packageDigest)
+
+    let player = RecoveredAudioPlayer(outputMode: .silent)
+    for start in [alpha.startNanoseconds, bravo.startNanoseconds] {
+      let lease = try preparation.leaseImportedPlayback(sessionId: receipt.sessionId)
+      try await player.playImported(
+        receipt: lease.playbackPath(), retaining: lease, generation: UUID(),
+        startNanoseconds: start)
+      player.stop()
+      withExtendedLifetime(lease) {}
+    }
+
+    let head = try sample(
+      preparation: preparation, sessionId: receipt.sessionId, startNanoseconds: 0)
+    let atAlpha = try sample(
+      preparation: preparation, sessionId: receipt.sessionId,
+      startNanoseconds: alpha.startNanoseconds)
+    let atBravo = try sample(
+      preparation: preparation, sessionId: receipt.sessionId,
+      startNanoseconds: bravo.startNanoseconds)
+    XCTAssertNotEqual(head, atAlpha)
+    XCTAssertNotEqual(atAlpha, atBravo)
+    XCTAssertEqual(try digest(of: libraryMedia[0]), packageDigest)
+    XCTAssertEqual(try digest(of: packageMedia[0]), packageDigest)
+
+    let recorded = RecoveredAudioPlayerFake()
+    let controller = RecoveredSessionController(
+      recoveryFactory: { RecoveryPreparationFake() },
+      importedPlaybackLeaseProvider: { sessionId in
+        try preparation.leaseImportedPlayback(sessionId: sessionId)
+      },
+      player: recorded)
+    controller.playTranscriptSearchHit(alphaHit, in: session)
+    await assertEventually { controller.playingSessionId == session.sessionId }
+    XCTAssertNil(controller.errorMessage)
+    XCTAssertEqual(recorded.importedStartNanoseconds, alphaHit.startNanoseconds)
+    controller.stopPlayback()
+    controller.playTranscriptSearchHit(bravoHit, in: session)
+    await assertEventually { controller.playingSessionId == session.sessionId }
+    XCTAssertNil(controller.errorMessage)
+    XCTAssertEqual(recorded.importedStartNanoseconds, bravoHit.startNanoseconds)
+    XCTAssertGreaterThan(bravoHit.startNanoseconds, alphaHit.startNanoseconds)
+    controller.stopPlayback()
+    XCTAssertEqual(try digest(of: libraryMedia[0]), packageDigest)
+    withExtendedLifetime(preparation) {}
+  }
+
+  private func sample(
+    preparation: NativeRecordingPreparation, sessionId: String, startNanoseconds: Int64
+  ) throws -> Float {
+    let lease = try preparation.leaseImportedPlayback(sessionId: sessionId)
+    let serialized = lease.playbackPath()
+    let decoder: CallbackCAFDecoder
+    let retained: AnyObject
+    if serialized.hasPrefix("v2;") || serialized.hasPrefix("v3;") {
+      let receipt = try RecoveredPlaybackDescriptorReceipt(serialized: serialized)
+      let source = try VerifiedDescriptorPlaybackSource.prepare(receipt: receipt)
+      decoder = try CallbackCAFDecoder(
+        source: source, fileTypeHint: receipt.fileTypeHint, onClose: {})
+      retained = source
+    } else {
+      let receipt = try ImportedPlaybackDescriptorReceipt(serialized: serialized)
+      let snapshot = try AnonymousImportedPlaybackSnapshot.copy(from: receipt)
+      decoder = try CallbackCAFDecoder(
+        source: snapshot.region, fileTypeHint: kAudioFileCAFType, onClose: {})
+      retained = snapshot.region
+    }
+    defer {
+      decoder.close()
+      withExtendedLifetime((lease, retained)) {}
+    }
+    let rate = decoder.processingFormat.sampleRate
+    XCTAssertEqual(rate, 48_000, accuracy: 0)
+    if startNanoseconds > 0 {
+      let frame = try XCTUnwrap(
+        TranscriptPlaybackProjection.frame(nanoseconds: startNanoseconds, sampleRate: rate))
+      XCTAssertGreaterThan(frame, 0)
+      try decoder.seek(toFrame: frame)
+    }
+    let decoded = try XCTUnwrap(decoder.read(maximumFrames: 1))
+    XCTAssertGreaterThan(decoded.frameLength, 0)
+    let channels = try XCTUnwrap(decoded.floatChannelData)
+    return channels[0][0]
+  }
+
+  private func exportStoredFinalPackage(to package: URL) async -> (status: Int32, log: String) {
+    let packagePath = package.path
+    let cargo = cargoExecutable()
+    let repo = repositoryRoot()
+    return await withCheckedContinuation { continuation in
+      DispatchQueue.global(qos: .userInitiated).async {
+        guard let cargo, let repo else {
+          continuation.resume(returning: (-1, "cargo or the workspace root is unavailable"))
+          return
+        }
+        let process = Process()
+        process.currentDirectoryURL = repo
+        process.executableURL = URL(fileURLWithPath: cargo)
+        process.arguments = [
+          "test", "--locked", "--offline", "-p", "open-scribe-core", "--lib",
+          "stored_final_exports_a_package_the_player_can_import", "--", "--exact",
+          "transcript_library_tests::stored_final_exports_a_package_the_player_can_import",
+        ]
+        var environment = ProcessInfo.processInfo.environment
+        let cargoBin = (cargo as NSString).deletingLastPathComponent
+        let path = environment["PATH"] ?? ""
+        if !path.split(separator: ":").contains(Substring(cargoBin)) {
+          environment["PATH"] = "\(cargoBin):\(path)"
+        }
+        environment["OPEN_SCRIBE_STORED_FINAL_PACKAGE"] = packagePath
+        process.environment = environment
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = pipe
+        do {
+          try process.run()
+        } catch {
+          continuation.resume(returning: (-1, "\(error)"))
+          return
+        }
+        process.waitUntilExit()
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        continuation.resume(
+          returning: (process.terminationStatus, String(decoding: data, as: UTF8.self)))
+      }
+    }
+  }
+
+  private func cargoExecutable() -> String? {
+    let which = Process()
+    which.executableURL = URL(fileURLWithPath: "/usr/bin/which")
+    which.arguments = ["cargo"]
+    let pipe = Pipe()
+    which.standardOutput = pipe
+    which.standardError = Pipe()
+    if (try? which.run()) != nil {
+      which.waitUntilExit()
+      if which.terminationStatus == 0 {
+        let path = String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+          .trimmingCharacters(in: .whitespacesAndNewlines)
+        if FileManager.default.isExecutableFile(atPath: path) { return path }
+      }
+    }
+    let fallback = NSHomeDirectory() + "/.cargo/bin/cargo"
+    return FileManager.default.isExecutableFile(atPath: fallback) ? fallback : nil
+  }
+
+  private func repositoryRoot() -> URL? {
+    var url = URL(filePath: #filePath)
+    while url.path != "/" {
+      url.deleteLastPathComponent()
+      let manifest = url.appendingPathComponent("Cargo.toml")
+      guard let text = try? String(contentsOf: manifest, encoding: .utf8) else { continue }
+      if text.contains("[workspace]") { return url }
+    }
+    return nil
+  }
+
+  private func regularFiles(under root: URL) throws -> [URL] {
+    guard
+      let enumerator = FileManager.default.enumerator(
+        at: root, includingPropertiesForKeys: [.isRegularFileKey])
+    else { return [] }
+    var files: [URL] = []
+    for case let url as URL in enumerator {
+      if try url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile == true {
+        files.append(url)
+      }
+    }
+    return files.sorted { $0.path < $1.path }
+  }
+
+  private func digest(of url: URL) throws -> String {
+    SHA256.hash(data: try Data(contentsOf: url)).map { String(format: "%02x", $0) }.joined()
+  }
 }
