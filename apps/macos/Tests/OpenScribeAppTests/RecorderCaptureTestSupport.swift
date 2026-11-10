@@ -211,7 +211,7 @@ final class PauseTelemetry: @unchecked Sendable {
 
 @MainActor
 final class PauseHarness {
-  let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+  let root: URL
   let preparation: NativeRecordingPreparation
   let permission = PausePermission()
   let clock = PauseClock()
@@ -222,11 +222,15 @@ final class PauseHarness {
   let controller: LiveMicrophoneRecordingController
   init(
     rotationInjection: Bool = false,
+    managedRoot: URL? = nil,
     microphoneDeviceProbe: @escaping @MainActor () -> MicrophoneDeviceIdentity? = { nil },
     restoreTimeoutWait: @escaping MicrophoneRestoreMonitor.Wait = {
       try await MicrophoneRestoreMonitor.waitForTimeout($0)
     }
   ) throws {
+    root =
+      managedRoot
+      ?? FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     preparation = try NativeRecordingPreparation.open(managedRoot: root.path)
     let real = preparation
     let injector = rotationInjection ? RotationFailureInjectingPreparation(base: real) : nil

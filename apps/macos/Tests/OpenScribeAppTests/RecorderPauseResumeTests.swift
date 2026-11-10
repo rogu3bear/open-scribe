@@ -4,6 +4,127 @@ import XCTest
 
 @testable import OpenScribeApp
 
+/// A bounded APFS disk image. Filling it cannot write the host volume because
+/// the mount is a different device, and the filler stops at the image size.
+private final class DedicatedExhaustionVolume {
+  let host: URL
+  let volume: URL
+  let mediaRoot: URL
+  private let image: URL
+  private var mounted = false
+
+  init() throws {
+    host = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "open-scribe-exhaust-\(UUID().uuidString)", isDirectory: true)
+    volume = host.appendingPathComponent("volume", isDirectory: true)
+    mediaRoot = volume.appendingPathComponent("media", isDirectory: true)
+    image = host.appendingPathComponent("pressure.sparseimage")
+    try FileManager.default.createDirectory(at: volume, withIntermediateDirectories: true)
+    try Self.run(
+      "/usr/bin/hdiutil",
+      [
+        "create", "-size", "96m", "-fs", "APFS", "-type", "SPARSE", "-volname",
+        "OpenScribeExhaustion",
+        host.appendingPathComponent("pressure").path,
+      ])
+    try Self.run(
+      "/usr/bin/hdiutil",
+      ["attach", "-nobrowse", "-mountpoint", volume.path, image.path])
+    mounted = true
+    let volumeDevice = try Self.deviceIdentifier(volume.path)
+    let hostDevice = try Self.deviceIdentifier(host.path)
+    guard volumeDevice != hostDevice else {
+      throw CocoaError(.fileWriteOutOfSpace)
+    }
+  }
+
+  func close() {
+    if mounted {
+      _ = try? Self.run("/usr/bin/hdiutil", ["detach", "-force", volume.path])
+      mounted = false
+    }
+    try? FileManager.default.removeItem(at: host)
+  }
+
+  func fillUntilNoSpaceRemains() throws {
+    let volumeDevice = try Self.deviceIdentifier(volume.path)
+    let hostDevice = try Self.deviceIdentifier(host.path)
+    guard volumeDevice != hostDevice else {
+      throw CocoaError(.fileWriteOutOfSpace)
+    }
+    let filler = volume.appendingPathComponent("owned-pressure-fill")
+    FileManager.default.createFile(atPath: filler.path, contents: nil)
+    let handle = try FileHandle(forWritingTo: filler)
+    defer { try? handle.close() }
+    var written = 0
+    let limit = 96 * 1024 * 1024
+    var sawNoSpace = false
+    for size in [1024 * 1024, 64 * 1024, 4096] {
+      let chunk = Data(repeating: 0x5A, count: size)
+      while written < limit {
+        do {
+          try handle.write(contentsOf: chunk)
+          written += size
+        } catch let error as NSError {
+          guard Self.isNoSpace(error) else { throw error }
+          sawNoSpace = true
+          break
+        }
+      }
+    }
+    guard sawNoSpace else {
+      throw CocoaError(.fileWriteUnknown)
+    }
+  }
+
+  private static func isNoSpace(_ error: NSError) -> Bool {
+    if error.domain == NSPOSIXErrorDomain && error.code == Int(ENOSPC) { return true }
+    if error.code == NSFileWriteOutOfSpaceError { return true }
+    if let underlying = error.userInfo[NSUnderlyingErrorKey] as? NSError {
+      return isNoSpace(underlying)
+    }
+    return false
+  }
+
+  private static func deviceIdentifier(_ path: String) throws -> Int32 {
+    let descriptor = Darwin.open(path, O_RDONLY)
+    guard descriptor >= 0 else {
+      throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .ENOENT)
+    }
+    defer { Darwin.close(descriptor) }
+    let info = UnsafeMutablePointer<Darwin.stat>.allocate(capacity: 1)
+    defer { info.deallocate() }
+    memset(info, 0, MemoryLayout<Darwin.stat>.size)
+    guard fstat(descriptor, info) == 0 else {
+      throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+    }
+    return info.pointee.st_dev
+  }
+
+  @discardableResult
+  private static func run(_ launchPath: String, _ arguments: [String]) throws -> String {
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: launchPath)
+    process.arguments = arguments
+    let output = Pipe()
+    let errors = Pipe()
+    process.standardOutput = output
+    process.standardError = errors
+    try process.run()
+    process.waitUntilExit()
+    let text =
+      String(data: output.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+    let errorText =
+      String(data: errors.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+    guard process.terminationStatus == 0 else {
+      throw CocoaError(
+        .fileWriteUnknown,
+        userInfo: [NSLocalizedDescriptionKey: errorText.isEmpty ? text : errorText])
+    }
+    return text
+  }
+}
+
 /// Real journal/SQLite, UniFFI, segmented CAF writers and controller; injected
 /// sources supply PCM instead of requesting TCC or opening audio devices.
 @MainActor
@@ -935,6 +1056,67 @@ final class RecorderPauseResumeTests: XCTestCase {
     XCTAssertEqual(
       detail.events.filter { $0.kind == "storage_observed" }.map(\.label),
       ["normal", "warning"])
+  }
+
+  /// A real CAF write on a dedicated full volume journals critical storage
+  /// before recovery, and the source audio already written stays in place.
+  func testFullVolumeWriteJournalsCriticalStorageAndKeepsSourceAudio() async throws {
+    let volume = try DedicatedExhaustionVolume()
+    defer { volume.close() }
+    let harness = try PauseHarness(managedRoot: volume.mediaRoot)
+    defer { harness.removeFiles() }
+    // The 96 MiB image is below the reserve, so start uses an injected reading.
+    // The later write and the failure observation use the mounted volume itself.
+    harness.storage.set(2 * 1024 * 1024 * 1024)
+    await harness.controller.start()
+    try await harness.capture()
+    let microphone = try XCTUnwrap(harness.captures.microphones.last)
+    let sessionId = microphone.writer.authorization.sessionId
+    let microphonePath = microphone.writer.authorization.absolutePath
+    let systemPath = try XCTUnwrap(harness.captures.systems.last).writer.authorization.absolutePath
+    let microphoneBytes = try Self.byteCount(microphonePath)
+    let systemBytes = try Self.byteCount(systemPath)
+    XCTAssertGreaterThan(microphoneBytes, 0)
+    XCTAssertGreaterThan(systemBytes, 0)
+
+    try volume.fillUntilNoSpaceRemains()
+    harness.storage.set(nil)
+    let available = try RecorderStorage.availableBytes(at: volume.volume.path)
+    XCTAssertLessThan(available, 512 * 1024 * 1024)
+    try microphone.emit(frames: 48_000, hostTime: harness.clock.now, value: 8192)
+    var terminal = false
+    for _ in 0..<1_000 {
+      let phase = harness.controller.phase
+      if (phase == .saved || phase == .failed), harness.controller.errorMessage != nil {
+        terminal = true
+        break
+      }
+      try await Task.sleep(nanoseconds: 10_000_000)
+    }
+    XCTAssertTrue(
+      terminal,
+      "phase \(harness.controller.phase.rawValue) message \(harness.controller.errorMessage ?? "nil")"
+    )
+    XCTAssertEqual(
+      harness.controller.errorMessage,
+      "Recording stopped because storage reached its reserve. Existing audio was preserved.")
+    XCTAssertFalse(
+      FileManager.default.fileExists(
+        atPath: harness.root.appendingPathComponent(".capture-journal-reserve-v1").path))
+    XCTAssertGreaterThanOrEqual(try Self.byteCount(microphonePath), microphoneBytes)
+    XCTAssertEqual(try Self.byteCount(systemPath), systemBytes)
+
+    let reopened = try NativeRecordingPreparation.open(managedRoot: harness.root.path)
+    _ = try reopened.recoverPlayableSessions()
+    let detail = try reopened.recorderDetail(sessionId: sessionId)
+    XCTAssertEqual(detail.storageLevel, "critical")
+    XCTAssertEqual(
+      detail.events.filter { $0.kind == "storage_observed" }.map(\.label).last, "critical")
+    let plan = try reopened.playbackTimeline(sessionId: sessionId)
+    XCTAssertEqual(Set(plan.map(\.trackId)).count, 2)
+    XCTAssertTrue(plan.allSatisfy { $0.sampleCount > 0 })
+    XCTAssertGreaterThanOrEqual(try Self.byteCount(microphonePath), microphoneBytes)
+    XCTAssertEqual(try Self.byteCount(systemPath), systemBytes)
   }
 
   /// Add Marker uses the session clock. The saved recording still has the marker
