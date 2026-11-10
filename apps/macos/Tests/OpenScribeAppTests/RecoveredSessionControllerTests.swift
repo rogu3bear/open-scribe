@@ -788,6 +788,133 @@ final class RecoveredSessionControllerTests: RecoveredSessionTestCase {
     withExtendedLifetime(preparation) {}
   }
 
+  /// Two restored conversations keep a final passage and a corrected passage.
+  /// The library search the sidebar uses returns both, and each match opens
+  /// at that passage's audio time.
+  func testLibrarySearchOpensCorrectedRangesInTwoStoredConversations() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "open-scribe-library-search-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let package = root.appendingPathComponent("Stored.openscribe")
+    let export = await exportStoredFinalPackage(to: package)
+    XCTAssertEqual(export.status, 0, String(export.log.suffix(2_000)))
+    let packageMedia = try regularFiles(under: package.appendingPathComponent("media"))
+    XCTAssertEqual(packageMedia.count, 1)
+    let packageDigest = try digest(of: packageMedia[0])
+
+    let managed = root.appendingPathComponent("Library", isDirectory: true)
+    let library = try NativeTranscriptLibrary.open(managedRoot: managed.path)
+    let first = try library.importPortablePackage(packagePath: package.path)
+    let second = try library.importPortablePackage(packagePath: package.path)
+    XCTAssertNotEqual(first.sessionId, second.sessionId)
+    XCTAssertEqual(first.sourceSessionId, second.sourceSessionId)
+    XCTAssertEqual(first.transcriptTracks, 1)
+    XCTAssertEqual(second.transcriptTracks, 1)
+    let sessions = [first.sessionId, second.sessionId]
+    var alphaStart: Int64?
+    var bravoStart: Int64?
+    var bravoEnd: Int64?
+    for sessionId in sessions {
+      XCTAssertEqual(try library.availability(sessionId: sessionId), .final)
+      let segments = try library.document(sessionId: sessionId)
+      let alpha = try XCTUnwrap(segments.first { $0.sequence == 0 })
+      let bravo = try XCTUnwrap(segments.first { $0.sequence == 1 })
+      XCTAssertEqual(alpha.finality, "final")
+      XCTAssertFalse(alpha.corrected)
+      XCTAssertEqual(alpha.effectiveText, alpha.verbatimText)
+      XCTAssertEqual(bravo.finality, "final")
+      XCTAssertTrue(bravo.corrected)
+      XCTAssertNotEqual(bravo.effectiveText, bravo.verbatimText)
+      XCTAssertGreaterThan(bravo.startNanoseconds, alpha.endNanoseconds)
+      if let alphaStart {
+        XCTAssertEqual(alpha.startNanoseconds, alphaStart)
+        XCTAssertEqual(bravo.startNanoseconds, bravoStart)
+        XCTAssertEqual(bravo.endNanoseconds, bravoEnd)
+      }
+      alphaStart = alpha.startNanoseconds
+      bravoStart = bravo.startNanoseconds
+      bravoEnd = bravo.endNanoseconds
+    }
+    let alphaTime = try XCTUnwrap(alphaStart)
+    let bravoTime = try XCTUnwrap(bravoStart)
+    let bravoClose = try XCTUnwrap(bravoEnd)
+    let libraryMedia = try regularFiles(under: managed.appendingPathComponent("Sessions"))
+      .filter { $0.pathExtension == "caf" }
+    XCTAssertEqual(libraryMedia.count, 2)
+    for media in libraryMedia {
+      XCTAssertEqual(try digest(of: media), packageDigest)
+    }
+
+    let model = TranscriptLibraryModel(managedRoot: managed)
+    await model.search("bravo corrected")
+    XCTAssertNil(model.message)
+    XCTAssertFalse(model.isSearching)
+    XCTAssertEqual(model.searchResults.count, 2)
+    XCTAssertEqual(Set(model.searchResults.map(\.sessionId)), Set(sessions))
+    XCTAssertTrue(model.searchResults.allSatisfy {
+      $0.sequence == 1 && $0.effectiveText == "bravo corrected"
+        && $0.startNanoseconds == bravoTime && $0.endNanoseconds == bravoClose
+    })
+    let correctedHits = model.searchResults
+    await model.search("alpha")
+    XCTAssertEqual(model.searchResults.count, 2)
+    XCTAssertEqual(Set(model.searchResults.map(\.sessionId)), Set(sessions))
+    XCTAssertTrue(model.searchResults.allSatisfy {
+      $0.sequence == 0 && $0.effectiveText == "alpha" && $0.startNanoseconds == alphaTime
+        && $0.startNanoseconds < bravoTime
+    })
+    await model.search("memo")
+    XCTAssertTrue(model.searchResults.isEmpty)
+    XCTAssertNil(model.message)
+    await model.search("  \n")
+    XCTAssertTrue(model.searchResults.isEmpty)
+    XCTAssertFalse(model.isSearching)
+
+    let preparation = try NativeRecordingPreparation.open(managedRoot: managed.path)
+    let saved = try preparation.runtimeLibrarySnapshot().savedSessions
+      .filter { sessions.contains($0.sessionId) }
+      .map(RuntimeSessionPresentation.init(native:))
+    XCTAssertEqual(Set(saved.map(\.sessionId)), Set(sessions))
+    XCTAssertTrue(saved.allSatisfy { !$0.hasCaptureTimeline && $0.playableMedia?.isPlayable == true })
+    let navigation = MainWorkspaceNavigation()
+    let recorded = RecoveredAudioPlayerFake()
+    let controller = RecoveredSessionController(
+      recoveryFactory: { RecoveryPreparationFake() },
+      importedPlaybackLeaseProvider: { sessionId in
+        try preparation.leaseImportedPlayback(sessionId: sessionId)
+      },
+      player: recorded)
+    let other = try XCTUnwrap(saved.first { $0.sessionId != correctedHits[0].sessionId })
+    controller.playTranscriptSearchHit(correctedHits[0], in: other)
+    XCTAssertNil(controller.playingSessionId)
+    XCTAssertNil(recorded.importedStartNanoseconds)
+    XCTAssertNil(navigation.selectedSessionId)
+    for hit in correctedHits {
+      let session = try XCTUnwrap(saved.first { $0.sessionId == hit.sessionId })
+      await model.load(sessionId: hit.sessionId)
+      XCTAssertEqual(model.availability, .final)
+      XCTAssertEqual(model.availabilityText, "Final transcript")
+      let passage = try XCTUnwrap(model.segments.first { $0.sequence == hit.sequence })
+      XCTAssertTrue(passage.corrected)
+      XCTAssertEqual(passage.effectiveText, hit.effectiveText)
+      XCTAssertEqual(passage.startNanoseconds, hit.startNanoseconds)
+      XCTAssertNotEqual(passage.verbatimText, passage.effectiveText)
+      navigation.select(hit.sessionId)
+      XCTAssertEqual(navigation.selectedSessionId, hit.sessionId)
+      controller.playTranscriptSearchHit(hit, in: session)
+      await assertEventually { controller.playingSessionId == hit.sessionId }
+      XCTAssertNil(controller.errorMessage)
+      XCTAssertEqual(recorded.importedStartNanoseconds, hit.startNanoseconds)
+      controller.stopPlayback()
+    }
+    for media in libraryMedia {
+      XCTAssertEqual(try digest(of: media), packageDigest)
+    }
+    XCTAssertEqual(try digest(of: packageMedia[0]), packageDigest)
+    withExtendedLifetime((library, preparation)) {}
+  }
+
   /// A stored final is cited after import. Opening that evidence highlights the
   /// loaded passage, and the imported player seeks to its audio interval.
   /// Confirm, correct, and reject write a review. Leaving the claim unresolved
