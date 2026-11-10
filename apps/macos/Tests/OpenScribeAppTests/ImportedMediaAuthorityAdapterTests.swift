@@ -4527,6 +4527,158 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
     withExtendedLifetime(drag) {}
   }
 
+  /// A supported CAF dropped in the Finder file-URL format imports through
+  /// the uncompressed path. Confirm saves a separate playable copy. Play
+  /// opens that conversation. The original bytes stay put. The test does not
+  /// call `stageDroppedAudio`, `confirmPendingAudioImport`, or `play`.
+  func testHostedFinderFormatCafDropConfirmsPlaysAndLeavesTheOriginal() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "open-scribe-finder-caf-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let frames = 960
+    let source = root.appendingPathComponent("Finder capture.caf")
+    let original = recoverableCaf(frames: frames)
+    try original.write(to: source, options: .atomic)
+    let importRoot = root.appendingPathComponent("Library", isDirectory: true)
+    try FileManager.default.createDirectory(at: importRoot, withIntermediateDirectories: false)
+    let store = RuntimeLibraryStore(managedRoot: importRoot, refreshesImmediately: false)
+    let player = RecoveredAudioPlayerFake()
+    let recovery = RecoveredSessionController(
+      recoveryFactory: {
+        try NativeRecordingPreparation.open(managedRoot: importRoot.path)
+      },
+      importedPlaybackLeaseProvider: { sessionId in
+        try NativeRecordingPreparation.open(managedRoot: importRoot.path)
+          .leaseImportedPlayback(sessionId: sessionId)
+      },
+      player: player
+    )
+    let live = LiveMicrophoneRecordingController(managedRoot: importRoot)
+    let adapter = ImportedMediaAuthorityAdapter(
+      startSecurityScope: { _ in true },
+      stopSecurityScope: { _ in },
+      canBeginImport: { live.canStart },
+      importer: { title, url in
+        try store.importManagedAudio(title: title, sourceURL: url)
+      }
+    )
+    let view = ContentView(
+      store: store,
+      importedMediaAuthority: adapter,
+      liveRecording: live,
+      recoveredSessions: recovery,
+      transcripts: TranscriptLibraryModel(managedRoot: importRoot),
+      speech: SpeechTranscriptionModel(managedRoot: importRoot),
+      scheduler: TranscriptionScheduler.inert(),
+      pressure: SystemPressureMonitor(libraryRoot: importRoot, samplesAutomatically: false),
+      context: ContextScopeModel(
+        binding: { nil },
+        frames: IdleContextFrames(),
+        permissionCheck: { .denied },
+        permissionRequest: { .denied },
+        topology: { [] }
+      ),
+      navigation: MainWorkspaceNavigation()
+    )
+    let host = NSHostingView(rootView: view)
+    host.sizingOptions = []
+    let window = NSWindow(
+      contentRect: NSRect(x: 0, y: 0, width: 1100, height: 720),
+      styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    window.contentView = host
+    window.setContentSize(NSSize(width: 1100, height: 720))
+    host.frame = window.contentLayoutRect
+    window.makeKeyAndOrderFront(nil)
+    window.orderFrontRegardless()
+    defer { window.close() }
+    let ready = await waitUntil(timeoutNanoseconds: 5_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      window.displayIfNeeded()
+      return self.dropDestination(in: host) != nil && self.bannerImportButton(in: host) == nil
+    }
+    let destination = try XCTUnwrap(self.dropDestination(in: host))
+    XCTAssertTrue(ready && window.contentView === host && destination.isDescendant(of: host))
+    XCTAssertEqual(destination.accessibilityIdentifier(), "Audio drop")
+    XCTAssertNil(self.playConversationButton(in: host))
+    XCTAssertTrue(store.savedSessions.isEmpty)
+    let location = destination.convert(
+      NSPoint(x: destination.bounds.midX, y: destination.bounds.midY), to: nil)
+    let drag = FinderFileDrag(fileURL: source, window: window, location: location)
+    defer { drag.draggingPasteboard.releaseGlobally() }
+    XCTAssertTrue(drag.wroteFileURL)
+    XCTAssertFalse(drag.didEnumerateItems)
+    let entered = destinationDragOperation("draggingEntered:", on: destination, info: drag)
+    let updated = destinationDragOperation("draggingUpdated:", on: destination, info: drag)
+    let prepared = destinationDragAccepted("prepareForDragOperation:", on: destination, info: drag)
+    let performed = destinationDragAccepted("performDragOperation:", on: destination, info: drag)
+    destinationDragEnded("concludeDragOperation:", on: destination, info: drag)
+    destinationDragEnded("draggingEnded:", on: destination, info: drag)
+    XCTAssertFalse(drag.didEnumerateItems)
+    XCTAssertNotEqual(updated == 0 ? entered : updated, 0)
+    XCTAssertTrue(prepared && performed)
+    let staged = await waitUntil(timeoutNanoseconds: 5_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      window.displayIfNeeded()
+      return adapter.pendingAudioImport?.urls == [source]
+        && self.bannerImportButton(in: host) != nil
+    }
+    XCTAssertTrue(staged && window.contentView === host, adapter.statusMessage ?? "nil")
+    XCTAssertNil(self.playConversationButton(in: host))
+    let confirm = try XCTUnwrap(self.bannerImportButton(in: host))
+    XCTAssertTrue(confirm.isDescendant(of: host))
+    confirm.performClick(nil)
+    let imported = await waitUntil(timeoutNanoseconds: 15_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      window.displayIfNeeded()
+      return adapter.phase == .succeeded
+        && adapter.importedSessionId != nil
+        && adapter.pendingAudioImport == nil
+        && self.playConversationButton(in: host) != nil
+        && store.savedSessions.contains { $0.playableMedia?.isPlayable == true }
+    }
+    XCTAssertTrue(
+      imported && window.contentView === host,
+      "phase=\(adapter.phase) message=\(adapter.statusMessage ?? "nil") saved=\(store.savedSessions.count)"
+    )
+    let sessionId = try XCTUnwrap(adapter.importedSessionId)
+    let saved = try XCTUnwrap(store.savedSessions.first { $0.sessionId == sessionId })
+    XCTAssertEqual(saved.lifecycle, "ready_for_review")
+    let media = try XCTUnwrap(saved.playableMedia)
+    XCTAssertEqual(media.sampleCount, UInt64(frames))
+    XCTAssertTrue(media.isPlayable)
+    let managed = try cafFiles(under: importRoot)
+    XCTAssertEqual(managed.count, 1)
+    XCTAssertEqual(managed[0], original)
+    let play = try XCTUnwrap(self.playConversationButton(in: host))
+    XCTAssertTrue(play.isDescendant(of: host))
+    XCTAssertTrue(play.isEnabled)
+    XCTAssertNil(player.importedReceipt)
+    play.performClick(nil)
+    let playing = await waitUntil(timeoutNanoseconds: 5_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      return recovery.playingSessionId == sessionId
+        && player.importedReceipt?.isEmpty == false
+    }
+    XCTAssertTrue(
+      playing,
+      "playing=\(recovery.playingSessionId ?? "nil") error=\(recovery.errorMessage ?? "nil")"
+    )
+    XCTAssertEqual(player.importedStartNanoseconds, 0)
+    XCTAssertNotNil(player.retainedLease)
+    XCTAssertNil(recovery.errorMessage)
+    XCTAssertEqual(try Data(contentsOf: source), original)
+    XCTAssertEqual(managed[0].count, 68 + frames * 2)
+    let sample = Int16(bitPattern: UInt16(managed[0][68]) | (UInt16(managed[0][69]) << 8))
+    XCTAssertEqual(sample, Int16(((0 % 997) - 498) * 31))
+    withExtendedLifetime(store) {}
+    withExtendedLifetime(live) {}
+    withExtendedLifetime(recovery) {}
+    withExtendedLifetime(player) {}
+    withExtendedLifetime(window) {}
+  }
+
   /// A Finder-format file URL dropped on the hosted library imports when the
   /// banner button is pressed. Typing in the sidebar field and pressing the
   /// match opens that passage. The pasteboard carries the public types Finder
@@ -5917,6 +6069,47 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
     withExtendedLifetime(pressure) {}
     withExtendedLifetime(playback) {}
     withExtendedLifetime(player) {}
+  }
+
+  /// Mono 16-bit 48 kHz CAF the uncompressed importer accepts. The first
+  /// sample is the same formula the later assertion reads back.
+  private func recoverableCaf(frames: Int) -> Data {
+    var data = Data()
+    data.append(contentsOf: [0x63, 0x61, 0x66, 0x66, 0x00, 0x01, 0x00, 0x00])
+    data.append(contentsOf: Array("desc".utf8))
+    func appendBig(_ value: some FixedWidthInteger) {
+      withUnsafeBytes(of: value.bigEndian) { data.append(contentsOf: $0) }
+    }
+    func appendLittle(_ value: some FixedWidthInteger) {
+      withUnsafeBytes(of: value.littleEndian) { data.append(contentsOf: $0) }
+    }
+    appendBig(Int64(32))
+    appendBig(UInt64(Double(48_000).bitPattern))
+    data.append(contentsOf: Array("lpcm".utf8))
+    for value in [UInt32(2), 2, 1, 1, 16] {
+      appendBig(value)
+    }
+    data.append(contentsOf: Array("data".utf8))
+    appendBig(Int64(-1))
+    appendBig(UInt32(0))
+    for frame in 0..<frames {
+      appendLittle(Int16(((frame % 997) - 498) * 31))
+    }
+    return data
+  }
+
+  private func cafFiles(under root: URL) throws -> [Data] {
+    guard let enumerator = FileManager.default.enumerator(
+      at: root, includingPropertiesForKeys: [.isRegularFileKey])
+    else { return [] }
+    var files: [Data] = []
+    for case let url as URL in enumerator {
+      guard url.pathExtension.lowercased() == "caf" else { continue }
+      let values = try url.resourceValues(forKeys: [.isRegularFileKey])
+      guard values.isRegularFile == true else { continue }
+      files.append(try Data(contentsOf: url))
+    }
+    return files
   }
 
   private func dropDestination(in root: NSView) -> NSView? {
