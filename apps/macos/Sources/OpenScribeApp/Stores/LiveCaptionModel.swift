@@ -28,10 +28,10 @@ final class LiveCaptionModel: ObservableObject {
     didSet { defaults.set(isEnabled, forKey: Self.enabledDefaultsKey) }
   }
 
-  private var defaults: UserDefaults
-  /// Until the app configures it, and in proof or hosted launches, no
-  /// recognizer runs and no Draft window is written.
-  private var suspended = true
+  private let defaults: UserDefaults
+  /// While suspended no recognizer runs and no Draft window is written. Only
+  /// the app's normal launch turns captions on.
+  private let suspended: Bool
   private var sessionId: String?
   /// Increases with every span so a slow start cannot attach to a later one.
   private var generation = 0
@@ -43,18 +43,11 @@ final class LiveCaptionModel: ObservableObject {
   private var cancellers: [@Sendable () async -> Void] = []
   private var committers: [LiveDraftCommitter] = []
 
-  init(defaults: UserDefaults = .standard) {
+  init(defaults: UserDefaults = .standard, suspended: Bool = true) {
     self.defaults = defaults
-    defaults.register(defaults: [Self.enabledDefaultsKey: true])
-    isEnabled = defaults.bool(forKey: Self.enabledDefaultsKey)
-  }
-
-  /// Binds the launch's preferences. Proof and hosted launches stay suspended.
-  func configure(defaults: UserDefaults, suspended: Bool) {
-    self.defaults = defaults
-    defaults.register(defaults: [Self.enabledDefaultsKey: true])
-    isEnabled = defaults.bool(forKey: Self.enabledDefaultsKey)
     self.suspended = suspended
+    defaults.register(defaults: [Self.enabledDefaultsKey: true])
+    isEnabled = defaults.bool(forKey: Self.enabledDefaultsKey)
   }
 
   var isListening: Bool {

@@ -17,14 +17,14 @@ enum TranscriptionHold: Equatable, Sendable {
       )
     case .memoryPressure: self = .pressure("Waiting: macOS reports critical memory pressure.")
     case .thermalPressure: self = .pressure("Waiting: this Mac is too hot to add work.")
-    case .modelUnverified: self = .unavailable("Waiting for speech model verification.")
+    case .modelUnverified: self = .unavailable("Waiting while the speech model is checked.")
     case .modelInvalid:
       self = .unavailable("The speech model needs repair. Choose a replacement file in Settings.")
     case .modelIncompatible:
       self = .unavailable("The speech model is incompatible with this engine.")
     case .automaticDisabled: self = .unavailable("Automatic transcription is off.")
     case .alreadyRunning: self = .unavailable("Waiting for the current transcription.")
-    case .noAudio: self = .unavailable("No transcribable audio is available.")
+    case .noAudio: self = .unavailable("There is no audio to transcribe.")
     case .unknownState:
       self = .unavailable("Transcript status is unavailable; work was not started.")
     }
@@ -33,7 +33,7 @@ enum TranscriptionHold: Equatable, Sendable {
     switch self {
     case .pausedByUser: "Paused by you."
     case .recordingInProgress: "Waiting for the current recording to finish."
-    case .launchRecoveryPending: "Waiting for capture-safety recovery."
+    case .launchRecoveryPending: "Waiting for the check of the last session to finish."
     case .noSpeechModel: "Waiting for a speech model to be installed."
     case .pressure(let text), .unavailable(let text): text
     }
@@ -82,7 +82,8 @@ final class TranscriptionScheduler: ObservableObject {
       reconsider()
     }
   }
-  var automationSuspended = false { didSet { reconsider() } }
+  /// Proof and hosted launches never start transcription on their own.
+  private(set) var automationSuspended = false { didSet { reconsider() } }
   private let defaults: UserDefaults
   private let coordinator: NativeWorkCoordinator?
   private let runner: Runner
@@ -122,7 +123,8 @@ final class TranscriptionScheduler: ObservableObject {
   convenience init(
     managedRoot: URL?, speech: SpeechTranscriptionModel, store: RuntimeLibraryStore,
     liveRecording: LiveMicrophoneRecordingController, recovery: RecoveredSessionController,
-    pressure: SystemPressureMonitor, defaults: UserDefaults = .standard
+    pressure: SystemPressureMonitor, defaults: UserDefaults = .standard,
+    automationSuspended: Bool = false
   ) {
     self.init(
       coordinator: try? managedRoot.map { try NativeWorkCoordinator.open(managedRoot: $0.path) },
@@ -155,6 +157,8 @@ final class TranscriptionScheduler: ObservableObject {
       in: &subscriptions)
     speech.$isRefreshing.sink { [weak self] _ in Task { @MainActor in self?.reconsider() } }.store(
       in: &subscriptions)
+    // Assigned last so its observer makes the first decision with every input bound.
+    self.automationSuspended = automationSuspended
   }
   deinit {
     refreshTask?.cancel()
@@ -340,7 +344,7 @@ final class TranscriptionScheduler: ObservableObject {
         }
       } catch {
         hold = .unavailable(
-          "Completion could not be saved. The next library recovery will reconcile durable work.")
+          "Completion could not be saved. Open Scribe finishes it the next time it opens the library.")
       }
       if outcome == .failed, let failure = result.failure {
         failureDetails[entry.sessionId] = (token, failure)

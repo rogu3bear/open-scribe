@@ -1,20 +1,21 @@
-//! Native session authority for Open Scribe.
-//!
-//! The current tranche keeps deterministic fixture commands and adds native
-//! durable session/media-open preparation, review, and local transcription
-//! through a manifest-verified model. Provider configuration authorizes no
-//! content category and opens no connection. It performs no capture, playback,
-//! or network work and never starts Recording.
+//! Native session authority for Open Scribe: durable capture preparation,
+//! review, export, and local transcription through a manifest-verified model.
+//! Provider configuration authorizes no content category and opens no
+//! connection. This crate performs no capture, playback, or network work.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 mod export;
 pub use export::{
     TRANSCRIPT_V1_SCHEMA_JSON, TranscriptAvailability, TranscriptExport, TranscriptExportError,
-    TranscriptExportFormat, TranscriptExportReceipt, write_transcript_export,
+    TranscriptExportFormat, TranscriptExportReceipt, write_atomically_with,
+    write_transcript_export,
 };
 mod conversation_text;
-pub use conversation_text::{ConversationText, ConversationTurn, conversation_text};
+pub use conversation_text::{
+    ConversationText, ConversationTurn, compact_clock, conversation_text, conversation_turns,
+    render_conversation_text,
+};
 mod transcript_library;
 pub use transcript_library::{AudioExportOptions, TranscriptLibrary};
 mod transcription;
@@ -30,15 +31,6 @@ pub use session_export::{
     render_session_manifest, verify_portable_package, write_portable_package,
     write_session_manifest,
 };
-mod drift_measurement;
-mod drift_stimulus;
-pub use drift_measurement::{
-    DRIFT_REPORT_SCHEMA, DriftOptions, DriftReport, TWO_HOURS_NANOSECONDS, measure_drift,
-};
-pub use drift_stimulus::{
-    DRIFT_STIMULUS_SCHEMA, DriftError, STIMULUS_SAMPLE_RATE, StimulusSpec, stimulus_sha256,
-    write_stimulus_wav,
-};
 mod package_import;
 #[cfg(test)]
 mod session_export_tests;
@@ -47,6 +39,7 @@ pub use package_import::{PackageImportReceipt, import_portable_package};
 mod package_import_tests;
 mod speech;
 mod transcription_plan;
+mod transcription_runner;
 pub use open_scribe_asr::{WHISPER_ENGINE, WHISPER_ENGINE_VERSION};
 pub use open_scribe_types::TranscriptionIntent;
 pub use speech::{
@@ -57,6 +50,12 @@ pub use transcription_plan::{
     SessionTranscriptionPlan, execute_transcription_plan, plan_session_transcription,
     plan_transcription_operation,
 };
+pub use transcription_runner::{
+    JobProgress, StopReason, TranscriptionJob, TranscriptionRunFailure, TranscriptionRunRequest,
+    TranscriptionRunResult, TranscriptionRunSummary,
+};
+#[cfg(test)]
+mod conversation_text_tests;
 #[cfg(test)]
 mod speech_tests;
 #[cfg(test)]
@@ -65,28 +64,33 @@ mod transcript_library_tests;
 mod transcription_projection_tests;
 
 pub use open_scribe_domain::{
-    Command, Fixture, Presentation, SessionSnapshot, TimerBehavior, TransitionError, announcement,
-    transcription_hold,
+    Command, Fixture, Presentation, SessionSnapshot, TRANSCRIPTION_DISK_FLOOR_BYTES, TimerBehavior,
+    TransitionError, announcement, transcription_hold,
 };
 pub use open_scribe_evidence::{
     AdjudicationAction, DerivedClaim, EvidenceKind, EvidenceRef, EvidenceRefError, ResolutionState,
 };
 pub use open_scribe_memory::{
-    CONFIGURED_PROVIDER_NOTICE, ContentCategory, ExecutionMode, NO_OUTBOUND_NOTICE, OfferedRecord,
-    PolicyError, PreparedReview, ProviderConfiguration, ProviderReceipt, RunAuthorization,
-    UNCONFIGURED_PROVIDER_NOTICE, authorize_run, configure_provider, grant_category,
-    materialize_review, outbound_from_configuration, refuse_provider_secret, retarget_remote,
+    ContentCategory, ExecutionMode, OfferedRecord, PolicyError, PreparedReview,
+    ProviderConfiguration, RunAuthorization, UNCONFIGURED_PROVIDER_NOTICE, authorize_run,
+    configure_provider, materialize_review, outbound_from_configuration, retarget_remote,
 };
 pub use open_scribe_store::{
     ClaimEvidenceSide, ClaimNavigation, ClaimNavigationTarget, DecodedAudioError, LibraryRecovery,
     RecoveryDisposition, ResolvedEvidence, RuntimeTranscriptState, SessionStore,
     TranscriptionFailure, TranscriptionOperation, TranscriptionRunPolicy, TranscriptionWork,
 };
+pub use open_scribe_store::{
+    RecorderEventKind, RetainedRunUse, SessionHealth, SessionLifecycle, SourceLifecycle,
+    StorageLevel, SuggestionBasis, TitleSource, TrackSourceKind, TranscriptFinality,
+    TranscriptionFailureClass, TranscriptionRunState,
+};
 
 /// Canonical `open-scribe.evidence-ref/v1` JSON for a Rust-derived reference.
 pub fn encode_evidence_ref(reference: &EvidenceRef) -> Result<String, StoreError> {
     serde_json::to_string(reference).map_err(StoreError::Json)
 }
+pub use open_scribe_diarize::SpeakerDisposition;
 pub use open_scribe_store::{
     AcceptedContextEvent, CONTEXT_EVENT_SCHEMA, CONTEXT_EXCLUSIONS, CONTEXT_SCOPE_SCHEMA,
     ContextAction, ContextBounds, ContextCondition, ContextDecision, ContextDetail,
@@ -96,24 +100,25 @@ pub use open_scribe_store::{
     ScreenPermission, SessionDeclaration,
 };
 pub use open_scribe_store::{
-    AuthorizeMediaOpenRequest, CaptureClock, CompressedImportMetadata, FirstSampleEvidence,
-    FirstSampleReceipt, ImportMediaRequest, ImportPolicy, ImportedMediaEvidence,
-    ImportedPlaybackLease, InterruptSessionRequest, MediaOpenAuthorization, MediaOpenEvidence,
-    MediaOpenReceipt, MediaSourceKind, MixdownAuthorization, MixdownReceipt, MixdownWork,
-    OriginalImportMetadata, PrepareSessionRequest, PreparedSessionReceipt, RecorderAction,
-    RecorderDetail, RecorderEvent, RecordingStartedEvidence, RecoveredPlayableSession,
-    RequiredSourcePlanEvidence, RuntimeLibrarySnapshot, RuntimePlayableMediaAvailability,
-    RuntimePlayableMediaSnapshot, RuntimeSessionSnapshot, RuntimeSourceSnapshot,
-    SealSegmentReceipt, SealedSegmentEvidence, SessionInterruptionEvidence,
+    AuthorizeMediaOpenRequest, CaptureClock, CapturePolicy, CompressedImportMetadata,
+    FirstSampleEvidence, FirstSampleReceipt, ImportMediaRequest, ImportPolicy,
+    ImportedMediaEvidence, ImportedPlaybackLease, InterruptSessionRequest, MediaOpenAuthorization,
+    MediaOpenEvidence, MediaOpenReceipt, MediaSourceKind, MixdownAuthorization, MixdownReceipt,
+    MixdownWork, OriginalImportMetadata, PrepareSessionRequest, PreparedSessionReceipt,
+    RecorderAction, RecorderDetail, RecorderEvent, RecordingStartedEvidence,
+    RecoveredPlayableSession, RequiredSourcePlanEvidence, RuntimeLibrarySnapshot,
+    RuntimePlayableMediaAvailability, RuntimePlayableMediaSnapshot, RuntimeSessionSnapshot,
+    RuntimeSourceSnapshot, SealSegmentReceipt, SealedSegmentEvidence, SessionInterruptionEvidence,
     SessionInterruptionReason, SessionOrigin, SourceFailureEvidence, SourceFailureReason,
-    SourceFailureRequest, StoreError, TimelineSegment, ValidatedMixdown, import_policy,
+    SourceFailureRequest, StoreError, TimelineSegment, ValidatedMixdown, capture_policy,
+    import_policy, source_defaults,
 };
 pub use open_scribe_store::{
-    LiveDraftWindow, NamedSpeakerTurn, NamedSpeakerTurnHistory, NamedSpeakerTurnRevision,
-    NamedTranscriptSpeaker, SelectedRevisionProvenance, SessionDeletionInventory,
-    SessionDeletionReceipt, SessionSpeaker, SpeakerDiarization, SpeakerDiarizationTrack,
-    SpeakerDiarizationTrackInput, SpeakerLabelHistory, SpeakerLabelOrigin, SpeakerLabelRevision,
-    TranscriptDocumentSegment, TranscriptExportContext, TranscriptProvenance,
+    ConversationDocument, ConversationTitle, DocumentScope, LiveDraftWindow, NamedSpeakerTurn,
+    NamedSpeakerTurnHistory, NamedSpeakerTurnRevision, NamedTranscriptSpeaker,
+    SelectedRevisionProvenance, SessionDeletionInventory, SessionDeletionReceipt, SessionSpeaker,
+    SpeakerDiarization, SpeakerDiarizationTrack, SpeakerLabelHistory, SpeakerLabelOrigin,
+    SpeakerLabelRevision, TranscriptDocumentSegment, TranscriptExportContext, TranscriptProvenance,
     TranscriptProvenanceRange, TranscriptSearchHit, TranscriptSpeakerAssignment,
 };
 
@@ -158,82 +163,14 @@ pub struct RecordingPreparationController {
 }
 
 impl RecordingPreparationController {
-    /// Scope changes share the recording writer, so context records and
-    /// media records never race for the session journal.
-    pub fn context_action(
-        &mut self,
-        session: open_scribe_types::SessionId,
-        action: ContextAction,
-    ) -> Result<ContextDetail, StoreError> {
-        self.store.context_action(session, action)
+    /// The capture store. The platform adapter calls its methods directly;
+    /// this controller adds only the coarse receipts and maintenance.
+    pub fn store(&self) -> &SessionStore {
+        &self.store
     }
 
-    pub fn propose_context_event(
-        &mut self,
-        session: open_scribe_types::SessionId,
-        proposal: ContextProposal,
-    ) -> Result<ContextDecision, StoreError> {
-        self.store.propose_context_event(session, proposal)
-    }
-
-    pub fn context_detail(
-        &self,
-        session: &open_scribe_types::SessionId,
-    ) -> Result<ContextDetail, StoreError> {
-        self.store.context_detail(session)
-    }
-
-    pub fn declare_session(
-        &mut self,
-        session: open_scribe_types::SessionId,
-        declaration: SessionDeclaration,
-    ) -> Result<SessionDeclaration, StoreError> {
-        self.store.declare_session(session, declaration)
-    }
-
-    pub fn recorder_action(
-        &mut self,
-        session: open_scribe_types::SessionId,
-        action: RecorderAction,
-    ) -> Result<RecorderDetail, StoreError> {
-        self.store.recorder_action(session, action)
-    }
-
-    pub fn recorder_detail(
-        &self,
-        session: open_scribe_types::SessionId,
-    ) -> Result<RecorderDetail, StoreError> {
-        self.store.recorder_detail(&session)
-    }
-    pub fn anchor_capture_clock(
-        &mut self,
-        session_id: open_scribe_types::SessionId,
-        clock: CaptureClock,
-    ) -> Result<(), StoreError> {
-        self.store.anchor_capture_clock(session_id, clock)
-    }
-
-    pub fn authorize_next_segment(
-        &mut self,
-        session_id: open_scribe_types::SessionId,
-        previous: String,
-    ) -> Result<MediaOpenAuthorization, StoreError> {
-        self.store.authorize_next_segment(session_id, previous)
-    }
-
-    pub fn playback_timeline(
-        &self,
-        session_id: open_scribe_types::SessionId,
-    ) -> Result<Vec<TimelineSegment>, StoreError> {
-        self.store.playback_timeline(&session_id)
-    }
-
-    pub fn abandon_reserved_segment(
-        &mut self,
-        session_id: open_scribe_types::SessionId,
-        segment_id: String,
-    ) -> Result<(), StoreError> {
-        self.store.abandon_reserved_segment(session_id, segment_id)
+    pub fn store_mut(&mut self) -> &mut SessionStore {
+        &mut self.store
     }
 
     pub fn lease_timeline_segment(
@@ -249,93 +186,22 @@ impl RecordingPreparationController {
         )
     }
 
-    pub fn authorize_mixdown(
-        &mut self,
-        session_id: open_scribe_types::SessionId,
-        available_bytes: u64,
-    ) -> Result<MixdownAuthorization, StoreError> {
-        self.store.authorize_mixdown(session_id, available_bytes)
-    }
-
-    pub fn accept_mixdown(
-        &mut self,
-        receipt: MixdownReceipt,
-    ) -> Result<ValidatedMixdown, StoreError> {
-        self.store.accept_mixdown(receipt)
-    }
-
-    pub fn validated_mixdown(
-        &self,
-        session_id: &open_scribe_types::SessionId,
-    ) -> Result<Option<ValidatedMixdown>, StoreError> {
-        self.store.validated_mixdown(session_id)
-    }
-
-    pub fn lease_validated_mixdown(
-        &self,
-        session_id: &open_scribe_types::SessionId,
-    ) -> Result<Option<ImportedPlaybackLease>, StoreError> {
-        self.store.lease_validated_mixdown(session_id)
-    }
     pub fn open(managed_root: impl AsRef<Path>) -> Result<Self, StoreError> {
         Ok(Self {
             store: open_scribe_store::SessionStore::open(managed_root)?,
         })
     }
 
-    /// Replaces a conversation's user-visible title; nothing else changes.
-    pub fn rename_session(
-        &mut self,
-        session: open_scribe_types::SessionId,
-        title: String,
-    ) -> Result<String, StoreError> {
-        self.store.rename_session(&session, &title)
-    }
-
-    pub fn prepare_session(&mut self, title: String) -> Result<PreparedSessionReceipt, StoreError> {
-        self.store.prepare_session(PrepareSessionRequest {
-            title,
-            origin: SessionOrigin::Capture,
-        })
-    }
-
+    /// Without a title, Rust names the capture with its placeholder.
     pub fn prepare_session_with_required_sources(
         &mut self,
-        title: String,
+        title: Option<String>,
         required_sources: Vec<MediaSourceKind>,
     ) -> Result<PreparedSessionReceipt, StoreError> {
         self.store.prepare_session_with_required_sources(
-            PrepareSessionRequest {
-                title,
-                origin: SessionOrigin::Capture,
-            },
+            PrepareSessionRequest::capture(title),
             required_sources,
         )
-    }
-
-    pub fn plan_required_sources(
-        &mut self,
-        session_id: open_scribe_types::SessionId,
-        required_sources: Vec<MediaSourceKind>,
-    ) -> Result<RequiredSourcePlanEvidence, StoreError> {
-        self.store
-            .plan_required_sources(session_id, required_sources)
-    }
-
-    pub fn confirm_recording(
-        &mut self,
-        session_id: open_scribe_types::SessionId,
-    ) -> Result<RecordingStartedEvidence, StoreError> {
-        self.store.confirm_recording(session_id)
-    }
-
-    /// Admits one provisional window while capture is open. The caller supplies
-    /// the hypothesis text and model identity. This does not load a model.
-    pub fn commit_live_draft_window(
-        &mut self,
-        window: LiveDraftWindow,
-    ) -> Result<String, StoreError> {
-        self.store.commit_live_draft_window(&window)
     }
 
     /// Draft text a reader can show. Selected Final text is omitted.
@@ -345,18 +211,12 @@ impl RecordingPreparationController {
     ) -> Result<Vec<String>, StoreError> {
         Ok(self
             .store
-            .readable_transcript(session)?
+            .conversation_document(session, DocumentScope::Readable)?
+            .segments
             .into_iter()
-            .filter(|segment| segment.finality == "draft")
+            .filter(|segment| segment.finality == TranscriptFinality::Draft)
             .map(|segment| segment.effective_text)
             .collect())
-    }
-
-    pub fn authorize_initial_media(
-        &mut self,
-        request: AuthorizeMediaOpenRequest,
-    ) -> Result<MediaOpenAuthorization, StoreError> {
-        self.store.authorize_media_open(request)
     }
 
     pub fn accept_coarse_media_open(
@@ -371,7 +231,7 @@ impl RecordingPreparationController {
             writer_generation: receipt.writer_generation,
             relative_path: receipt.relative_path,
             media_format: "caf-pcm-s16le".to_owned(),
-            sample_rate_hz: 48_000,
+            sample_rate_hz: open_scribe_types::MEDIA_SAMPLE_RATE_HZ,
             channels: receipt.channels,
             initial_byte_length: receipt.initial_byte_length,
         })
@@ -411,51 +271,30 @@ impl RecordingPreparationController {
         })
     }
 
-    pub fn interrupt_session(
+    /// Reconciles retained transcripts when neither capture nor admitted work
+    /// holds the library. A stop request on `job` decides the outcome.
+    pub fn maintain_retained_transcripts(
         &mut self,
-        session_id: open_scribe_types::SessionId,
-        reason: SessionInterruptionReason,
-    ) -> Result<SessionInterruptionEvidence, StoreError> {
-        self.store
-            .interrupt_session(InterruptSessionRequest { session_id, reason })
-    }
-
-    pub fn record_source_failure(
-        &mut self,
-        session_id: open_scribe_types::SessionId,
-        source_kind: MediaSourceKind,
-        reason: SourceFailureReason,
-    ) -> Result<SourceFailureEvidence, StoreError> {
-        self.store.record_source_failure(SourceFailureRequest {
-            session_id,
-            source_kind,
-            reason,
-        })
-    }
-
-    pub fn recover_playable_sessions(
-        &mut self,
-    ) -> Result<Vec<RecoveredPlayableSession>, StoreError> {
-        Ok(self.recover_capture_safety()?.playable)
-    }
-
-    pub fn recover_capture_safety(&mut self) -> Result<LibraryRecovery, StoreError> {
-        self.store.recover_library()
+        job: &TranscriptionJob,
+        observations: open_scribe_types::WorkObservations,
+    ) -> Result<open_scribe_types::WorkOutcome, StoreError> {
+        use open_scribe_types::WorkOutcome;
+        if self.store.capture_active()? || observations.capture_active {
+            return Ok(WorkOutcome::CapturePreempted);
+        }
+        if self.store.work_admission_active()?
+            || transcription_hold(false, TranscriptionIntent::ReconcileRetained, observations)
+                .is_some()
+        {
+            return Ok(WorkOutcome::Deferred);
+        }
+        let outcome = self.maintain_transcripts(job.cancellation(), observations)?;
+        Ok(job.stop_reason().map_or(outcome, StopReason::outcome))
     }
 
     /// Lower-priority derived maintenance, explicitly outside capture-safety
     /// recovery. Cancellation yields between durable runs, never hides media.
     pub fn maintain_transcripts(
-        &mut self,
-        cancel: &std::sync::atomic::AtomicBool,
-    ) -> Result<open_scribe_types::WorkOutcome, StoreError> {
-        self.maintain_transcripts_with_observations(
-            cancel,
-            open_scribe_types::WorkObservations::default(),
-        )
-    }
-
-    pub fn maintain_transcripts_with_observations(
         &mut self,
         cancel: &std::sync::atomic::AtomicBool,
         observations: open_scribe_types::WorkObservations,
@@ -464,19 +303,8 @@ impl RecordingPreparationController {
         let (pending, _) = self.store.recover_orphan_transcription_runs()?;
         // Class A: all chunks complete, worker gone — finalize without ASR,
         // under the reconciliation version this build actually applies.
-        for run_id in pending {
-            if cancel.load(std::sync::atomic::Ordering::Acquire) {
-                return Ok(WorkOutcome::UserCancelled);
-            }
-            if !self.reconcile_maintenance_run(&run_id, observations)? {
-                return Ok(
-                    if self.store.capture_active()? || observations.capture_active {
-                        WorkOutcome::CapturePreempted
-                    } else {
-                        WorkOutcome::Deferred
-                    },
-                );
-            }
+        if let Some(stopped) = self.reconcile_maintenance_runs(pending, cancel, observations)? {
+            return Ok(stopped);
         }
         // Runs an earlier build failed after every chunk was durable, or left
         // under a label this build no longer commits, are rebuilt from their
@@ -484,21 +312,34 @@ impl RecordingPreparationController {
         let candidates = self
             .store
             .retained_transcript_candidates(open_scribe_asr::RECONCILIATION_VERSION)?;
-        for run_id in candidates {
+        Ok(self
+            .reconcile_maintenance_runs(candidates, cancel, observations)?
+            .unwrap_or(WorkOutcome::Completed))
+    }
+
+    /// Reconciles `runs` in order; `Some` is the outcome that stopped them.
+    fn reconcile_maintenance_runs(
+        &mut self,
+        runs: Vec<String>,
+        cancel: &std::sync::atomic::AtomicBool,
+        observations: open_scribe_types::WorkObservations,
+    ) -> Result<Option<open_scribe_types::WorkOutcome>, StoreError> {
+        use open_scribe_types::WorkOutcome;
+        for run_id in runs {
             if cancel.load(std::sync::atomic::Ordering::Acquire) {
-                return Ok(WorkOutcome::UserCancelled);
+                return Ok(Some(WorkOutcome::UserCancelled));
             }
             if !self.reconcile_maintenance_run(&run_id, observations)? {
-                return Ok(
+                return Ok(Some(
                     if self.store.capture_active()? || observations.capture_active {
                         WorkOutcome::CapturePreempted
                     } else {
                         WorkOutcome::Deferred
                     },
-                );
+                ));
             }
         }
-        Ok(WorkOutcome::Completed)
+        Ok(None)
     }
 
     fn reconcile_maintenance_run(
@@ -566,16 +407,7 @@ impl RecordingPreparationController {
                     WorkOutcome::Deferred
                 }
             }
-            Err(crate::TranscriptionError::Preempted) => WorkOutcome::CapturePreempted,
-            Err(crate::TranscriptionError::RunEnded {
-                failure: TranscriptionFailure::CapturePreempted,
-                ..
-            }) => WorkOutcome::CapturePreempted,
-            Err(crate::TranscriptionError::RunEnded {
-                failure: TranscriptionFailure::Cancelled,
-                ..
-            }) => WorkOutcome::UserCancelled,
-            Err(_) => WorkOutcome::Failed,
+            Err(error) => TranscriptionRunFailure::from_transcription(error, false).outcome(),
         };
         self.store.finish_transcription(token, outcome)?;
         match result {
@@ -584,7 +416,12 @@ impl RecordingPreparationController {
                 failure: TranscriptionFailure::CapturePreempted,
                 ..
             }) => Ok(false),
-            Ok(_) | Err(crate::TranscriptionError::RunEnded { .. }) => Ok(true),
+            Ok(_)
+            | Err(
+                crate::TranscriptionError::RunEnded { .. }
+                | crate::TranscriptionError::Cancelled
+                | crate::TranscriptionError::RecognizerRequired,
+            ) => Ok(true),
             Err(crate::TranscriptionError::Store(
                 StoreError::InvalidState(_)
                 | StoreError::InvalidRequest(_)
@@ -592,64 +429,6 @@ impl RecordingPreparationController {
             )) => Ok(true),
             Err(crate::TranscriptionError::Store(error)) => Err(error),
         }
-    }
-
-    pub fn import_recoverable_caf(
-        &mut self,
-        title: String,
-        source_path: PathBuf,
-    ) -> Result<ImportedMediaEvidence, StoreError> {
-        self.store
-            .import_recoverable_caf(ImportMediaRequest { title, source_path })
-    }
-
-    pub fn import_normalized_caf(
-        &mut self,
-        title: String,
-        source_path: PathBuf,
-        original: OriginalImportMetadata,
-    ) -> Result<ImportedMediaEvidence, StoreError> {
-        self.store
-            .import_normalized_caf(ImportMediaRequest { title, source_path }, original)
-    }
-
-    pub fn import_compressed_m4a(
-        &mut self,
-        title: String,
-        source_path: PathBuf,
-        metadata: CompressedImportMetadata,
-    ) -> Result<ImportedMediaEvidence, StoreError> {
-        self.store
-            .import_compressed_m4a(ImportMediaRequest { title, source_path }, metadata)
-    }
-
-    pub fn lease_imported_playback(
-        &self,
-        session_id: open_scribe_types::SessionId,
-    ) -> Result<ImportedPlaybackLease, StoreError> {
-        self.store.lease_imported_playback(&session_id)
-    }
-
-    pub fn lease_recovered_playback(
-        &self,
-        session_id: open_scribe_types::SessionId,
-        source_id: String,
-        track_id: String,
-        segment_id: String,
-    ) -> Result<ImportedPlaybackLease, StoreError> {
-        self.store
-            .lease_recovered_playback(&session_id, &source_id, &track_id, &segment_id)
-    }
-
-    pub fn runtime_library_snapshot(&self) -> Result<RuntimeLibrarySnapshot, StoreError> {
-        self.store.runtime_library_snapshot()
-    }
-
-    pub fn runtime_library_snapshot_at_host(
-        &self,
-        host_time: u64,
-    ) -> Result<RuntimeLibrarySnapshot, StoreError> {
-        self.store.runtime_library_snapshot_at_host(host_time)
     }
 }
 
@@ -708,8 +487,7 @@ pub const fn status_snapshot() -> CoreStatus {
 /// manifest without compiling or executing code.
 pub const RUNTIME_CAPABILITY_MANIFEST_JSON: &str = include_str!("../runtime-capabilities.v1.json");
 
-/// The sentence a product surface shows while no signed release exists.
-pub const NO_PUBLIC_RELEASE: &str = "No public release is available.";
+pub use open_scribe_types::{NO_PUBLIC_RELEASE, public_capability_label};
 
 /// One checked capability and the words a public surface may show for it.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -718,13 +496,6 @@ pub struct CapabilityClaim {
     pub terminology: String,
     pub maturity: String,
     pub public_label: String,
-}
-
-/// Words for a maturity. `Available` is reserved for a signed release that
-/// proved the capability. Every other value stays visibly excluded.
-#[must_use]
-pub fn public_capability_label(maturity: &str) -> &'static str {
-    open_scribe_types::public_capability_label(maturity)
 }
 
 /// Reads the embedded registry. A manifest that cannot be read yields no

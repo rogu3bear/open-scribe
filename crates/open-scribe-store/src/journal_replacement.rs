@@ -8,6 +8,7 @@ use std::io;
 use std::path::Path;
 use std::sync::{Mutex, PoisonError};
 use std::time::Duration;
+use uuid::Uuid;
 
 static LIVE: Mutex<BTreeSet<String>> = Mutex::new(BTreeSet::new());
 
@@ -56,6 +57,18 @@ impl Drop for LiveReplacement {
             .unwrap_or_else(PoisonError::into_inner)
             .remove(&self.0);
     }
+}
+
+/// `.open-scribe-journal-<uuid>.tmp`, written beside the session journal.
+pub(super) fn temporary_name() -> String {
+    format!(".open-scribe-journal-{}.tmp", Uuid::now_v7())
+}
+
+/// The replacement id `file_name` carries when it names a replacement file.
+pub(super) fn temporary_id(file_name: &str) -> Option<&str> {
+    file_name
+        .strip_prefix(".open-scribe-journal-")
+        .and_then(|value| value.strip_suffix(".tmp"))
 }
 
 /// True while an append in this process owns the named replacement file.

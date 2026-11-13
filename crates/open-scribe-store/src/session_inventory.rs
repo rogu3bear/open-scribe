@@ -5,7 +5,10 @@
 
 use super::import::COMPRESSED_IMPORT_MEDIA_FORMAT;
 use super::transcript_input::verify_full_digest;
-use super::{MEDIA_FORMAT_CAF_PCM_S16LE, SessionStore, StoreError};
+use super::{
+    MEDIA_FORMAT_CAF_PCM_S16LE, RecorderEventKind, SessionLifecycle, SessionStore, StoreError,
+    missing_row,
+};
 use open_scribe_types::SessionId;
 use std::fs::File;
 
@@ -39,7 +42,7 @@ pub struct SessionInventory {
     pub session_id: SessionId,
     pub title: String,
     pub origin: String,
-    pub lifecycle: String,
+    pub lifecycle: SessionLifecycle,
     pub created_at_ms: i64,
     pub media: Vec<SessionMediaEntry>,
     pub markers: Vec<SessionMarker>,
@@ -56,20 +59,15 @@ pub struct VerifiedMedia {
 
 impl SessionStore {
     pub fn session_inventory(&self, session: &SessionId) -> Result<SessionInventory, StoreError> {
-        let (title, origin, lifecycle, created_at_ms): (String, String, String, i64) = self
-            .connection
-            .query_row(
-                "SELECT title, origin, lifecycle, created_at_ms FROM sessions
+        let (title, origin, lifecycle, created_at_ms): (String, String, SessionLifecycle, i64) =
+            self.connection
+                .query_row(
+                    "SELECT title, origin, lifecycle, created_at_ms FROM sessions
                  WHERE id = ?1 AND lifecycle = 'ready_for_review'",
-                [&session.0],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
-            )
-            .map_err(|error| match error {
-                rusqlite::Error::QueryReturnedNoRows => {
-                    StoreError::InvalidState("session is not saved for review")
-                }
-                other => StoreError::Sqlite(other),
-            })?;
+                    [&session.0],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                )
+                .map_err(missing_row("session is not saved for review"))?;
         let placements: Vec<(String, i64)> = if origin == "capture" {
             self.playback_timeline(session)?
                 .into_iter()
@@ -159,7 +157,7 @@ impl SessionStore {
             .recorder_detail(session)?
             .events
             .into_iter()
-            .filter(|event| event.kind == "marker_added")
+            .filter(|event| event.kind == RecorderEventKind::MarkerAdded)
             .map(|event| SessionMarker {
                 marker_id: event.id,
                 at_nanoseconds: event.session_nanoseconds,

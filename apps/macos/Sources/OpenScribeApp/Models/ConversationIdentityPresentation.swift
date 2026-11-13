@@ -8,36 +8,33 @@ enum ConversationIdentityPresentation {
     for session: RuntimeSessionPresentation, locale: Locale = .current,
     timeZone: TimeZone = .current
   ) -> String {
-    title(session.displayTitle, locale: locale, timeZone: timeZone)
+    title(
+      session.displayTitle, placeholderAtMs: session.placeholderAtMs, locale: locale,
+      timeZone: timeZone)
   }
 
-  /// A capture placeholder (`Conversation <ISO 8601>`) reads as the time the
-  /// conversation began; the library's date sections carry the day.
+  /// The conversation a search match came from, titled as the library shows it.
   static func title(
-    _ storedTitle: String, locale: Locale = .current, timeZone: TimeZone = .current
+    for hit: NativeTranscriptSearchHit, locale: Locale = .current, timeZone: TimeZone = .current
   ) -> String {
-    guard let date = placeholderDate(storedTitle) else { return storedTitle }
+    title(hit.sessionTitle, placeholderAtMs: hit.placeholderAtMs, locale: locale, timeZone: timeZone)
+  }
+
+  /// Rust names the capture time when the display title is still its
+  /// placeholder; that reads as the time the conversation began, and the
+  /// library's date sections carry the day.
+  static func title(
+    _ displayTitle: String, placeholderAtMs: Int64?, locale: Locale = .current,
+    timeZone: TimeZone = .current
+  ) -> String {
+    guard let placeholderAtMs else { return displayTitle }
     let formatter = DateFormatter()
     formatter.locale = locale
     formatter.timeZone = timeZone
     formatter.dateStyle = .none
     formatter.timeStyle = .short
+    let date = Date(timeIntervalSince1970: Double(placeholderAtMs) / 1_000)
     return "Conversation at \(formatter.string(from: date))"
-  }
-
-  static func isPlaceholder(_ storedTitle: String) -> Bool {
-    placeholderDate(storedTitle) != nil
-  }
-
-  private static func placeholderDate(_ storedTitle: String) -> Date? {
-    let prefix = "Conversation "
-    guard storedTitle.hasPrefix(prefix) else { return nil }
-    let timestamp = String(storedTitle.dropFirst(prefix.count))
-    let parser = ISO8601DateFormatter()
-    guard let date = parser.date(from: timestamp), parser.string(from: date) == timestamp else {
-      return nil
-    }
-    return date
   }
 
   /// Only otherwise indistinguishable rows need a reference. Grow the suffix
@@ -46,7 +43,7 @@ enum ConversationIdentityPresentation {
     let unique = Dictionary(
       sessions.map { ($0.sessionId, $0) }, uniquingKeysWith: { first, _ in first })
     let groups = Dictionary(grouping: unique.values) {
-      [title(for: $0), $0.timerText, $0.statusText]
+      [title(for: $0), $0.lengthText ?? "", $0.statusText]
     }
     var result = [String: String]()
     for group in groups.values where group.count > 1 {

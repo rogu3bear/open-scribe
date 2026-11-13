@@ -11,8 +11,7 @@ protocol PlayableSessionRecovering: AnyObject, Sendable {
 
 extension PlayableSessionRecovering {
   func recoverCaptureSafety() throws -> NativeMediaRecovery {
-    NativeMediaRecovery(
-      captureSafetyComplete: true, playable: try recoverPlayableSessions(), findings: [])
+    NativeMediaRecovery(playable: try recoverPlayableSessions(), findings: [])
   }
 }
 

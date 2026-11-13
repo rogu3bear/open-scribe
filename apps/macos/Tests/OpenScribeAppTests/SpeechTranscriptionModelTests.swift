@@ -118,9 +118,10 @@ final class SpeechTranscriptionModelTests: XCTestCase {
         $0.sessionId == imported.sessionId
       })
     let session = RuntimeSessionPresentation(native: saved)
-    XCTAssertEqual(session.lifecycle, "ready_for_review")
+    XCTAssertEqual(session.lifecycle, .readyForReview)
     XCTAssertNil(session.transcriptionUnavailableReason)
-    XCTAssertNil(session.deletionUnavailableReason)
+    XCTAssertTrue(session.preservedAudio)
+    XCTAssertNil(LibraryPresentation.trashUnavailableReason(session, recorderIdle: true))
     let transcripts = TranscriptLibraryModel(managedRoot: libraryRoot)
     await transcripts.load(session: session)
     XCTAssertEqual(transcripts.availability, .unavailable)
@@ -182,7 +183,7 @@ final class SpeechTranscriptionModelTests: XCTestCase {
         $0.sessionId == evidence.sessionId
       })
     let session = RuntimeSessionPresentation(native: saved)
-    XCTAssertEqual(session.lifecycle, "ready_for_review")
+    XCTAssertEqual(session.lifecycle, .readyForReview)
     XCTAssertTrue(session.playableMedia?.isPlayable == true)
 
     let player = RecoveredAudioPlayer(outputMode: .silent)
@@ -400,8 +401,9 @@ final class SpeechTranscriptionModelTests: XCTestCase {
   func testTranscriptionStatesAndModelSheetRender() throws {
     let session = RuntimeSessionPresentation(
       native: NativeRuntimeSessionSnapshot(
-        sessionId: "session", title: "Weekly planning", lifecycle: "ready_for_review",
-        health: "healthy", elapsedSeconds: 3_900, journalDurable: true, mediaFilesOpen: false,
+        sessionId: "session", title: "Weekly planning", titleSource: .person,
+        lifecycle: .readyForReview,
+        health: .healthy, elapsedSeconds: 3_900, journalDurable: true, mediaFilesOpen: false,
         interruptionReason: nil, recovered: false, hasCaptureTimeline: true, sources: [],
         playableMedia: nil))
     func model(
@@ -531,7 +533,9 @@ final class SpeechTranscriptionModelTests: XCTestCase {
       .importManagedAudio(title: "Stereo memo", sourceURL: source)
     XCTAssertTrue(evidence.relativePath.hasSuffix(".m4a"))
     let speech = try NativeSpeechModels.open(managedRoot: managedRoot.path)
-    XCTAssertTrue(try speech.needsDecodedCompanion(sessionId: evidence.sessionId))
+    XCTAssertTrue(
+      try speech.needsDecodedCompanionForIntent(
+        sessionId: evidence.sessionId, intent: .resumeIncomplete))
 
     let companion = root.appendingPathComponent("decoded.caf")
     let lease = try NativeRecordingPreparation.open(managedRoot: managedRoot.path)
@@ -633,8 +637,8 @@ final class SpeechTranscriptionModelTests: XCTestCase {
     XCTAssertEqual(item.modelSha256.count, 64)
     XCTAssertFalse(item.engine.isEmpty)
     XCTAssertNotEqual(item.engine, "fixture-engine")
-    XCTAssertEqual(item.runState, "complete")
-    XCTAssertEqual(item.finality, "final")
+    XCTAssertEqual(item.runState, .complete)
+    XCTAssertEqual(item.finality, .final)
     XCTAssertFalse(item.inputDigest.isEmpty)
 
     let model = TranscriptLibraryModel(library: library)

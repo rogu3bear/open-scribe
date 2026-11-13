@@ -2,7 +2,6 @@
 use super::*;
 #[derive(Clone, Debug, uniffi::Record)]
 pub struct NativeMediaRecovery {
-    pub capture_safety_complete: bool,
     pub playable: Vec<NativeRecoveredPlayableSession>,
     pub findings: Vec<NativeRecoveryFinding>,
 }
@@ -86,10 +85,10 @@ impl NativeRecordingPreparation {
     pub fn recover_capture_safety(&self) -> Result<NativeMediaRecovery, NativeStorageError> {
         let result = self
             .controller()?
-            .recover_capture_safety()
+            .store_mut()
+            .recover_library()
             .map_err(map_storage_error)?;
         Ok(NativeMediaRecovery {
-            capture_safety_complete: true,
             playable: result.playable.into_iter().map(map_recovered).collect(),
             findings: result
                 .findings
@@ -109,7 +108,7 @@ pub(super) fn map_recovered(
         session_id: recovered.session_id.0,
         source_id: recovered.source_id,
         track_id: recovered.track_id,
-        source_kind: map_native_media_source_kind(recovered.source_kind),
+        source_kind: recovered.source_kind.into(),
         source_display_name: recovered.source_display_name,
         segment_id: recovered.segment_id,
         relative_path: recovered.relative_path,

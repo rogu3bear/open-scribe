@@ -355,7 +355,7 @@ impl ModelLayout {
                     && modified_nanoseconds(&observed) == modified_nanoseconds(&existing);
                 if unchanged
                     && existing.len() == record.byte_length
-                    && format!("{:x}", digest.finalize()) == record.sha256
+                    && open_scribe_types::lowercase_hex(&digest.finalize()) == record.sha256
                 {
                     fs::remove_file(staged)?;
                     sync_directory(&self.staging_directory())?;

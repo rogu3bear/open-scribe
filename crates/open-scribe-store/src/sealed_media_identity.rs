@@ -40,6 +40,35 @@ impl ValidatedMediaFile {
     }
 }
 
+/// Accepted evidence for one sealed media file.
+pub(crate) struct SealedEvidence<'a> {
+    pub(crate) device: u64,
+    pub(crate) inode: u64,
+    pub(crate) byte_length: u64,
+    pub(crate) digest: &'a str,
+    pub(crate) sample_count: u64,
+    /// `None` where the accepted evidence records no channel layout.
+    pub(crate) channels: Option<u16>,
+}
+
+impl ValidatedMediaFile {
+    /// The file still matches everything accepted about it: identity under
+    /// the device rule above, the full digest, the frame count and, when
+    /// recorded, the channel layout.
+    pub(crate) fn matches_sealed(&self, sealed: &SealedEvidence<'_>) -> bool {
+        self.matches_sealed_identity(
+            sealed.device,
+            sealed.inode,
+            sealed.byte_length,
+            sealed.digest,
+        ) && self.digest_sha256.as_deref() == Some(sealed.digest)
+            && self.recoverable_sample_count == Some(sealed.sample_count)
+            && sealed
+                .channels
+                .is_none_or(|channels| self.channels == Some(channels))
+    }
+}
+
 impl SessionStore {
     #[cfg(test)]
     pub(super) fn run_media_validation_hook(&self) {

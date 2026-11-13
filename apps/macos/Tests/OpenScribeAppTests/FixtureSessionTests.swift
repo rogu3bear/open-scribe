@@ -21,15 +21,25 @@ final class FixtureSessionTests: XCTestCase {
     let locale = Locale(identifier: "en_US")
     let zone = TimeZone(secondsFromGMT: -4 * 3600)!
     let generated = "Conversation 2026-10-06T17:20:28Z"
+    // Rust recognizes the placeholder and names its capture time; the title
+    // reads as the local time of day, and the library's date section carries
+    // the day.
     let displayed = ConversationIdentityPresentation.title(
-      generated, locale: locale, timeZone: zone)
-    XCTAssertTrue(displayed.contains("Oct 6, 2026"))
-    XCTAssertTrue(displayed.contains("1:20"))
-    XCTAssertFalse(displayed.contains("17:20:28Z"))
+      generated, placeholderAtMs: 1_791_307_228_000, locale: locale, timeZone: zone)
+    XCTAssertTrue(displayed.hasPrefix("Conversation at 1:20"), displayed)
+    XCTAssertTrue(displayed.hasSuffix("PM"), displayed)
+    XCTAssertFalse(displayed.contains("2026"), displayed)
+    XCTAssertFalse(displayed.contains("17:20"), displayed)
+    XCTAssertEqual(
+      ConversationIdentityPresentation.title(
+        generated, placeholderAtMs: 1_791_307_228_000, locale: locale,
+        timeZone: TimeZone(secondsFromGMT: 0)!),
+      displayed.replacingOccurrences(of: "1:20", with: "5:20"),
+      "the same placeholder reads in the reader's own time zone")
     for title in [
       "Troy and James", "Conversation about 2026", "Conversation 2026-10-06T17:20:28Z notes",
     ] {
-      XCTAssertEqual(ConversationIdentityPresentation.title(title), title)
+      XCTAssertEqual(ConversationIdentityPresentation.title(title, placeholderAtMs: nil), title)
     }
   }
 
@@ -37,7 +47,8 @@ final class FixtureSessionTests: XCTestCase {
     func session(_ id: String, seconds: UInt64 = 3) -> RuntimeSessionPresentation {
       RuntimeSessionPresentation(
         native: NativeRuntimeSessionSnapshot(
-          sessionId: id, title: "speech48", lifecycle: "ready_for_review", health: "healthy",
+          sessionId: id, title: "speech48", titleSource: .person, lifecycle: .readyForReview,
+          health: .healthy,
           elapsedSeconds: seconds, journalDurable: true, mediaFilesOpen: false,
           interruptionReason: nil, recovered: false, hasCaptureTimeline: false,
           sources: [], playableMedia: nil
@@ -70,53 +81,53 @@ final class FixtureSessionTests: XCTestCase {
 
   func testRuntimeCaptureAnnouncementsRequireDurableTruthAndIgnoreTicks() {
     var announcements = RuntimeCaptureAnnouncements()
-    XCTAssertTrue(announcements.update(current: captureSession("preparing"), saved: []).isEmpty)
+    XCTAssertTrue(announcements.update(current: captureSession(.preparing), saved: []).isEmpty)
     XCTAssertTrue(
       announcements.update(
-        current: captureSession("recording", durable: false), saved: []
+        current: captureSession(.recording, durable: false), saved: []
       ).isEmpty
     )
     XCTAssertTrue(
       announcements.update(
-        current: captureSession("recording", durable: false, mediaOpen: true), saved: []
+        current: captureSession(.recording, durable: false, mediaOpen: true), saved: []
       ).isEmpty
     )
     XCTAssertTrue(
       announcements.update(
-        current: captureSession("recording", mediaOpen: false), saved: []
+        current: captureSession(.recording, mediaOpen: false), saved: []
       ).isEmpty
     )
     XCTAssertEqual(
-      announcements.update(current: captureSession("recording"), saved: []),
+      announcements.update(current: captureSession(.recording), saved: []),
       ["Recording Mac microphone and Mac system audio."]
     )
     XCTAssertTrue(
-      announcements.update(current: captureSession("recording", seconds: 900), saved: []).isEmpty
+      announcements.update(current: captureSession(.recording, seconds: 900), saved: []).isEmpty
     )
     XCTAssertEqual(
-      announcements.update(current: captureSession("paused"), saved: []),
+      announcements.update(current: captureSession(.paused), saved: []),
       ["Paused. Capture is suspended."]
     )
-    XCTAssertTrue(announcements.update(current: captureSession("paused"), saved: []).isEmpty)
+    XCTAssertTrue(announcements.update(current: captureSession(.paused), saved: []).isEmpty)
     XCTAssertTrue(
       announcements.update(
-        current: captureSession("paused", sourceLifecycle: "sealed"), saved: []
+        current: captureSession(.paused, sourceLifecycle: .sealed), saved: []
       ).isEmpty
     )
-    XCTAssertEqual(announcements.update(current: captureSession("recording"), saved: []).count, 1)
+    XCTAssertEqual(announcements.update(current: captureSession(.recording), saved: []).count, 1)
   }
 
   func testRuntimeSourceFailureNamesFailureAndActualContinuationOnce() {
     var announcements = RuntimeCaptureAnnouncements()
-    _ = announcements.update(current: captureSession("recording"), saved: [])
-    let degraded = captureSession("recording", health: "degraded", microphoneFailed: true)
+    _ = announcements.update(current: captureSession(.recording), saved: [])
+    let degraded = captureSession(.recording, health: .degraded, microphoneFailed: true)
     let messages = announcements.update(current: degraded, saved: [])
     XCTAssertEqual(messages.count, 1)
     XCTAssertTrue(messages[0].contains("Mac microphone failed."))
     XCTAssertTrue(messages[0].contains("Capture continues on Mac system audio."))
     XCTAssertTrue(announcements.update(current: degraded, saved: []).isEmpty)
     let revoked = captureSession(
-      "interrupted", health: "degraded", reason: "permission_revoked", microphoneFailed: true
+      .interrupted, health: .degraded, reason: .permissionRevoked, microphoneFailed: true
     )
     let permission = announcements.update(current: revoked, saved: [])
     XCTAssertEqual(permission.count, 1)
@@ -132,14 +143,14 @@ final class FixtureSessionTests: XCTestCase {
     var announcements = RuntimeCaptureAnnouncements()
     XCTAssertTrue(
       announcements.update(
-        current: captureSession("recording", health: "degraded", durable: false), saved: []
+        current: captureSession(.recording, health: .degraded, durable: false), saved: []
       ).isEmpty
     )
   }
 
   func testRecoveryAnnouncementsSeedHistoryAndAnnounceNewPartialRecoveryOnce() {
     var announcements = RuntimeCaptureAnnouncements()
-    let recovered = captureSession("ready_for_review", health: "degraded", recovered: true)
+    let recovered = captureSession(.readyForReview, health: .degraded, recovered: true)
     XCTAssertTrue(announcements.update(current: nil, saved: [recovered]).isEmpty)
     XCTAssertTrue(announcements.update(current: nil, saved: [recovered]).isEmpty)
 
@@ -157,12 +168,13 @@ final class FixtureSessionTests: XCTestCase {
 
   func testRuntimeStoreDispatchesWithoutViewAndDoesNotAnnounceReadFailures() async {
     let native = NativeRuntimeSessionSnapshot(
-      sessionId: "announcement-session", title: "Meeting", lifecycle: "recording",
-      health: "healthy", elapsedSeconds: 1, journalDurable: true, mediaFilesOpen: true,
+      sessionId: "announcement-session", title: "Meeting", titleSource: .person,
+      lifecycle: .recording,
+      health: .healthy, elapsedSeconds: 1, journalDurable: true, mediaFilesOpen: true,
       interruptionReason: nil, recovered: false, hasCaptureTimeline: true,
       sources: [
         NativeRuntimeSourceSnapshot(
-          kind: .microphone, displayName: "Mac microphone", lifecycle: "capturing"
+          kind: .microphone, displayName: "Mac microphone", lifecycle: .capturing
         )
       ], playableMedia: nil
     )
@@ -186,9 +198,10 @@ final class FixtureSessionTests: XCTestCase {
 
   func testRuntimeStoreSeedsEmptySnapshotBeforeNewRecoveryArrives() async {
     let partial = NativeRuntimeSessionSnapshot(
-      sessionId: "partial-session", title: "Meeting", lifecycle: "ready_for_review",
-      health: "degraded", elapsedSeconds: 5, journalDurable: true, mediaFilesOpen: false,
-      interruptionReason: "capture_failed", recovered: true, hasCaptureTimeline: true,
+      sessionId: "partial-session", title: "Meeting", titleSource: .person,
+      lifecycle: .readyForReview,
+      health: .degraded, elapsedSeconds: 5, journalDurable: true, mediaFilesOpen: false,
+      interruptionReason: .captureFailed, recovered: true, hasCaptureTimeline: true,
       sources: [], playableMedia: nil
     )
     let counter = SnapshotInvocationCounter()
@@ -208,9 +221,10 @@ final class FixtureSessionTests: XCTestCase {
   }
 
   func testPausedGlyphAgreesAcrossLiveMenuAndStatusItem() async {
-    let paused = captureSession("paused")
+    let paused = captureSession(.paused)
     let native = NativeRuntimeSessionSnapshot(
-      sessionId: paused.sessionId, title: paused.title, lifecycle: "paused", health: "healthy",
+      sessionId: paused.sessionId, title: paused.title, titleSource: .person, lifecycle: .paused,
+      health: .healthy,
       elapsedSeconds: 1, journalDurable: true, mediaFilesOpen: true, interruptionReason: nil,
       recovered: false, hasCaptureTimeline: true, sources: [], playableMedia: nil
     )
@@ -218,7 +232,7 @@ final class FixtureSessionTests: XCTestCase {
       snapshotProvider: { NativeRuntimeLibrarySnapshot(currentSession: native, savedSessions: []) },
       announce: { _ in }, startsPolling: false
     )
-    await assertEventually { store.currentSession?.lifecycle == "paused" }
+    await assertEventually { store.currentSession?.lifecycle == .paused }
     let live = CompactLiveView(
       store: store, liveRecording: LiveMicrophoneRecordingController(managedRoot: nil)
     )
@@ -236,13 +250,13 @@ final class FixtureSessionTests: XCTestCase {
       )
     }
     let pausedWithElapsedTime = MenuBarLabel.presentation(
-      session: captureSession("paused", seconds: 3661, sourceLifecycle: "paused"),
+      session: captureSession(.paused, seconds: 3661, sourceLifecycle: .sealed),
       snapshotStale: false, livePhase: .paused, liveStatus: "Paused"
     )
-    XCTAssertEqual(pausedWithElapsedTime.text, "Paused · 01:01:01")
-    XCTAssertEqual(pausedWithElapsedTime.accessibilityText, "Paused, 01:01:01")
+    XCTAssertEqual(pausedWithElapsedTime.text, "Paused · 1:01:01")
+    XCTAssertEqual(pausedWithElapsedTime.accessibilityText, "Paused, 1 hr, 1 min")
     XCTAssertEqual(
-      MenuBarContent.statusSymbol(for: captureSession("interrupted", health: "degraded")),
+      MenuBarContent.statusSymbol(for: captureSession(.interrupted, health: .degraded)),
       SymbolResolver.captureSymbol(for: .recoveryRequired)
     )
   }
@@ -269,14 +283,14 @@ final class FixtureSessionTests: XCTestCase {
 
   func testSessionAndControllerMenuSymbolsAgreeWithoutPrematureRecording() {
     let sessions: [(RuntimeSessionPresentation, SymbolResolver.CaptureState)] = [
-      (captureSession("preparing"), .starting),
-      (captureSession("recording", durable: false), .starting),
-      (captureSession("recording"), .recording),
-      (captureSession("paused"), .paused),
-      (captureSession("recording", health: "degraded", microphoneFailed: true), .degraded),
-      (captureSession("paused", health: "degraded", microphoneFailed: true), .degraded),
-      (captureSession("interrupted", health: "degraded"), .recoveryRequired),
-      (captureSession("ready_for_review", health: "degraded", recovered: true), .recoveryRequired),
+      (captureSession(.preparing), .starting),
+      (captureSession(.recording, durable: false), .starting),
+      (captureSession(.recording), .recording),
+      (captureSession(.paused), .paused),
+      (captureSession(.recording, health: .degraded, microphoneFailed: true), .degraded),
+      (captureSession(.paused, health: .degraded, microphoneFailed: true), .degraded),
+      (captureSession(.interrupted, health: .degraded), .recoveryRequired),
+      (captureSession(.readyForReview, health: .degraded, recovered: true), .recoveryRequired),
     ]
     for (session, state) in sessions {
       let symbol = SymbolResolver.captureSymbol(for: state)
@@ -301,22 +315,22 @@ final class FixtureSessionTests: XCTestCase {
       ).symbolName, SymbolResolver.captureSymbol(for: .ready))
     XCTAssertEqual(
       MenuBarLabel.presentation(
-        session: captureSession("recording"), snapshotStale: true,
+        session: captureSession(.recording), snapshotStale: true,
         livePhase: .capturing, liveStatus: "Recording"
-      ).accessibilityText, "Live recording state unavailable")
+      ).accessibilityText, "Recording status unavailable")
   }
 
   /// A durable recording names Recording, the elapsed time, and each capturing
   /// source in words. The symbol is not the status.
   func testRecordingMenuNamesElapsedTimeAndEachSourceInWords() {
-    let session = captureSession("recording", seconds: 125)
+    let session = captureSession(.recording, seconds: 125)
     XCTAssertEqual(session.sources.map(\.stateText), ["Capturing", "Capturing"])
     let presented = MenuBarLabel.presentation(
       session: session, snapshotStale: false, livePhase: .capturing, liveStatus: "Recording")
-    XCTAssertEqual(presented.text, "Recording · 00:02:05")
+    XCTAssertEqual(presented.text, "Recording · 2:05")
     XCTAssertEqual(
       presented.accessibilityText,
-      "Recording Mac microphone and Mac system audio, 00:02:05")
+      "Recording Mac microphone and Mac system audio, 2 min")
     XCTAssertTrue(session.sources.allSatisfy { presented.accessibilityText.contains($0.name) })
     XCTAssertFalse(presented.symbolName.isEmpty)
     XCTAssertFalse(presented.text.contains(presented.symbolName))
@@ -356,26 +370,28 @@ final class FixtureSessionTests: XCTestCase {
   }
 
   private func captureSession(
-    _ lifecycle: String, health: String = "healthy", durable: Bool = true,
-    mediaOpen: Bool? = nil,
-    seconds: UInt64 = 1, reason: String? = nil, microphoneFailed: Bool = false,
-    recovered: Bool = false, sourceLifecycle: String = "capturing"
+    _ lifecycle: NativeSessionLifecycle, health: NativeSessionHealth = .healthy,
+    durable: Bool = true, mediaOpen: Bool? = nil, seconds: UInt64 = 1,
+    reason: NativeSessionInterruptionReason? = nil, microphoneFailed: Bool = false,
+    recovered: Bool = false, sourceLifecycle: NativeSourceLifecycle = .capturing,
+    preservedAudio: Bool = true
   ) -> RuntimeSessionPresentation {
     RuntimeSessionPresentation(
       native: NativeRuntimeSessionSnapshot(
-        sessionId: "announcement-session", title: "Meeting", lifecycle: lifecycle,
+        sessionId: "announcement-session", title: "Meeting", titleSource: .person,
+        lifecycle: lifecycle,
         health: health, elapsedSeconds: seconds, journalDurable: durable,
         mediaFilesOpen: mediaOpen ?? durable, interruptionReason: reason, recovered: recovered,
         hasCaptureTimeline: true,
         sources: [
           NativeRuntimeSourceSnapshot(
             kind: .microphone, displayName: "Mac microphone",
-            lifecycle: microphoneFailed ? "failed" : sourceLifecycle
+            lifecycle: microphoneFailed ? .failed : sourceLifecycle
           ),
           NativeRuntimeSourceSnapshot(
             kind: .systemAudio, displayName: "Mac system audio", lifecycle: sourceLifecycle
           ),
-        ], playableMedia: nil
+        ], playableMedia: nil, preservedAudio: preservedAudio
       )
     )
   }
@@ -579,7 +595,7 @@ final class FixtureSessionTests: XCTestCase {
       RuntimePlayableMediaPresentation(
         native: NativeRuntimePlayableMediaSnapshot(
           sourceDisplayName: "meeting.caf",
-          availability: "available",
+          availability: .available,
           absolutePath: "/managed/meeting.caf",
           durationNanoseconds: 1_000_000_000,
           sampleCount: 48_000,
@@ -589,15 +605,13 @@ final class FixtureSessionTests: XCTestCase {
     }
 
     let exactCap = media(byteLength: 268_435_456)
-    XCTAssertTrue(ImportedPlaybackEligibility.canPlay(exactCap))
-    XCTAssertEqual(ImportedPlaybackEligibility.status(exactCap), "Ready to play")
+    XCTAssertTrue(exactCap.isPlayable)
+    XCTAssertEqual(exactCap.statusText, "Ready to play")
+    XCTAssertEqual(exactCap.durationText, "1 sec")
 
     let overCap = media(byteLength: 268_435_457)
-    XCTAssertTrue(ImportedPlaybackEligibility.canPlay(overCap))
-    XCTAssertEqual(
-      ImportedPlaybackEligibility.status(overCap),
-      "Ready to play"
-    )
+    XCTAssertTrue(overCap.isPlayable)
+    XCTAssertEqual(overCap.statusText, "Ready to play")
   }
 
   func testEveryRustFixtureMapsIntoSwift() {
@@ -666,8 +680,8 @@ final class FixtureSessionTests: XCTestCase {
     let current = NativeRuntimeSessionSnapshot(
       sessionId: "session-live",
       title: "Design review",
-      lifecycle: "recording",
-      health: "healthy",
+      titleSource: .person, lifecycle: .recording,
+      health: .healthy,
       elapsedSeconds: 65,
       journalDurable: true,
       mediaFilesOpen: true,
@@ -678,12 +692,12 @@ final class FixtureSessionTests: XCTestCase {
         NativeRuntimeSourceSnapshot(
           kind: .microphone,
           displayName: "Mac microphone",
-          lifecycle: "capturing"
+          lifecycle: .capturing
         ),
         NativeRuntimeSourceSnapshot(
           kind: .systemAudio,
           displayName: "Mac system audio",
-          lifecycle: "capturing"
+          lifecycle: .capturing
         ),
       ],
       playableMedia: nil
@@ -691,8 +705,8 @@ final class FixtureSessionTests: XCTestCase {
     let saved = NativeRuntimeSessionSnapshot(
       sessionId: "session-saved",
       title: "Saved conversation",
-      lifecycle: "ready_for_review",
-      health: "healthy",
+      titleSource: .person, lifecycle: .readyForReview,
+      health: .healthy,
       elapsedSeconds: 120,
       journalDurable: true,
       mediaFilesOpen: false,
@@ -703,7 +717,7 @@ final class FixtureSessionTests: XCTestCase {
         NativeRuntimeSourceSnapshot(
           kind: $0.kind,
           displayName: $0.displayName,
-          lifecycle: "sealed"
+          lifecycle: .sealed
         )
       },
       playableMedia: nil
@@ -729,7 +743,7 @@ final class FixtureSessionTests: XCTestCase {
 
     XCTAssertTrue(menu.store === live.store)
     XCTAssertEqual(store.currentSession?.sessionId, "session-live")
-    XCTAssertEqual(store.currentSession?.timerText, "00:01:05")
+    XCTAssertEqual(store.currentSession?.timerText, "1:05")
     XCTAssertEqual(store.currentSession?.sources.map(\.stateText), ["Capturing", "Capturing"])
     XCTAssertEqual(store.savedSessions.map(\.sessionId), ["session-saved"])
     XCTAssertTrue(store.savedSessions[0].recovered)
@@ -781,38 +795,40 @@ final class FixtureSessionTests: XCTestCase {
       native: NativeRuntimeSessionSnapshot(
         sessionId: "session-interrupted",
         title: "Interrupted conversation",
-        lifecycle: "interrupted",
-        health: "degraded",
+        titleSource: .person, lifecycle: .interrupted,
+        health: .degraded,
         elapsedSeconds: 42,
         journalDurable: true,
         mediaFilesOpen: true,
-        interruptionReason: "capture_failed",
+        interruptionReason: .captureFailed,
         recovered: false,
         hasCaptureTimeline: false,
         sources: [
           NativeRuntimeSourceSnapshot(
             kind: .microphone,
             displayName: "Mac microphone",
-            lifecycle: "failed"
+            lifecycle: .failed
           ),
           NativeRuntimeSourceSnapshot(
             kind: .systemAudio,
             displayName: "Mac system audio",
-            lifecycle: "failed"
+            lifecycle: .failed
           ),
         ],
-        playableMedia: nil
+        playableMedia: nil,
+        preservedAudio: true
       )
     )
 
     XCTAssertFalse(interrupted.isRecording)
     XCTAssertTrue(interrupted.needsAttention)
-    XCTAssertEqual(interrupted.statusText, "Recording interrupted")
+    XCTAssertFalse(interrupted.didNotRecord)
+    XCTAssertEqual(interrupted.statusText, "Stopped unexpectedly")
     XCTAssertEqual(interrupted.recoveryText, "Recovery required")
     XCTAssertEqual(interrupted.sources.map(\.stateText), ["Failed", "Failed"])
     XCTAssertEqual(
       interrupted.interruptionText,
-      "A capture source failed; durable recovery state was preserved."
+      "Recording stopped unexpectedly — the audio up to that point is saved."
     )
   }
 
@@ -821,8 +837,8 @@ final class FixtureSessionTests: XCTestCase {
       native: NativeRuntimeSessionSnapshot(
         sessionId: "session-degraded",
         title: "Degraded conversation",
-        lifecycle: "recording",
-        health: "degraded",
+        titleSource: .person, lifecycle: .recording,
+        health: .degraded,
         elapsedSeconds: 42,
         journalDurable: true,
         mediaFilesOpen: true,
@@ -833,12 +849,12 @@ final class FixtureSessionTests: XCTestCase {
           NativeRuntimeSourceSnapshot(
             kind: .microphone,
             displayName: "Mac microphone",
-            lifecycle: "failed"
+            lifecycle: .failed
           ),
           NativeRuntimeSourceSnapshot(
             kind: .systemAudio,
             displayName: "Mac system audio",
-            lifecycle: "capturing"
+            lifecycle: .capturing
           ),
         ],
         playableMedia: nil
@@ -848,7 +864,7 @@ final class FixtureSessionTests: XCTestCase {
     XCTAssertTrue(degraded.isDegradedRecording)
     XCTAssertFalse(degraded.isRecording)
     XCTAssertTrue(degraded.needsAttention)
-    XCTAssertEqual(degraded.statusText, "Recording — degraded")
+    XCTAssertEqual(degraded.statusText, "Recording — a source stopped")
     XCTAssertEqual(
       MenuBarLabel.accessibilityStatus(
         session: degraded,
@@ -856,7 +872,7 @@ final class FixtureSessionTests: XCTestCase {
         livePhase: .capturing,
         liveStatus: "Recording microphone + system audio"
       ),
-      "Recording — degraded"
+      "Recording Mac system audio; a source stopped, 42 sec"
     )
   }
 
@@ -867,8 +883,8 @@ final class FixtureSessionTests: XCTestCase {
       native: NativeRuntimeSessionSnapshot(
         sessionId: "session-application",
         title: "Application call",
-        lifecycle: "recording",
-        health: "healthy",
+        titleSource: .person, lifecycle: .recording,
+        health: .healthy,
         elapsedSeconds: 65,
         journalDurable: true,
         mediaFilesOpen: true,
@@ -879,17 +895,17 @@ final class FixtureSessionTests: XCTestCase {
           NativeRuntimeSourceSnapshot(
             kind: .microphone,
             displayName: "Mac microphone",
-            lifecycle: "capturing"
+            lifecycle: .capturing
           ),
           NativeRuntimeSourceSnapshot(
             kind: .applicationAudio,
             displayName: "Example Call",
-            lifecycle: "capturing"
+            lifecycle: .capturing
           ),
           NativeRuntimeSourceSnapshot(
             kind: .systemAudio,
             displayName: "Mac system audio",
-            lifecycle: "ended"
+            lifecycle: .sealed
           ),
         ],
         playableMedia: nil
@@ -904,7 +920,7 @@ final class FixtureSessionTests: XCTestCase {
       liveStatus: "Recording microphone + Example Call"
     )
     XCTAssertTrue(spoken.hasPrefix("Recording "), spoken)
-    XCTAssertTrue(spoken.hasSuffix(", 00:01:05"), spoken)
+    XCTAssertTrue(spoken.hasSuffix(", 1 min"), spoken)
     XCTAssertTrue(spoken.contains("Mac microphone"), spoken)
     XCTAssertTrue(spoken.contains("Example Call"), spoken)
     XCTAssertFalse(spoken.localizedCaseInsensitiveContains("system audio"), spoken)
@@ -917,8 +933,8 @@ final class FixtureSessionTests: XCTestCase {
     let leftover = NativeRuntimeSessionSnapshot(
       sessionId: "session-left-recording",
       title: "Interrupted conversation",
-      lifecycle: "recording",
-      health: "healthy",
+      titleSource: .person, lifecycle: .recording,
+      health: .healthy,
       elapsedSeconds: 65,
       journalDurable: true,
       mediaFilesOpen: true,
@@ -929,7 +945,7 @@ final class FixtureSessionTests: XCTestCase {
         NativeRuntimeSourceSnapshot(
           kind: .microphone,
           displayName: "Mac microphone",
-          lifecycle: "capturing"
+          lifecycle: .capturing
         )
       ],
       playableMedia: nil
@@ -937,8 +953,8 @@ final class FixtureSessionTests: XCTestCase {
     let saved = NativeRuntimeSessionSnapshot(
       sessionId: "session-saved",
       title: "Saved conversation",
-      lifecycle: "ready_for_review",
-      health: "healthy",
+      titleSource: .person, lifecycle: .readyForReview,
+      health: .healthy,
       elapsedSeconds: 120,
       journalDurable: true,
       mediaFilesOpen: false,
@@ -972,16 +988,16 @@ final class FixtureSessionTests: XCTestCase {
     defer { firstRead.release() }
     let leftover = NativeRuntimeSessionSnapshot(
       sessionId: "abandoned-recording", title: "Interrupted conversation",
-      lifecycle: "recording", health: "healthy", elapsedSeconds: 65,
+      titleSource: .person, lifecycle: .recording, health: .healthy, elapsedSeconds: 65,
       journalDurable: true, mediaFilesOpen: true, interruptionReason: nil,
       recovered: false, hasCaptureTimeline: true,
       sources: [
         NativeRuntimeSourceSnapshot(
-          kind: .microphone, displayName: "Fixture microphone", lifecycle: "capturing")
+          kind: .microphone, displayName: "Fixture microphone", lifecycle: .capturing)
       ], playableMedia: nil)
     let saved = NativeRuntimeSessionSnapshot(
       sessionId: "saved-after-startup", title: "Saved conversation",
-      lifecycle: "ready_for_review", health: "healthy", elapsedSeconds: 1,
+      titleSource: .person, lifecycle: .readyForReview, health: .healthy, elapsedSeconds: 1,
       journalDurable: true, mediaFilesOpen: false, interruptionReason: nil,
       recovered: true, hasCaptureTimeline: false, sources: [], playableMedia: nil)
     var announcements: [String] = []
@@ -1012,24 +1028,24 @@ final class FixtureSessionTests: XCTestCase {
       native: NativeRuntimeSessionSnapshot(
         sessionId: "session-partial",
         title: "Recovered meeting",
-        lifecycle: "ready_for_review",
-        health: "degraded",
+        titleSource: .person, lifecycle: .readyForReview,
+        health: .degraded,
         elapsedSeconds: 2_425,
         journalDurable: true,
         mediaFilesOpen: false,
-        interruptionReason: "capture_failed",
+        interruptionReason: .captureFailed,
         recovered: true,
         hasCaptureTimeline: false,
         sources: [
           NativeRuntimeSourceSnapshot(
             kind: .microphone,
             displayName: "Mac microphone",
-            lifecycle: "sealed"
+            lifecycle: .sealed
           ),
           NativeRuntimeSourceSnapshot(
             kind: .systemAudio,
             displayName: "Mac system audio",
-            lifecycle: "sealed"
+            lifecycle: .sealed
           ),
         ],
         playableMedia: nil
@@ -1061,14 +1077,15 @@ final class FixtureSessionTests: XCTestCase {
     ])
 
     XCTAssertTrue(partial.needsAttention)
-    XCTAssertEqual(partial.statusText, "Recovered partial recording")
+    XCTAssertEqual(partial.statusText, "Partly saved")
     XCTAssertEqual(partial.recoveryText, "Recovered partial recording")
-    XCTAssertEqual(partial.timerText, "00:40:25")
+    XCTAssertEqual(partial.timerText, "40:25")
+    XCTAssertEqual(partial.lengthText, "40 min")
     XCTAssertEqual(tracks.map(\.source.name), ["Mac microphone", "Mac system audio"])
-    XCTAssertEqual(tracks.map(\.durationText), ["00:06:26.180", "00:40:25.700"])
+    XCTAssertEqual(tracks.map(\.durationText), ["6 min, 26 sec", "40 min, 25 sec"])
     XCTAssertEqual(
       partial.interruptionText,
-      "A capture source failed; durable recovery state was preserved."
+      "Part of this recording couldn't be saved. Details lists each source."
     )
   }
 
@@ -1172,8 +1189,8 @@ final class FixtureSessionTests: XCTestCase {
       native: NativeRuntimeSessionSnapshot(
         sessionId: "session-healthy",
         title: "Recovered conversation",
-        lifecycle: "ready_for_review",
-        health: "healthy",
+        titleSource: .person, lifecycle: .readyForReview,
+        health: .healthy,
         elapsedSeconds: 120,
         journalDurable: true,
         mediaFilesOpen: false,
@@ -1184,7 +1201,7 @@ final class FixtureSessionTests: XCTestCase {
           NativeRuntimeSourceSnapshot(
             kind: .microphone,
             displayName: "Mac microphone",
-            lifecycle: "sealed"
+            lifecycle: .sealed
           )
         ],
         playableMedia: nil
@@ -1192,7 +1209,7 @@ final class FixtureSessionTests: XCTestCase {
     )
 
     XCTAssertFalse(healthy.needsAttention)
-    XCTAssertEqual(healthy.statusText, "Recovered and ready")
+    XCTAssertEqual(healthy.statusText, "Recovered")
     XCTAssertEqual(healthy.recoveryText, "Recovered")
     XCTAssertNil(healthy.interruptionText)
   }
@@ -1215,7 +1232,7 @@ final class FixtureSessionTests: XCTestCase {
           savedSessions: [
             NativeRuntimeSessionSnapshot(
               sessionId: "slow-saved-session", title: "Slow saved meeting",
-              lifecycle: "ready_for_review", health: "healthy", elapsedSeconds: 2,
+              titleSource: .person, lifecycle: .readyForReview, health: .healthy, elapsedSeconds: 2,
               journalDurable: true, mediaFilesOpen: false, interruptionReason: nil,
               recovered: true, hasCaptureTimeline: false, sources: [], playableMedia: nil
             )
@@ -1235,8 +1252,8 @@ final class FixtureSessionTests: XCTestCase {
     let current = NativeRuntimeSessionSnapshot(
       sessionId: "session-live",
       title: "Live conversation",
-      lifecycle: "recording",
-      health: "healthy",
+      titleSource: .person, lifecycle: .recording,
+      health: .healthy,
       elapsedSeconds: 12,
       journalDurable: true,
       mediaFilesOpen: true,
@@ -1247,7 +1264,7 @@ final class FixtureSessionTests: XCTestCase {
         NativeRuntimeSourceSnapshot(
           kind: .microphone,
           displayName: "Mac microphone",
-          lifecycle: "capturing"
+          lifecycle: .capturing
         )
       ],
       playableMedia: nil
@@ -1255,8 +1272,8 @@ final class FixtureSessionTests: XCTestCase {
     let saved = NativeRuntimeSessionSnapshot(
       sessionId: "session-saved",
       title: "Saved conversation",
-      lifecycle: "ready_for_review",
-      health: "healthy",
+      titleSource: .person, lifecycle: .readyForReview,
+      health: .healthy,
       elapsedSeconds: 60,
       journalDurable: true,
       mediaFilesOpen: false,
@@ -1267,7 +1284,7 @@ final class FixtureSessionTests: XCTestCase {
         NativeRuntimeSourceSnapshot(
           kind: .microphone,
           displayName: "Mac microphone",
-          lifecycle: "sealed"
+          lifecycle: .sealed
         )
       ],
       playableMedia: nil
@@ -1297,7 +1314,7 @@ final class FixtureSessionTests: XCTestCase {
         livePhase: .capturing,
         liveStatus: "Recording microphone + system audio"
       ),
-      "Live recording state unavailable"
+      "Recording status unavailable"
     )
   }
 
@@ -1329,24 +1346,24 @@ final class FixtureSessionTests: XCTestCase {
       native: NativeRuntimeSessionSnapshot(
         sessionId: sessionId,
         title: "Recovered meeting",
-        lifecycle: "ready_for_review",
-        health: "degraded",
+        titleSource: .person, lifecycle: .readyForReview,
+        health: .degraded,
         elapsedSeconds: 2,
         journalDurable: true,
         mediaFilesOpen: false,
-        interruptionReason: "capture_failed",
+        interruptionReason: .captureFailed,
         recovered: true,
         hasCaptureTimeline: false,
         sources: [
           NativeRuntimeSourceSnapshot(
             kind: .microphone,
             displayName: "Mac microphone",
-            lifecycle: "sealed"
+            lifecycle: .sealed
           ),
           NativeRuntimeSourceSnapshot(
             kind: .systemAudio,
             displayName: "Mac system audio",
-            lifecycle: "sealed"
+            lifecycle: .sealed
           ),
         ],
         playableMedia: nil

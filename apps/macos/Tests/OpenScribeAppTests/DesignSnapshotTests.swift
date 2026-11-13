@@ -75,7 +75,7 @@ final class DesignSnapshotTests: XCTestCase {
     fixture.suggestions.considerLibrary(fixture.store.savedSessions)
     let suggested = await Self.waitUntil(timeoutNanoseconds: 120_000_000_000) {
       fixture.store.refresh()
-      return fixture.store.savedSessions.filter { $0.titleSource == "suggested" }.count
+      return fixture.store.savedSessions.filter { $0.titleSource == .suggested }.count
         == sessionIds.count
     }
     print(

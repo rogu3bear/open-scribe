@@ -97,25 +97,3 @@ extension UInt64 {
     return overflow ? .max : sum
   }
 }
-
-enum FixtureLaunchSelection {
-  static func selected(from arguments: [String]) -> NativeFixture {
-    guard let marker = arguments.firstIndex(of: "--fixture"), arguments.indices.contains(marker + 1)
-    else {
-      return .idle
-    }
-
-    switch arguments[marker + 1] {
-    case "ready": return .ready
-    case "starting": return .starting
-    case "recording": return .recording
-    case "paused": return .paused
-    case "finalizing": return .finalizing
-    case "recording-degraded": return .recordingDegraded
-    case "permission-revoked": return .permissionRevoked
-    case "recovery-required": return .recoveryRequired
-    case "complete": return .complete
-    default: return .idle
-    }
-  }
-}

@@ -31,7 +31,7 @@ The store already accepted Draft windows during capture (`commit_live_draft_wind
 
 ### Copy
 
-- `conversation_text` (Rust core) renders turns merged by speaker in timeline order, with optional `[m:ss]` stamps, from the selected document. Swift adds the local-date heading and a Draft notice. Copy reads the same text that export would use.
+- `conversation_text` (Rust core) renders turns merged by speaker in timeline order, with optional `[m:ss]` stamps, from the readable document: selected Final text plus Draft text no selected Final range covers. Swift adds the local-date heading and, when any copied text is Draft, a Draft notice. File exports stay Final-only. Copy So Far renders the same way from the Draft windows stored so far.
 
 ## Consequences
 

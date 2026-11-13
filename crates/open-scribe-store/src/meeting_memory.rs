@@ -16,8 +16,6 @@ use uuid::Uuid;
 
 use super::{SessionStore, StoreError, wall_time_milliseconds};
 
-pub(super) const MEETING_MEMORY_MIGRATION_VERSION: i64 = 18;
-
 pub(super) fn apply_schema(transaction: &rusqlite::Transaction<'_>) -> Result<(), StoreError> {
     transaction.execute_batch(
         "CREATE TABLE IF NOT EXISTS meeting_memory_projection (
@@ -47,10 +45,6 @@ pub(super) fn apply_schema(transaction: &rusqlite::Transaction<'_>) -> Result<()
         CREATE TRIGGER IF NOT EXISTS meeting_memory_delta_operations_append_only
         BEFORE UPDATE ON meeting_memory_delta_operations
         BEGIN SELECT RAISE(ABORT, 'meeting memory delta operations are append-only'); END;",
-    )?;
-    transaction.execute(
-        "INSERT OR IGNORE INTO schema_migrations VALUES(?1, ?2)",
-        params![MEETING_MEMORY_MIGRATION_VERSION, wall_time_milliseconds()],
     )?;
     Ok(())
 }
@@ -189,7 +183,6 @@ fn commitment_transition(from: ClaimStatus, to: ClaimStatus) -> bool {
 fn model_claim(
     session: &SessionId,
     claim_id: String,
-    revision_id: String,
     kind: ClaimKind,
     text: &str,
     status: ClaimStatus,
@@ -199,7 +192,7 @@ fn model_claim(
     DerivedClaim {
         schema: DERIVED_CLAIM_SCHEMA.to_owned(),
         claim_id,
-        revision_id,
+        revision_id: fresh_id(),
         session_id: session.0.clone(),
         kind,
         text: text.to_owned(),
@@ -532,7 +525,6 @@ impl SessionStore {
                 let claim = model_claim(
                     session,
                     fresh_id(),
-                    fresh_id(),
                     *kind,
                     text,
                     *status,
@@ -582,7 +574,6 @@ impl SessionStore {
                 let claim = model_claim(
                     session,
                     existing.claim_id,
-                    fresh_id(),
                     *kind,
                     text,
                     *status,
@@ -601,7 +592,6 @@ impl SessionStore {
                 session,
                 operation_id,
                 claim_id,
-                None,
                 *status,
                 supporting,
                 contradicting,
@@ -641,7 +631,6 @@ impl SessionStore {
                 let claim = model_claim(
                     session,
                     existing.claim_id,
-                    fresh_id(),
                     existing.kind,
                     &existing.text,
                     *status,
@@ -689,7 +678,6 @@ impl SessionStore {
                 let claim = model_claim(
                     session,
                     existing.claim_id,
-                    fresh_id(),
                     existing.kind,
                     &existing.text,
                     ClaimStatus::Superseded,
@@ -706,7 +694,6 @@ impl SessionStore {
         session: &SessionId,
         operation_id: &str,
         claim_id: &str,
-        text: Option<&str>,
         status: ClaimStatus,
         supporting: &[EvidenceRef],
         contradicting: &[EvidenceRef],
@@ -741,9 +728,8 @@ impl SessionStore {
         let claim = model_claim(
             session,
             existing.claim_id,
-            fresh_id(),
             existing.kind,
-            text.unwrap_or(&existing.text),
+            &existing.text,
             status,
             supporting,
             contradicting,

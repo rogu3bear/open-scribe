@@ -571,15 +571,16 @@ class RecoveredSessionTestCase: XCTestCase {
     )
   }
   func savedSession(
-    sessionId: String = "session-imported", availability: String, absolutePath: String?,
+    sessionId: String = "session-imported", availability: NativePlayableMediaAvailability,
+    absolutePath: String?,
     byteLength: UInt64 = 192_068, sourceDisplayName: String = "interview.caf"
   ) -> RuntimeSessionPresentation {
     RuntimeSessionPresentation(
       native: NativeRuntimeSessionSnapshot(
         sessionId: sessionId,
         title: "Saved conversation",
-        lifecycle: "ready_for_review",
-        health: "healthy",
+        titleSource: .person, lifecycle: .readyForReview,
+        health: .healthy,
         elapsedSeconds: 2,
         journalDurable: true,
         mediaFilesOpen: false,

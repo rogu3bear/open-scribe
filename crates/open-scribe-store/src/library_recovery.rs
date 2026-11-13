@@ -29,10 +29,6 @@ pub(super) fn apply_schema(tx: &Transaction<'_>) -> Result<(), StoreError> {
         ON recovery_runs(session_id, capture_event_digest)
         WHERE disposition = 'capture_safety_isolated';",
     )?;
-    tx.execute(
-        "INSERT OR IGNORE INTO schema_migrations VALUES(14, ?1)",
-        [wall_time_milliseconds()],
-    )?;
     Ok(())
 }
 
@@ -48,9 +44,14 @@ pub(super) const ISOLATED_CAPTURE_SQL: &str = "EXISTS(SELECT 1 FROM recovery_run
 
 pub(super) fn active_capture_sql() -> String {
     format!(
-        "SELECT EXISTS(SELECT 1 FROM sessions capture WHERE capture.origin = 'capture'
-        AND capture.lifecycle IN ('preparing','recording','paused','finalizing')
-        AND NOT ({ISOLATED_CAPTURE_SQL}))"
+        concat!(
+            "SELECT EXISTS(SELECT 1 FROM sessions capture WHERE capture.origin = 'capture'
+        AND capture.lifecycle IN ",
+            open_capture_lifecycles_sql!(),
+            "
+        AND NOT ({isolated}))"
+        ),
+        isolated = ISOLATED_CAPTURE_SQL
     )
 }
 
@@ -249,12 +250,12 @@ impl SessionStore {
     ) -> Result<(), StoreError> {
         let tx = self.connection.transaction()?;
         for finding in findings {
-            tx.execute(&format!("INSERT INTO recovery_runs(id, schema_version, session_id, disposition, created_at_ms, capture_event_digest)
+            tx.execute(&format!(concat!("INSERT INTO recovery_runs(id, schema_version, session_id, disposition, created_at_ms, capture_event_digest)
                 SELECT ?1, ?2, capture.id, 'capture_safety_isolated', ?4,
                     COALESCE((SELECT digest FROM session_events WHERE session_id = capture.id ORDER BY sequence DESC LIMIT 1), '')
                 FROM sessions capture WHERE capture.id = ?3 AND capture.origin = 'capture'
-                  AND capture.lifecycle IN ('preparing','recording','paused','finalizing')
-                  AND NOT ({ISOLATED_CAPTURE_SQL})"),
+                  AND capture.lifecycle IN ", open_capture_lifecycles_sql!(), "
+                  AND NOT ({isolated})"), isolated = ISOLATED_CAPTURE_SQL),
                 params![Uuid::now_v7().to_string(), SCHEMA_VERSION, finding.session_id.0, wall_time_milliseconds()])?;
         }
         tx.commit()?;
@@ -579,7 +580,7 @@ impl SessionStore {
                 params![source_id, session_id],
                 |row| row.get(0),
             )?;
-            MediaSourceKind::from_str(&source_kind)?;
+            parse_source_kind(&source_kind)?;
             playable_source_kinds.insert(source_kind);
         }
         if self
@@ -614,10 +615,7 @@ impl SessionStore {
                     payload.clone(),
                 )?
             };
-            projections.push(PlayableRecoveryProjection {
-                payload,
-                journal_record,
-            });
+            projections.push(journal_record);
         }
         self.project_playable_recovery_session(session_id, &projections, &playable_source_kinds)
     }

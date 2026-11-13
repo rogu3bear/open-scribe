@@ -137,9 +137,10 @@ enum BoundedAudioImport {
     _ source: ExtAudioFileRef, format: AudioStreamBasicDescription, frames: UInt64,
     policy: NativeImportPolicy
   ) throws -> UInt64 {
+    let mediaRate = Double(nativeCapturePolicy().sampleRateHz)
     guard
       let client = AVAudioFormat(
-        standardFormatWithSampleRate: 48_000, channels: format.mChannelsPerFrame),
+        standardFormatWithSampleRate: mediaRate, channels: format.mChannelsPerFrame),
       let buffer = AVAudioPCMBuffer(pcmFormat: client, frameCapacity: 16_384)
     else { throw BoundedAudioImportError.unsupportedFormat }
     var clientFormat = client.streamDescription.pointee
@@ -164,7 +165,7 @@ enum BoundedAudioImport {
       }
       // Same-rate files already have an exact frame count. Preserve bounded
       // streaming admission for long recordings instead of decoding them all.
-      if format.mSampleRate == 48_000 {
+      if format.mSampleRate == mediaRate {
         guard frames <= policy.maximumManagedSamples else {
           throw BoundedAudioImportError.durationTooLong(
             maximumNanoseconds: policy.maximumDurationNanoseconds)

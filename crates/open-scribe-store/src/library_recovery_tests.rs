@@ -327,6 +327,15 @@ fn assert_damage_is_isolated(
         .find(|session| session.session_id == damaged)
         .unwrap();
     assert!(historical.capture_recovery_isolated);
+    assert!(historical.preserved_audio, "sealed samples are kept audio");
+    assert!(
+        !historical.can_move_to_trash,
+        "isolated history holding audio is never discarded as an empty attempt"
+    );
+    assert!(matches!(
+        store.begin_session_deletion(&damaged),
+        Err(StoreError::InvalidState(_))
+    ));
     assert_eq!(
         historical.lifecycle, "paused",
         "last accepted lifecycle remains evidence"
@@ -532,6 +541,48 @@ fn isolated_recording_history_cannot_advance_a_live_clock_or_occupy_now() {
     );
     assert_eq!(fs::read(&journal).unwrap(), preserved);
     assert_eq!(media_bytes(&sources), media);
+}
+
+/// A capture that never accepted a sample holds nothing to recover. Once a
+/// launch isolates it, it can leave the library through Trash like any other.
+#[test]
+fn an_isolated_attempt_without_audio_can_be_moved_to_trash() {
+    let temp = TempDir::new().unwrap();
+    let mut store = SessionStore::open(temp.path()).unwrap();
+    let attempt = store
+        .prepare_session(PrepareSessionRequest {
+            title: "Never started".into(),
+            origin: SessionOrigin::Capture,
+        })
+        .unwrap()
+        .session_id;
+    let journal = store
+        .session_directory(&attempt.0)
+        .unwrap()
+        .join(JOURNAL_NAME);
+    let bytes = fs::read(&journal).unwrap();
+    fs::write(&journal, &bytes[..bytes.len() - 1]).unwrap();
+    drop(store);
+
+    let mut store = SessionStore::open(temp.path()).unwrap();
+    store.recover_library().unwrap();
+    let snapshot = store.runtime_library_snapshot().unwrap();
+    let listed = snapshot
+        .saved_sessions
+        .iter()
+        .find(|session| session.session_id == attempt)
+        .expect("isolated history stays listed");
+    assert!(listed.capture_recovery_isolated);
+    assert!(!listed.preserved_audio);
+    assert!(listed.can_move_to_trash);
+
+    let inventory = store.begin_session_deletion(&attempt).unwrap();
+    assert_eq!(inventory.media_files, 0);
+    fs::rename(&inventory.directory, temp.path().join("Trash")).unwrap();
+    store.complete_session_deletion(&attempt, None).unwrap();
+    let after = store.runtime_library_snapshot().unwrap();
+    assert!(after.current_session.is_none());
+    assert!(after.saved_sessions.is_empty());
 }
 
 #[test]

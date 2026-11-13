@@ -71,7 +71,7 @@ private struct WindowChromeReader: NSViewRepresentable {
 
     override func viewDidMoveToWindow() {
       super.viewDidMoveToWindow()
-      if AppDelegate.isVerificationLaunch { window?.isRestorable = false }
+      if !AppDelegate.restoresState { window?.isRestorable = false }
       reportChromeHeight()
     }
 
@@ -91,13 +91,27 @@ private struct WindowChromeReader: NSViewRepresentable {
 }
 
 @MainActor final class AppDelegate: NSObject, NSApplicationDelegate {
-  static var isVerificationLaunch = false
+  /// Set once by `adoptStatePolicy` before any window exists.
+  private(set) static var restoresState = true
   private var launchAdmitted = false
+
+  /// A launch that keeps no window state answers no to AppKit's save and
+  /// restore questions, tells AppKit to ignore saved state and keep no windows
+  /// on quit, and marks the main window not restorable as it appears.
+  static func adoptStatePolicy(_ configuration: LaunchConfiguration) {
+    guard !configuration.restoresState else { return }
+    restoresState = false
+    var arguments = UserDefaults.standard.volatileDomain(forName: UserDefaults.argumentDomain)
+    arguments["ApplePersistenceIgnoreState"] = true
+    arguments["NSQuitAlwaysKeepsWindows"] = false
+    UserDefaults.standard.setVolatileDomain(arguments, forName: UserDefaults.argumentDomain)
+  }
+
   func applicationShouldSaveApplicationState(_ app: NSApplication) -> Bool {
-    !Self.isVerificationLaunch
+    Self.restoresState
   }
   func applicationShouldRestoreApplicationState(_ app: NSApplication) -> Bool {
-    !Self.isVerificationLaunch
+    Self.restoresState
   }
 
   func applicationWillFinishLaunching(_ notification: Notification) {
@@ -152,17 +166,13 @@ struct OpenScribeApp: App {
   @StateObject private var navigation = MainWorkspaceNavigation()
   @StateObject private var suggestions: ConversationSuggestionModel
 
-  private let status = RustStatusSource.load()
+  private let status = AppStatus.load()
   private let launchConfiguration: LaunchConfiguration
 
   init() {
     let configuration: LaunchConfiguration
     do {
-      guard
-        let normalRoot = FileManager.default.urls(
-          for: .applicationSupportDirectory, in: .userDomainMask
-        ).first?
-        .appendingPathComponent("Open Scribe", isDirectory: true)
+      guard let normalRoot = LaunchConfiguration.productionRoot
       else { throw LaunchConfiguration.Rejection.missingRoot }
       configuration = try LaunchConfiguration.resolve(
         arguments: ProcessInfo.processInfo.arguments,
@@ -177,31 +187,25 @@ struct OpenScribeApp: App {
       fputs("OPEN_SCRIBE_LAUNCH_REFUSED: invalid storage isolation or launch mode\n", stderr)
       exit(64)
     }
-    let managedRoot: URL? = configuration.libraryRoot
+    let managedRoot = configuration.libraryRoot
     launchConfiguration = configuration
-    #if DEBUG
-      ProofLaunchRunner.configurePresentation(configuration)
-    #endif
-    let injectedProof: M1FailureRuntimeProof?
-    #if DEBUG
-      if case .injected(let scenario) = configuration.action, let root = configuration.proofRoot {
-        injectedProof = M1FailureRuntimeProof(
-          root: root, mediaRoot: configuration.mediaRoot ?? root, scenario: scenario)
-      } else {
-        injectedProof = nil
-      }
-    #else
-      injectedProof = nil
-    #endif
-    let controller =
-      injectedProof?.controller
-      ?? managedRoot.map(LiveMicrophoneRecordingController.init(managedRoot:))
-      ?? LiveMicrophoneRecordingController(managedRoot: nil)
-    controller.liveCaptions.configure(
-      defaults: configuration.preferences, suspended: configuration.suspendsAutomation)
+    AppDelegate.adoptStatePolicy(configuration)
+    // This is the one place that builds the app's stores and capture
+    // sources. Recovery comes first: its scan holds recording and import.
     let recovery = RecoveredSessionController(managedRoot: managedRoot)
-    let runtime = RuntimeLibraryStore(
-      managedRoot: managedRoot, isLaunchRecoveryPending: { !recovery.captureSafetyComplete })
+    let launchHold: @MainActor () -> Bool = { !recovery.captureSafetyComplete }
+    let production = CaptureEnvironment.production(
+      managedRoot: managedRoot, isLaunchRecoveryPending: launchHold,
+      liveCaptions: LiveCaptionModel(
+        defaults: configuration.preferences, suspended: configuration.suspendsAutomation))
+    #if DEBUG
+      let injectedCapture = M1InjectedCapture(configuration)
+      let capture = injectedCapture?.environment(production) ?? production
+    #else
+      let capture = production
+    #endif
+    let controller = LiveMicrophoneRecordingController(environment: capture)
+    let runtime = RuntimeLibraryStore(managedRoot: managedRoot, isLaunchRecoveryPending: launchHold)
     let importAuthority = ImportedMediaAuthorityAdapter(
       canBeginImport: { controller.canStart },
       importer: { title, sourceURL in
@@ -217,12 +221,11 @@ struct OpenScribeApp: App {
     _recoveredSessions = StateObject(wrappedValue: recovery)
     let transcriptLibrary = TranscriptLibraryModel(managedRoot: managedRoot)
     _transcripts = StateObject(wrappedValue: transcriptLibrary)
-    // Proof launches keep titles and names as stored; no language model runs.
     // Suggestions share the transcript library's connection.
     _suggestions = StateObject(
-      wrappedValue: configuration.suspendsAutomation
-        ? .inert
-        : ConversationSuggestionModel(library: { try await transcriptLibrary.connectedLibrary() }))
+      wrappedValue: ConversationSuggestionModel(
+        library: { try await transcriptLibrary.connectedLibrary() },
+        suspended: configuration.suspendsAutomation))
     let speech = SpeechTranscriptionModel(managedRoot: managedRoot)
     _speech = StateObject(wrappedValue: speech)
     let pressure = SystemPressureMonitor(libraryRoot: managedRoot)
@@ -230,16 +233,17 @@ struct OpenScribeApp: App {
     // All proof/test launches use the validated isolated library and preferences.
     let scheduler = TranscriptionScheduler(
       managedRoot: managedRoot, speech: speech, store: runtime, liveRecording: controller,
-      recovery: recovery,
-      pressure: pressure, defaults: configuration.preferences)
-    scheduler.automationSuspended =
-      configuration.suspendsAutomation
+      recovery: recovery, pressure: pressure, defaults: configuration.preferences,
+      automationSuspended: configuration.suspendsAutomation)
     _scheduler = StateObject(wrappedValue: scheduler)
-    _context = StateObject(wrappedValue: ContextScopeModel(recorder: controller))
-    controller.isLaunchRecoveryPending = { !recovery.captureSafetyComplete }
+    _context = StateObject(
+      wrappedValue: ContextScopeModel(
+        binding: { [weak controller] in controller?.contextBinding },
+        bindingChanges: controller.$phase.map { _ in () }.eraseToAnyPublisher()))
     #if DEBUG
       ProofLaunchRunner.start(
-        configuration: configuration, injected: injectedProof,
+        configuration: configuration,
+        injected: injectedCapture.map { M1FailureRuntimeProof(capture: $0, controller: controller) },
         controller: controller, runtime: runtime, recovery: recovery)
     #else
       recovery.recoverOnLaunch()
@@ -282,14 +286,7 @@ struct OpenScribeApp: App {
         scheduler: scheduler,
         speech: speech,
         copyConversation: { [transcripts] session in
-          let title = ConversationIdentityPresentation.title(for: session)
-          Task { @MainActor in
-            guard
-              let copied = try? await transcripts.clipboardText(
-                sessionId: session.sessionId, title: title)
-            else { return }
-            ConversationClipboard.copy(copied.text)
-          }
+          Task { @MainActor in await transcripts.copyConversation(session) }
         }
       )
       .defaultAppStorage(launchConfiguration.preferences)
@@ -309,8 +306,8 @@ struct OpenScribeApp: App {
 
 }
 
-/// View > Bigger and Smaller for transcript text, stored where the reader
-/// reads it. The system text size still applies underneath.
+/// View > Bigger, Smaller and Actual Size for transcript text, stored where
+/// the reader reads it.
 struct TranscriptTextSizeCommands: Commands {
   @AppStorage private var stored: String
 
@@ -324,10 +321,10 @@ struct TranscriptTextSizeCommands: Commands {
 
   var body: some Commands {
     CommandGroup(after: .toolbar) {
-      Button("Bigger Transcript Text") { step(1) }
+      Button("Bigger Transcript Text") { stored = scale.stepped(1).rawValue }
         .keyboardShortcut("+", modifiers: .command)
         .disabled(scale == .largest)
-      Button("Smaller Transcript Text") { step(-1) }
+      Button("Smaller Transcript Text") { stored = scale.stepped(-1).rawValue }
         .keyboardShortcut("-", modifiers: .command)
         .disabled(scale == .standard)
       Button("Actual Size") { stored = TranscriptTextScale.standard.rawValue }
@@ -335,12 +332,5 @@ struct TranscriptTextSizeCommands: Commands {
         .disabled(scale == .standard)
       Divider()
     }
-  }
-
-  private func step(_ delta: Int) {
-    let all = TranscriptTextScale.allCases
-    guard let index = all.firstIndex(of: scale) else { return }
-    let next = min(max(index + delta, 0), all.count - 1)
-    stored = all[next].rawValue
   }
 }

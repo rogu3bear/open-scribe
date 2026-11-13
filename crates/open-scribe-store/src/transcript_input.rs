@@ -11,6 +11,7 @@
 use super::import::{COMPRESSED_IMPORT_MEDIA_FORMAT, ImportedPlaybackLease};
 use super::{
     MEDIA_FORMAT_CAF_PCM_S16LE, MEDIA_SAMPLE_RATE_HZ, SessionStore, StoreError, inspect_pcm_caf,
+    lowercase_hex, missing_row, sha256_file_at,
 };
 use open_scribe_types::SessionId;
 use sha2::{Digest, Sha256};
@@ -94,7 +95,7 @@ pub fn transcription_input_digest(
             .as_bytes(),
         );
     }
-    hex(&hasher.finalize())
+    lowercase_hex(&hasher.finalize())
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -176,12 +177,7 @@ impl SessionStore {
                 [&session.0],
                 |row| row.get(0),
             )
-            .map_err(|error| match error {
-                rusqlite::Error::QueryReturnedNoRows => {
-                    StoreError::InvalidState("session is not saved for review")
-                }
-                other => StoreError::Sqlite(other),
-            })?;
+            .map_err(missing_row("session is not saved for review"))?;
         let (placed, compressed) = if origin == "import" {
             self.imported_placement(session, track_id)?
         } else {
@@ -510,18 +506,8 @@ fn verify_sealed_bytes(
             "sealed segment format changed since sealing",
         ));
     }
-    let mut hasher = Sha256::new();
-    let mut offset = 0_u64;
-    let mut buffer = vec![0_u8; 1 << 20];
-    while offset < length {
-        let read = lease.file().read_at(&mut buffer, offset)?;
-        if read == 0 {
-            break;
-        }
-        hasher.update(&buffer[..read]);
-        offset += read as u64;
-    }
-    if offset != length || hex(&hasher.finalize()) != segment.digest_sha256 {
+    let (digest, read) = sha256_file_at(lease.file(), length)?;
+    if read != length || digest != segment.digest_sha256 {
         return Err(StoreError::IntegrityMismatch(
             "sealed segment bytes differ from their sealed digest",
         ));
@@ -572,30 +558,10 @@ impl SealedTrackReader {
     }
 }
 
-fn hex(bytes: &[u8]) -> String {
-    use std::fmt::Write;
-    bytes
-        .iter()
-        .fold(String::with_capacity(64), |mut out, byte| {
-            let _ = write!(out, "{byte:02x}");
-            out
-        })
-}
-
 pub(super) fn verify_full_digest(file: &File, expected: &str) -> Result<(), StoreError> {
     let length = file.metadata()?.len();
-    let mut hasher = Sha256::new();
-    let mut offset = 0_u64;
-    let mut buffer = vec![0_u8; 1 << 20];
-    while offset < length {
-        let read = file.read_at(&mut buffer, offset)?;
-        if read == 0 {
-            break;
-        }
-        hasher.update(&buffer[..read]);
-        offset += read as u64;
-    }
-    if offset != length || hex(&hasher.finalize()) != expected {
+    let (digest, read) = sha256_file_at(file, length)?;
+    if read != length || digest != expected {
         return Err(StoreError::IntegrityMismatch(
             "imported bytes differ from their sealed digest",
         ));

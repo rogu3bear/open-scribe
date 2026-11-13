@@ -209,10 +209,10 @@ impl DeltaOperation {
                 contradicting,
                 ..
             } => {
-                if let Self::ReviseClaim { claim_id, .. } = self {
-                    if !identifier_is_valid(claim_id) {
-                        return Err(DeltaError::InvalidIdentifier);
-                    }
+                if let Self::ReviseClaim { claim_id, .. } = self
+                    && !identifier_is_valid(claim_id)
+                {
+                    return Err(DeltaError::InvalidIdentifier);
                 }
                 validate_material(*kind, *status, text, supporting, contradicting, session_id)
             }

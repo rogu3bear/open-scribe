@@ -1565,8 +1565,6 @@ dependencies = [
 name = "open-scribe-evidence"
 version = "0.0.0"
 dependencies = [
- "open-scribe-domain",
- "open-scribe-types",
  "serde",
  "serde_json",
 ]
@@ -1574,11 +1572,6 @@ dependencies = [
 [[package]]
 name = "open-scribe-memory"
 version = "0.0.0"
-dependencies = [
- "open-scribe-domain",
- "open-scribe-evidence",
- "open-scribe-types",
-]
 
 [[package]]
 name = "open-scribe-models"
@@ -1596,6 +1589,7 @@ dependencies = [
 name = "open-scribe-store"
 version = "0.0.0"
 dependencies = [
+ "open-scribe-diarize",
  "open-scribe-domain",
  "open-scribe-evidence",
  "open-scribe-types",

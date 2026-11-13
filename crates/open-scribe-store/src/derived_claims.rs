@@ -13,8 +13,6 @@ use open_scribe_types::SessionId;
 use rusqlite::{OptionalExtension, params};
 use uuid::Uuid;
 
-pub(super) const DERIVED_CLAIM_MIGRATION_VERSION: i64 = 17;
-
 pub(super) fn apply_schema(transaction: &rusqlite::Transaction<'_>) -> Result<(), StoreError> {
     transaction.execute_batch(
         "CREATE TABLE IF NOT EXISTS derived_claim_revisions (
@@ -32,10 +30,6 @@ pub(super) fn apply_schema(transaction: &rusqlite::Transaction<'_>) -> Result<()
         CREATE TRIGGER IF NOT EXISTS derived_claim_revisions_append_only
         BEFORE UPDATE ON derived_claim_revisions
         BEGIN SELECT RAISE(ABORT, 'derived claim revisions are append-only'); END;",
-    )?;
-    transaction.execute(
-        "INSERT OR IGNORE INTO schema_migrations VALUES(?1, ?2)",
-        params![DERIVED_CLAIM_MIGRATION_VERSION, wall_time_milliseconds()],
     )?;
     Ok(())
 }

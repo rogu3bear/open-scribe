@@ -6,14 +6,6 @@ use open_scribe_types::{
     WorkObservations, WorkOutcome,
 };
 
-macro_rules! vocabulary {
-    ($native:ident, $core:ident, $($variant:ident),+ $(,)?) => {
-        #[derive(Clone, Copy, Debug, Eq, PartialEq, uniffi::Enum)]
-        pub enum $native { $($variant),+ }
-        impl From<$native> for $core { fn from(value: $native) -> Self { match value { $($native::$variant => Self::$variant),+ } } }
-        impl From<$core> for $native { fn from(value: $core) -> Self { match value { $($core::$variant => Self::$variant),+ } } }
-    };
-}
 vocabulary!(
     NativeTranscriptionIntent,
     TranscriptionIntent,
@@ -238,8 +230,7 @@ impl NativeWorkCoordinator {
             )
             .collect())
     }
-    /// Once per process after the capture-safety barrier. Uses its own handle;
-    /// no coordinator mutex is held while reconciling retained hypotheses.
+    /// Once per process after the capture-safety barrier.
     pub fn recover_intent(&self) -> Result<(), NativeStorageError> {
         self.store
             .lock()
@@ -247,36 +238,18 @@ impl NativeWorkCoordinator {
             .recover_transcription_admissions()
             .map_err(map_storage_error)
     }
+    /// Uses its own handle; no coordinator mutex is held while reconciling
+    /// retained hypotheses.
     pub fn maintain_retained(
         &self,
         job: Arc<NativeTranscriptionJob>,
         observations: NativeWorkObservations,
     ) -> Result<NativeWorkOutcome, NativeStorageError> {
-        let observations: WorkObservations = observations.into();
-        {
-            let store = self
-                .store
-                .lock()
-                .map_err(|_| NativeStorageError::StorageFailure)?;
-            if store.capture_active().map_err(map_storage_error)? || observations.capture_active {
-                return Ok(NativeWorkOutcome::CapturePreempted);
-            }
-            if store.work_admission_active().map_err(map_storage_error)?
-                || open_scribe_core::transcription_hold(
-                    false,
-                    TranscriptionIntent::ReconcileRetained,
-                    observations,
-                )
-                .is_some()
-            {
-                return Ok(NativeWorkOutcome::Deferred);
-            }
-        }
-        let mut controller = open_scribe_core::RecordingPreparationController::open(&self.root)
-            .map_err(map_storage_error)?;
-        let outcome = controller
-            .maintain_transcripts_with_observations(job.cancellation(), observations)
-            .map_err(map_storage_error)?;
-        Ok(job.stop_outcome().unwrap_or_else(|| outcome.into()))
+        open_scribe_core::RecordingPreparationController::open(&self.root)
+            .and_then(|mut controller| {
+                controller.maintain_retained_transcripts(job.job(), observations.into())
+            })
+            .map(Into::into)
+            .map_err(map_storage_error)
     }
 }

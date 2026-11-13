@@ -4,7 +4,7 @@ import XCTest
 
 final class RustStatusSourceTests: XCTestCase {
   func testRustStatusSourceReportsBoundedCaptureWithoutIntelligence() {
-    let status = RustStatusSource.load()
+    let status = AppStatus.load()
 
     XCTAssertEqual(status.productName, "Open Scribe")
     XCTAssertEqual(status.coreVersion, "0.0.0")
@@ -13,10 +13,10 @@ final class RustStatusSourceTests: XCTestCase {
     XCTAssertEqual(status.intelligence, "Not implemented")
   }
 
-  /// Settings calls `ReleaseCapabilityClaims.load`. This build has no signed release,
+  /// Settings reads `nativeReleaseClaims`. This build has no signed release,
   /// so none of the checked capabilities are Available.
   func testUnprovedCapabilitiesStayExcludedWithoutASignedRelease() {
-    let release = ReleaseCapabilityClaims.load()
+    let release = nativeReleaseClaims()
 
     XCTAssertEqual(release.noPublicRelease, "No public release is available.")
     XCTAssertEqual(release.capabilities.count, 8)
@@ -37,7 +37,7 @@ final class RustStatusSourceTests: XCTestCase {
 
   /// Settings renders these rows. The words come from the shared maturity label.
   func testSettingsReleaseRowsUseTheSharedExclusionLabels() {
-    let release = ReleaseCapabilityClaims.load()
+    let release = nativeReleaseClaims()
     XCTAssertEqual(release.noPublicRelease, "No public release is available.")
     XCTAssertEqual(release.capabilities.count, 8)
     var seen: Set<String> = []

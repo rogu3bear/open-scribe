@@ -92,7 +92,10 @@ fn verified_file_import_review_export_preserves_original_evidence() {
         &mut |_| {},
     )
     .unwrap();
-    let original = store.transcript_document(&session).unwrap();
+    let original = store
+        .conversation_document(&session, crate::DocumentScope::FinalOnly)
+        .map(|document| document.segments)
+        .unwrap();
     let first = original
         .first()
         .expect("real recognizer produced timed text");
@@ -129,7 +132,7 @@ fn verified_file_import_review_export_preserves_original_evidence() {
         library.availability(&session).unwrap(),
         TranscriptAvailability::Final
     );
-    let reviewed = library.document(&session).unwrap();
+    let reviewed = library.document(&session).unwrap().segments;
     assert_eq!(reviewed[0].verbatim_text, verbatim);
     assert_eq!(reviewed[0].effective_text, "Reviewed agreement evidence");
     assert!(reviewed[0].corrected);
@@ -158,7 +161,11 @@ fn verified_file_import_review_export_preserves_original_evidence() {
     let exported_reference =
         serde_json::from_value(exported["segments"][0]["evidence_ref"].clone()).unwrap();
     assert_eq!(
-        library.resolve_evidence(&exported_reference).unwrap().state,
+        library
+            .store()
+            .resolve_evidence(&exported_reference)
+            .unwrap()
+            .state,
         ResolutionState::Available
     );
     // Export omits the advisory resolver hint. All identity, time, and digest
@@ -346,6 +353,7 @@ fn the_pinned_model_installs_and_transcribes_an_imported_conversation() {
     let text = library
         .document(&session)
         .unwrap()
+        .segments
         .iter()
         .map(|segment| segment.effective_text.clone())
         .collect::<Vec<_>>()

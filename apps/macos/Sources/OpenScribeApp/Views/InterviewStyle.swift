@@ -33,8 +33,6 @@ enum Interview {
     .system(size: 17 * scale.multiplier, design: .serif)
   }
 
-  /// Run-in speaker names: small caps, bold, slightly tracked.
-  static let speaker = Font.system(size: 12, weight: .bold).smallCaps()
   static let meta = Font.system(size: 13)
   static let stamp = Font.system(size: 11).monospacedDigit()
   static let sectionLabel = Font.system(size: 11, weight: .semibold)
@@ -43,12 +41,15 @@ enum Interview {
 
   /// About 68 characters of 17-point New York.
   static let measure: CGFloat = 640
-  /// The left margin that holds timestamps beside the column.
+  /// Where a passage's timestamp sits, left of the text.
   static let shoulder: CGFloat = 60
-  /// The right margin that holds a passage's Name and Correct controls.
+  /// Where a passage's Name and Correct controls sit, right of the text.
   static let gutter: CGFloat = 60
-  /// The document's whole width: shoulder, measure, and gutter.
-  static let documentWidth: CGFloat = shoulder + measure + gutter
+  /// The page's own margin around the document.
+  static let pageMargin: CGFloat = 28
+  /// The narrowest page on which the shoulder and gutter hang in the margins
+  /// beside a full measure; on a narrower page they sit inside the column.
+  static let hangingWidth: CGFloat = shoulder + measure + gutter + 2 * pageMargin
   static let speechLineSpacing: CGFloat = 5
   static let turnSpacing: CGFloat = 18
 }
@@ -93,16 +94,49 @@ struct InterviewRule: View {
   }
 }
 
-/// Centers document content at the interview width, leaving the shoulder on
-/// the left for timestamps.
+/// Centers the document on its text. Everything in it shares the text's left
+/// edge; only passage rows reach outside it, through `interviewMargins()`, so
+/// the column never reserves empty space beside a title or notice.
 struct InterviewColumn<Content: View>: View {
   @ViewBuilder var content: Content
+  @State private var marginsHang = true
 
   var body: some View {
     content
-      .frame(maxWidth: Interview.documentWidth, alignment: .leading)
-      .padding(.horizontal, 28)
+      .environment(\.interviewMarginsHang, marginsHang)
+      .frame(
+        maxWidth: marginsHang ? Interview.measure : Interview.hangingWidth, alignment: .leading
+      )
+      .padding(.horizontal, Interview.pageMargin)
       .frame(maxWidth: .infinity, alignment: .center)
+      .onGeometryChange(for: Bool.self) { proxy in
+        proxy.size.width >= Interview.hangingWidth
+      } action: { hangs in
+        marginsHang = hangs
+      }
+  }
+}
+
+extension EnvironmentValues {
+  /// Whether passage timestamps and controls hang outside the column.
+  @Entry var interviewMarginsHang = true
+}
+
+extension View {
+  /// Lets a passage row's shoulder and gutter hang into the page margins when
+  /// the column has room, so its text lines up with the rest of the document.
+  func interviewMargins() -> some View {
+    modifier(InterviewMarginsModifier())
+  }
+}
+
+private struct InterviewMarginsModifier: ViewModifier {
+  @Environment(\.interviewMarginsHang) private var hangs
+
+  func body(content: Content) -> some View {
+    content
+      .padding(.leading, hangs ? -Interview.shoulder : 0)
+      .padding(.trailing, hangs ? -Interview.gutter : 0)
   }
 }
 
@@ -147,14 +181,12 @@ struct InterviewNotice: View {
   }
 }
 
-enum InterviewTime {
-  /// `m:ss` under an hour, `h:mm:ss` from an hour; the transcript's own format.
-  static func stamp(_ nanoseconds: Int64) -> String {
-    TranscriptSection.timestamp(nanoseconds)
-  }
-
-  /// "12 min", "1 hr 4 min", "40 sec".
-  static func length(seconds: UInt64) -> String {
-    ConversationClipboard.duration(nanoseconds: Int64(seconds) * 1_000_000_000)
+extension CaptureStatusPresentation.Tint {
+  var color: Color {
+    switch self {
+    case .recording: Interview.recording
+    case .attention: .orange
+    case .quiet: Interview.quiet
+    }
   }
 }

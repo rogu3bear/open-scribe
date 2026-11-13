@@ -23,6 +23,8 @@ final class RuntimeLibraryStore: ObservableObject {
 
   @Published private(set) var currentSession: RuntimeSessionPresentation?
   @Published private(set) var savedSessions: [RuntimeSessionPresentation] = []
+  /// The library as every surface lists it, rebuilt with each new snapshot.
+  @Published private(set) var library = LibraryPresentation.empty
   @Published private(set) var isSnapshotStale = false
   @Published private(set) var errorMessage: String?
   /// The result of the last title or details edit, for the workspace notice.
@@ -49,6 +51,7 @@ final class RuntimeLibraryStore: ObservableObject {
   private var refreshGeneration: UInt64 = 0
   private var refreshQueued = false
   private var loggedSnapshotSignature = ""
+  private var libraryDay = Calendar.current.startOfDay(for: Date())
 
   init(
     snapshotProvider: @escaping SnapshotProvider,
@@ -105,8 +108,7 @@ final class RuntimeLibraryStore: ObservableObject {
   }
 
   private var tracksLiveClock: Bool {
-    guard let lifecycle = currentSession?.lifecycle else { return false }
-    return ["preparing", "recording", "paused", "finalizing"].contains(lifecycle)
+    currentSession?.lifecycle.isOpenCapture() ?? false
   }
 
   convenience init(
@@ -359,7 +361,7 @@ final class RuntimeLibraryStore: ObservableObject {
     AppTelemetry.libraryNote(
       stage: "snapshot",
       detail:
-        "current=\(DiagnosticPrivacy.token(current?.sessionId ?? "none")) saved=\(saved.count) lifecycle=\(DiagnosticPrivacy.token(current?.lifecycle ?? "idle"))"
+        "current=\(DiagnosticPrivacy.token(current?.sessionId ?? "none")) saved=\(saved.count) lifecycle=\(DiagnosticPrivacy.token(current?.lifecycle.description ?? "idle"))"
     )
   }
 
@@ -400,14 +402,19 @@ final class RuntimeLibraryStore: ObservableObject {
           ? nil : native.currentSession.map(RuntimeSessionPresentation.init(native:))
         let nextSaved = native.savedSessions.map(RuntimeSessionPresentation.init(native:))
         let announcements = captureAnnouncements.update(current: nextCurrent, saved: nextSaved)
+        let now = Date()
+        let day = Calendar.current.startOfDay(for: now)
         // Identical snapshots must not invalidate SwiftUI. The one-second poll
-        // otherwise redraws the whole library while the app is idle.
+        // otherwise redraws the whole library while the app is idle. A new day
+        // regroups Today and Yesterday.
         guard
           currentSession != nextCurrent || savedSessions != nextSaved || isSnapshotStale
-            || errorMessage != nil
+            || errorMessage != nil || day != libraryDay
         else { break }
         currentSession = nextCurrent
         savedSessions = nextSaved
+        libraryDay = day
+        library = LibraryPresentation(current: nextCurrent, saved: nextSaved, now: now)
         isSnapshotStale = false
         errorMessage = nil
         noteSnapshotIfChanged(current: nextCurrent, saved: nextSaved)
@@ -419,9 +426,11 @@ final class RuntimeLibraryStore: ObservableObject {
       case .failure:
         let alreadyFailed = isSnapshotStale && errorMessage != nil
         currentSession = nil
+        let lastKnown = LibraryPresentation(current: nil, saved: savedSessions, now: Date())
+        if lastKnown != library { library = lastKnown }
         isSnapshotStale = true
         errorMessage =
-          "Live recording state is unavailable. The saved list is last known; recorded media was not changed."
+          "Open Scribe can't read the library right now. The list shows what it last saw; no recording was changed."
         if !alreadyFailed {
           loggedSnapshotSignature = ""
           AppTelemetry.libraryNote(stage: "snapshot-failed", detail: "code=unavailable")

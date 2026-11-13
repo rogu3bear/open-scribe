@@ -394,7 +394,7 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
     await assertEventually { adapter.phase == .failed }
     XCTAssertEqual(opener.count, 1)
     XCTAssertNil(adapter.importedSessionId)
-    XCTAssertTrue(adapter.statusMessage?.contains("did not verify") == true)
+    XCTAssertTrue(adapter.statusMessage?.contains("couldn't be opened") == true)
 
     opener.fail(with: NativeStorageError.InvalidRequest)
     adapter.chooseAndOpenPackage()
@@ -467,7 +467,7 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
     XCTAssertEqual(try Data(contentsOf: source), original)
     let reopened = try NativeRecordingPreparation.open(managedRoot: managedRoot.path)
     let saved = try XCTUnwrap(try reopened.runtimeLibrarySnapshot().savedSessions.first)
-    XCTAssertEqual(saved.playableMedia?.availability, "available")
+    XCTAssertEqual(saved.playableMedia?.availability, .available)
     let lease = try reopened.leaseImportedPlayback(sessionId: evidence.sessionId)
     XCTAssertTrue(lease.playbackPath().hasPrefix("v3;"))
     let receipt = try RecoveredPlaybackDescriptorReceipt(serialized: lease.playbackPath())
@@ -685,10 +685,10 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
       snapshot.savedSessions.first { $0.sessionId == second.sessionId })
     XCTAssertEqual(firstSaved.title, "Stereo memo")
     XCTAssertEqual(secondSaved.title, "Stereo memo again")
-    XCTAssertEqual(firstSaved.lifecycle, "ready_for_review")
-    XCTAssertEqual(secondSaved.lifecycle, "ready_for_review")
-    XCTAssertEqual(firstSaved.playableMedia?.availability, "available")
-    XCTAssertEqual(secondSaved.playableMedia?.availability, "available")
+    XCTAssertEqual(firstSaved.lifecycle, .readyForReview)
+    XCTAssertEqual(secondSaved.lifecycle, .readyForReview)
+    XCTAssertEqual(firstSaved.playableMedia?.availability, .available)
+    XCTAssertEqual(secondSaved.playableMedia?.availability, .available)
     for sessionId in [first.sessionId, second.sessionId] {
       let lease = try reopened.leaseImportedPlayback(sessionId: sessionId)
       let receipt = try RecoveredPlaybackDescriptorReceipt(serialized: lease.playbackPath())
@@ -781,7 +781,7 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
     XCTAssertEqual(evidence.byteLength, metadata.original.byteLength)
     let controller = try NativeRecordingPreparation.open(managedRoot: root.path)
     let snapshot = try controller.runtimeLibrarySnapshot()
-    XCTAssertEqual(snapshot.savedSessions.first?.playableMedia?.availability, "available")
+    XCTAssertEqual(snapshot.savedSessions.first?.playableMedia?.availability, .available)
     let lease = try controller.leaseImportedPlayback(sessionId: evidence.sessionId)
     let receipt = try RecoveredPlaybackDescriptorReceipt(serialized: lease.playbackPath())
     let bytes = try await StructuredNativeIO.read {
@@ -850,7 +850,7 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
       imported.availabilityText, TranscriptLibraryModel.text(for: .unavailable))
     XCTAssertEqual(imported.segments, [])
     XCTAssertEqual(
-      RuntimeTranscriptPresentation.failureText("model_unavailable"),
+      TranscriptStatusPresentation.failureReason(.modelUnavailable),
       "The speech model is not installed.")
     XCTAssertEqual(
       imported.speakerDiarizationText,
@@ -877,7 +877,7 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
     XCTAssertEqual(imported.speakers.first?.label, "Speaker")
     XCTAssertEqual(imported.speakers.first?.namedByUser, false)
     let restored = try importedLibrary.prepareSpeakerDiarization(sessionId: evidence.sessionId)
-    XCTAssertEqual(restored.tracks.first?.labelOrigin, "source_default")
+    XCTAssertEqual(restored.tracks.first?.labelOrigin, .sourceDefault)
     XCTAssertEqual(restored.clusteringState, "unavailable")
     XCTAssertEqual(imported.segments, [])
 
@@ -1078,9 +1078,20 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
     XCTAssertEqual(store.savedSessions.map(\.sessionId), ["imported-session"])
     XCTAssertEqual(store.savedSessions.map(\.title), ["Customer interview"])
     XCTAssertEqual(store.savedSessions[0].playableMedia?.sourceDisplayName, "customer.caf")
-    XCTAssertEqual(store.savedSessions[0].playableMedia?.durationText, "00:00:01")
-    XCTAssertEqual(store.savedSessions[0].statusText, "Ready to play")
+    XCTAssertEqual(store.savedSessions[0].playableMedia?.durationText, "1 sec")
     XCTAssertTrue(store.savedSessions[0].playableMedia?.isPlayable == true)
+    // A playable import reads like any saved conversation: the same status
+    // a recording on this Mac gets, quiet, with nothing needing attention.
+    let recorded = RuntimeSessionPresentation(
+      native: NativeRuntimeSessionSnapshot(
+        sessionId: "recorded-session", title: "Customer interview", titleSource: .person,
+        lifecycle: .readyForReview, health: .healthy, elapsedSeconds: 1, journalDurable: true,
+        mediaFilesOpen: false, interruptionReason: nil, recovered: false,
+        hasCaptureTimeline: true, sources: [], playableMedia: nil))
+    XCTAssertEqual(store.savedSessions[0].captureStatus, recorded.captureStatus)
+    XCTAssertEqual(store.savedSessions[0].captureStatus.tint, .quiet)
+    XCTAssertFalse(store.savedSessions[0].needsAttention)
+    XCTAssertNil(store.savedSessions[0].interruptionText)
     XCTAssertFalse(store.isSnapshotStale)
   }
 
@@ -1386,7 +1397,7 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
     let decision = try library.prepareSpeakerDiarization(sessionId: sessionId)
     XCTAssertEqual(decision.clusteringState, "unavailable")
     XCTAssertEqual(decision.reason, "no calibrated diarization model")
-    XCTAssertEqual(decision.tracks.first?.labelOrigin, "source_default")
+    XCTAssertEqual(decision.tracks.first?.labelOrigin, .sourceDefault)
     XCTAssertTrue(try library.search(query: "memo", sessionId: sessionId, limit: 20).isEmpty)
     XCTAssertNotEqual(correctionRefusal(library, sessionId: sessionId), "accepted")
     XCTAssertEqual(model.segments, [])
@@ -1519,7 +1530,6 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
       TranscriptSection.statusLine(session: session, transcripts: model, speech: speech),
       TranscriptSection.speechModelUnavailableStatus)
     let speechNative = try NativeSpeechModels.open(managedRoot: importRoot.path)
-    XCTAssertTrue(try speechNative.needsDecodedCompanion(sessionId: sessionId))
     XCTAssertTrue(
       try speechNative.needsDecodedCompanionForIntent(
         sessionId: sessionId, intent: .resumeIncomplete))
@@ -2505,7 +2515,7 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
     XCTAssertFalse(harness.controller.canStart)
     XCTAssertTrue(harness.controller.canStop)
     let current = try XCTUnwrap(harness.preparation.runtimeLibrarySnapshot().currentSession)
-    XCTAssertEqual(current.lifecycle, "preparing")
+    XCTAssertEqual(current.lifecycle, .preparing)
     let session = RuntimeSessionPresentation(native: current)
     XCTAssertEqual(session.sources.map(\.name), ["Mac microphone", "Mac system audio"])
     XCTAssertEqual(session.sources.map(\.stateText), ["Ready", "Ready"])
@@ -2608,7 +2618,7 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
     XCTAssertFalse(harness.controller.canStart)
     XCTAssertTrue(harness.controller.canStop)
     let current = try XCTUnwrap(harness.preparation.runtimeLibrarySnapshot().currentSession)
-    XCTAssertEqual(current.lifecycle, "preparing")
+    XCTAssertEqual(current.lifecycle, .preparing)
     let session = RuntimeSessionPresentation(native: current)
     XCTAssertEqual(session.sources.map(\.name), ["Mac microphone", "Mac system audio"])
     XCTAssertEqual(session.sources.map(\.stateText), ["Ready", "Ready"])
@@ -2722,7 +2732,7 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
     XCTAssertFalse(harness.controller.canStart)
     XCTAssertTrue(harness.controller.canStop)
     let current = try XCTUnwrap(harness.preparation.runtimeLibrarySnapshot().currentSession)
-    XCTAssertEqual(current.lifecycle, "preparing")
+    XCTAssertEqual(current.lifecycle, .preparing)
     let session = RuntimeSessionPresentation(native: current)
     XCTAssertEqual(session.sources.map(\.name), ["Mac microphone", "Mac system audio"])
     XCTAssertEqual(session.sources.map(\.stateText), ["Ready", "Ready"])
@@ -2825,7 +2835,7 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
     }
     harness.clock.advance(seconds: 1)
     let current = try XCTUnwrap(harness.preparation.runtimeLibrarySnapshot().currentSession)
-    XCTAssertEqual(current.lifecycle, "recording")
+    XCTAssertEqual(current.lifecycle, .recording)
     let recording = RuntimeSessionPresentation(native: current)
     XCTAssertEqual(recording.sources.map(\.name), ["Mac microphone", "Mac system audio"])
     XCTAssertEqual(recording.sources.map(\.stateText), ["Capturing", "Capturing"])
@@ -2863,13 +2873,13 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
     XCTAssertNil(store.currentSession)
     let conversation = try XCTUnwrap(store.savedSessions.first { $0.sessionId == sessionId })
     XCTAssertEqual(store.savedSessions.count, 1)
-    XCTAssertEqual(conversation.lifecycle, "ready_for_review")
+    XCTAssertEqual(conversation.lifecycle, .readyForReview)
     XCTAssertEqual(conversation.sources.map(\.name), ["Mac microphone", "Mac system audio"])
     XCTAssertEqual(conversation.sources.map(\.stateText), ["Saved", "Saved"])
     XCTAssertGreaterThan(conversation.elapsedSeconds, 0)
     XCTAssertEqual(conversation.transcript.state, .none)
     let detail = try harness.preparation.recorderDetail(sessionId: sessionId)
-    XCTAssertEqual(detail.lifecycle, "ready_for_review")
+    XCTAssertEqual(detail.lifecycle, .readyForReview)
     _ = try harness.preparation.recoverPlayableSessions()
     let plan = try harness.preparation.playbackTimeline(sessionId: sessionId)
     XCTAssertEqual(Set(plan.map(\.trackId)).count, 2)
@@ -3036,8 +3046,8 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
     XCTAssertNil(harness.controller.errorMessage)
     XCTAssertNil(store.currentSession)
     let detail = try harness.preparation.recorderDetail(sessionId: sessionId)
-    let savedMarker = try XCTUnwrap(detail.events.last { $0.kind == "marker_added" })
-    XCTAssertEqual(detail.lifecycle, "ready_for_review")
+    let savedMarker = try XCTUnwrap(detail.events.last { $0.kind == .markerAdded })
+    XCTAssertEqual(detail.lifecycle, .readyForReview)
     XCTAssertEqual(savedMarker.id, marker.id)
     XCTAssertEqual(savedMarker.label, "")
     XCTAssertEqual(savedMarker.sessionNanoseconds, marker.sessionNanoseconds)
@@ -3160,11 +3170,11 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
     XCTAssertEqual(field.accessibilityLabel(), notice)
     XCTAssertEqual(harness.controller.phase, .capturing)
     XCTAssertNil(harness.controller.errorMessage)
-    XCTAssertEqual(harness.controller.recorderDetail?.storageLevel, "warning")
+    XCTAssertEqual(harness.controller.recorderDetail?.storageLevel, .warning)
     XCTAssertEqual(microphone.stopCount, 0)
     XCTAssertEqual(system.stopCount, 0)
     let warnedLabels = try harness.preparation.recorderDetail(sessionId: sessionId).events.filter {
-      $0.kind == "storage_observed"
+      $0.kind == .storageObserved
     }.map(\.label)
     XCTAssertEqual(warnedLabels.last, "warning")
     harness.storage.set(4 * 1024 * 1024 * 1024)
@@ -3173,7 +3183,7 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
       window.displayIfNeeded()
       return harness.controller.phase == .capturing
         && harness.controller.storagePressureNotice == nil
-        && harness.controller.recorderDetail?.storageLevel == "normal"
+        && harness.controller.recorderDetail?.storageLevel == .normal
         && self.hostedLabeledField(labeled: notice, in: host) == nil
     }
     XCTAssertTrue(cleared, harness.controller.errorMessage ?? harness.controller.phase.rawValue)
@@ -3181,7 +3191,7 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
     XCTAssertEqual(microphone.stopCount, 0)
     XCTAssertEqual(system.stopCount, 0)
     let clearedLabels = try harness.preparation.recorderDetail(sessionId: sessionId).events.filter {
-      $0.kind == "storage_observed"
+      $0.kind == .storageObserved
     }.map(\.label)
     XCTAssertTrue(clearedLabels.contains("warning"))
     XCTAssertEqual(clearedLabels.last, "normal")
@@ -3196,12 +3206,12 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
     XCTAssertTrue(saved, harness.controller.errorMessage ?? harness.controller.phase.rawValue)
     XCTAssertNil(harness.controller.storagePressureNotice)
     let savedLabels = try harness.preparation.recorderDetail(sessionId: sessionId).events.filter {
-      $0.kind == "storage_observed"
+      $0.kind == .storageObserved
     }.map(\.label)
     XCTAssertTrue(savedLabels.contains("warning"))
     XCTAssertEqual(savedLabels.last, "normal")
     XCTAssertEqual(
-      try harness.preparation.recorderDetail(sessionId: sessionId).lifecycle, "ready_for_review")
+      try harness.preparation.recorderDetail(sessionId: sessionId).lifecycle, .readyForReview)
     XCTAssertTrue(window.contentView === host)
     withExtendedLifetime(store) {}
     withExtendedLifetime(harness) {}
@@ -3314,11 +3324,11 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
     XCTAssertEqual(field.accessibilityLabel(), spoken)
     XCTAssertEqual(harness.controller.phase, .saved)
     XCTAssertNil(harness.controller.storagePressureNotice)
-    XCTAssertEqual(harness.controller.recorderDetail?.storageLevel, "critical")
+    XCTAssertEqual(harness.controller.recorderDetail?.storageLevel, .critical)
     XCTAssertEqual(microphone.stopCount, 1)
     XCTAssertEqual(system.stopCount, 1)
     let labels = try harness.preparation.recorderDetail(sessionId: sessionId).events.filter {
-      $0.kind == "storage_observed"
+      $0.kind == .storageObserved
     }.map(\.label)
     XCTAssertEqual(labels.last, "critical")
     _ = try harness.preparation.recoverPlayableSessions()
@@ -3326,7 +3336,7 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
     XCTAssertEqual(Set(plan.map(\.trackId)).count, 2)
     XCTAssertTrue(plan.allSatisfy { $0.sampleCount >= 48_000 })
     XCTAssertEqual(
-      try harness.preparation.recorderDetail(sessionId: sessionId).lifecycle, "ready_for_review")
+      try harness.preparation.recorderDetail(sessionId: sessionId).lifecycle, .readyForReview)
     XCTAssertTrue(window.contentView === host)
     withExtendedLifetime(store) {}
     withExtendedLifetime(harness) {}
@@ -3420,7 +3430,7 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
     }
     harness.clock.advance(seconds: 1)
     let current = try XCTUnwrap(harness.preparation.runtimeLibrarySnapshot().currentSession)
-    XCTAssertEqual(current.lifecycle, "recording")
+    XCTAssertEqual(current.lifecycle, .recording)
     let recording = RuntimeSessionPresentation(native: current)
     XCTAssertEqual(recording.sources.map(\.name), ["Mac microphone", "Mac system audio"])
     XCTAssertEqual(recording.sources.map(\.stateText), ["Capturing", "Capturing"])
@@ -3469,13 +3479,13 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
     XCTAssertNil(store.currentSession)
     let conversation = try XCTUnwrap(store.savedSessions.first { $0.sessionId == sessionId })
     XCTAssertEqual(store.savedSessions.count, 1)
-    XCTAssertEqual(conversation.lifecycle, "ready_for_review")
+    XCTAssertEqual(conversation.lifecycle, .readyForReview)
     XCTAssertEqual(conversation.sources.map(\.name), ["Mac microphone", "Mac system audio"])
     XCTAssertEqual(conversation.sources.map(\.stateText), ["Saved", "Saved"])
     XCTAssertGreaterThan(conversation.elapsedSeconds, 0)
     XCTAssertEqual(conversation.transcript.state, .none)
     let detail = try harness.preparation.recorderDetail(sessionId: sessionId)
-    XCTAssertEqual(detail.lifecycle, "ready_for_review")
+    XCTAssertEqual(detail.lifecycle, .readyForReview)
     _ = try harness.preparation.recoverPlayableSessions()
     let plan = try harness.preparation.playbackTimeline(sessionId: sessionId)
     XCTAssertEqual(Set(plan.map(\.trackId)).count, 2)
@@ -3628,9 +3638,9 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
     XCTAssertTrue(harness.controller.canStop)
     XCTAssertEqual(microphone.stopCount, 1)
     XCTAssertEqual(system.stopCount, 1)
-    XCTAssertEqual(harness.controller.statusText, "Paused — captured time is stopped")
+    XCTAssertEqual(harness.controller.statusText, "Paused")
     let detail = try harness.preparation.recorderDetail(sessionId: sessionId)
-    XCTAssertEqual(detail.lifecycle, "paused")
+    XCTAssertEqual(detail.lifecycle, .paused)
     XCTAssertEqual(detail.capturedNanoseconds, 1_010_000_000)
     XCTAssertTrue(store.savedSessions.isEmpty)
     let pauseLeaves = await waitUntil(timeoutNanoseconds: 5_000_000_000) {
@@ -3905,13 +3915,13 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
       let session = RuntimeSessionPresentation(native: current)
       let microphoneState = session.sources.first { $0.name == "Mac microphone" }?.lifecycle
       let systemState = session.sources.first { $0.name == "Mac system audio" }?.lifecycle
-      return session.lifecycle == "preparing" && microphoneState == "capturing"
-        && systemState == "open" && session.isRecording == false
+      return session.lifecycle == .preparing && microphoneState == .capturing
+        && systemState == .open && session.isRecording == false
     }
     guard oneSource else {
       let current = try? harness.preparation.runtimeLibrarySnapshot().currentSession
       XCTFail(
-        "phase=\(harness.controller.phase.rawValue) code=\(harness.controller.failureCode ?? "none") message=\(harness.controller.errorMessage ?? "none") lifecycle=\(current?.lifecycle ?? "none")"
+        "phase=\(harness.controller.phase.rawValue) code=\(harness.controller.failureCode ?? "none") message=\(harness.controller.errorMessage ?? "none") lifecycle=\(current.map { "\($0.lifecycle)" } ?? "none")"
       )
       return
     }
@@ -3944,7 +3954,7 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
       host.layoutSubtreeIfNeeded()
       window.displayIfNeeded()
       return harness.controller.phase == .failed
-        && store.currentSession?.lifecycle == "interrupted"
+        && store.currentSession?.lifecycle == .interrupted
         && self.toolbarStopButton(in: window) == nil
         && self.toolbarRecordButton(in: window) != nil
     }
@@ -3959,23 +3969,26 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
     XCTAssertEqual(try Data(contentsOf: systemURL), systemBytes)
     let conversation = try XCTUnwrap(store.currentSession)
     XCTAssertEqual(conversation.sessionId, microphone.writer.authorization.sessionId)
-    XCTAssertEqual(conversation.lifecycle, "interrupted")
-    XCTAssertEqual(conversation.interruptionReason, "stop_without_durable_sample")
+    XCTAssertEqual(conversation.lifecycle, .interrupted)
+    XCTAssertEqual(conversation.interruptionReason, .stopWithoutDurableSample)
+    XCTAssertTrue(conversation.preservedAudio, "the microphone captured audio before Stop")
+    XCTAssertFalse(conversation.didNotRecord)
     XCTAssertEqual(
-      conversation.interruptionText, "A required source had no durable final sample.")
+      conversation.interruptionText,
+      "Part of this recording couldn't be saved. Details lists each source.")
     XCTAssertFalse(conversation.isRecording)
     XCTAssertEqual(
       conversation.sources.first { $0.name == "Mac microphone" }?.stateText, "Failed")
     XCTAssertEqual(
       conversation.sources.first { $0.name == "Mac system audio" }?.stateText, "Failed")
     XCTAssertTrue(store.savedSessions.isEmpty)
-    XCTAssertNotEqual(conversation.lifecycle, "ready_for_review")
+    XCTAssertNotEqual(conversation.lifecycle, .readyForReview)
     let interruptedMenu = MenuBarLabel.presentation(
       session: conversation,
       snapshotStale: false,
       livePhase: harness.controller.phase,
       liveStatus: harness.controller.statusText)
-    XCTAssertEqual(interruptedMenu.text, "Recording interrupted")
+    XCTAssertEqual(interruptedMenu.text, "Stopped unexpectedly")
     XCTAssertTrue(window.contentView === host)
     withExtendedLifetime(store) {}
     withExtendedLifetime(harness) {}
@@ -4064,7 +4077,7 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
     XCTAssertFalse(harness.controller.canStart)
     XCTAssertTrue(harness.controller.canStop)
     let current = try XCTUnwrap(harness.preparation.runtimeLibrarySnapshot().currentSession)
-    XCTAssertEqual(current.lifecycle, "preparing")
+    XCTAssertEqual(current.lifecycle, .preparing)
     let session = RuntimeSessionPresentation(native: current)
     XCTAssertEqual(session.sources.map(\.name), ["Mac microphone", "Mac system audio"])
     XCTAssertEqual(session.sources.map(\.stateText), ["Ready", "Ready"])
@@ -4166,7 +4179,7 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
     }
     harness.clock.advance(seconds: 1)
     let current = try XCTUnwrap(harness.preparation.runtimeLibrarySnapshot().currentSession)
-    XCTAssertEqual(current.lifecycle, "recording")
+    XCTAssertEqual(current.lifecycle, .recording)
     let recording = RuntimeSessionPresentation(native: current)
     XCTAssertEqual(recording.sources.map(\.stateText), ["Capturing", "Capturing"])
     let recordingMenu = MenuBarLabel.presentation(
@@ -4203,13 +4216,13 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
     XCTAssertNil(store.currentSession)
     let conversation = try XCTUnwrap(store.savedSessions.first { $0.sessionId == sessionId })
     XCTAssertEqual(store.savedSessions.count, 1)
-    XCTAssertEqual(conversation.lifecycle, "ready_for_review")
+    XCTAssertEqual(conversation.lifecycle, .readyForReview)
     XCTAssertEqual(conversation.sources.map(\.name), ["Mac microphone", "Mac system audio"])
     XCTAssertEqual(conversation.sources.map(\.stateText), ["Saved", "Saved"])
     XCTAssertGreaterThan(conversation.elapsedSeconds, 0)
     XCTAssertEqual(conversation.transcript.state, .none)
     let detail = try harness.preparation.recorderDetail(sessionId: sessionId)
-    XCTAssertEqual(detail.lifecycle, "ready_for_review")
+    XCTAssertEqual(detail.lifecycle, .readyForReview)
     _ = try harness.preparation.recoverPlayableSessions()
     let plan = try harness.preparation.playbackTimeline(sessionId: sessionId)
     XCTAssertEqual(plan.count, 2)
@@ -4333,7 +4346,7 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
     XCTAssertFalse(harness.controller.canStart)
     XCTAssertTrue(harness.controller.canStop)
     let current = try XCTUnwrap(harness.preparation.runtimeLibrarySnapshot().currentSession)
-    XCTAssertEqual(current.lifecycle, "preparing")
+    XCTAssertEqual(current.lifecycle, .preparing)
     let session = RuntimeSessionPresentation(native: current)
     XCTAssertEqual(session.sources.map(\.name), ["Mac microphone", "Mac system audio"])
     XCTAssertEqual(session.sources.map(\.stateText), ["Ready", "Ready"])
@@ -4436,7 +4449,7 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
     }
     harness.clock.advance(seconds: 1)
     let current = try XCTUnwrap(harness.preparation.runtimeLibrarySnapshot().currentSession)
-    XCTAssertEqual(current.lifecycle, "recording")
+    XCTAssertEqual(current.lifecycle, .recording)
     let recording = RuntimeSessionPresentation(native: current)
     XCTAssertEqual(recording.sources.map(\.stateText), ["Capturing", "Capturing"])
     let stopReady = await waitUntil(timeoutNanoseconds: 5_000_000_000) {
@@ -4483,13 +4496,13 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
     XCTAssertNil(store.currentSession)
     let conversation = try XCTUnwrap(store.savedSessions.first { $0.sessionId == sessionId })
     XCTAssertEqual(store.savedSessions.count, 1)
-    XCTAssertEqual(conversation.lifecycle, "ready_for_review")
+    XCTAssertEqual(conversation.lifecycle, .readyForReview)
     XCTAssertEqual(conversation.sources.map(\.name), ["Mac microphone", "Mac system audio"])
     XCTAssertEqual(conversation.sources.map(\.stateText), ["Saved", "Saved"])
     XCTAssertGreaterThan(conversation.elapsedSeconds, 0)
     XCTAssertEqual(conversation.transcript.state, .none)
     let detail = try harness.preparation.recorderDetail(sessionId: sessionId)
-    XCTAssertEqual(detail.lifecycle, "ready_for_review")
+    XCTAssertEqual(detail.lifecycle, .readyForReview)
     _ = try harness.preparation.recoverPlayableSessions()
     let plan = try harness.preparation.playbackTimeline(sessionId: sessionId)
     XCTAssertEqual(plan.count, 2)
@@ -5081,7 +5094,7 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
     )
     let sessionId = try XCTUnwrap(adapter.importedSessionId)
     let saved = try XCTUnwrap(store.savedSessions.first { $0.sessionId == sessionId })
-    XCTAssertEqual(saved.lifecycle, "ready_for_review")
+    XCTAssertEqual(saved.lifecycle, .readyForReview)
     let media = try XCTUnwrap(saved.playableMedia)
     XCTAssertEqual(media.sampleCount, UInt64(frames))
     XCTAssertTrue(media.isPlayable)
@@ -5353,6 +5366,13 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
     else {
       throw XCTSkip("Set OPEN_SCRIBE_WHISPER_MODEL and OPEN_SCRIBE_WHISPER_SPEECH_M4A.")
     }
+    // The Seatbelt profile outlives this test and passes to every process a
+    // later test launches: setuid tools such as ps fail with EPERM, and a
+    // launched app cannot read volume capacity. Search always runs; denying IP
+    // first happens only in a test-host process of its own, opted in with
+    // TEST_RUNNER_OPEN_SCRIBE_IN_PROCESS_IP_DENIAL=1. check_m4_local_only.sh
+    // proves the denial profile separately.
+    let deniesInternetProtocol = environment["OPEN_SCRIBE_IN_PROCESS_IP_DENIAL"] == "1"
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(
       "open-scribe-search-two-\(UUID().uuidString)", isDirectory: true)
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
@@ -5461,10 +5481,12 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
     let field = try XCTUnwrap(self.hostedSearchField(in: host))
     XCTAssertTrue(ready && window.contentView === host && field.isDescendant(of: host))
     XCTAssertTrue(self.hostedResultButtons(containing: "recording", in: host).isEmpty)
-    let reachable = self.loopbackConnectErrno()
-    XCTAssertNotEqual(reachable, EPERM, "loopback was already denied: \(reachable)")
-    try self.denyInternetProtocol()
-    XCTAssertEqual(self.loopbackConnectErrno(), EPERM)
+    if deniesInternetProtocol {
+      let reachable = self.loopbackConnectErrno()
+      XCTAssertNotEqual(reachable, EPERM, "loopback was already denied: \(reachable)")
+      try self.denyInternetProtocol()
+      XCTAssertEqual(self.loopbackConnectErrno(), EPERM)
+    }
     field.stringValue = "recording"
     let matched = await waitUntil(timeoutNanoseconds: 10_000_000_000) {
       host.layoutSubtreeIfNeeded()
@@ -5913,7 +5935,7 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
     let reviewReady = await waitUntil(timeoutNanoseconds: 20_000_000_000) {
       host.layoutSubtreeIfNeeded()
       window.displayIfNeeded()
-      guard let segment = transcripts.segments.first(where: { $0.finality != "draft" }),
+      guard let segment = transcripts.segments.first(where: { $0.finality != .draft }),
         transcripts.sessionId == sessionId
       else { return false }
       let stamp = TranscriptSection.timestamp(segment.startNanoseconds)
@@ -5929,7 +5951,7 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
       reviewReady && window.contentView === host,
       "segments=\(transcripts.segments.map(\.effectiveText)) message=\(transcripts.message ?? "nil")\n\(self.reviewProbe(in: host))"
     )
-    let segment = try XCTUnwrap(transcripts.segments.first { $0.finality != "draft" })
+    let segment = try XCTUnwrap(transcripts.segments.first { $0.finality != .draft })
     let stamp = TranscriptSection.timestamp(segment.startNanoseconds)
     let nameLabel = ConversationControlLabels.nameSpeakerAccessibility(
       stamp: stamp, label: segment.speakerLabel)
@@ -6165,7 +6187,7 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
     let reviewReady = await waitUntil(timeoutNanoseconds: 20_000_000_000) {
       host.layoutSubtreeIfNeeded()
       window.displayIfNeeded()
-      guard let segment = transcripts.segments.first(where: { $0.finality != "draft" }),
+      guard let segment = transcripts.segments.first(where: { $0.finality != .draft }),
         transcripts.sessionId == sessionId
       else { return false }
       let stamp = TranscriptSection.timestamp(segment.startNanoseconds)
@@ -6181,7 +6203,7 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
       reviewReady && window.contentView === host,
       "segments=\(transcripts.segments.map(\.effectiveText)) message=\(transcripts.message ?? "nil")\n\(self.reviewProbe(in: host))"
     )
-    let segment = try XCTUnwrap(transcripts.segments.first { $0.finality != "draft" })
+    let segment = try XCTUnwrap(transcripts.segments.first { $0.finality != .draft })
     let stamp = TranscriptSection.timestamp(segment.startNanoseconds)
     let nameLabel = ConversationControlLabels.nameSpeakerAccessibility(
       stamp: stamp, label: segment.speakerLabel)
@@ -6652,7 +6674,8 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
   }
 
   /// Seatbelt profile matching the local-only harness: default allow, IP denied.
-  /// `sandbox_init` cannot be lifted, so later tests in this process also lose IP.
+  /// `sandbox_init` cannot be lifted; the profile stays on this process and
+  /// every process it launches.
   private func denyInternetProtocol() throws {
     let profile =
       "(version 1)(allow default)(deny network-outbound (remote ip))(deny network-inbound (local ip))(deny network-bind (local ip))"
@@ -6734,7 +6757,7 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
 
   private func markerEvents(sessionId: String, harness: PauseHarness) throws -> [NativeRecorderEvent] {
     try harness.preparation.recorderDetail(sessionId: sessionId).events.filter {
-      $0.kind == "marker_added"
+      $0.kind == .markerAdded
     }
   }
 
@@ -7499,8 +7522,8 @@ private final class ImportRuntimeFixture: @unchecked Sendable {
       NativeRuntimeSessionSnapshot(
         sessionId: "imported-session",
         title: $0,
-        lifecycle: "ready_for_review",
-        health: "healthy",
+        titleSource: .person, lifecycle: .readyForReview,
+        health: .healthy,
         elapsedSeconds: 0,
         journalDurable: true,
         mediaFilesOpen: false,
@@ -7510,7 +7533,7 @@ private final class ImportRuntimeFixture: @unchecked Sendable {
         sources: [],
         playableMedia: NativeRuntimePlayableMediaSnapshot(
           sourceDisplayName: "customer.caf",
-          availability: "available",
+          availability: .available,
           absolutePath: "/managed/customer.caf",
           durationNanoseconds: 1_000_000_000,
           sampleCount: 48_000,
@@ -7554,8 +7577,8 @@ private final class DelayedImportProjectionFixture: @unchecked Sendable {
     let older = NativeRuntimeSessionSnapshot(
       sessionId: "older-session",
       title: "Older conversation",
-      lifecycle: "ready_for_review",
-      health: "healthy",
+      titleSource: .person, lifecycle: .readyForReview,
+      health: .healthy,
       elapsedSeconds: 60,
       journalDurable: true,
       mediaFilesOpen: false,
@@ -7569,8 +7592,8 @@ private final class DelayedImportProjectionFixture: @unchecked Sendable {
       NativeRuntimeSessionSnapshot(
         sessionId: "imported-session",
         title: $0,
-        lifecycle: "ready_for_review",
-        health: "healthy",
+        titleSource: .person, lifecycle: .readyForReview,
+        health: .healthy,
         elapsedSeconds: 0,
         journalDurable: true,
         mediaFilesOpen: false,
@@ -7580,7 +7603,7 @@ private final class DelayedImportProjectionFixture: @unchecked Sendable {
         sources: [],
         playableMedia: NativeRuntimePlayableMediaSnapshot(
           sourceDisplayName: "customer.caf",
-          availability: "available",
+          availability: .available,
           absolutePath: "/managed/customer.caf",
           durationNanoseconds: 1_000_000_000,
           sampleCount: 48_000,

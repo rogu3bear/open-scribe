@@ -69,7 +69,7 @@ final class TranscriptLibraryModelTests: XCTestCase {
     XCTAssertEqual(TranscriptSearch.matching(rows, query: " \n"), rows)
     XCTAssertEqual(TranscriptSearch.matching(Array(rows.suffix(1)), query: "café"), [rows[2]])
     let draft = segment(
-      3, 9_000_000_000, "Dana", named: true, "Café secret draft", finality: "draft")
+      3, 9_000_000_000, "Dana", named: true, "Café secret draft", finality: .draft)
     XCTAssertTrue(TranscriptSearch.matching(rows + [draft], query: "secret").isEmpty)
     XCTAssertEqual(
       TranscriptSearch.matching(rows + [draft], query: "café").map(\.id),
@@ -136,10 +136,8 @@ final class TranscriptLibraryModelTests: XCTestCase {
       snapshotProvider: { NativeRuntimeLibrarySnapshot(currentSession: nil, savedSessions: []) },
       startsPolling: false, refreshesImmediately: false)
     let conversation = session("review-fixture", calibrated: false, sources: [])
+    // Rename is the window's confirmation strip; Details is the one sheet.
     for scheme in [ColorScheme.light, .dark] {
-      try captureEditorSheet(
-        ConversationRenameSheet(session: conversation, store: store, onClose: {}),
-        width: 420, name: "rename", scheme: scheme)
       try captureEditorSheet(
         ConversationDetailsSheet(
           session: conversation, declaration: nil, store: store, onSaved: {}, onClose: {}),
@@ -298,10 +296,10 @@ final class TranscriptLibraryModelTests: XCTestCase {
     XCTAssertEqual(first.reason, "no calibrated diarization model")
     XCTAssertEqual(first.algorithmId, "topology-before-clustering-v1")
     XCTAssertEqual(first.tracks.count, 1)
-    XCTAssertEqual(first.tracks[0].sourceKind, "imported_audio")
-    XCTAssertEqual(first.tracks[0].disposition, "unresolved")
+    XCTAssertEqual(first.tracks[0].sourceKind, .importedAudio)
+    XCTAssertEqual(first.tracks[0].disposition, .unresolved)
     XCTAssertEqual(first.tracks[0].label, "Speaker")
-    XCTAssertEqual(first.tracks[0].labelOrigin, "source_default")
+    XCTAssertEqual(first.tracks[0].labelOrigin, .sourceDefault)
     let model = TranscriptLibraryModel(library: library)
     await model.load(session: session(imported.sessionId, calibrated: false, sources: []))
     XCTAssertEqual(
@@ -331,9 +329,9 @@ final class TranscriptLibraryModelTests: XCTestCase {
     XCTAssertEqual(reviewed.clusteringState, "unavailable")
     XCTAssertEqual(reviewed.reason, "no calibrated diarization model")
     XCTAssertEqual(reviewed.tracks.count, 1)
-    XCTAssertEqual(reviewed.tracks[0].disposition, "unresolved")
+    XCTAssertEqual(reviewed.tracks[0].disposition, .unresolved)
     XCTAssertEqual(reviewed.tracks[0].label, "Dana")
-    XCTAssertEqual(reviewed.tracks[0].labelOrigin, "human")
+    XCTAssertEqual(reviewed.tracks[0].labelOrigin, .human)
     XCTAssertEqual(try library.inspectProvenance(sessionId: imported.sessionId), [])
     XCTAssertEqual(try Self.mediaDigests(under: libraryRoot), before)
   }
@@ -382,11 +380,12 @@ final class TranscriptLibraryModelTests: XCTestCase {
   ) -> RuntimeSessionPresentation {
     RuntimeSessionPresentation(
       native: NativeRuntimeSessionSnapshot(
-        sessionId: id, title: id, lifecycle: "ready_for_review", health: "healthy",
+        sessionId: id, title: id, titleSource: .person, lifecycle: .readyForReview,
+        health: .healthy,
         elapsedSeconds: 1, journalDurable: true, mediaFilesOpen: false,
         interruptionReason: nil, recovered: recovered, hasCaptureTimeline: calibrated,
         sources: sources.map {
-          NativeRuntimeSourceSnapshot(kind: $0, displayName: "Fixture", lifecycle: "sealed")
+          NativeRuntimeSourceSnapshot(kind: $0, displayName: "Fixture", lifecycle: .sealed)
         }, playableMedia: nil))
   }
 
@@ -760,14 +759,14 @@ final class TranscriptLibraryModelTests: XCTestCase {
     XCTAssertNil(model.pendingDeletion)
     XCTAssertTrue(model.messageIsFailure)
     XCTAssertTrue(model.message?.contains("could not be confirmed") == true)
-    XCTAssertTrue(model.message?.contains("verify Trash") == true)
+    XCTAssertTrue(model.message?.contains("check Trash") == true)
     await model.load(sessionId: sessionId)
     XCTAssertTrue(
       model.message?.contains("could not be confirmed") == true,
       "document refresh must not acknowledge a library-operation warning")
     model.dismissMessage()
     XCTAssertTrue(
-      model.message?.contains("verify Trash") == true,
+      model.message?.contains("check Trash") == true,
       "starting another edit does not resolve an uncertain move")
     XCTAssertNil(
       model.editingFailureMessage,
@@ -997,7 +996,7 @@ final class TranscriptLibraryModelTests: XCTestCase {
 
   private func segment(
     _ sequence: UInt32, _ start: Int64, _ speaker: String, named: Bool, _ text: String,
-    machine: String? = nil, finality: String = "final"
+    machine: String? = nil, finality: NativeTranscriptFinality = .final
   ) -> NativeTranscriptSegment {
     NativeTranscriptSegment(
       revisionId: "revision", trackId: named ? "system" : "microphone", sequence: sequence,
@@ -1380,10 +1379,17 @@ private final class TranscriptTimingLibraryFake: NativeTranscriptLibrary, @unche
         revisionId: "fixture", trackId: sessionId, sequence: 0, startNanoseconds: 0,
         endNanoseconds: 1_000_000_000, verbatimText: "Fixture", effectiveText: "Fixture",
         corrected: false, speakerLabel: "Fixture", speakerNamedByUser: false, namedSpeakerId: nil,
-        finality: "final")
+        finality: .final)
     ]
     observe("document", sessionId)
     return snapshot
+  }
+
+  /// The model reads segments and speakers through this one call; a method
+  /// left to the generated class would cross the FFI with no handle.
+  override func conversationDocument(sessionId: String) throws -> NativeConversationDocument {
+    NativeConversationDocument(
+      segments: try document(sessionId: sessionId), speakers: try speakers(sessionId: sessionId))
   }
 
   override func namedSpeakers(sessionId: String) throws -> [NativeNamedTranscriptSpeaker] { [] }
@@ -1397,7 +1403,7 @@ private final class TranscriptTimingLibraryFake: NativeTranscriptLibrary, @unche
   override func speakers(sessionId: String) throws -> [NativeSessionSpeaker] {
     [
       NativeSessionSpeaker(
-        trackId: sessionId, sourceKind: "microphone", label: "Fixture", namedByUser: false)
+        trackId: sessionId, sourceKind: .microphone, label: "Fixture", namedByUser: false)
     ]
   }
 
@@ -1424,8 +1430,8 @@ private final class TranscriptTimingLibraryFake: NativeTranscriptLibrary, @unche
       clusteringState: "unavailable", reason: "no calibrated diarization model", inserted: false,
       tracks: [
         NativeSpeakerDiarizationTrack(
-          trackId: sessionId, sourceKind: "microphone", disposition: "topology", label: "Fixture",
-          labelOrigin: "source_default")
+          trackId: sessionId, sourceKind: .microphone, disposition: .topology, label: "Fixture",
+          labelOrigin: .sourceDefault)
       ])
   }
 
@@ -1573,7 +1579,7 @@ private final class TranscriptTimingLibraryFake: NativeTranscriptLibrary, @unche
       matches
       ? [
         NativeTranscriptSearchHit(
-          sessionId: "valid", sessionTitle: "Fixture", revisionId: "fixture", trackId: "valid",
+          sessionId: "valid", sessionTitle: "Fixture", titleSource: .person, revisionId: "fixture", trackId: "valid",
           sequence: 0, startNanoseconds: 0, endNanoseconds: 1_000_000_000, effectiveText: query)
       ] : []
     observe("search", query)

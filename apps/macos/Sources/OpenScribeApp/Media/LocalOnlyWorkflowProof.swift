@@ -1,3 +1,5 @@
+// Proof launches exist only in Debug builds; candidates build Debug.
+#if DEBUG
 import AppKit
 import Foundation
 
@@ -27,12 +29,10 @@ enum LocalOnlyWorkflowProof {
   static func run(root: URL, contextInput: ContextInput) async {
     do {
       let report = try await perform(root: root, contextInput: contextInput)
-      try JSONSerialization.data(withJSONObject: report, options: [.sortedKeys])
-        .write(to: root.appendingPathComponent("local-only-verified.json"), options: .atomic)
+      try ProofFiles.write(report, name: "local-only-verified.json", root: root)
     } catch {
       // Error descriptions carry step names and platform codes, never content.
-      try? String(describing: error).write(
-        to: root.appendingPathComponent("proof-error"), atomically: true, encoding: .utf8)
+      ProofFiles.fail(error, root: root)
     }
     NSApp.terminate(nil)
   }
@@ -198,3 +198,4 @@ enum LocalOnlyWorkflowProof {
     return report
   }
 }
+#endif

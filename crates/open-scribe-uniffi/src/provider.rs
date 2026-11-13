@@ -2,10 +2,9 @@
 //! here. Audio samples, secrets, and network requests do not.
 
 use open_scribe_core::{
-    CONFIGURED_PROVIDER_NOTICE, ContentCategory, ExecutionMode, NO_OUTBOUND_NOTICE, OfferedRecord,
-    PolicyError, PreparedReview, ProviderConfiguration, RunAuthorization,
-    UNCONFIGURED_PROVIDER_NOTICE, authorize_run, configure_provider, grant_category,
-    materialize_review, outbound_from_configuration, refuse_provider_secret, retarget_remote,
+    ContentCategory, ExecutionMode, OfferedRecord, PolicyError, PreparedReview,
+    ProviderConfiguration, RunAuthorization, UNCONFIGURED_PROVIDER_NOTICE, authorize_run,
+    configure_provider, materialize_review, outbound_from_configuration, retarget_remote,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, uniffi::Enum)]
@@ -236,18 +235,8 @@ fn prepared_to_native(prepared: PreparedReview) -> NativePreparedReview {
 }
 
 #[uniffi::export]
-pub fn provider_configured_notice() -> String {
-    CONFIGURED_PROVIDER_NOTICE.to_owned()
-}
-
-#[uniffi::export]
 pub fn provider_unconfigured_notice() -> String {
     UNCONFIGURED_PROVIDER_NOTICE.to_owned()
-}
-
-#[uniffi::export]
-pub fn provider_no_outbound_notice() -> String {
-    NO_OUTBOUND_NOTICE.to_owned()
 }
 
 #[uniffi::export]
@@ -267,35 +256,6 @@ pub fn configure_content_provider(
     )
     .map(configuration_to_native)
     .map_err(map_error)
-}
-
-#[uniffi::export]
-pub fn refuse_content_provider_secret(material: String) -> Result<(), NativeProviderError> {
-    refuse_provider_secret(&material).map_err(map_error)
-}
-
-#[uniffi::export]
-pub fn grant_content_category(name: String) -> Result<NativeContentCategory, NativeProviderError> {
-    grant_category(&name)
-        .map(category_to_native)
-        .map_err(map_error)
-}
-
-#[uniffi::export]
-pub fn authorize_content_provider_run(
-    configuration: NativeProviderConfiguration,
-    authorization_id: String,
-    session_id: String,
-    granted: Vec<NativeContentCategory>,
-) -> Result<Vec<NativeContentCategory>, NativeProviderError> {
-    let configuration = configuration_from_native(&configuration)?;
-    let granted = granted
-        .into_iter()
-        .map(category_from_native)
-        .collect::<Vec<_>>();
-    let authorization = authorize_run(&configuration, &authorization_id, &session_id, &granted)
-        .map_err(map_error)?;
-    Ok(authorization.granted().map(category_to_native).collect())
 }
 
 #[uniffi::export]

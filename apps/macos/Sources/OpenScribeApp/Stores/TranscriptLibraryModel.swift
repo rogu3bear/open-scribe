@@ -1,8 +1,7 @@
 import Foundation
 
-/// Which passages the transcript reading and the speaker-review strip show.
-/// All speakers is the full non-draft document. A person or unassigned choice
-/// narrows both surfaces together.
+/// Which passages the transcript reading shows. All speakers is the whole
+/// document; a person or the unassigned passages narrow it.
 enum TranscriptReadingPerson: Equatable {
   case all
   case unassigned
@@ -96,6 +95,8 @@ final class TranscriptLibraryModel: ObservableObject {
   @Published private(set) var readingPerson: TranscriptReadingPerson = .all
   @Published private(set) var readingQuery = ""
   private var loadGeneration: UInt64 = 0
+  private var openedIdentity: String?
+  private var openTask: Task<Void, Never>?
   private var searchGeneration: UInt64 = 0
   private var library: NativeTranscriptLibrary?
   private var managedRoot: URL?
@@ -168,7 +169,10 @@ final class TranscriptLibraryModel: ObservableObject {
     try await readyLibrary()
   }
 
-  deinit { connectionTask?.cancel() }
+  deinit {
+    connectionTask?.cancel()
+    openTask?.cancel()
+  }
 
   #if DEBUG
     /// Fixed values for rendered inspection and tests: no library and no
@@ -200,12 +204,54 @@ final class TranscriptLibraryModel: ObservableObject {
   /// The words a reader shows for this transcript posture. Draft stays distinct
   /// from a Final transcript and from a failed run.
   nonisolated static func text(for availability: NativeTranscriptAvailability) -> String {
-    switch availability {
-    case .final: "Final transcript"
-    case .draft: "Draft — a Final transcript does not cover every range yet"
-    case .failed: "Transcription failed. The recorded audio is unaffected."
-    case .unavailable: "No transcript yet."
+    TranscriptStatusPresentation.availability(availability)
+  }
+
+  /// The document a conversation's views read, or nil while this model holds
+  /// another conversation or none. Views ask with their own session; they
+  /// never compare the shared model's session themselves.
+  func loaded(_ sessionId: String) -> LoadedConversation? {
+    guard self.sessionId == sessionId else { return nil }
+    return LoadedConversation(
+      sessionId: sessionId, availability: availability, segments: segments, speakers: speakers,
+      speakerLabelHistory: speakerLabelHistory, namedSpeakers: namedSpeakers,
+      reviewMetadata: reviewMetadata, audioOptions: audioOptions, contextDetail: contextDetail,
+      contextEvents: contextEvents, derivedClaims: derivedClaims)
+  }
+
+  /// True while this model holds `sessionId`'s document.
+  func hasLoaded(_ sessionId: String) -> Bool {
+    self.sessionId == sessionId
+  }
+
+  /// What a conversation's document depends on: launch recovery, a finished
+  /// run, a correction, or new Draft windows change it.
+  static func documentIdentity(_ session: RuntimeSessionPresentation) -> String {
+    session.sessionId
+      + (session.transcriptionUnavailableReason == nil ? ":timed" : ":untimed")
+      + ":\(session.transcript.state.rawValue):\(session.transcript.documentVersion)"
+      + ":\(session.transcript.draftWindows)"
+  }
+
+  /// Opens `session`'s document: one read per document identity, however many
+  /// views of that conversation ask. The read belongs to this model, so a
+  /// view that goes away does not cancel it for the others.
+  func open(_ session: RuntimeSessionPresentation) async {
+    let identity = Self.documentIdentity(session)
+    let heldElsewhere = openTask == nil && sessionId != session.sessionId
+    guard identity != openedIdentity || heldElsewhere else {
+      await openTask?.value
+      return
     }
+    openedIdentity = identity
+    openTask?.cancel()
+    let task = Task { [weak self] in
+      guard let self else { return }
+      await self.load(session: session)
+    }
+    openTask = task
+    await task.value
+    if openTask == task { openTask = nil }
   }
 
   func load(sessionId: String) async {
@@ -277,6 +323,7 @@ final class TranscriptLibraryModel: ObservableObject {
       return
     } catch {
       guard loadGeneration == generation, self.sessionId == sessionId else { return }
+      openedIdentity = nil
       clear(message: Self.describe(error, action: "load the transcript"))
       self.transcriptionUnavailableReason = transcriptionUnavailableReason
       documentMessageIsFailure = true
@@ -486,7 +533,7 @@ final class TranscriptLibraryModel: ObservableObject {
     switch kind {
     case .validatedMix:
       let receipt = try library.exportValidatedMix(sessionId: sessionId, destinationPath: path)
-      return "Exported the verified mix (\(size(receipt.byteLength)))."
+      return "Exported the stereo mix (\(size(receipt.byteLength)))."
     case .mixWAV:
       guard let timeline else { throw NativeStorageError.InvalidState }
       try TimelineMixExporter.exportWAV(plan: try timeline(sessionId), to: destination)
@@ -723,6 +770,7 @@ final class TranscriptLibraryModel: ObservableObject {
       if outcome.success {
         if sessionId == inventory.sessionId {
           loadGeneration &+= 1
+          openedIdentity = nil
           isLoading = false
           clear(message: nil)
         }
@@ -752,7 +800,7 @@ final class TranscriptLibraryModel: ObservableObject {
         return .init(
           success: false, warning: true, pending: nil,
           message:
-            "The move to Trash could not be confirmed. The library location is unavailable. When capture and other work have finished, restart Open Scribe to reconcile the deletion; verify Trash before assuming the audio is recoverable."
+            "The move to Trash could not be confirmed. The library location is unavailable. When capture and other work have finished, restart Open Scribe to finish the deletion; check Trash before relying on the audio being there."
         )
       }
       do {
@@ -788,7 +836,66 @@ final class TranscriptLibraryModel: ObservableObject {
     let moved = "“\(title)” was moved to Trash."
     guard !walCheckpointed else { return moved }
     return moved + " Database cleanup is incomplete because the database is busy. "
-      + "Earlier data may remain in the database journal. When capture and other work have finished, restart Open Scribe before copying or sharing the library."
+      + "Earlier data may remain in the library file. When capture and other work have finished, restart Open Scribe before copying or sharing the library."
+  }
+
+  /// Moves recordings that stopped before saving any audio to Trash, one at a
+  /// time through the same two steps as any deletion. Rust refuses any that
+  /// hold audio; the first refusal stops the rest.
+  func removeEmptyAttempts(_ sessionIds: [String]) async {
+    guard !isDeleting, pendingDeletion == nil, !sessionIds.isEmpty else { return }
+    isDeleting = true
+    defer { isDeleting = false }
+    let library: NativeTranscriptLibrary
+    do {
+      library = try await readyLibrary()
+    } catch {
+      report(Self.describe(error, action: "remove these recordings"), failure: true)
+      return
+    }
+    let moveToTrash = moveToTrash
+    var removed = 0
+    var failure: TranscriptDeletionOutcome?
+    for sessionId in sessionIds {
+      let outcome: TranscriptDeletionOutcome
+      do {
+        let inventory = try await StructuredNativeIO.mutation {
+          try library.beginDeletion(sessionId: sessionId)
+        }
+        outcome = try await StructuredNativeIO.mutation {
+          Self.delete(inventory, library: library, moveToTrash: moveToTrash)
+        }
+      } catch {
+        failure = .init(
+          success: false, warning: false, pending: nil,
+          message: Self.describe(error, action: "remove a recording that didn't start"))
+        break
+      }
+      guard outcome.success else {
+        pendingDeletion = outcome.pending
+        failure = outcome
+        break
+      }
+      if sessionId == self.sessionId {
+        loadGeneration &+= 1
+        openedIdentity = nil
+        isLoading = false
+        clear(message: nil)
+      }
+      removed += 1
+    }
+    if removed > 0 { await search(activeSearchQuery, debounce: false) }
+    if let failure {
+      if failure.warning {
+        reportDeletionWarning(failure.message)
+      } else {
+        report(failure.message, failure: true)
+      }
+    } else {
+      report(
+        removed == 1
+          ? "Removed 1 recording that didn't start." : "Removed \(removed) recordings that didn't start.")
+    }
   }
 
   /// The reader publishes the menu choice. An equal value does not republish.
@@ -905,7 +1012,7 @@ final class TranscriptLibraryModel: ObservableObject {
     return lines.joined(separator: "\n")
   }
 
-  /// Words for the rename sheet. The source default stays on its own line.
+  /// Words for a track's name history. The source default stays on its own line.
   /// Each stored rename follows, oldest first, and says whether a person
   /// chose it or the source name was restored.
   nonisolated static func speakerLabelHistoryText(for history: NativeSpeakerLabelHistory) -> String
@@ -954,7 +1061,7 @@ final class TranscriptLibraryModel: ObservableObject {
     case .InvalidRequest: "Open Scribe could not \(action): the request was not valid."
     case .InvalidState: "Open Scribe could not \(action) in the conversation's current state."
     case .IntegrityMismatch:
-      "Open Scribe could not \(action) because stored evidence did not verify."
+      "Open Scribe could not \(action) because the saved data didn't match what was recorded."
     default: "Open Scribe could not \(action)."
     }
   }
@@ -1019,11 +1126,14 @@ private struct TranscriptDocumentSnapshot: Sendable {
 
   init(library: NativeTranscriptLibrary, sessionId: String, isUntimed: Bool) throws {
     availability = isUntimed ? .unavailable : try library.availability(sessionId: sessionId)
-    segments = isUntimed ? [] : try library.document(sessionId: sessionId)
-    speakers =
-      isUntimed
-      ? (try? library.speakers(sessionId: sessionId)) ?? []
-      : try library.speakers(sessionId: sessionId)
+    if isUntimed {
+      segments = []
+      speakers = (try? library.speakers(sessionId: sessionId)) ?? []
+    } else {
+      let document = try library.conversationDocument(sessionId: sessionId)
+      segments = document.segments
+      speakers = document.speakers
+    }
     speakerLabelHistory =
       isUntimed
       ? (try? library.speakerLabelHistory(sessionId: sessionId)) ?? []
@@ -1099,6 +1209,30 @@ enum StructuredMemory {
     case "number_or_term": "Numbers"
     default: nil
     }
+  }
+}
+
+/// One conversation's loaded document, as its views read it.
+struct LoadedConversation {
+  let sessionId: String
+  let availability: NativeTranscriptAvailability
+  let segments: [NativeTranscriptSegment]
+  let speakers: [NativeSessionSpeaker]
+  let speakerLabelHistory: [NativeSpeakerLabelHistory]
+  let namedSpeakers: [NativeNamedTranscriptSpeaker]
+  let reviewMetadata: NativeConversationReviewMetadata?
+  let audioOptions: NativeAudioExportOptions?
+  let contextDetail: NativeContextDetail?
+  let contextEvents: [NativeContextEvent]
+  let derivedClaims: [DerivedClaimSummary]
+
+  /// People in the order they first speak.
+  var people: [String] {
+    var names: [String] = []
+    for segment in segments where !names.contains(segment.speakerLabel) {
+      names.append(segment.speakerLabel)
+    }
+    return names
   }
 }
 

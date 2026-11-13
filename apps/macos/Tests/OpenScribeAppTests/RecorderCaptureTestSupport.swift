@@ -86,6 +86,7 @@ enum PauseSourceError: Error { case startup, drain }
 
 final class PauseSource: MicrophoneCapturing, SystemAudioCapturing, @unchecked Sendable {
   let writer: ManagedSegmentWriting
+  let liveAudio = LiveAudioListenerSlot()
   var pendingDrain: (UInt64, Int16)?
   var failStart = false
   var failStop = false
@@ -368,32 +369,8 @@ final class RotationFailureInjectingPreparation: NativeRecordingPreparationProto
   func confirmRecording(sessionId: String) throws -> NativeRecordingStartedEvidence {
     try base.confirmRecording(sessionId: sessionId)
   }
-  func commitLiveDraftWindow(
-    sessionId: String,
-    trackId: String,
-    startNanoseconds: Int64,
-    endNanoseconds: Int64,
-    text: String,
-    engine: String,
-    engineVersion: String,
-    modelId: String,
-    modelSha256: String,
-    optionsDigest: String,
-    reconciliationVersion: String
-  ) throws -> String {
-    try base.commitLiveDraftWindow(
-      sessionId: sessionId,
-      trackId: trackId,
-      startNanoseconds: startNanoseconds,
-      endNanoseconds: endNanoseconds,
-      text: text,
-      engine: engine,
-      engineVersion: engineVersion,
-      modelId: modelId,
-      modelSha256: modelSha256,
-      optionsDigest: optionsDigest,
-      reconciliationVersion: reconciliationVersion
-    )
+  func commitLiveDraftWindow(window: NativeLiveDraftWindow) throws -> String {
+    try base.commitLiveDraftWindow(window: window)
   }
   func readableDraftTexts(sessionId: String) throws -> [String] {
     try base.readableDraftTexts(sessionId: sessionId)
@@ -429,11 +406,8 @@ final class RotationFailureInjectingPreparation: NativeRecordingPreparationProto
   func playbackTimeline(sessionId: String) throws -> [NativeTimelineSegment] {
     try base.playbackTimeline(sessionId: sessionId)
   }
-  func prepareSession(title: String) throws -> NativePreparedSession {
-    try base.prepareSession(title: title)
-  }
   func prepareSessionWithRequiredSources(
-    title: String, requiredSources: [NativeMediaSourceKind]
+    title: String?, requiredSources: [NativeMediaSourceKind]
   ) throws -> NativePreparedSession {
     try base.prepareSessionWithRequiredSources(title: title, requiredSources: requiredSources)
   }

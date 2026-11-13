@@ -13,7 +13,8 @@ enum TranscriptionCompanionDecoder {
     let receipt = try RecoveredPlaybackDescriptorReceipt(serialized: lease.playbackPath())
     let decoder = try CallbackCAFDecoder(
       source: try VerifiedDescriptorPlaybackSource.prepare(receipt: receipt),
-      fileTypeHint: receipt.fileTypeHint, outputSampleRate: 48_000, onClose: {})
+      fileTypeHint: receipt.fileTypeHint,
+      outputSampleRate: Double(nativeCapturePolicy().sampleRateHz), onClose: {})
     defer { decoder.close() }
     let format = decoder.processingFormat
     // The file closes, and its header is final, when it leaves this scope.

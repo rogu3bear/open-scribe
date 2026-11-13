@@ -228,7 +228,7 @@ fn derived_mixdown_uses_fresh_capacity_without_changing_saved_recorder_state() {
     assert!(store.authorize_mixdown(session.clone(), 0).is_err());
     let authorization = store.authorize_mixdown(session.clone(), u64::MAX).unwrap();
     assert_eq!(authorization.expected_frame_count, 48_000);
-    assert!(authorization.write_floor_bytes > recorder::RESERVE_BYTES);
+    assert!(authorization.write_floor_bytes > storage_reserve::RESERVE_BYTES);
     let after = store.recorder_detail(&session).unwrap();
     assert_eq!(after.lifecycle, before.lifecycle);
     assert_eq!(after.storage_level, before.storage_level);
@@ -1082,7 +1082,10 @@ fn a_live_draft_during_recording_stays_unselected_and_leaves_the_media() {
             .collect::<Vec<_>>(),
         ["provisional meadow"]
     );
-    let readable = store.readable_transcript(&session).unwrap();
+    let readable = store
+        .conversation_document(&session, crate::DocumentScope::Readable)
+        .map(|document| document.segments)
+        .unwrap();
     assert_eq!(
         readable
             .iter()
@@ -1090,7 +1093,27 @@ fn a_live_draft_during_recording_stays_unselected_and_leaves_the_media() {
             .collect::<Vec<_>>(),
         [("draft", "provisional cedar"), ("draft", "later brook")]
     );
-    assert!(store.transcript_document(&session).unwrap().is_empty());
+    // Copy So Far reads this same document while the recording is open.
+    let live = store
+        .conversation_document(&session, crate::DocumentScope::Readable)
+        .unwrap();
+    assert!(live.has_draft());
+    assert!(store.has_readable_draft(&session).unwrap());
+    assert_eq!(live.title.display_title, "Recorder controls");
+    assert_eq!(
+        live.speakers
+            .iter()
+            .map(|speaker| speaker.label.as_str())
+            .collect::<Vec<_>>(),
+        ["You", "Others"]
+    );
+    assert!(
+        store
+            .conversation_document(&session, crate::DocumentScope::FinalOnly)
+            .map(|document| document.segments)
+            .unwrap()
+            .is_empty()
+    );
     assert!(store.selected_transcript(&session).unwrap().is_empty());
     assert!(
         store
@@ -1543,8 +1566,8 @@ fn system_sleep_and_wake_are_logged_without_moving_the_lifecycle() {
         .unwrap()
         .events
         .into_iter()
-        .filter(|event| event.kind.starts_with("system_"))
-        .map(|event| (event.kind, event.session_nanoseconds))
+        .filter(|event| event.kind.as_str().starts_with("system_"))
+        .map(|event| (event.kind.as_str().to_owned(), event.session_nanoseconds))
         .collect();
     assert_eq!(
         power,

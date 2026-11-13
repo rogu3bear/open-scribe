@@ -26,6 +26,22 @@ fn session_tables(store: &SessionStore) -> Vec<String> {
         .unwrap()
 }
 
+#[test]
+fn deletion_declares_every_session_table() {
+    // Emptied by ON DELETE CASCADE from transcription_runs and
+    // transcript_named_speakers.
+    const CASCADED: [&str; 2] = ["transcript_revisions", "transcript_turn_speakers"];
+    let fixture = imported_fixture(48_000);
+    let mut declared: Vec<String> = SESSION_OWNED_TABLES
+        .iter()
+        .chain(&CASCADED)
+        .map(|table| (*table).to_owned())
+        .collect();
+    declared.push("deletion_receipts".to_owned());
+    declared.sort();
+    assert_eq!(declared, session_tables(&fixture.store));
+}
+
 fn insert_claim(fixture: &mut Fixture, revision: &str) {
     let session = fixture.session.clone();
     let cited = fixture
@@ -132,19 +148,7 @@ fn deletion_states_its_scope_requires_trash_and_removes_every_owned_row() {
     fs::write(exports.join("notes.txt"), b"exported").unwrap();
     fixture.store.cancel_transcription(&session).unwrap();
     insert_claim(&mut fixture, &revision);
-    fixture
-        .store
-        .record_speaker_diarization(
-            &session,
-            "topology-before-clustering-v1",
-            "unavailable",
-            "no calibrated diarization model",
-            &[crate::speaker_diarization::SpeakerDiarizationTrackInput {
-                track_id: fixture.track.clone(),
-                disposition: "unresolved".into(),
-            }],
-        )
-        .unwrap();
+    fixture.store.prepare_speaker_diarization(&session).unwrap();
     assert_eq!(rows(&fixture.store, "transcription_intent", &session), 1);
     assert_eq!(rows(&fixture.store, "derived_claim_revisions", &session), 2);
 

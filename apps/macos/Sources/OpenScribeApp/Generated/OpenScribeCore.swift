@@ -896,9 +896,10 @@ public protocol NativeRecordingPreparationProtocol: AnyObject, Sendable {
 
   func playbackTimeline(sessionId: String) throws -> [NativeTimelineSegment]
 
-  func prepareSession(title: String) throws -> NativePreparedSession
-
-  func prepareSessionWithRequiredSources(title: String, requiredSources: [NativeMediaSourceKind])
+  /**
+   * `title: None` lets Rust name the capture with its placeholder.
+   */
+  func prepareSessionWithRequiredSources(title: String?, requiredSources: [NativeMediaSourceKind])
     throws -> NativePreparedSession
 
   func recordSourceFailure(
@@ -920,6 +921,10 @@ public protocol NativeRecordingPreparationProtocol: AnyObject, Sendable {
 
   func validatedMixdown(sessionId: String) throws -> NativeValidatedMixdown?
 
+  /**
+   * Scope changes share the recording writer, so context records and
+   * media records never race for the session journal.
+   */
   func contextAction(sessionId: String, action: NativeContextAction) throws -> NativeContextDetail
 
   func contextDetail(sessionId: String) throws -> NativeContextDetail
@@ -941,11 +946,7 @@ public protocol NativeRecordingPreparationProtocol: AnyObject, Sendable {
    * writer does not invent a recognizer score. Empty text is still rejected
    * by the store.
    */
-  func commitLiveDraftWindow(
-    sessionId: String, trackId: String, startNanoseconds: Int64, endNanoseconds: Int64,
-    text: String, engine: String, engineVersion: String, modelId: String, modelSha256: String,
-    optionsDigest: String, reconciliationVersion: String
-  ) throws -> String
+  func commitLiveDraftWindow(window: NativeLiveDraftWindow) throws -> String
 
   func readableDraftTexts(sessionId: String) throws -> [String]
 
@@ -1240,26 +1241,18 @@ open class NativeRecordingPreparation: NativeRecordingPreparationProtocol, @unch
       })
   }
 
-  open func prepareSession(title: String) throws -> NativePreparedSession {
-    return try FfiConverterTypeNativePreparedSession_lift(
-      try rustCallWithError(FfiConverterTypeNativeStorageError_lift) {
-        uniffiCallStatus in
-        uniffi_open_scribe_uniffi_fn_method_nativerecordingpreparation_prepare_session(
-          self.uniffiCloneHandle(),
-          FfiConverterString.lower(title), uniffiCallStatus
-        )
-      })
-  }
-
+  /**
+   * `title: None` lets Rust name the capture with its placeholder.
+   */
   open func prepareSessionWithRequiredSources(
-    title: String, requiredSources: [NativeMediaSourceKind]
+    title: String?, requiredSources: [NativeMediaSourceKind]
   ) throws -> NativePreparedSession {
     return try FfiConverterTypeNativePreparedSession_lift(
       try rustCallWithError(FfiConverterTypeNativeStorageError_lift) {
         uniffiCallStatus in
         uniffi_open_scribe_uniffi_fn_method_nativerecordingpreparation_prepare_session_with_required_sources(
           self.uniffiCloneHandle(),
-          FfiConverterString.lower(title),
+          FfiConverterOptionString.lower(title),
           FfiConverterSequenceTypeNativeMediaSourceKind.lower(requiredSources), uniffiCallStatus
         )
       })
@@ -1348,6 +1341,10 @@ open class NativeRecordingPreparation: NativeRecordingPreparationProtocol, @unch
       })
   }
 
+  /**
+   * Scope changes share the recording writer, so context records and
+   * media records never race for the session journal.
+   */
   open func contextAction(sessionId: String, action: NativeContextAction) throws
     -> NativeContextDetail
   {
@@ -1412,27 +1409,13 @@ open class NativeRecordingPreparation: NativeRecordingPreparationProtocol, @unch
    * writer does not invent a recognizer score. Empty text is still rejected
    * by the store.
    */
-  open func commitLiveDraftWindow(
-    sessionId: String, trackId: String, startNanoseconds: Int64, endNanoseconds: Int64,
-    text: String, engine: String, engineVersion: String, modelId: String, modelSha256: String,
-    optionsDigest: String, reconciliationVersion: String
-  ) throws -> String {
+  open func commitLiveDraftWindow(window: NativeLiveDraftWindow) throws -> String {
     return try FfiConverterString.lift(
       try rustCallWithError(FfiConverterTypeNativeStorageError_lift) {
         uniffiCallStatus in
         uniffi_open_scribe_uniffi_fn_method_nativerecordingpreparation_commit_live_draft_window(
           self.uniffiCloneHandle(),
-          FfiConverterString.lower(sessionId),
-          FfiConverterString.lower(trackId),
-          FfiConverterInt64.lower(startNanoseconds),
-          FfiConverterInt64.lower(endNanoseconds),
-          FfiConverterString.lower(text),
-          FfiConverterString.lower(engine),
-          FfiConverterString.lower(engineVersion),
-          FfiConverterString.lower(modelId),
-          FfiConverterString.lower(modelSha256),
-          FfiConverterString.lower(optionsDigest),
-          FfiConverterString.lower(reconciliationVersion), uniffiCallStatus
+          FfiConverterTypeNativeLiveDraftWindow_lower(window), uniffiCallStatus
         )
       })
   }
@@ -1546,11 +1529,9 @@ public protocol NativeSpeechModelsProtocol: AnyObject, Sendable {
   func models() -> [NativeSpeechModel]
 
   /**
-   * Whether the app must first decode the session's compressed import to a
-   * 48 kHz 16-bit linear CAF companion and pass it to `transcribe_session`.
+   * Whether this intent's run must first be given a 48 kHz 16-bit linear
+   * CAF companion decoded from the session's compressed import.
    */
-  func needsDecodedCompanion(sessionId: String) throws -> Bool
-
   func needsDecodedCompanionForIntent(sessionId: String, intent: NativeTranscriptionIntent) throws
     -> Bool
 
@@ -1570,14 +1551,10 @@ public protocol NativeSpeechModelsProtocol: AnyObject, Sendable {
   func repairFromFile(modelId: String, sourcePath: String) throws
 
   /**
-   * Reverifies the model, then transcribes every sealed track of one saved
-   * session. Blocking; honors `job.cancel()` between and within chunks.
+   * Reverifies the model, then transcribes the session's planned tracks.
+   * Blocking; honors `job.cancel()` between and within chunks.
    * `decoded_companion_path` is required for a compressed import.
    */
-  func transcribeSession(
-    modelId: String, sessionId: String, decodedCompanionPath: String?, job: NativeTranscriptionJob
-  ) throws -> NativeTranscriptionSummary
-
   func transcribeWithIntent(
     modelId: String, sessionId: String, intent: NativeTranscriptionIntent, admission: String?,
     decodedCompanionPath: String?, job: NativeTranscriptionJob
@@ -1683,20 +1660,9 @@ open class NativeSpeechModels: NativeSpeechModelsProtocol, @unchecked Sendable {
   }
 
   /**
-   * Whether the app must first decode the session's compressed import to a
-   * 48 kHz 16-bit linear CAF companion and pass it to `transcribe_session`.
+   * Whether this intent's run must first be given a 48 kHz 16-bit linear
+   * CAF companion decoded from the session's compressed import.
    */
-  open func needsDecodedCompanion(sessionId: String) throws -> Bool {
-    return try FfiConverterBool.lift(
-      try rustCallWithError(FfiConverterTypeNativeSpeechError_lift) {
-        uniffiCallStatus in
-        uniffi_open_scribe_uniffi_fn_method_nativespeechmodels_needs_decoded_companion(
-          self.uniffiCloneHandle(),
-          FfiConverterString.lower(sessionId), uniffiCallStatus
-        )
-      })
-  }
-
   open func needsDecodedCompanionForIntent(sessionId: String, intent: NativeTranscriptionIntent)
     throws -> Bool
   {
@@ -1755,26 +1721,10 @@ open class NativeSpeechModels: NativeSpeechModelsProtocol, @unchecked Sendable {
   }
 
   /**
-   * Reverifies the model, then transcribes every sealed track of one saved
-   * session. Blocking; honors `job.cancel()` between and within chunks.
+   * Reverifies the model, then transcribes the session's planned tracks.
+   * Blocking; honors `job.cancel()` between and within chunks.
    * `decoded_companion_path` is required for a compressed import.
    */
-  open func transcribeSession(
-    modelId: String, sessionId: String, decodedCompanionPath: String?, job: NativeTranscriptionJob
-  ) throws -> NativeTranscriptionSummary {
-    return try FfiConverterTypeNativeTranscriptionSummary_lift(
-      try rustCallWithError(FfiConverterTypeNativeSpeechError_lift) {
-        uniffiCallStatus in
-        uniffi_open_scribe_uniffi_fn_method_nativespeechmodels_transcribe_session(
-          self.uniffiCloneHandle(),
-          FfiConverterString.lower(modelId),
-          FfiConverterString.lower(sessionId),
-          FfiConverterOptionString.lower(decodedCompanionPath),
-          FfiConverterTypeNativeTranscriptionJob_lower(job), uniffiCallStatus
-        )
-      })
-  }
-
   open func transcribeWithIntent(
     modelId: String, sessionId: String, intent: NativeTranscriptionIntent, admission: String?,
     decodedCompanionPath: String?, job: NativeTranscriptionJob
@@ -2023,7 +1973,14 @@ public protocol NativeTranscriptLibraryProtocol: AnyObject, Sendable {
     -> NativeSessionDeletionReceipt
 
   /**
-   * Reads the selected document once; nothing is written.
+   * The readable transcript and its source speakers from one read
+   * transaction, so the reader does not ask for each separately.
+   */
+  func conversationDocument(sessionId: String) throws -> NativeConversationDocument
+
+  /**
+   * Reads the readable document once, Draft text included; nothing is
+   * written. A recording in progress reads its stored Draft windows.
    */
   func conversationText(sessionId: String, includeTimestamps: Bool) throws -> NativeConversationText
 
@@ -2086,19 +2043,10 @@ public protocol NativeTranscriptLibraryProtocol: AnyObject, Sendable {
 
   /**
    * Records that known audio sources keep their topology and that voice
-   * clustering is unavailable. A repeated identical decision does not
-   * insert another run. Speaker names, transcript text, and media stay
-   * as they were.
+   * clustering is unavailable. An unchanged decision writes nothing.
+   * Speaker names, transcript text, and media stay as they were.
    */
   func prepareSpeakerDiarization(sessionId: String) throws -> NativeSpeakerDiarization
-
-  /**
-   * Rebuilds Final transcripts from chunks earlier runs retained but could
-   * not commit, without loading a model. `session_id` limits the pass to
-   * one conversation. Media, failed runs, and selected revisions are
-   * untouched.
-   */
-  func recoverRetainedTranscripts(sessionId: String?) throws -> [NativeRetainedTranscriptRecovery]
 
   func renameNamedSpeaker(sessionId: String, speakerId: String, label: String) throws
 
@@ -2130,10 +2078,11 @@ public protocol NativeTranscriptLibraryProtocol: AnyObject, Sendable {
   ) throws -> String
 
   /**
-   * Stores a title derived from the transcript (`basis` is `draft` or
-   * `final`). Returns false when a person has named the conversation.
+   * Stores a title derived from the transcript. Returns false when the
+   * current title refuses it (see `NativeConversationTitle`).
    */
-  func suggestTitle(sessionId: String, title: String, engine: String, basis: String) throws -> Bool
+  func suggestTitle(sessionId: String, title: String, engine: String, basis: NativeSuggestionBasis)
+    throws -> Bool
 
 }
 open class NativeTranscriptLibrary: NativeTranscriptLibraryProtocol, @unchecked Sendable {
@@ -2436,7 +2385,23 @@ open class NativeTranscriptLibrary: NativeTranscriptLibraryProtocol, @unchecked 
   }
 
   /**
-   * Reads the selected document once; nothing is written.
+   * The readable transcript and its source speakers from one read
+   * transaction, so the reader does not ask for each separately.
+   */
+  open func conversationDocument(sessionId: String) throws -> NativeConversationDocument {
+    return try FfiConverterTypeNativeConversationDocument_lift(
+      try rustCallWithError(FfiConverterTypeNativeStorageError_lift) {
+        uniffiCallStatus in
+        uniffi_open_scribe_uniffi_fn_method_nativetranscriptlibrary_conversation_document(
+          self.uniffiCloneHandle(),
+          FfiConverterString.lower(sessionId), uniffiCallStatus
+        )
+      })
+  }
+
+  /**
+   * Reads the readable document once, Draft text included; nothing is
+   * written. A recording in progress reads its stored Draft windows.
    */
   open func conversationText(sessionId: String, includeTimestamps: Bool) throws
     -> NativeConversationText
@@ -2658,9 +2623,8 @@ open class NativeTranscriptLibrary: NativeTranscriptLibraryProtocol, @unchecked 
 
   /**
    * Records that known audio sources keep their topology and that voice
-   * clustering is unavailable. A repeated identical decision does not
-   * insert another run. Speaker names, transcript text, and media stay
-   * as they were.
+   * clustering is unavailable. An unchanged decision writes nothing.
+   * Speaker names, transcript text, and media stay as they were.
    */
   open func prepareSpeakerDiarization(sessionId: String) throws -> NativeSpeakerDiarization {
     return try FfiConverterTypeNativeSpeakerDiarization_lift(
@@ -2669,25 +2633,6 @@ open class NativeTranscriptLibrary: NativeTranscriptLibraryProtocol, @unchecked 
         uniffi_open_scribe_uniffi_fn_method_nativetranscriptlibrary_prepare_speaker_diarization(
           self.uniffiCloneHandle(),
           FfiConverterString.lower(sessionId), uniffiCallStatus
-        )
-      })
-  }
-
-  /**
-   * Rebuilds Final transcripts from chunks earlier runs retained but could
-   * not commit, without loading a model. `session_id` limits the pass to
-   * one conversation. Media, failed runs, and selected revisions are
-   * untouched.
-   */
-  open func recoverRetainedTranscripts(sessionId: String?) throws
-    -> [NativeRetainedTranscriptRecovery]
-  {
-    return try FfiConverterSequenceTypeNativeRetainedTranscriptRecovery.lift(
-      try rustCallWithError(FfiConverterTypeNativeStorageError_lift) {
-        uniffiCallStatus in
-        uniffi_open_scribe_uniffi_fn_method_nativetranscriptlibrary_recover_retained_transcripts(
-          self.uniffiCloneHandle(),
-          FfiConverterOptionString.lower(sessionId), uniffiCallStatus
         )
       })
   }
@@ -2793,12 +2738,12 @@ open class NativeTranscriptLibrary: NativeTranscriptLibraryProtocol, @unchecked 
   }
 
   /**
-   * Stores a title derived from the transcript (`basis` is `draft` or
-   * `final`). Returns false when a person has named the conversation.
+   * Stores a title derived from the transcript. Returns false when the
+   * current title refuses it (see `NativeConversationTitle`).
    */
-  open func suggestTitle(sessionId: String, title: String, engine: String, basis: String) throws
-    -> Bool
-  {
+  open func suggestTitle(
+    sessionId: String, title: String, engine: String, basis: NativeSuggestionBasis
+  ) throws -> Bool {
     return try FfiConverterBool.lift(
       try rustCallWithError(FfiConverterTypeNativeStorageError_lift) {
         uniffiCallStatus in
@@ -2807,7 +2752,7 @@ open class NativeTranscriptLibrary: NativeTranscriptLibraryProtocol, @unchecked 
           FfiConverterString.lower(sessionId),
           FfiConverterString.lower(title),
           FfiConverterString.lower(engine),
-          FfiConverterString.lower(basis), uniffiCallStatus
+          FfiConverterTypeNativeSuggestionBasis_lower(basis), uniffiCallStatus
         )
       })
   }
@@ -3037,6 +2982,10 @@ public protocol NativeWorkCoordinatorProtocol: AnyObject, Sendable {
 
   func finish(admission: String, outcome: NativeWorkOutcome) throws
 
+  /**
+   * Uses its own handle; no coordinator mutex is held while reconciling
+   * retained hypotheses.
+   */
   func maintainRetained(job: NativeTranscriptionJob, observations: NativeWorkObservations) throws
     -> NativeWorkOutcome
 
@@ -3045,8 +2994,7 @@ public protocol NativeWorkCoordinatorProtocol: AnyObject, Sendable {
   func queue(observations: NativeWorkObservations) throws -> [NativeTranscriptionWork]
 
   /**
-   * Once per process after the capture-safety barrier. Uses its own handle;
-   * no coordinator mutex is held while reconciling retained hypotheses.
+   * Once per process after the capture-safety barrier.
    */
   func recoverIntent() throws
 
@@ -3149,6 +3097,10 @@ open class NativeWorkCoordinator: NativeWorkCoordinatorProtocol, @unchecked Send
     }
   }
 
+  /**
+   * Uses its own handle; no coordinator mutex is held while reconciling
+   * retained hypotheses.
+   */
   open func maintainRetained(job: NativeTranscriptionJob, observations: NativeWorkObservations)
     throws -> NativeWorkOutcome
   {
@@ -3185,8 +3137,7 @@ open class NativeWorkCoordinator: NativeWorkCoordinatorProtocol, @unchecked Send
   }
 
   /**
-   * Once per process after the capture-safety barrier. Uses its own handle;
-   * no coordinator mutex is held while reconciling retained hypotheses.
+   * Once per process after the capture-safety barrier.
    */
   open func recoverIntent() throws {
     try rustCallWithError(FfiConverterTypeNativeStorageError_lift) {
@@ -3457,6 +3408,102 @@ public func FfiConverterTypeNativeCapabilityClaim_lower(_ value: NativeCapabilit
   -> RustBuffer
 {
   return FfiConverterTypeNativeCapabilityClaim.lower(value)
+}
+
+/// Rust-owned capture limits and defaults. The native app uses these values
+/// as given and keeps no copies of them.
+public struct NativeCapturePolicy: Equatable, Hashable {
+  public let sampleRateHz: UInt32
+  public let segmentFrameCount: UInt64
+  public let liveDraftWindowMaxNanoseconds: Int64
+  public let storageReserveBytes: UInt64
+  public let storageWarningBytes: UInt64
+  public let transcriptionDiskFloorBytes: UInt64
+  public let playbackChunkBytes: UInt64
+  public let playbackSnapshotMaxBytes: UInt64
+  public let microphone: NativeSourceDefaults
+  public let applicationAudio: NativeSourceDefaults
+  public let systemAudio: NativeSourceDefaults
+
+  // Default memberwise initializers are never public by default, so we
+  // declare one manually.
+  public init(
+    sampleRateHz: UInt32, segmentFrameCount: UInt64, liveDraftWindowMaxNanoseconds: Int64,
+    storageReserveBytes: UInt64, storageWarningBytes: UInt64, transcriptionDiskFloorBytes: UInt64,
+    playbackChunkBytes: UInt64, playbackSnapshotMaxBytes: UInt64, microphone: NativeSourceDefaults,
+    applicationAudio: NativeSourceDefaults, systemAudio: NativeSourceDefaults
+  ) {
+    self.sampleRateHz = sampleRateHz
+    self.segmentFrameCount = segmentFrameCount
+    self.liveDraftWindowMaxNanoseconds = liveDraftWindowMaxNanoseconds
+    self.storageReserveBytes = storageReserveBytes
+    self.storageWarningBytes = storageWarningBytes
+    self.transcriptionDiskFloorBytes = transcriptionDiskFloorBytes
+    self.playbackChunkBytes = playbackChunkBytes
+    self.playbackSnapshotMaxBytes = playbackSnapshotMaxBytes
+    self.microphone = microphone
+    self.applicationAudio = applicationAudio
+    self.systemAudio = systemAudio
+  }
+
+}
+
+#if compiler(>=6)
+  extension NativeCapturePolicy: Sendable {}
+#endif
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeNativeCapturePolicy: FfiConverterRustBuffer {
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws
+    -> NativeCapturePolicy
+  {
+    return
+      try NativeCapturePolicy(
+        sampleRateHz: FfiConverterUInt32.read(from: &buf),
+        segmentFrameCount: FfiConverterUInt64.read(from: &buf),
+        liveDraftWindowMaxNanoseconds: FfiConverterInt64.read(from: &buf),
+        storageReserveBytes: FfiConverterUInt64.read(from: &buf),
+        storageWarningBytes: FfiConverterUInt64.read(from: &buf),
+        transcriptionDiskFloorBytes: FfiConverterUInt64.read(from: &buf),
+        playbackChunkBytes: FfiConverterUInt64.read(from: &buf),
+        playbackSnapshotMaxBytes: FfiConverterUInt64.read(from: &buf),
+        microphone: FfiConverterTypeNativeSourceDefaults.read(from: &buf),
+        applicationAudio: FfiConverterTypeNativeSourceDefaults.read(from: &buf),
+        systemAudio: FfiConverterTypeNativeSourceDefaults.read(from: &buf)
+      )
+  }
+
+  public static func write(_ value: NativeCapturePolicy, into buf: inout [UInt8]) {
+    FfiConverterUInt32.write(value.sampleRateHz, into: &buf)
+    FfiConverterUInt64.write(value.segmentFrameCount, into: &buf)
+    FfiConverterInt64.write(value.liveDraftWindowMaxNanoseconds, into: &buf)
+    FfiConverterUInt64.write(value.storageReserveBytes, into: &buf)
+    FfiConverterUInt64.write(value.storageWarningBytes, into: &buf)
+    FfiConverterUInt64.write(value.transcriptionDiskFloorBytes, into: &buf)
+    FfiConverterUInt64.write(value.playbackChunkBytes, into: &buf)
+    FfiConverterUInt64.write(value.playbackSnapshotMaxBytes, into: &buf)
+    FfiConverterTypeNativeSourceDefaults.write(value.microphone, into: &buf)
+    FfiConverterTypeNativeSourceDefaults.write(value.applicationAudio, into: &buf)
+    FfiConverterTypeNativeSourceDefaults.write(value.systemAudio, into: &buf)
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeCapturePolicy_lift(_ buf: RustBuffer) throws
+  -> NativeCapturePolicy
+{
+  return try FfiConverterTypeNativeCapturePolicy.lift(buf)
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeCapturePolicy_lower(_ value: NativeCapturePolicy) -> RustBuffer {
+  return FfiConverterTypeNativeCapturePolicy.lower(value)
 }
 
 public struct NativeClaimNavigation: Equatable, Hashable {
@@ -4401,6 +4448,62 @@ public func FfiConverterTypeNativeContextTextBlock_lower(_ value: NativeContextT
   return FfiConverterTypeNativeContextTextBlock.lower(value)
 }
 
+/// The readable transcript and its source speakers, read together.
+public struct NativeConversationDocument: Equatable, Hashable {
+  public let segments: [NativeTranscriptSegment]
+  public let speakers: [NativeSessionSpeaker]
+
+  // Default memberwise initializers are never public by default, so we
+  // declare one manually.
+  public init(segments: [NativeTranscriptSegment], speakers: [NativeSessionSpeaker]) {
+    self.segments = segments
+    self.speakers = speakers
+  }
+
+}
+
+#if compiler(>=6)
+  extension NativeConversationDocument: Sendable {}
+#endif
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeNativeConversationDocument: FfiConverterRustBuffer {
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws
+    -> NativeConversationDocument
+  {
+    return
+      try NativeConversationDocument(
+        segments: FfiConverterSequenceTypeNativeTranscriptSegment.read(from: &buf),
+        speakers: FfiConverterSequenceTypeNativeSessionSpeaker.read(from: &buf)
+      )
+  }
+
+  public static func write(_ value: NativeConversationDocument, into buf: inout [UInt8]) {
+    FfiConverterSequenceTypeNativeTranscriptSegment.write(value.segments, into: &buf)
+    FfiConverterSequenceTypeNativeSessionSpeaker.write(value.speakers, into: &buf)
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeConversationDocument_lift(_ buf: RustBuffer) throws
+  -> NativeConversationDocument
+{
+  return try FfiConverterTypeNativeConversationDocument.lift(buf)
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeConversationDocument_lower(_ value: NativeConversationDocument)
+  -> RustBuffer
+{
+  return FfiConverterTypeNativeConversationDocument.lower(value)
+}
+
 public struct NativeConversationReviewMetadata: Equatable, Hashable {
   public let addedAtMs: Int64
   public let origin: String
@@ -4465,7 +4568,8 @@ public func FfiConverterTypeNativeConversationReviewMetadata_lower(
 }
 
 /// The clipboard reading copy: one paragraph per speaker turn. The app heads
-/// it with the title, a localized date, and the participants.
+/// it with the title, a localized date, and the participants. `turns` is the
+/// same text as data.
 public struct NativeConversationText: Equatable, Hashable {
   public let title: String
   public let createdAtMs: Int64
@@ -4474,12 +4578,13 @@ public struct NativeConversationText: Equatable, Hashable {
   public let hasDraft: Bool
   public let turnCount: UInt32
   public let body: String
+  public let turns: [NativeConversationTurn]
 
   // Default memberwise initializers are never public by default, so we
   // declare one manually.
   public init(
     title: String, createdAtMs: Int64, durationNanoseconds: Int64, participants: [String],
-    hasDraft: Bool, turnCount: UInt32, body: String
+    hasDraft: Bool, turnCount: UInt32, body: String, turns: [NativeConversationTurn]
   ) {
     self.title = title
     self.createdAtMs = createdAtMs
@@ -4488,6 +4593,7 @@ public struct NativeConversationText: Equatable, Hashable {
     self.hasDraft = hasDraft
     self.turnCount = turnCount
     self.body = body
+    self.turns = turns
   }
 
 }
@@ -4511,7 +4617,8 @@ public struct FfiConverterTypeNativeConversationText: FfiConverterRustBuffer {
         participants: FfiConverterSequenceString.read(from: &buf),
         hasDraft: FfiConverterBool.read(from: &buf),
         turnCount: FfiConverterUInt32.read(from: &buf),
-        body: FfiConverterString.read(from: &buf)
+        body: FfiConverterString.read(from: &buf),
+        turns: FfiConverterSequenceTypeNativeConversationTurn.read(from: &buf)
       )
   }
 
@@ -4523,6 +4630,7 @@ public struct FfiConverterTypeNativeConversationText: FfiConverterRustBuffer {
     FfiConverterBool.write(value.hasDraft, into: &buf)
     FfiConverterUInt32.write(value.turnCount, into: &buf)
     FfiConverterString.write(value.body, into: &buf)
+    FfiConverterSequenceTypeNativeConversationTurn.write(value.turns, into: &buf)
   }
 }
 
@@ -4544,28 +4652,40 @@ public func FfiConverterTypeNativeConversationText_lower(_ value: NativeConversa
   return FfiConverterTypeNativeConversationText.lower(value)
 }
 
-/// A conversation's title: what a reader sees and where it came from
-/// (`placeholder`, `suggested`, or `person`).
+/// A conversation's title: what a reader sees and where it came from.
 public struct NativeConversationTitle: Equatable, Hashable {
   public let storedTitle: String
   public let displayTitle: String
-  public let source: String
+  public let source: NativeTitleSource
+  public let placeholderAtMs: Int64?
   public let suggestedTitle: String?
   public let suggestionEngine: String?
-  public let suggestionBasis: String?
+  public let suggestionBasis: NativeSuggestionBasis?
+  /**
+   * Whether `suggest_title` would store a suggestion on each basis now.
+   */
+  public let acceptsDraftSuggestion: Bool
+  public let acceptsFinalSuggestion: Bool
 
   // Default memberwise initializers are never public by default, so we
   // declare one manually.
   public init(
-    storedTitle: String, displayTitle: String, source: String, suggestedTitle: String?,
-    suggestionEngine: String?, suggestionBasis: String?
+    storedTitle: String, displayTitle: String, source: NativeTitleSource, placeholderAtMs: Int64?,
+    suggestedTitle: String?, suggestionEngine: String?, suggestionBasis: NativeSuggestionBasis?,
+    /**
+     * Whether `suggest_title` would store a suggestion on each basis now.
+     */
+    acceptsDraftSuggestion: Bool, acceptsFinalSuggestion: Bool
   ) {
     self.storedTitle = storedTitle
     self.displayTitle = displayTitle
     self.source = source
+    self.placeholderAtMs = placeholderAtMs
     self.suggestedTitle = suggestedTitle
     self.suggestionEngine = suggestionEngine
     self.suggestionBasis = suggestionBasis
+    self.acceptsDraftSuggestion = acceptsDraftSuggestion
+    self.acceptsFinalSuggestion = acceptsFinalSuggestion
   }
 
 }
@@ -4585,20 +4705,26 @@ public struct FfiConverterTypeNativeConversationTitle: FfiConverterRustBuffer {
       try NativeConversationTitle(
         storedTitle: FfiConverterString.read(from: &buf),
         displayTitle: FfiConverterString.read(from: &buf),
-        source: FfiConverterString.read(from: &buf),
+        source: FfiConverterTypeNativeTitleSource.read(from: &buf),
+        placeholderAtMs: FfiConverterOptionInt64.read(from: &buf),
         suggestedTitle: FfiConverterOptionString.read(from: &buf),
         suggestionEngine: FfiConverterOptionString.read(from: &buf),
-        suggestionBasis: FfiConverterOptionString.read(from: &buf)
+        suggestionBasis: FfiConverterOptionTypeNativeSuggestionBasis.read(from: &buf),
+        acceptsDraftSuggestion: FfiConverterBool.read(from: &buf),
+        acceptsFinalSuggestion: FfiConverterBool.read(from: &buf)
       )
   }
 
   public static func write(_ value: NativeConversationTitle, into buf: inout [UInt8]) {
     FfiConverterString.write(value.storedTitle, into: &buf)
     FfiConverterString.write(value.displayTitle, into: &buf)
-    FfiConverterString.write(value.source, into: &buf)
+    FfiConverterTypeNativeTitleSource.write(value.source, into: &buf)
+    FfiConverterOptionInt64.write(value.placeholderAtMs, into: &buf)
     FfiConverterOptionString.write(value.suggestedTitle, into: &buf)
     FfiConverterOptionString.write(value.suggestionEngine, into: &buf)
-    FfiConverterOptionString.write(value.suggestionBasis, into: &buf)
+    FfiConverterOptionTypeNativeSuggestionBasis.write(value.suggestionBasis, into: &buf)
+    FfiConverterBool.write(value.acceptsDraftSuggestion, into: &buf)
+    FfiConverterBool.write(value.acceptsFinalSuggestion, into: &buf)
   }
 }
 
@@ -4618,6 +4744,70 @@ public func FfiConverterTypeNativeConversationTitle_lower(_ value: NativeConvers
   -> RustBuffer
 {
   return FfiConverterTypeNativeConversationTitle.lower(value)
+}
+
+/// One speaker's consecutive passages of the reading copy.
+public struct NativeConversationTurn: Equatable, Hashable {
+  public let speaker: String
+  public let startNanoseconds: Int64
+  public let text: String
+  public let draft: Bool
+
+  // Default memberwise initializers are never public by default, so we
+  // declare one manually.
+  public init(speaker: String, startNanoseconds: Int64, text: String, draft: Bool) {
+    self.speaker = speaker
+    self.startNanoseconds = startNanoseconds
+    self.text = text
+    self.draft = draft
+  }
+
+}
+
+#if compiler(>=6)
+  extension NativeConversationTurn: Sendable {}
+#endif
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeNativeConversationTurn: FfiConverterRustBuffer {
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws
+    -> NativeConversationTurn
+  {
+    return
+      try NativeConversationTurn(
+        speaker: FfiConverterString.read(from: &buf),
+        startNanoseconds: FfiConverterInt64.read(from: &buf),
+        text: FfiConverterString.read(from: &buf),
+        draft: FfiConverterBool.read(from: &buf)
+      )
+  }
+
+  public static func write(_ value: NativeConversationTurn, into buf: inout [UInt8]) {
+    FfiConverterString.write(value.speaker, into: &buf)
+    FfiConverterInt64.write(value.startNanoseconds, into: &buf)
+    FfiConverterString.write(value.text, into: &buf)
+    FfiConverterBool.write(value.draft, into: &buf)
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeConversationTurn_lift(_ buf: RustBuffer) throws
+  -> NativeConversationTurn
+{
+  return try FfiConverterTypeNativeConversationTurn.lift(buf)
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeConversationTurn_lower(_ value: NativeConversationTurn)
+  -> RustBuffer
+{
+  return FfiConverterTypeNativeConversationTurn.lower(value)
 }
 
 public struct NativeDisplayTopology: Equatable, Hashable {
@@ -5085,6 +5275,102 @@ public func FfiConverterTypeNativeImportedMediaEvidence_lower(_ value: NativeImp
   return FfiConverterTypeNativeImportedMediaEvidence.lower(value)
 }
 
+/// One provisional caption window and the engine identity that produced it.
+public struct NativeLiveDraftWindow: Equatable, Hashable {
+  public let sessionId: String
+  public let trackId: String
+  public let startNanoseconds: Int64
+  public let endNanoseconds: Int64
+  public let text: String
+  public let engine: String
+  public let engineVersion: String
+  public let modelId: String
+  public let modelSha256: String
+  public let optionsDigest: String
+  public let reconciliationVersion: String
+
+  // Default memberwise initializers are never public by default, so we
+  // declare one manually.
+  public init(
+    sessionId: String, trackId: String, startNanoseconds: Int64, endNanoseconds: Int64,
+    text: String, engine: String, engineVersion: String, modelId: String, modelSha256: String,
+    optionsDigest: String, reconciliationVersion: String
+  ) {
+    self.sessionId = sessionId
+    self.trackId = trackId
+    self.startNanoseconds = startNanoseconds
+    self.endNanoseconds = endNanoseconds
+    self.text = text
+    self.engine = engine
+    self.engineVersion = engineVersion
+    self.modelId = modelId
+    self.modelSha256 = modelSha256
+    self.optionsDigest = optionsDigest
+    self.reconciliationVersion = reconciliationVersion
+  }
+
+}
+
+#if compiler(>=6)
+  extension NativeLiveDraftWindow: Sendable {}
+#endif
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeNativeLiveDraftWindow: FfiConverterRustBuffer {
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws
+    -> NativeLiveDraftWindow
+  {
+    return
+      try NativeLiveDraftWindow(
+        sessionId: FfiConverterString.read(from: &buf),
+        trackId: FfiConverterString.read(from: &buf),
+        startNanoseconds: FfiConverterInt64.read(from: &buf),
+        endNanoseconds: FfiConverterInt64.read(from: &buf),
+        text: FfiConverterString.read(from: &buf),
+        engine: FfiConverterString.read(from: &buf),
+        engineVersion: FfiConverterString.read(from: &buf),
+        modelId: FfiConverterString.read(from: &buf),
+        modelSha256: FfiConverterString.read(from: &buf),
+        optionsDigest: FfiConverterString.read(from: &buf),
+        reconciliationVersion: FfiConverterString.read(from: &buf)
+      )
+  }
+
+  public static func write(_ value: NativeLiveDraftWindow, into buf: inout [UInt8]) {
+    FfiConverterString.write(value.sessionId, into: &buf)
+    FfiConverterString.write(value.trackId, into: &buf)
+    FfiConverterInt64.write(value.startNanoseconds, into: &buf)
+    FfiConverterInt64.write(value.endNanoseconds, into: &buf)
+    FfiConverterString.write(value.text, into: &buf)
+    FfiConverterString.write(value.engine, into: &buf)
+    FfiConverterString.write(value.engineVersion, into: &buf)
+    FfiConverterString.write(value.modelId, into: &buf)
+    FfiConverterString.write(value.modelSha256, into: &buf)
+    FfiConverterString.write(value.optionsDigest, into: &buf)
+    FfiConverterString.write(value.reconciliationVersion, into: &buf)
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeLiveDraftWindow_lift(_ buf: RustBuffer) throws
+  -> NativeLiveDraftWindow
+{
+  return try FfiConverterTypeNativeLiveDraftWindow.lift(buf)
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeLiveDraftWindow_lower(_ value: NativeLiveDraftWindow)
+  -> RustBuffer
+{
+  return FfiConverterTypeNativeLiveDraftWindow.lower(value)
+}
+
 public struct NativeMediaOpenAuthorization: Equatable, Hashable {
   public let sessionId: String
   public let sourceId: String
@@ -5095,6 +5381,7 @@ public struct NativeMediaOpenAuthorization: Equatable, Hashable {
   public let relativePath: String
   public let absolutePath: String
   public let channels: UInt16
+  public let sampleRateHz: UInt32
   public let mappedStartNanoseconds: Int64
 
   // Default memberwise initializers are never public by default, so we
@@ -5102,7 +5389,7 @@ public struct NativeMediaOpenAuthorization: Equatable, Hashable {
   public init(
     sessionId: String, sourceId: String, trackId: String, segmentId: String, openToken: String,
     writerGeneration: UInt64, relativePath: String, absolutePath: String, channels: UInt16,
-    mappedStartNanoseconds: Int64
+    sampleRateHz: UInt32, mappedStartNanoseconds: Int64
   ) {
     self.sessionId = sessionId
     self.sourceId = sourceId
@@ -5113,6 +5400,7 @@ public struct NativeMediaOpenAuthorization: Equatable, Hashable {
     self.relativePath = relativePath
     self.absolutePath = absolutePath
     self.channels = channels
+    self.sampleRateHz = sampleRateHz
     self.mappedStartNanoseconds = mappedStartNanoseconds
   }
 
@@ -5140,6 +5428,7 @@ public struct FfiConverterTypeNativeMediaOpenAuthorization: FfiConverterRustBuff
         relativePath: FfiConverterString.read(from: &buf),
         absolutePath: FfiConverterString.read(from: &buf),
         channels: FfiConverterUInt16.read(from: &buf),
+        sampleRateHz: FfiConverterUInt32.read(from: &buf),
         mappedStartNanoseconds: FfiConverterInt64.read(from: &buf)
       )
   }
@@ -5154,6 +5443,7 @@ public struct FfiConverterTypeNativeMediaOpenAuthorization: FfiConverterRustBuff
     FfiConverterString.write(value.relativePath, into: &buf)
     FfiConverterString.write(value.absolutePath, into: &buf)
     FfiConverterUInt16.write(value.channels, into: &buf)
+    FfiConverterUInt32.write(value.sampleRateHz, into: &buf)
     FfiConverterInt64.write(value.mappedStartNanoseconds, into: &buf)
   }
 }
@@ -5333,17 +5623,12 @@ public func FfiConverterTypeNativeMediaOpenReceipt_lower(_ value: NativeMediaOpe
 }
 
 public struct NativeMediaRecovery: Equatable, Hashable {
-  public let captureSafetyComplete: Bool
   public let playable: [NativeRecoveredPlayableSession]
   public let findings: [NativeRecoveryFinding]
 
   // Default memberwise initializers are never public by default, so we
   // declare one manually.
-  public init(
-    captureSafetyComplete: Bool, playable: [NativeRecoveredPlayableSession],
-    findings: [NativeRecoveryFinding]
-  ) {
-    self.captureSafetyComplete = captureSafetyComplete
+  public init(playable: [NativeRecoveredPlayableSession], findings: [NativeRecoveryFinding]) {
     self.playable = playable
     self.findings = findings
   }
@@ -5363,14 +5648,12 @@ public struct FfiConverterTypeNativeMediaRecovery: FfiConverterRustBuffer {
   {
     return
       try NativeMediaRecovery(
-        captureSafetyComplete: FfiConverterBool.read(from: &buf),
         playable: FfiConverterSequenceTypeNativeRecoveredPlayableSession.read(from: &buf),
         findings: FfiConverterSequenceTypeNativeRecoveryFinding.read(from: &buf)
       )
   }
 
   public static func write(_ value: NativeMediaRecovery, into buf: inout [UInt8]) {
-    FfiConverterBool.write(value.captureSafetyComplete, into: &buf)
     FfiConverterSequenceTypeNativeRecoveredPlayableSession.write(value.playable, into: &buf)
     FfiConverterSequenceTypeNativeRecoveryFinding.write(value.findings, into: &buf)
   }
@@ -6460,15 +6743,15 @@ public func FfiConverterTypeNativeProviderReceipt_lower(_ value: NativeProviderR
 }
 
 public struct NativeRecorderDetail: Equatable, Hashable {
-  public let lifecycle: String
+  public let lifecycle: NativeSessionLifecycle
   public let capturedNanoseconds: Int64
-  public let storageLevel: String
+  public let storageLevel: NativeStorageLevel
   public let events: [NativeRecorderEvent]
 
   // Default memberwise initializers are never public by default, so we
   // declare one manually.
   public init(
-    lifecycle: String, capturedNanoseconds: Int64, storageLevel: String,
+    lifecycle: NativeSessionLifecycle, capturedNanoseconds: Int64, storageLevel: NativeStorageLevel,
     events: [NativeRecorderEvent]
   ) {
     self.lifecycle = lifecycle
@@ -6492,17 +6775,17 @@ public struct FfiConverterTypeNativeRecorderDetail: FfiConverterRustBuffer {
   {
     return
       try NativeRecorderDetail(
-        lifecycle: FfiConverterString.read(from: &buf),
+        lifecycle: FfiConverterTypeNativeSessionLifecycle.read(from: &buf),
         capturedNanoseconds: FfiConverterInt64.read(from: &buf),
-        storageLevel: FfiConverterString.read(from: &buf),
+        storageLevel: FfiConverterTypeNativeStorageLevel.read(from: &buf),
         events: FfiConverterSequenceTypeNativeRecorderEvent.read(from: &buf)
       )
   }
 
   public static func write(_ value: NativeRecorderDetail, into buf: inout [UInt8]) {
-    FfiConverterString.write(value.lifecycle, into: &buf)
+    FfiConverterTypeNativeSessionLifecycle.write(value.lifecycle, into: &buf)
     FfiConverterInt64.write(value.capturedNanoseconds, into: &buf)
-    FfiConverterString.write(value.storageLevel, into: &buf)
+    FfiConverterTypeNativeStorageLevel.write(value.storageLevel, into: &buf)
     FfiConverterSequenceTypeNativeRecorderEvent.write(value.events, into: &buf)
   }
 }
@@ -6526,13 +6809,13 @@ public func FfiConverterTypeNativeRecorderDetail_lower(_ value: NativeRecorderDe
 
 public struct NativeRecorderEvent: Equatable, Hashable {
   public let id: String
-  public let kind: String
+  public let kind: NativeRecorderEventKind
   public let sessionNanoseconds: Int64
   public let label: String
 
   // Default memberwise initializers are never public by default, so we
   // declare one manually.
-  public init(id: String, kind: String, sessionNanoseconds: Int64, label: String) {
+  public init(id: String, kind: NativeRecorderEventKind, sessionNanoseconds: Int64, label: String) {
     self.id = id
     self.kind = kind
     self.sessionNanoseconds = sessionNanoseconds
@@ -6555,7 +6838,7 @@ public struct FfiConverterTypeNativeRecorderEvent: FfiConverterRustBuffer {
     return
       try NativeRecorderEvent(
         id: FfiConverterString.read(from: &buf),
-        kind: FfiConverterString.read(from: &buf),
+        kind: FfiConverterTypeNativeRecorderEventKind.read(from: &buf),
         sessionNanoseconds: FfiConverterInt64.read(from: &buf),
         label: FfiConverterString.read(from: &buf)
       )
@@ -6563,7 +6846,7 @@ public struct FfiConverterTypeNativeRecorderEvent: FfiConverterRustBuffer {
 
   public static func write(_ value: NativeRecorderEvent, into buf: inout [UInt8]) {
     FfiConverterString.write(value.id, into: &buf)
-    FfiConverterString.write(value.kind, into: &buf)
+    FfiConverterTypeNativeRecorderEventKind.write(value.kind, into: &buf)
     FfiConverterInt64.write(value.sessionNanoseconds, into: &buf)
     FfiConverterString.write(value.label, into: &buf)
   }
@@ -6978,81 +7261,6 @@ public func FfiConverterTypeNativeResolvedEvidence_lower(_ value: NativeResolved
   return FfiConverterTypeNativeResolvedEvidence.lower(value)
 }
 
-/// One Final transcript rebuilt from retained chunks without a model.
-public struct NativeRetainedTranscriptRecovery: Equatable, Hashable {
-  public let sessionId: String
-  public let trackId: String
-  public let runId: String
-  public let revisionId: String
-  public let reusedChunks: UInt32
-  public let segmentCount: UInt32
-
-  // Default memberwise initializers are never public by default, so we
-  // declare one manually.
-  public init(
-    sessionId: String, trackId: String, runId: String, revisionId: String, reusedChunks: UInt32,
-    segmentCount: UInt32
-  ) {
-    self.sessionId = sessionId
-    self.trackId = trackId
-    self.runId = runId
-    self.revisionId = revisionId
-    self.reusedChunks = reusedChunks
-    self.segmentCount = segmentCount
-  }
-
-}
-
-#if compiler(>=6)
-  extension NativeRetainedTranscriptRecovery: Sendable {}
-#endif
-
-#if swift(>=5.8)
-  @_documentation(visibility: private)
-#endif
-public struct FfiConverterTypeNativeRetainedTranscriptRecovery: FfiConverterRustBuffer {
-  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws
-    -> NativeRetainedTranscriptRecovery
-  {
-    return
-      try NativeRetainedTranscriptRecovery(
-        sessionId: FfiConverterString.read(from: &buf),
-        trackId: FfiConverterString.read(from: &buf),
-        runId: FfiConverterString.read(from: &buf),
-        revisionId: FfiConverterString.read(from: &buf),
-        reusedChunks: FfiConverterUInt32.read(from: &buf),
-        segmentCount: FfiConverterUInt32.read(from: &buf)
-      )
-  }
-
-  public static func write(_ value: NativeRetainedTranscriptRecovery, into buf: inout [UInt8]) {
-    FfiConverterString.write(value.sessionId, into: &buf)
-    FfiConverterString.write(value.trackId, into: &buf)
-    FfiConverterString.write(value.runId, into: &buf)
-    FfiConverterString.write(value.revisionId, into: &buf)
-    FfiConverterUInt32.write(value.reusedChunks, into: &buf)
-    FfiConverterUInt32.write(value.segmentCount, into: &buf)
-  }
-}
-
-#if swift(>=5.8)
-  @_documentation(visibility: private)
-#endif
-public func FfiConverterTypeNativeRetainedTranscriptRecovery_lift(_ buf: RustBuffer) throws
-  -> NativeRetainedTranscriptRecovery
-{
-  return try FfiConverterTypeNativeRetainedTranscriptRecovery.lift(buf)
-}
-
-#if swift(>=5.8)
-  @_documentation(visibility: private)
-#endif
-public func FfiConverterTypeNativeRetainedTranscriptRecovery_lower(
-  _ value: NativeRetainedTranscriptRecovery
-) -> RustBuffer {
-  return FfiConverterTypeNativeRetainedTranscriptRecovery.lower(value)
-}
-
 public struct NativeRuntimeLibrarySnapshot: Equatable, Hashable {
   public let currentSession: NativeRuntimeSessionSnapshot?
   public let savedSessions: [NativeRuntimeSessionSnapshot]
@@ -7112,7 +7320,7 @@ public func FfiConverterTypeNativeRuntimeLibrarySnapshot_lower(
 
 public struct NativeRuntimePlayableMediaSnapshot: Equatable, Hashable {
   public let sourceDisplayName: String
-  public let availability: String
+  public let availability: NativePlayableMediaAvailability
   public let absolutePath: String?
   public let durationNanoseconds: UInt64
   public let sampleCount: UInt64
@@ -7121,7 +7329,7 @@ public struct NativeRuntimePlayableMediaSnapshot: Equatable, Hashable {
   // Default memberwise initializers are never public by default, so we
   // declare one manually.
   public init(
-    sourceDisplayName: String, availability: String, absolutePath: String?,
+    sourceDisplayName: String, availability: NativePlayableMediaAvailability, absolutePath: String?,
     durationNanoseconds: UInt64, sampleCount: UInt64, byteLength: UInt64
   ) {
     self.sourceDisplayName = sourceDisplayName
@@ -7148,7 +7356,7 @@ public struct FfiConverterTypeNativeRuntimePlayableMediaSnapshot: FfiConverterRu
     return
       try NativeRuntimePlayableMediaSnapshot(
         sourceDisplayName: FfiConverterString.read(from: &buf),
-        availability: FfiConverterString.read(from: &buf),
+        availability: FfiConverterTypeNativePlayableMediaAvailability.read(from: &buf),
         absolutePath: FfiConverterOptionString.read(from: &buf),
         durationNanoseconds: FfiConverterUInt64.read(from: &buf),
         sampleCount: FfiConverterUInt64.read(from: &buf),
@@ -7158,7 +7366,7 @@ public struct FfiConverterTypeNativeRuntimePlayableMediaSnapshot: FfiConverterRu
 
   public static func write(_ value: NativeRuntimePlayableMediaSnapshot, into buf: inout [UInt8]) {
     FfiConverterString.write(value.sourceDisplayName, into: &buf)
-    FfiConverterString.write(value.availability, into: &buf)
+    FfiConverterTypeNativePlayableMediaAvailability.write(value.availability, into: &buf)
     FfiConverterOptionString.write(value.absolutePath, into: &buf)
     FfiConverterUInt64.write(value.durationNanoseconds, into: &buf)
     FfiConverterUInt64.write(value.sampleCount, into: &buf)
@@ -7192,17 +7400,19 @@ public struct NativeRuntimeSessionSnapshot: Equatable, Hashable {
    * stored placeholder. Empty from older producers; fall back to `title`.
    */
   public let displayTitle: String
+  public let titleSource: NativeTitleSource
   /**
-   * `placeholder`, `suggested`, or `person`.
+   * The capture time a placeholder display title names, for the app to
+   * format in the reader's locale.
    */
-  public let titleSource: String
+  public let placeholderAtMs: Int64?
   public let createdAtMs: Int64
-  public let lifecycle: String
-  public let health: String
+  public let lifecycle: NativeSessionLifecycle
+  public let health: NativeSessionHealth
   public let elapsedSeconds: UInt64
   public let journalDurable: Bool
   public let mediaFilesOpen: Bool
-  public let interruptionReason: String?
+  public let interruptionReason: NativeSessionInterruptionReason?
   public let recovered: Bool
   public let hasCaptureTimeline: Bool
   public let sources: [NativeRuntimeSourceSnapshot]
@@ -7215,6 +7425,14 @@ public struct NativeRuntimeSessionSnapshot: Equatable, Hashable {
    * Historical recovery failure, not a currently owned capture.
    */
   public let captureRecoveryIsolated: Bool
+  /**
+   * The session holds audio; an attempt without it never recorded anything.
+   */
+  public let preservedAudio: Bool
+  /**
+   * Rust's Trash rule for this session's lifecycle and audio.
+   */
+  public let canMoveToTrash: Bool
 
   // Default memberwise initializers are never public by default, so we
   // declare one manually.
@@ -7224,13 +7442,14 @@ public struct NativeRuntimeSessionSnapshot: Equatable, Hashable {
      * What a reader sees: a person's title, else a suggestion, else the
      * stored placeholder. Empty from older producers; fall back to `title`.
      */
-    displayTitle: String = "",
+    displayTitle: String = "", titleSource: NativeTitleSource,
     /**
-     * `placeholder`, `suggested`, or `person`.
+     * The capture time a placeholder display title names, for the app to
+     * format in the reader's locale.
      */
-    titleSource: String = "person", createdAtMs: Int64 = Int64(0), lifecycle: String,
-    health: String, elapsedSeconds: UInt64, journalDurable: Bool, mediaFilesOpen: Bool,
-    interruptionReason: String?, recovered: Bool, hasCaptureTimeline: Bool,
+    placeholderAtMs: Int64? = nil, createdAtMs: Int64 = Int64(0), lifecycle: NativeSessionLifecycle,
+    health: NativeSessionHealth, elapsedSeconds: UInt64, journalDurable: Bool, mediaFilesOpen: Bool,
+    interruptionReason: NativeSessionInterruptionReason?, recovered: Bool, hasCaptureTimeline: Bool,
     sources: [NativeRuntimeSourceSnapshot], playableMedia: NativeRuntimePlayableMediaSnapshot?,
     /**
      * Derived-transcript posture of a saved conversation; absent for a live one.
@@ -7239,12 +7458,21 @@ public struct NativeRuntimeSessionSnapshot: Equatable, Hashable {
     /**
      * Historical recovery failure, not a currently owned capture.
      */
-    captureRecoveryIsolated: Bool = false
+    captureRecoveryIsolated: Bool = false,
+    /**
+     * The session holds audio; an attempt without it never recorded anything.
+     */
+    preservedAudio: Bool = false,
+    /**
+     * Rust's Trash rule for this session's lifecycle and audio.
+     */
+    canMoveToTrash: Bool = false
   ) {
     self.sessionId = sessionId
     self.title = title
     self.displayTitle = displayTitle
     self.titleSource = titleSource
+    self.placeholderAtMs = placeholderAtMs
     self.createdAtMs = createdAtMs
     self.lifecycle = lifecycle
     self.health = health
@@ -7258,6 +7486,8 @@ public struct NativeRuntimeSessionSnapshot: Equatable, Hashable {
     self.playableMedia = playableMedia
     self.transcript = transcript
     self.captureRecoveryIsolated = captureRecoveryIsolated
+    self.preservedAudio = preservedAudio
+    self.canMoveToTrash = canMoveToTrash
   }
 
 }
@@ -7278,20 +7508,23 @@ public struct FfiConverterTypeNativeRuntimeSessionSnapshot: FfiConverterRustBuff
         sessionId: FfiConverterString.read(from: &buf),
         title: FfiConverterString.read(from: &buf),
         displayTitle: FfiConverterString.read(from: &buf),
-        titleSource: FfiConverterString.read(from: &buf),
+        titleSource: FfiConverterTypeNativeTitleSource.read(from: &buf),
+        placeholderAtMs: FfiConverterOptionInt64.read(from: &buf),
         createdAtMs: FfiConverterInt64.read(from: &buf),
-        lifecycle: FfiConverterString.read(from: &buf),
-        health: FfiConverterString.read(from: &buf),
+        lifecycle: FfiConverterTypeNativeSessionLifecycle.read(from: &buf),
+        health: FfiConverterTypeNativeSessionHealth.read(from: &buf),
         elapsedSeconds: FfiConverterUInt64.read(from: &buf),
         journalDurable: FfiConverterBool.read(from: &buf),
         mediaFilesOpen: FfiConverterBool.read(from: &buf),
-        interruptionReason: FfiConverterOptionString.read(from: &buf),
+        interruptionReason: FfiConverterOptionTypeNativeSessionInterruptionReason.read(from: &buf),
         recovered: FfiConverterBool.read(from: &buf),
         hasCaptureTimeline: FfiConverterBool.read(from: &buf),
         sources: FfiConverterSequenceTypeNativeRuntimeSourceSnapshot.read(from: &buf),
         playableMedia: FfiConverterOptionTypeNativeRuntimePlayableMediaSnapshot.read(from: &buf),
         transcript: FfiConverterOptionTypeNativeRuntimeTranscriptSnapshot.read(from: &buf),
-        captureRecoveryIsolated: FfiConverterBool.read(from: &buf)
+        captureRecoveryIsolated: FfiConverterBool.read(from: &buf),
+        preservedAudio: FfiConverterBool.read(from: &buf),
+        canMoveToTrash: FfiConverterBool.read(from: &buf)
       )
   }
 
@@ -7299,20 +7532,24 @@ public struct FfiConverterTypeNativeRuntimeSessionSnapshot: FfiConverterRustBuff
     FfiConverterString.write(value.sessionId, into: &buf)
     FfiConverterString.write(value.title, into: &buf)
     FfiConverterString.write(value.displayTitle, into: &buf)
-    FfiConverterString.write(value.titleSource, into: &buf)
+    FfiConverterTypeNativeTitleSource.write(value.titleSource, into: &buf)
+    FfiConverterOptionInt64.write(value.placeholderAtMs, into: &buf)
     FfiConverterInt64.write(value.createdAtMs, into: &buf)
-    FfiConverterString.write(value.lifecycle, into: &buf)
-    FfiConverterString.write(value.health, into: &buf)
+    FfiConverterTypeNativeSessionLifecycle.write(value.lifecycle, into: &buf)
+    FfiConverterTypeNativeSessionHealth.write(value.health, into: &buf)
     FfiConverterUInt64.write(value.elapsedSeconds, into: &buf)
     FfiConverterBool.write(value.journalDurable, into: &buf)
     FfiConverterBool.write(value.mediaFilesOpen, into: &buf)
-    FfiConverterOptionString.write(value.interruptionReason, into: &buf)
+    FfiConverterOptionTypeNativeSessionInterruptionReason.write(
+      value.interruptionReason, into: &buf)
     FfiConverterBool.write(value.recovered, into: &buf)
     FfiConverterBool.write(value.hasCaptureTimeline, into: &buf)
     FfiConverterSequenceTypeNativeRuntimeSourceSnapshot.write(value.sources, into: &buf)
     FfiConverterOptionTypeNativeRuntimePlayableMediaSnapshot.write(value.playableMedia, into: &buf)
     FfiConverterOptionTypeNativeRuntimeTranscriptSnapshot.write(value.transcript, into: &buf)
     FfiConverterBool.write(value.captureRecoveryIsolated, into: &buf)
+    FfiConverterBool.write(value.preservedAudio, into: &buf)
+    FfiConverterBool.write(value.canMoveToTrash, into: &buf)
   }
 }
 
@@ -7337,11 +7574,11 @@ public func FfiConverterTypeNativeRuntimeSessionSnapshot_lower(
 public struct NativeRuntimeSourceSnapshot: Equatable, Hashable {
   public let kind: NativeMediaSourceKind
   public let displayName: String
-  public let lifecycle: String
+  public let lifecycle: NativeSourceLifecycle
 
   // Default memberwise initializers are never public by default, so we
   // declare one manually.
-  public init(kind: NativeMediaSourceKind, displayName: String, lifecycle: String) {
+  public init(kind: NativeMediaSourceKind, displayName: String, lifecycle: NativeSourceLifecycle) {
     self.kind = kind
     self.displayName = displayName
     self.lifecycle = lifecycle
@@ -7364,14 +7601,14 @@ public struct FfiConverterTypeNativeRuntimeSourceSnapshot: FfiConverterRustBuffe
       try NativeRuntimeSourceSnapshot(
         kind: FfiConverterTypeNativeMediaSourceKind.read(from: &buf),
         displayName: FfiConverterString.read(from: &buf),
-        lifecycle: FfiConverterString.read(from: &buf)
+        lifecycle: FfiConverterTypeNativeSourceLifecycle.read(from: &buf)
       )
   }
 
   public static func write(_ value: NativeRuntimeSourceSnapshot, into buf: inout [UInt8]) {
     FfiConverterTypeNativeMediaSourceKind.write(value.kind, into: &buf)
     FfiConverterString.write(value.displayName, into: &buf)
-    FfiConverterString.write(value.lifecycle, into: &buf)
+    FfiConverterTypeNativeSourceLifecycle.write(value.lifecycle, into: &buf)
   }
 }
 
@@ -7393,8 +7630,7 @@ public func FfiConverterTypeNativeRuntimeSourceSnapshot_lower(_ value: NativeRun
   return FfiConverterTypeNativeRuntimeSourceSnapshot.lower(value)
 }
 
-/// Content-free transcript progress: `state` is `none`, `running`, `final`,
-/// `partial`, or `failed`; chunk counts cover the running runs only.
+/// Content-free transcript progress; chunk counts cover the running runs only.
 public struct NativeRuntimeTranscriptSnapshot: Equatable, Hashable {
   public let document: NativeDocumentAvailability
   public let replacementResumable: Bool
@@ -7402,12 +7638,12 @@ public struct NativeRuntimeTranscriptSnapshot: Equatable, Hashable {
   public let selectedRevisionIds: [String]
   public let documentVersion: String
   public let attempt: NativeAttemptState
-  public let attemptFailure: String?
+  public let attemptFailure: NativeTranscriptionFailureClass?
   public let totalTracks: UInt32
   public let finalTracks: UInt32
   public let completedChunks: UInt32
   public let totalChunks: UInt32
-  public let failureClass: String?
+  public let failureClass: NativeTranscriptionFailureClass?
   /**
    * Readable live Draft windows (not superseded by later text).
    */
@@ -7418,8 +7654,9 @@ public struct NativeRuntimeTranscriptSnapshot: Equatable, Hashable {
   public init(
     document: NativeDocumentAvailability, replacementResumable: Bool,
     state: NativeRuntimeTranscriptState, selectedRevisionIds: [String], documentVersion: String,
-    attempt: NativeAttemptState, attemptFailure: String?, totalTracks: UInt32, finalTracks: UInt32,
-    completedChunks: UInt32, totalChunks: UInt32, failureClass: String?,
+    attempt: NativeAttemptState, attemptFailure: NativeTranscriptionFailureClass?,
+    totalTracks: UInt32, finalTracks: UInt32, completedChunks: UInt32, totalChunks: UInt32,
+    failureClass: NativeTranscriptionFailureClass?,
     /**
      * Readable live Draft windows (not superseded by later text).
      */
@@ -7461,12 +7698,12 @@ public struct FfiConverterTypeNativeRuntimeTranscriptSnapshot: FfiConverterRustB
         selectedRevisionIds: FfiConverterSequenceString.read(from: &buf),
         documentVersion: FfiConverterString.read(from: &buf),
         attempt: FfiConverterTypeNativeAttemptState.read(from: &buf),
-        attemptFailure: FfiConverterOptionString.read(from: &buf),
+        attemptFailure: FfiConverterOptionTypeNativeTranscriptionFailureClass.read(from: &buf),
         totalTracks: FfiConverterUInt32.read(from: &buf),
         finalTracks: FfiConverterUInt32.read(from: &buf),
         completedChunks: FfiConverterUInt32.read(from: &buf),
         totalChunks: FfiConverterUInt32.read(from: &buf),
-        failureClass: FfiConverterOptionString.read(from: &buf),
+        failureClass: FfiConverterOptionTypeNativeTranscriptionFailureClass.read(from: &buf),
         draftWindows: FfiConverterUInt32.read(from: &buf)
       )
   }
@@ -7478,12 +7715,12 @@ public struct FfiConverterTypeNativeRuntimeTranscriptSnapshot: FfiConverterRustB
     FfiConverterSequenceString.write(value.selectedRevisionIds, into: &buf)
     FfiConverterString.write(value.documentVersion, into: &buf)
     FfiConverterTypeNativeAttemptState.write(value.attempt, into: &buf)
-    FfiConverterOptionString.write(value.attemptFailure, into: &buf)
+    FfiConverterOptionTypeNativeTranscriptionFailureClass.write(value.attemptFailure, into: &buf)
     FfiConverterUInt32.write(value.totalTracks, into: &buf)
     FfiConverterUInt32.write(value.finalTracks, into: &buf)
     FfiConverterUInt32.write(value.completedChunks, into: &buf)
     FfiConverterUInt32.write(value.totalChunks, into: &buf)
-    FfiConverterOptionString.write(value.failureClass, into: &buf)
+    FfiConverterOptionTypeNativeTranscriptionFailureClass.write(value.failureClass, into: &buf)
     FfiConverterUInt32.write(value.draftWindows, into: &buf)
   }
 }
@@ -8097,13 +8334,14 @@ public func FfiConverterTypeNativeSessionSnapshot_lower(_ value: NativeSessionSn
 
 public struct NativeSessionSpeaker: Equatable, Hashable {
   public let trackId: String
-  public let sourceKind: String
+  public let sourceKind: NativeTrackSourceKind
   public let label: String
   public let namedByUser: Bool
 
   // Default memberwise initializers are never public by default, so we
   // declare one manually.
-  public init(trackId: String, sourceKind: String, label: String, namedByUser: Bool) {
+  public init(trackId: String, sourceKind: NativeTrackSourceKind, label: String, namedByUser: Bool)
+  {
     self.trackId = trackId
     self.sourceKind = sourceKind
     self.label = label
@@ -8126,7 +8364,7 @@ public struct FfiConverterTypeNativeSessionSpeaker: FfiConverterRustBuffer {
     return
       try NativeSessionSpeaker(
         trackId: FfiConverterString.read(from: &buf),
-        sourceKind: FfiConverterString.read(from: &buf),
+        sourceKind: FfiConverterTypeNativeTrackSourceKind.read(from: &buf),
         label: FfiConverterString.read(from: &buf),
         namedByUser: FfiConverterBool.read(from: &buf)
       )
@@ -8134,7 +8372,7 @@ public struct FfiConverterTypeNativeSessionSpeaker: FfiConverterRustBuffer {
 
   public static func write(_ value: NativeSessionSpeaker, into buf: inout [UInt8]) {
     FfiConverterString.write(value.trackId, into: &buf)
-    FfiConverterString.write(value.sourceKind, into: &buf)
+    FfiConverterTypeNativeTrackSourceKind.write(value.sourceKind, into: &buf)
     FfiConverterString.write(value.label, into: &buf)
     FfiConverterBool.write(value.namedByUser, into: &buf)
   }
@@ -8214,6 +8452,61 @@ public func FfiConverterTypeNativeSessionWorkOutcome_lower(_ value: NativeSessio
   -> RustBuffer
 {
   return FfiConverterTypeNativeSessionWorkOutcome.lower(value)
+}
+
+/// The name and speaker label a capture source has until it is renamed.
+public struct NativeSourceDefaults: Equatable, Hashable {
+  public let displayName: String
+  public let speakerLabel: String
+
+  // Default memberwise initializers are never public by default, so we
+  // declare one manually.
+  public init(displayName: String, speakerLabel: String) {
+    self.displayName = displayName
+    self.speakerLabel = speakerLabel
+  }
+
+}
+
+#if compiler(>=6)
+  extension NativeSourceDefaults: Sendable {}
+#endif
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeNativeSourceDefaults: FfiConverterRustBuffer {
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws
+    -> NativeSourceDefaults
+  {
+    return
+      try NativeSourceDefaults(
+        displayName: FfiConverterString.read(from: &buf),
+        speakerLabel: FfiConverterString.read(from: &buf)
+      )
+  }
+
+  public static func write(_ value: NativeSourceDefaults, into buf: inout [UInt8]) {
+    FfiConverterString.write(value.displayName, into: &buf)
+    FfiConverterString.write(value.speakerLabel, into: &buf)
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeSourceDefaults_lift(_ buf: RustBuffer) throws
+  -> NativeSourceDefaults
+{
+  return try FfiConverterTypeNativeSourceDefaults.lift(buf)
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeSourceDefaults_lower(_ value: NativeSourceDefaults) -> RustBuffer
+{
+  return FfiConverterTypeNativeSourceDefaults.lower(value)
 }
 
 public struct NativeSourceFailureEvidence: Equatable, Hashable {
@@ -8462,15 +8755,16 @@ public func FfiConverterTypeNativeSpeakerDiarization_lower(_ value: NativeSpeake
 
 public struct NativeSpeakerDiarizationTrack: Equatable, Hashable {
   public let trackId: String
-  public let sourceKind: String
-  public let disposition: String
+  public let sourceKind: NativeTrackSourceKind
+  public let disposition: NativeSpeakerDisposition
   public let label: String
-  public let labelOrigin: String
+  public let labelOrigin: NativeSpeakerLabelOrigin
 
   // Default memberwise initializers are never public by default, so we
   // declare one manually.
   public init(
-    trackId: String, sourceKind: String, disposition: String, label: String, labelOrigin: String
+    trackId: String, sourceKind: NativeTrackSourceKind, disposition: NativeSpeakerDisposition,
+    label: String, labelOrigin: NativeSpeakerLabelOrigin
   ) {
     self.trackId = trackId
     self.sourceKind = sourceKind
@@ -8495,19 +8789,19 @@ public struct FfiConverterTypeNativeSpeakerDiarizationTrack: FfiConverterRustBuf
     return
       try NativeSpeakerDiarizationTrack(
         trackId: FfiConverterString.read(from: &buf),
-        sourceKind: FfiConverterString.read(from: &buf),
-        disposition: FfiConverterString.read(from: &buf),
+        sourceKind: FfiConverterTypeNativeTrackSourceKind.read(from: &buf),
+        disposition: FfiConverterTypeNativeSpeakerDisposition.read(from: &buf),
         label: FfiConverterString.read(from: &buf),
-        labelOrigin: FfiConverterString.read(from: &buf)
+        labelOrigin: FfiConverterTypeNativeSpeakerLabelOrigin.read(from: &buf)
       )
   }
 
   public static func write(_ value: NativeSpeakerDiarizationTrack, into buf: inout [UInt8]) {
     FfiConverterString.write(value.trackId, into: &buf)
-    FfiConverterString.write(value.sourceKind, into: &buf)
-    FfiConverterString.write(value.disposition, into: &buf)
+    FfiConverterTypeNativeTrackSourceKind.write(value.sourceKind, into: &buf)
+    FfiConverterTypeNativeSpeakerDisposition.write(value.disposition, into: &buf)
     FfiConverterString.write(value.label, into: &buf)
-    FfiConverterString.write(value.labelOrigin, into: &buf)
+    FfiConverterTypeNativeSpeakerLabelOrigin.write(value.labelOrigin, into: &buf)
   }
 }
 
@@ -8533,14 +8827,14 @@ public func FfiConverterTypeNativeSpeakerDiarizationTrack_lower(
 /// only stored renames, oldest first. An empty list means no rename is stored.
 public struct NativeSpeakerLabelHistory: Equatable, Hashable {
   public let trackId: String
-  public let sourceKind: String
+  public let sourceKind: NativeTrackSourceKind
   public let sourceDefaultLabel: String
   public let revisions: [NativeSpeakerLabelRevision]
 
   // Default memberwise initializers are never public by default, so we
   // declare one manually.
   public init(
-    trackId: String, sourceKind: String, sourceDefaultLabel: String,
+    trackId: String, sourceKind: NativeTrackSourceKind, sourceDefaultLabel: String,
     revisions: [NativeSpeakerLabelRevision]
   ) {
     self.trackId = trackId
@@ -8565,7 +8859,7 @@ public struct FfiConverterTypeNativeSpeakerLabelHistory: FfiConverterRustBuffer 
     return
       try NativeSpeakerLabelHistory(
         trackId: FfiConverterString.read(from: &buf),
-        sourceKind: FfiConverterString.read(from: &buf),
+        sourceKind: FfiConverterTypeNativeTrackSourceKind.read(from: &buf),
         sourceDefaultLabel: FfiConverterString.read(from: &buf),
         revisions: FfiConverterSequenceTypeNativeSpeakerLabelRevision.read(from: &buf)
       )
@@ -8573,7 +8867,7 @@ public struct FfiConverterTypeNativeSpeakerLabelHistory: FfiConverterRustBuffer 
 
   public static func write(_ value: NativeSpeakerLabelHistory, into buf: inout [UInt8]) {
     FfiConverterString.write(value.trackId, into: &buf)
-    FfiConverterString.write(value.sourceKind, into: &buf)
+    FfiConverterTypeNativeTrackSourceKind.write(value.sourceKind, into: &buf)
     FfiConverterString.write(value.sourceDefaultLabel, into: &buf)
     FfiConverterSequenceTypeNativeSpeakerLabelRevision.write(value.revisions, into: &buf)
   }
@@ -8977,16 +9271,16 @@ public struct NativeTranscriptProvenance: Equatable, Hashable {
   public let modelId: String
   public let modelSha256: String
   public let inputDigest: String
-  public let runState: String
-  public let finality: String
+  public let runState: NativeTranscriptionRunState
+  public let finality: NativeTranscriptFinality
   public let ranges: [NativeTranscriptProvenanceRange]
 
   // Default memberwise initializers are never public by default, so we
   // declare one manually.
   public init(
     revisionId: String, trackId: String, engine: String, engineVersion: String, modelId: String,
-    modelSha256: String, inputDigest: String, runState: String, finality: String,
-    ranges: [NativeTranscriptProvenanceRange]
+    modelSha256: String, inputDigest: String, runState: NativeTranscriptionRunState,
+    finality: NativeTranscriptFinality, ranges: [NativeTranscriptProvenanceRange]
   ) {
     self.revisionId = revisionId
     self.trackId = trackId
@@ -9022,8 +9316,8 @@ public struct FfiConverterTypeNativeTranscriptProvenance: FfiConverterRustBuffer
         modelId: FfiConverterString.read(from: &buf),
         modelSha256: FfiConverterString.read(from: &buf),
         inputDigest: FfiConverterString.read(from: &buf),
-        runState: FfiConverterString.read(from: &buf),
-        finality: FfiConverterString.read(from: &buf),
+        runState: FfiConverterTypeNativeTranscriptionRunState.read(from: &buf),
+        finality: FfiConverterTypeNativeTranscriptFinality.read(from: &buf),
         ranges: FfiConverterSequenceTypeNativeTranscriptProvenanceRange.read(from: &buf)
       )
   }
@@ -9036,8 +9330,8 @@ public struct FfiConverterTypeNativeTranscriptProvenance: FfiConverterRustBuffer
     FfiConverterString.write(value.modelId, into: &buf)
     FfiConverterString.write(value.modelSha256, into: &buf)
     FfiConverterString.write(value.inputDigest, into: &buf)
-    FfiConverterString.write(value.runState, into: &buf)
-    FfiConverterString.write(value.finality, into: &buf)
+    FfiConverterTypeNativeTranscriptionRunState.write(value.runState, into: &buf)
+    FfiConverterTypeNativeTranscriptFinality.write(value.finality, into: &buf)
     FfiConverterSequenceTypeNativeTranscriptProvenanceRange.write(value.ranges, into: &buf)
   }
 }
@@ -9117,7 +9411,15 @@ public func FfiConverterTypeNativeTranscriptProvenanceRange_lower(
 
 public struct NativeTranscriptSearchHit: Equatable, Hashable {
   public let sessionId: String
+  /**
+   * The title the library shows for the conversation.
+   */
   public let sessionTitle: String
+  public let titleSource: NativeTitleSource
+  /**
+   * The capture time a placeholder title names; see the session snapshot.
+   */
+  public let placeholderAtMs: Int64?
   public let revisionId: String
   public let trackId: String
   public let sequence: UInt32
@@ -9128,11 +9430,21 @@ public struct NativeTranscriptSearchHit: Equatable, Hashable {
   // Default memberwise initializers are never public by default, so we
   // declare one manually.
   public init(
-    sessionId: String, sessionTitle: String, revisionId: String, trackId: String, sequence: UInt32,
+    sessionId: String,
+    /**
+     * The title the library shows for the conversation.
+     */
+    sessionTitle: String, titleSource: NativeTitleSource,
+    /**
+     * The capture time a placeholder title names; see the session snapshot.
+     */
+    placeholderAtMs: Int64? = nil, revisionId: String, trackId: String, sequence: UInt32,
     startNanoseconds: Int64, endNanoseconds: Int64, effectiveText: String
   ) {
     self.sessionId = sessionId
     self.sessionTitle = sessionTitle
+    self.titleSource = titleSource
+    self.placeholderAtMs = placeholderAtMs
     self.revisionId = revisionId
     self.trackId = trackId
     self.sequence = sequence
@@ -9158,6 +9470,8 @@ public struct FfiConverterTypeNativeTranscriptSearchHit: FfiConverterRustBuffer 
       try NativeTranscriptSearchHit(
         sessionId: FfiConverterString.read(from: &buf),
         sessionTitle: FfiConverterString.read(from: &buf),
+        titleSource: FfiConverterTypeNativeTitleSource.read(from: &buf),
+        placeholderAtMs: FfiConverterOptionInt64.read(from: &buf),
         revisionId: FfiConverterString.read(from: &buf),
         trackId: FfiConverterString.read(from: &buf),
         sequence: FfiConverterUInt32.read(from: &buf),
@@ -9170,6 +9484,8 @@ public struct FfiConverterTypeNativeTranscriptSearchHit: FfiConverterRustBuffer 
   public static func write(_ value: NativeTranscriptSearchHit, into buf: inout [UInt8]) {
     FfiConverterString.write(value.sessionId, into: &buf)
     FfiConverterString.write(value.sessionTitle, into: &buf)
+    FfiConverterTypeNativeTitleSource.write(value.titleSource, into: &buf)
+    FfiConverterOptionInt64.write(value.placeholderAtMs, into: &buf)
     FfiConverterString.write(value.revisionId, into: &buf)
     FfiConverterString.write(value.trackId, into: &buf)
     FfiConverterUInt32.write(value.sequence, into: &buf)
@@ -9210,9 +9526,9 @@ public struct NativeTranscriptSegment: Equatable, Hashable {
   public let speakerNamedByUser: Bool
   public let namedSpeakerId: String?
   /**
-   * `final` for a selected revision, `draft` for provisional text.
+   * `Final` for a selected revision, `Draft` for provisional text.
    */
-  public let finality: String
+  public let finality: NativeTranscriptFinality
 
   // Default memberwise initializers are never public by default, so we
   // declare one manually.
@@ -9221,9 +9537,9 @@ public struct NativeTranscriptSegment: Equatable, Hashable {
     endNanoseconds: Int64, verbatimText: String, effectiveText: String, corrected: Bool,
     speakerLabel: String, speakerNamedByUser: Bool, namedSpeakerId: String?,
     /**
-     * `final` for a selected revision, `draft` for provisional text.
+     * `Final` for a selected revision, `Draft` for provisional text.
      */
-    finality: String
+    finality: NativeTranscriptFinality
   ) {
     self.revisionId = revisionId
     self.trackId = trackId
@@ -9265,7 +9581,7 @@ public struct FfiConverterTypeNativeTranscriptSegment: FfiConverterRustBuffer {
         speakerLabel: FfiConverterString.read(from: &buf),
         speakerNamedByUser: FfiConverterBool.read(from: &buf),
         namedSpeakerId: FfiConverterOptionString.read(from: &buf),
-        finality: FfiConverterString.read(from: &buf)
+        finality: FfiConverterTypeNativeTranscriptFinality.read(from: &buf)
       )
   }
 
@@ -9281,7 +9597,7 @@ public struct FfiConverterTypeNativeTranscriptSegment: FfiConverterRustBuffer {
     FfiConverterString.write(value.speakerLabel, into: &buf)
     FfiConverterBool.write(value.speakerNamedByUser, into: &buf)
     FfiConverterOptionString.write(value.namedSpeakerId, into: &buf)
-    FfiConverterString.write(value.finality, into: &buf)
+    FfiConverterTypeNativeTranscriptFinality.write(value.finality, into: &buf)
   }
 }
 
@@ -11234,6 +11550,74 @@ public func FfiConverterTypeNativeModelReadiness_lower(_ value: NativeModelReadi
   return FfiConverterTypeNativeModelReadiness.lower(value)
 }
 
+public enum NativePlayableMediaAvailability: Equatable, Hashable {
+
+  case available
+  case unavailable
+  case corrupt
+
+}
+
+#if compiler(>=6)
+  extension NativePlayableMediaAvailability: Sendable {}
+#endif
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeNativePlayableMediaAvailability: FfiConverterRustBuffer {
+  typealias SwiftType = NativePlayableMediaAvailability
+
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws
+    -> NativePlayableMediaAvailability
+  {
+    let variant: Int32 = try readInt(&buf)
+    switch variant {
+
+    case 1: return .available
+
+    case 2: return .unavailable
+
+    case 3: return .corrupt
+
+    default: throw UniffiInternalError.unexpectedEnumCase
+    }
+  }
+
+  public static func write(_ value: NativePlayableMediaAvailability, into buf: inout [UInt8]) {
+    switch value {
+
+    case .available:
+      writeInt(&buf, Int32(1))
+
+    case .unavailable:
+      writeInt(&buf, Int32(2))
+
+    case .corrupt:
+      writeInt(&buf, Int32(3))
+
+    }
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativePlayableMediaAvailability_lift(_ buf: RustBuffer) throws
+  -> NativePlayableMediaAvailability
+{
+  return try FfiConverterTypeNativePlayableMediaAvailability.lift(buf)
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativePlayableMediaAvailability_lower(
+  _ value: NativePlayableMediaAvailability
+) -> RustBuffer {
+  return FfiConverterTypeNativePlayableMediaAvailability.lower(value)
+}
+
 public
   enum NativeProviderError: Swift.Error, Equatable, Hashable, Foundation.LocalizedError
 {
@@ -11584,6 +11968,151 @@ public func FfiConverterTypeNativeRecorderAction_lift(_ buf: RustBuffer) throws
 public func FfiConverterTypeNativeRecorderAction_lower(_ value: NativeRecorderAction) -> RustBuffer
 {
   return FfiConverterTypeNativeRecorderAction.lower(value)
+}
+
+public enum NativeRecorderEventKind: Equatable, Hashable, CustomStringConvertible {
+
+  case pauseRequested
+  case capturePaused
+  case resumeRequested
+  case captureResumed
+  case pausedSessionFinalized
+  case markerAdded
+  case sourceScopeSelected
+  case storageObserved
+  case sourceFailed
+  case systemSleepObserved
+  case systemWakeObserved
+  case microphoneRestoreRequested
+  case microphoneRestoreCancelled
+  case microphoneRetiredUnstarted
+
+  // The local Rust `Display` implementation.
+  public var description: String {
+    return try! FfiConverterString.lift(
+      try! rustCall {
+        uniffiCallStatus in
+        uniffi_open_scribe_uniffi_fn_method_nativerecordereventkind_uniffi_trait_display(
+          FfiConverterTypeNativeRecorderEventKind_lower(self), uniffiCallStatus
+        )
+      }
+    )
+  }
+}
+
+#if compiler(>=6)
+  extension NativeRecorderEventKind: Sendable {}
+#endif
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeNativeRecorderEventKind: FfiConverterRustBuffer {
+  typealias SwiftType = NativeRecorderEventKind
+
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws
+    -> NativeRecorderEventKind
+  {
+    let variant: Int32 = try readInt(&buf)
+    switch variant {
+
+    case 1: return .pauseRequested
+
+    case 2: return .capturePaused
+
+    case 3: return .resumeRequested
+
+    case 4: return .captureResumed
+
+    case 5: return .pausedSessionFinalized
+
+    case 6: return .markerAdded
+
+    case 7: return .sourceScopeSelected
+
+    case 8: return .storageObserved
+
+    case 9: return .sourceFailed
+
+    case 10: return .systemSleepObserved
+
+    case 11: return .systemWakeObserved
+
+    case 12: return .microphoneRestoreRequested
+
+    case 13: return .microphoneRestoreCancelled
+
+    case 14: return .microphoneRetiredUnstarted
+
+    default: throw UniffiInternalError.unexpectedEnumCase
+    }
+  }
+
+  public static func write(_ value: NativeRecorderEventKind, into buf: inout [UInt8]) {
+    switch value {
+
+    case .pauseRequested:
+      writeInt(&buf, Int32(1))
+
+    case .capturePaused:
+      writeInt(&buf, Int32(2))
+
+    case .resumeRequested:
+      writeInt(&buf, Int32(3))
+
+    case .captureResumed:
+      writeInt(&buf, Int32(4))
+
+    case .pausedSessionFinalized:
+      writeInt(&buf, Int32(5))
+
+    case .markerAdded:
+      writeInt(&buf, Int32(6))
+
+    case .sourceScopeSelected:
+      writeInt(&buf, Int32(7))
+
+    case .storageObserved:
+      writeInt(&buf, Int32(8))
+
+    case .sourceFailed:
+      writeInt(&buf, Int32(9))
+
+    case .systemSleepObserved:
+      writeInt(&buf, Int32(10))
+
+    case .systemWakeObserved:
+      writeInt(&buf, Int32(11))
+
+    case .microphoneRestoreRequested:
+      writeInt(&buf, Int32(12))
+
+    case .microphoneRestoreCancelled:
+      writeInt(&buf, Int32(13))
+
+    case .microphoneRetiredUnstarted:
+      writeInt(&buf, Int32(14))
+
+    }
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeRecorderEventKind_lift(_ buf: RustBuffer) throws
+  -> NativeRecorderEventKind
+{
+  return try FfiConverterTypeNativeRecorderEventKind.lift(buf)
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeRecorderEventKind_lower(_ value: NativeRecorderEventKind)
+  -> RustBuffer
+{
+  return FfiConverterTypeNativeRecorderEventKind.lower(value)
 }
 
 public enum NativeRecoveryDisposition: Equatable, Hashable {
@@ -12045,6 +12574,77 @@ public func FfiConverterTypeNativeSessionError_lower(_ value: NativeSessionError
   return FfiConverterTypeNativeSessionError.lower(value)
 }
 
+public enum NativeSessionHealth: Equatable, Hashable, CustomStringConvertible {
+
+  case healthy
+  case degraded
+
+  // The local Rust `Display` implementation.
+  public var description: String {
+    return try! FfiConverterString.lift(
+      try! rustCall {
+        uniffiCallStatus in
+        uniffi_open_scribe_uniffi_fn_method_nativesessionhealth_uniffi_trait_display(
+          FfiConverterTypeNativeSessionHealth_lower(self), uniffiCallStatus
+        )
+      }
+    )
+  }
+}
+
+#if compiler(>=6)
+  extension NativeSessionHealth: Sendable {}
+#endif
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeNativeSessionHealth: FfiConverterRustBuffer {
+  typealias SwiftType = NativeSessionHealth
+
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws
+    -> NativeSessionHealth
+  {
+    let variant: Int32 = try readInt(&buf)
+    switch variant {
+
+    case 1: return .healthy
+
+    case 2: return .degraded
+
+    default: throw UniffiInternalError.unexpectedEnumCase
+    }
+  }
+
+  public static func write(_ value: NativeSessionHealth, into buf: inout [UInt8]) {
+    switch value {
+
+    case .healthy:
+      writeInt(&buf, Int32(1))
+
+    case .degraded:
+      writeInt(&buf, Int32(2))
+
+    }
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeSessionHealth_lift(_ buf: RustBuffer) throws
+  -> NativeSessionHealth
+{
+  return try FfiConverterTypeNativeSessionHealth.lift(buf)
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeSessionHealth_lower(_ value: NativeSessionHealth) -> RustBuffer {
+  return FfiConverterTypeNativeSessionHealth.lower(value)
+}
+
 public enum NativeSessionInterruptionReason: Equatable, Hashable {
 
   case captureStartFailed
@@ -12131,6 +12731,122 @@ public func FfiConverterTypeNativeSessionInterruptionReason_lower(
   return FfiConverterTypeNativeSessionInterruptionReason.lower(value)
 }
 
+public enum NativeSessionLifecycle: Equatable, Hashable, CustomStringConvertible {
+
+  case preparing
+  case recording
+  case paused
+  case finalizing
+  case readyForReview
+  case interrupted
+  case deleted
+
+  /**
+   * Capture that is not yet saved, interrupted or deleted.
+   */
+  public func isOpenCapture() -> Bool {
+    return try! FfiConverterBool.lift(
+      try! rustCall {
+        uniffiCallStatus in
+        uniffi_open_scribe_uniffi_fn_method_nativesessionlifecycle_is_open_capture(
+          FfiConverterTypeNativeSessionLifecycle_lower(self), uniffiCallStatus
+        )
+      })
+  }
+
+  // The local Rust `Display` implementation.
+  public var description: String {
+    return try! FfiConverterString.lift(
+      try! rustCall {
+        uniffiCallStatus in
+        uniffi_open_scribe_uniffi_fn_method_nativesessionlifecycle_uniffi_trait_display(
+          FfiConverterTypeNativeSessionLifecycle_lower(self), uniffiCallStatus
+        )
+      }
+    )
+  }
+}
+
+#if compiler(>=6)
+  extension NativeSessionLifecycle: Sendable {}
+#endif
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeNativeSessionLifecycle: FfiConverterRustBuffer {
+  typealias SwiftType = NativeSessionLifecycle
+
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws
+    -> NativeSessionLifecycle
+  {
+    let variant: Int32 = try readInt(&buf)
+    switch variant {
+
+    case 1: return .preparing
+
+    case 2: return .recording
+
+    case 3: return .paused
+
+    case 4: return .finalizing
+
+    case 5: return .readyForReview
+
+    case 6: return .interrupted
+
+    case 7: return .deleted
+
+    default: throw UniffiInternalError.unexpectedEnumCase
+    }
+  }
+
+  public static func write(_ value: NativeSessionLifecycle, into buf: inout [UInt8]) {
+    switch value {
+
+    case .preparing:
+      writeInt(&buf, Int32(1))
+
+    case .recording:
+      writeInt(&buf, Int32(2))
+
+    case .paused:
+      writeInt(&buf, Int32(3))
+
+    case .finalizing:
+      writeInt(&buf, Int32(4))
+
+    case .readyForReview:
+      writeInt(&buf, Int32(5))
+
+    case .interrupted:
+      writeInt(&buf, Int32(6))
+
+    case .deleted:
+      writeInt(&buf, Int32(7))
+
+    }
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeSessionLifecycle_lift(_ buf: RustBuffer) throws
+  -> NativeSessionLifecycle
+{
+  return try FfiConverterTypeNativeSessionLifecycle.lift(buf)
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeSessionLifecycle_lower(_ value: NativeSessionLifecycle)
+  -> RustBuffer
+{
+  return FfiConverterTypeNativeSessionLifecycle.lower(value)
+}
+
 public enum NativeSourceFailureReason: Equatable, Hashable {
 
   case captureFailed
@@ -12193,11 +12909,187 @@ public func FfiConverterTypeNativeSourceFailureReason_lower(_ value: NativeSourc
   return FfiConverterTypeNativeSourceFailureReason.lower(value)
 }
 
-public enum NativeSpeakerLabelOrigin: Equatable, Hashable {
+public enum NativeSourceLifecycle: Equatable, Hashable {
+
+  case required
+  case opening
+  case `open`
+  case capturing
+  case failed
+  case sealed
+  case unavailable
+
+}
+
+#if compiler(>=6)
+  extension NativeSourceLifecycle: Sendable {}
+#endif
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeNativeSourceLifecycle: FfiConverterRustBuffer {
+  typealias SwiftType = NativeSourceLifecycle
+
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws
+    -> NativeSourceLifecycle
+  {
+    let variant: Int32 = try readInt(&buf)
+    switch variant {
+
+    case 1: return .required
+
+    case 2: return .opening
+
+    case 3: return .`open`
+
+    case 4: return .capturing
+
+    case 5: return .failed
+
+    case 6: return .sealed
+
+    case 7: return .unavailable
+
+    default: throw UniffiInternalError.unexpectedEnumCase
+    }
+  }
+
+  public static func write(_ value: NativeSourceLifecycle, into buf: inout [UInt8]) {
+    switch value {
+
+    case .required:
+      writeInt(&buf, Int32(1))
+
+    case .opening:
+      writeInt(&buf, Int32(2))
+
+    case .`open`:
+      writeInt(&buf, Int32(3))
+
+    case .capturing:
+      writeInt(&buf, Int32(4))
+
+    case .failed:
+      writeInt(&buf, Int32(5))
+
+    case .sealed:
+      writeInt(&buf, Int32(6))
+
+    case .unavailable:
+      writeInt(&buf, Int32(7))
+
+    }
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeSourceLifecycle_lift(_ buf: RustBuffer) throws
+  -> NativeSourceLifecycle
+{
+  return try FfiConverterTypeNativeSourceLifecycle.lift(buf)
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeSourceLifecycle_lower(_ value: NativeSourceLifecycle)
+  -> RustBuffer
+{
+  return FfiConverterTypeNativeSourceLifecycle.lower(value)
+}
+
+public enum NativeSpeakerDisposition: Equatable, Hashable, CustomStringConvertible {
+
+  case topology
+  case unresolved
+
+  // The local Rust `Display` implementation.
+  public var description: String {
+    return try! FfiConverterString.lift(
+      try! rustCall {
+        uniffiCallStatus in
+        uniffi_open_scribe_uniffi_fn_method_nativespeakerdisposition_uniffi_trait_display(
+          FfiConverterTypeNativeSpeakerDisposition_lower(self), uniffiCallStatus
+        )
+      }
+    )
+  }
+}
+
+#if compiler(>=6)
+  extension NativeSpeakerDisposition: Sendable {}
+#endif
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeNativeSpeakerDisposition: FfiConverterRustBuffer {
+  typealias SwiftType = NativeSpeakerDisposition
+
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws
+    -> NativeSpeakerDisposition
+  {
+    let variant: Int32 = try readInt(&buf)
+    switch variant {
+
+    case 1: return .topology
+
+    case 2: return .unresolved
+
+    default: throw UniffiInternalError.unexpectedEnumCase
+    }
+  }
+
+  public static func write(_ value: NativeSpeakerDisposition, into buf: inout [UInt8]) {
+    switch value {
+
+    case .topology:
+      writeInt(&buf, Int32(1))
+
+    case .unresolved:
+      writeInt(&buf, Int32(2))
+
+    }
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeSpeakerDisposition_lift(_ buf: RustBuffer) throws
+  -> NativeSpeakerDisposition
+{
+  return try FfiConverterTypeNativeSpeakerDisposition.lift(buf)
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeSpeakerDisposition_lower(_ value: NativeSpeakerDisposition)
+  -> RustBuffer
+{
+  return FfiConverterTypeNativeSpeakerDisposition.lower(value)
+}
+
+public enum NativeSpeakerLabelOrigin: Equatable, Hashable, CustomStringConvertible {
 
   case sourceDefault
   case human
 
+  // The local Rust `Display` implementation.
+  public var description: String {
+    return try! FfiConverterString.lift(
+      try! rustCall {
+        uniffiCallStatus in
+        uniffi_open_scribe_uniffi_fn_method_nativespeakerlabelorigin_uniffi_trait_display(
+          FfiConverterTypeNativeSpeakerLabelOrigin_lower(self), uniffiCallStatus
+        )
+      }
+    )
+  }
 }
 
 #if compiler(>=6)
@@ -12503,6 +13395,310 @@ public func FfiConverterTypeNativeStorageError_lower(_ value: NativeStorageError
   return FfiConverterTypeNativeStorageError.lower(value)
 }
 
+public enum NativeStorageLevel: Equatable, Hashable, CustomStringConvertible {
+
+  case unchecked
+  case normal
+  case warning
+  case critical
+
+  // The local Rust `Display` implementation.
+  public var description: String {
+    return try! FfiConverterString.lift(
+      try! rustCall {
+        uniffiCallStatus in
+        uniffi_open_scribe_uniffi_fn_method_nativestoragelevel_uniffi_trait_display(
+          FfiConverterTypeNativeStorageLevel_lower(self), uniffiCallStatus
+        )
+      }
+    )
+  }
+}
+
+#if compiler(>=6)
+  extension NativeStorageLevel: Sendable {}
+#endif
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeNativeStorageLevel: FfiConverterRustBuffer {
+  typealias SwiftType = NativeStorageLevel
+
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws
+    -> NativeStorageLevel
+  {
+    let variant: Int32 = try readInt(&buf)
+    switch variant {
+
+    case 1: return .unchecked
+
+    case 2: return .normal
+
+    case 3: return .warning
+
+    case 4: return .critical
+
+    default: throw UniffiInternalError.unexpectedEnumCase
+    }
+  }
+
+  public static func write(_ value: NativeStorageLevel, into buf: inout [UInt8]) {
+    switch value {
+
+    case .unchecked:
+      writeInt(&buf, Int32(1))
+
+    case .normal:
+      writeInt(&buf, Int32(2))
+
+    case .warning:
+      writeInt(&buf, Int32(3))
+
+    case .critical:
+      writeInt(&buf, Int32(4))
+
+    }
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeStorageLevel_lift(_ buf: RustBuffer) throws -> NativeStorageLevel
+{
+  return try FfiConverterTypeNativeStorageLevel.lift(buf)
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeStorageLevel_lower(_ value: NativeStorageLevel) -> RustBuffer {
+  return FfiConverterTypeNativeStorageLevel.lower(value)
+}
+
+public enum NativeSuggestionBasis: Equatable, Hashable, CustomStringConvertible {
+
+  case draft
+  case final
+
+  // The local Rust `Display` implementation.
+  public var description: String {
+    return try! FfiConverterString.lift(
+      try! rustCall {
+        uniffiCallStatus in
+        uniffi_open_scribe_uniffi_fn_method_nativesuggestionbasis_uniffi_trait_display(
+          FfiConverterTypeNativeSuggestionBasis_lower(self), uniffiCallStatus
+        )
+      }
+    )
+  }
+}
+
+#if compiler(>=6)
+  extension NativeSuggestionBasis: Sendable {}
+#endif
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeNativeSuggestionBasis: FfiConverterRustBuffer {
+  typealias SwiftType = NativeSuggestionBasis
+
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws
+    -> NativeSuggestionBasis
+  {
+    let variant: Int32 = try readInt(&buf)
+    switch variant {
+
+    case 1: return .draft
+
+    case 2: return .final
+
+    default: throw UniffiInternalError.unexpectedEnumCase
+    }
+  }
+
+  public static func write(_ value: NativeSuggestionBasis, into buf: inout [UInt8]) {
+    switch value {
+
+    case .draft:
+      writeInt(&buf, Int32(1))
+
+    case .final:
+      writeInt(&buf, Int32(2))
+
+    }
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeSuggestionBasis_lift(_ buf: RustBuffer) throws
+  -> NativeSuggestionBasis
+{
+  return try FfiConverterTypeNativeSuggestionBasis.lift(buf)
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeSuggestionBasis_lower(_ value: NativeSuggestionBasis)
+  -> RustBuffer
+{
+  return FfiConverterTypeNativeSuggestionBasis.lower(value)
+}
+
+public enum NativeTitleSource: Equatable, Hashable {
+
+  case placeholder
+  case suggested
+  case person
+
+}
+
+#if compiler(>=6)
+  extension NativeTitleSource: Sendable {}
+#endif
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeNativeTitleSource: FfiConverterRustBuffer {
+  typealias SwiftType = NativeTitleSource
+
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws
+    -> NativeTitleSource
+  {
+    let variant: Int32 = try readInt(&buf)
+    switch variant {
+
+    case 1: return .placeholder
+
+    case 2: return .suggested
+
+    case 3: return .person
+
+    default: throw UniffiInternalError.unexpectedEnumCase
+    }
+  }
+
+  public static func write(_ value: NativeTitleSource, into buf: inout [UInt8]) {
+    switch value {
+
+    case .placeholder:
+      writeInt(&buf, Int32(1))
+
+    case .suggested:
+      writeInt(&buf, Int32(2))
+
+    case .person:
+      writeInt(&buf, Int32(3))
+
+    }
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeTitleSource_lift(_ buf: RustBuffer) throws -> NativeTitleSource {
+  return try FfiConverterTypeNativeTitleSource.lift(buf)
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeTitleSource_lower(_ value: NativeTitleSource) -> RustBuffer {
+  return FfiConverterTypeNativeTitleSource.lower(value)
+}
+
+public enum NativeTrackSourceKind: Equatable, Hashable, CustomStringConvertible {
+
+  case microphone
+  case applicationAudio
+  case systemAudio
+  case importedAudio
+
+  // The local Rust `Display` implementation.
+  public var description: String {
+    return try! FfiConverterString.lift(
+      try! rustCall {
+        uniffiCallStatus in
+        uniffi_open_scribe_uniffi_fn_method_nativetracksourcekind_uniffi_trait_display(
+          FfiConverterTypeNativeTrackSourceKind_lower(self), uniffiCallStatus
+        )
+      }
+    )
+  }
+}
+
+#if compiler(>=6)
+  extension NativeTrackSourceKind: Sendable {}
+#endif
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeNativeTrackSourceKind: FfiConverterRustBuffer {
+  typealias SwiftType = NativeTrackSourceKind
+
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws
+    -> NativeTrackSourceKind
+  {
+    let variant: Int32 = try readInt(&buf)
+    switch variant {
+
+    case 1: return .microphone
+
+    case 2: return .applicationAudio
+
+    case 3: return .systemAudio
+
+    case 4: return .importedAudio
+
+    default: throw UniffiInternalError.unexpectedEnumCase
+    }
+  }
+
+  public static func write(_ value: NativeTrackSourceKind, into buf: inout [UInt8]) {
+    switch value {
+
+    case .microphone:
+      writeInt(&buf, Int32(1))
+
+    case .applicationAudio:
+      writeInt(&buf, Int32(2))
+
+    case .systemAudio:
+      writeInt(&buf, Int32(3))
+
+    case .importedAudio:
+      writeInt(&buf, Int32(4))
+
+    }
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeTrackSourceKind_lift(_ buf: RustBuffer) throws
+  -> NativeTrackSourceKind
+{
+  return try FfiConverterTypeNativeTrackSourceKind.lift(buf)
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeTrackSourceKind_lower(_ value: NativeTrackSourceKind)
+  -> RustBuffer
+{
+  return FfiConverterTypeNativeTrackSourceKind.lower(value)
+}
+
 public enum NativeTranscriptAvailability: Equatable, Hashable {
 
   case final
@@ -12657,6 +13853,85 @@ public func FfiConverterTypeNativeTranscriptExportFormat_lower(
   return FfiConverterTypeNativeTranscriptExportFormat.lower(value)
 }
 
+public enum NativeTranscriptFinality: Equatable, Hashable, CustomStringConvertible {
+
+  case draft
+  case final
+  case superseded
+
+  // The local Rust `Display` implementation.
+  public var description: String {
+    return try! FfiConverterString.lift(
+      try! rustCall {
+        uniffiCallStatus in
+        uniffi_open_scribe_uniffi_fn_method_nativetranscriptfinality_uniffi_trait_display(
+          FfiConverterTypeNativeTranscriptFinality_lower(self), uniffiCallStatus
+        )
+      }
+    )
+  }
+}
+
+#if compiler(>=6)
+  extension NativeTranscriptFinality: Sendable {}
+#endif
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeNativeTranscriptFinality: FfiConverterRustBuffer {
+  typealias SwiftType = NativeTranscriptFinality
+
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws
+    -> NativeTranscriptFinality
+  {
+    let variant: Int32 = try readInt(&buf)
+    switch variant {
+
+    case 1: return .draft
+
+    case 2: return .final
+
+    case 3: return .superseded
+
+    default: throw UniffiInternalError.unexpectedEnumCase
+    }
+  }
+
+  public static func write(_ value: NativeTranscriptFinality, into buf: inout [UInt8]) {
+    switch value {
+
+    case .draft:
+      writeInt(&buf, Int32(1))
+
+    case .final:
+      writeInt(&buf, Int32(2))
+
+    case .superseded:
+      writeInt(&buf, Int32(3))
+
+    }
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeTranscriptFinality_lift(_ buf: RustBuffer) throws
+  -> NativeTranscriptFinality
+{
+  return try FfiConverterTypeNativeTranscriptFinality.lift(buf)
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeTranscriptFinality_lower(_ value: NativeTranscriptFinality)
+  -> RustBuffer
+{
+  return FfiConverterTypeNativeTranscriptFinality.lower(value)
+}
+
 public enum NativeTranscriptSpeakerAssignment: Equatable, Hashable {
 
   case existing(
@@ -12737,6 +14012,122 @@ public func FfiConverterTypeNativeTranscriptSpeakerAssignment_lower(
   return FfiConverterTypeNativeTranscriptSpeakerAssignment.lower(value)
 }
 
+public enum NativeTranscriptionFailureClass: Equatable, Hashable {
+
+  case cancelled
+  case capturePreempted
+  case modelUnavailable
+  case engineError
+  case resourceExhausted
+  case invalidResult
+  case inputUnavailable
+  case storageError
+  case orphaned
+  case staleReconciliation
+  case superseded
+
+}
+
+#if compiler(>=6)
+  extension NativeTranscriptionFailureClass: Sendable {}
+#endif
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeNativeTranscriptionFailureClass: FfiConverterRustBuffer {
+  typealias SwiftType = NativeTranscriptionFailureClass
+
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws
+    -> NativeTranscriptionFailureClass
+  {
+    let variant: Int32 = try readInt(&buf)
+    switch variant {
+
+    case 1: return .cancelled
+
+    case 2: return .capturePreempted
+
+    case 3: return .modelUnavailable
+
+    case 4: return .engineError
+
+    case 5: return .resourceExhausted
+
+    case 6: return .invalidResult
+
+    case 7: return .inputUnavailable
+
+    case 8: return .storageError
+
+    case 9: return .orphaned
+
+    case 10: return .staleReconciliation
+
+    case 11: return .superseded
+
+    default: throw UniffiInternalError.unexpectedEnumCase
+    }
+  }
+
+  public static func write(_ value: NativeTranscriptionFailureClass, into buf: inout [UInt8]) {
+    switch value {
+
+    case .cancelled:
+      writeInt(&buf, Int32(1))
+
+    case .capturePreempted:
+      writeInt(&buf, Int32(2))
+
+    case .modelUnavailable:
+      writeInt(&buf, Int32(3))
+
+    case .engineError:
+      writeInt(&buf, Int32(4))
+
+    case .resourceExhausted:
+      writeInt(&buf, Int32(5))
+
+    case .invalidResult:
+      writeInt(&buf, Int32(6))
+
+    case .inputUnavailable:
+      writeInt(&buf, Int32(7))
+
+    case .storageError:
+      writeInt(&buf, Int32(8))
+
+    case .orphaned:
+      writeInt(&buf, Int32(9))
+
+    case .staleReconciliation:
+      writeInt(&buf, Int32(10))
+
+    case .superseded:
+      writeInt(&buf, Int32(11))
+
+    }
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeTranscriptionFailureClass_lift(_ buf: RustBuffer) throws
+  -> NativeTranscriptionFailureClass
+{
+  return try FfiConverterTypeNativeTranscriptionFailureClass.lift(buf)
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeTranscriptionFailureClass_lower(
+  _ value: NativeTranscriptionFailureClass
+) -> RustBuffer {
+  return FfiConverterTypeNativeTranscriptionFailureClass.lower(value)
+}
+
 public enum NativeTranscriptionIntent: Equatable, Hashable {
 
   case resumeIncomplete
@@ -12803,6 +14194,91 @@ public func FfiConverterTypeNativeTranscriptionIntent_lower(_ value: NativeTrans
   -> RustBuffer
 {
   return FfiConverterTypeNativeTranscriptionIntent.lower(value)
+}
+
+public enum NativeTranscriptionRunState: Equatable, Hashable, CustomStringConvertible {
+
+  case running
+  case complete
+  case failed
+  case cancelled
+
+  // The local Rust `Display` implementation.
+  public var description: String {
+    return try! FfiConverterString.lift(
+      try! rustCall {
+        uniffiCallStatus in
+        uniffi_open_scribe_uniffi_fn_method_nativetranscriptionrunstate_uniffi_trait_display(
+          FfiConverterTypeNativeTranscriptionRunState_lower(self), uniffiCallStatus
+        )
+      }
+    )
+  }
+}
+
+#if compiler(>=6)
+  extension NativeTranscriptionRunState: Sendable {}
+#endif
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeNativeTranscriptionRunState: FfiConverterRustBuffer {
+  typealias SwiftType = NativeTranscriptionRunState
+
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws
+    -> NativeTranscriptionRunState
+  {
+    let variant: Int32 = try readInt(&buf)
+    switch variant {
+
+    case 1: return .running
+
+    case 2: return .complete
+
+    case 3: return .failed
+
+    case 4: return .cancelled
+
+    default: throw UniffiInternalError.unexpectedEnumCase
+    }
+  }
+
+  public static func write(_ value: NativeTranscriptionRunState, into buf: inout [UInt8]) {
+    switch value {
+
+    case .running:
+      writeInt(&buf, Int32(1))
+
+    case .complete:
+      writeInt(&buf, Int32(2))
+
+    case .failed:
+      writeInt(&buf, Int32(3))
+
+    case .cancelled:
+      writeInt(&buf, Int32(4))
+
+    }
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeTranscriptionRunState_lift(_ buf: RustBuffer) throws
+  -> NativeTranscriptionRunState
+{
+  return try FfiConverterTypeNativeTranscriptionRunState.lift(buf)
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeTranscriptionRunState_lower(_ value: NativeTranscriptionRunState)
+  -> RustBuffer
+{
+  return FfiConverterTypeNativeTranscriptionRunState.lower(value)
 }
 
 public enum NativeTranscriptionStage: Equatable, Hashable {
@@ -13141,6 +14617,30 @@ private struct FfiConverterOptionUInt64: FfiConverterRustBuffer {
 #if swift(>=5.8)
   @_documentation(visibility: private)
 #endif
+private struct FfiConverterOptionInt64: FfiConverterRustBuffer {
+  typealias SwiftType = Int64?
+
+  public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+    guard let value = value else {
+      writeInt(&buf, Int8(0))
+      return
+    }
+    writeInt(&buf, Int8(1))
+    FfiConverterInt64.write(value, into: &buf)
+  }
+
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+    switch try readInt(&buf) as Int8 {
+    case 0: return nil
+    case 1: return try FfiConverterInt64.read(from: &buf)
+    default: throw UniffiInternalError.unexpectedOptionalTag
+    }
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
 private struct FfiConverterOptionString: FfiConverterRustBuffer {
   typealias SwiftType = String?
 
@@ -13381,6 +14881,30 @@ private struct FfiConverterOptionTypeNativeMediaSourceKind: FfiConverterRustBuff
 #if swift(>=5.8)
   @_documentation(visibility: private)
 #endif
+private struct FfiConverterOptionTypeNativeSessionInterruptionReason: FfiConverterRustBuffer {
+  typealias SwiftType = NativeSessionInterruptionReason?
+
+  public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+    guard let value = value else {
+      writeInt(&buf, Int8(0))
+      return
+    }
+    writeInt(&buf, Int8(1))
+    FfiConverterTypeNativeSessionInterruptionReason.write(value, into: &buf)
+  }
+
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+    switch try readInt(&buf) as Int8 {
+    case 0: return nil
+    case 1: return try FfiConverterTypeNativeSessionInterruptionReason.read(from: &buf)
+    default: throw UniffiInternalError.unexpectedOptionalTag
+    }
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
 private struct FfiConverterOptionTypeNativeSpeechError: FfiConverterRustBuffer {
   typealias SwiftType = NativeSpeechError?
 
@@ -13397,6 +14921,54 @@ private struct FfiConverterOptionTypeNativeSpeechError: FfiConverterRustBuffer {
     switch try readInt(&buf) as Int8 {
     case 0: return nil
     case 1: return try FfiConverterTypeNativeSpeechError.read(from: &buf)
+    default: throw UniffiInternalError.unexpectedOptionalTag
+    }
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+private struct FfiConverterOptionTypeNativeSuggestionBasis: FfiConverterRustBuffer {
+  typealias SwiftType = NativeSuggestionBasis?
+
+  public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+    guard let value = value else {
+      writeInt(&buf, Int8(0))
+      return
+    }
+    writeInt(&buf, Int8(1))
+    FfiConverterTypeNativeSuggestionBasis.write(value, into: &buf)
+  }
+
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+    switch try readInt(&buf) as Int8 {
+    case 0: return nil
+    case 1: return try FfiConverterTypeNativeSuggestionBasis.read(from: &buf)
+    default: throw UniffiInternalError.unexpectedOptionalTag
+    }
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
+private struct FfiConverterOptionTypeNativeTranscriptionFailureClass: FfiConverterRustBuffer {
+  typealias SwiftType = NativeTranscriptionFailureClass?
+
+  public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+    guard let value = value else {
+      writeInt(&buf, Int8(0))
+      return
+    }
+    writeInt(&buf, Int8(1))
+    FfiConverterTypeNativeTranscriptionFailureClass.write(value, into: &buf)
+  }
+
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+    switch try readInt(&buf) as Int8 {
+    case 0: return nil
+    case 1: return try FfiConverterTypeNativeTranscriptionFailureClass.read(from: &buf)
     default: throw UniffiInternalError.unexpectedOptionalTag
     }
   }
@@ -13667,6 +15239,33 @@ private struct FfiConverterSequenceTypeNativeContextTextBlock: FfiConverterRustB
 #if swift(>=5.8)
   @_documentation(visibility: private)
 #endif
+private struct FfiConverterSequenceTypeNativeConversationTurn: FfiConverterRustBuffer {
+  typealias SwiftType = [NativeConversationTurn]
+
+  public static func write(_ value: [NativeConversationTurn], into buf: inout [UInt8]) {
+    let len = Int32(value.count)
+    writeInt(&buf, len)
+    for item in value {
+      FfiConverterTypeNativeConversationTurn.write(item, into: &buf)
+    }
+  }
+
+  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws
+    -> [NativeConversationTurn]
+  {
+    let len: Int32 = try readInt(&buf)
+    var seq = [NativeConversationTurn]()
+    seq.reserveCapacity(Int(len))
+    for _ in 0..<len {
+      seq.append(try FfiConverterTypeNativeConversationTurn.read(from: &buf))
+    }
+    return seq
+  }
+}
+
+#if swift(>=5.8)
+  @_documentation(visibility: private)
+#endif
 private struct FfiConverterSequenceTypeNativeDisplayTopology: FfiConverterRustBuffer {
   typealias SwiftType = [NativeDisplayTopology]
 
@@ -13902,33 +15501,6 @@ private struct FfiConverterSequenceTypeNativeRecoveryFinding: FfiConverterRustBu
     seq.reserveCapacity(Int(len))
     for _ in 0..<len {
       seq.append(try FfiConverterTypeNativeRecoveryFinding.read(from: &buf))
-    }
-    return seq
-  }
-}
-
-#if swift(>=5.8)
-  @_documentation(visibility: private)
-#endif
-private struct FfiConverterSequenceTypeNativeRetainedTranscriptRecovery: FfiConverterRustBuffer {
-  typealias SwiftType = [NativeRetainedTranscriptRecovery]
-
-  public static func write(_ value: [NativeRetainedTranscriptRecovery], into buf: inout [UInt8]) {
-    let len = Int32(value.count)
-    writeInt(&buf, len)
-    for item in value {
-      FfiConverterTypeNativeRetainedTranscriptRecovery.write(item, into: &buf)
-    }
-  }
-
-  public static func read(from buf: inout (data: Data, offset: Data.Index)) throws
-    -> [NativeRetainedTranscriptRecovery]
-  {
-    let len: Int32 = try readInt(&buf)
-    var seq = [NativeRetainedTranscriptRecovery]()
-    seq.reserveCapacity(Int(len))
-    for _ in 0..<len {
-      seq.append(try FfiConverterTypeNativeRetainedTranscriptRecovery.read(from: &buf))
     }
     return seq
   }
@@ -14431,6 +16003,15 @@ public func nativeApplyFixtureCommand(fixture: NativeFixture, command: NativeCom
       )
     })
 }
+public func nativeCapturePolicy() -> NativeCapturePolicy {
+  return try! FfiConverterTypeNativeCapturePolicy_lift(
+    try! rustCall {
+      uniffiCallStatus in
+      uniffi_open_scribe_uniffi_fn_func_native_capture_policy(
+        uniffiCallStatus
+      )
+    })
+}
 public func nativeFixture(fixture: NativeFixture) -> NativeSessionSnapshot {
   return try! FfiConverterTypeNativeSessionSnapshot_lift(
     try! rustCall {
@@ -14478,21 +16059,6 @@ public func nativeStatus() -> NativeStatus {
       )
     })
 }
-public func authorizeContentProviderRun(
-  configuration: NativeProviderConfiguration, authorizationId: String, sessionId: String,
-  granted: [NativeContentCategory]
-) throws -> [NativeContentCategory] {
-  return try FfiConverterSequenceTypeNativeContentCategory.lift(
-    try rustCallWithError(FfiConverterTypeNativeProviderError_lift) {
-      uniffiCallStatus in
-      uniffi_open_scribe_uniffi_fn_func_authorize_content_provider_run(
-        FfiConverterTypeNativeProviderConfiguration_lower(configuration),
-        FfiConverterString.lower(authorizationId),
-        FfiConverterString.lower(sessionId),
-        FfiConverterSequenceTypeNativeContentCategory.lower(granted), uniffiCallStatus
-      )
-    })
-}
 public func configureContentProvider(
   providerId: String, modelId: String, execution: NativeProviderExecution, origin: String?,
   credentialFingerprint: String?
@@ -14506,15 +16072,6 @@ public func configureContentProvider(
         FfiConverterTypeNativeProviderExecution_lower(execution),
         FfiConverterOptionString.lower(origin),
         FfiConverterOptionString.lower(credentialFingerprint), uniffiCallStatus
-      )
-    })
-}
-public func grantContentCategory(name: String) throws -> NativeContentCategory {
-  return try FfiConverterTypeNativeContentCategory_lift(
-    try rustCallWithError(FfiConverterTypeNativeProviderError_lift) {
-      uniffiCallStatus in
-      uniffi_open_scribe_uniffi_fn_func_grant_content_category(
-        FfiConverterString.lower(name), uniffiCallStatus
       )
     })
 }
@@ -14546,24 +16103,6 @@ public func outboundFromContentProviderConfiguration(
       )
     })
 }
-public func providerConfiguredNotice() -> String {
-  return try! FfiConverterString.lift(
-    try! rustCall {
-      uniffiCallStatus in
-      uniffi_open_scribe_uniffi_fn_func_provider_configured_notice(
-        uniffiCallStatus
-      )
-    })
-}
-public func providerNoOutboundNotice() -> String {
-  return try! FfiConverterString.lift(
-    try! rustCall {
-      uniffiCallStatus in
-      uniffi_open_scribe_uniffi_fn_func_provider_no_outbound_notice(
-        uniffiCallStatus
-      )
-    })
-}
 public func providerUnconfiguredNotice() -> String {
   return try! FfiConverterString.lift(
     try! rustCall {
@@ -14572,14 +16111,6 @@ public func providerUnconfiguredNotice() -> String {
         uniffiCallStatus
       )
     })
-}
-public func refuseContentProviderSecret(material: String) throws {
-  try rustCallWithError(FfiConverterTypeNativeProviderError_lift) {
-    uniffiCallStatus in
-    uniffi_open_scribe_uniffi_fn_func_refuse_content_provider_secret(
-      FfiConverterString.lower(material), uniffiCallStatus
-    )
-  }
 }
 public func retargetContentProviderRemote(
   configuration: NativeProviderConfiguration, authorizationId: String, sessionId: String,
@@ -14595,6 +16126,17 @@ public func retargetContentProviderRemote(
       FfiConverterString.lower(origin), uniffiCallStatus
     )
   }
+}
+/// A transcript timestamp: `m:ss` under an hour, `h:mm:ss` from an hour.
+/// Copy and the reader print the same stamp.
+public func transcriptClock(nanoseconds: Int64) -> String {
+  return try! FfiConverterString.lift(
+    try! rustCall {
+      uniffiCallStatus in
+      uniffi_open_scribe_uniffi_fn_func_transcript_clock(
+        FfiConverterInt64.lower(nanoseconds), uniffiCallStatus
+      )
+    })
 }
 /// Checks an untrusted `.openscribe` package without opening a library.
 public func verifyPortablePackage(packagePath: String) throws -> NativePortableSummary {
@@ -14625,6 +16167,9 @@ private let initializationResult: InitializationResult = {
   if uniffi_open_scribe_uniffi_checksum_func_native_apply_fixture_command() != 25897 {
     return InitializationResult.apiChecksumMismatch
   }
+  if uniffi_open_scribe_uniffi_checksum_func_native_capture_policy() != 49850 {
+    return InitializationResult.apiChecksumMismatch
+  }
   if uniffi_open_scribe_uniffi_checksum_func_native_fixture() != 10343 {
     return InitializationResult.apiChecksumMismatch
   }
@@ -14640,13 +16185,7 @@ private let initializationResult: InitializationResult = {
   if uniffi_open_scribe_uniffi_checksum_func_native_status() != 55397 {
     return InitializationResult.apiChecksumMismatch
   }
-  if uniffi_open_scribe_uniffi_checksum_func_authorize_content_provider_run() != 26513 {
-    return InitializationResult.apiChecksumMismatch
-  }
   if uniffi_open_scribe_uniffi_checksum_func_configure_content_provider() != 48810 {
-    return InitializationResult.apiChecksumMismatch
-  }
-  if uniffi_open_scribe_uniffi_checksum_func_grant_content_category() != 48680 {
     return InitializationResult.apiChecksumMismatch
   }
   if uniffi_open_scribe_uniffi_checksum_func_materialize_content_provider_review() != 64931 {
@@ -14656,19 +16195,13 @@ private let initializationResult: InitializationResult = {
   {
     return InitializationResult.apiChecksumMismatch
   }
-  if uniffi_open_scribe_uniffi_checksum_func_provider_configured_notice() != 17460 {
-    return InitializationResult.apiChecksumMismatch
-  }
-  if uniffi_open_scribe_uniffi_checksum_func_provider_no_outbound_notice() != 11844 {
-    return InitializationResult.apiChecksumMismatch
-  }
   if uniffi_open_scribe_uniffi_checksum_func_provider_unconfigured_notice() != 46472 {
     return InitializationResult.apiChecksumMismatch
   }
-  if uniffi_open_scribe_uniffi_checksum_func_refuse_content_provider_secret() != 11520 {
+  if uniffi_open_scribe_uniffi_checksum_func_retarget_content_provider_remote() != 3719 {
     return InitializationResult.apiChecksumMismatch
   }
-  if uniffi_open_scribe_uniffi_checksum_func_retarget_content_provider_remote() != 3719 {
+  if uniffi_open_scribe_uniffi_checksum_func_transcript_clock() != 17642 {
     return InitializationResult.apiChecksumMismatch
   }
   if uniffi_open_scribe_uniffi_checksum_func_verify_portable_package() != 50136 {
@@ -14764,12 +16297,8 @@ private let initializationResult: InitializationResult = {
   {
     return InitializationResult.apiChecksumMismatch
   }
-  if uniffi_open_scribe_uniffi_checksum_method_nativerecordingpreparation_prepare_session() != 12714
-  {
-    return InitializationResult.apiChecksumMismatch
-  }
   if uniffi_open_scribe_uniffi_checksum_method_nativerecordingpreparation_prepare_session_with_required_sources()
-    != 33857
+    != 2673
   {
     return InitializationResult.apiChecksumMismatch
   }
@@ -14805,7 +16334,7 @@ private let initializationResult: InitializationResult = {
   {
     return InitializationResult.apiChecksumMismatch
   }
-  if uniffi_open_scribe_uniffi_checksum_method_nativerecordingpreparation_context_action() != 15524
+  if uniffi_open_scribe_uniffi_checksum_method_nativerecordingpreparation_context_action() != 54299
   {
     return InitializationResult.apiChecksumMismatch
   }
@@ -14823,7 +16352,7 @@ private let initializationResult: InitializationResult = {
     return InitializationResult.apiChecksumMismatch
   }
   if uniffi_open_scribe_uniffi_checksum_method_nativerecordingpreparation_commit_live_draft_window()
-    != 38349
+    != 14269
   {
     return InitializationResult.apiChecksumMismatch
   }
@@ -14857,12 +16386,8 @@ private let initializationResult: InitializationResult = {
   if uniffi_open_scribe_uniffi_checksum_method_nativespeechmodels_models() != 16715 {
     return InitializationResult.apiChecksumMismatch
   }
-  if uniffi_open_scribe_uniffi_checksum_method_nativespeechmodels_needs_decoded_companion() != 16190
-  {
-    return InitializationResult.apiChecksumMismatch
-  }
   if uniffi_open_scribe_uniffi_checksum_method_nativespeechmodels_needs_decoded_companion_for_intent()
-    != 15853
+    != 9913
   {
     return InitializationResult.apiChecksumMismatch
   }
@@ -14875,10 +16400,7 @@ private let initializationResult: InitializationResult = {
   if uniffi_open_scribe_uniffi_checksum_method_nativespeechmodels_repair_from_file() != 12844 {
     return InitializationResult.apiChecksumMismatch
   }
-  if uniffi_open_scribe_uniffi_checksum_method_nativespeechmodels_transcribe_session() != 61554 {
-    return InitializationResult.apiChecksumMismatch
-  }
-  if uniffi_open_scribe_uniffi_checksum_method_nativespeechmodels_transcribe_with_intent() != 34459
+  if uniffi_open_scribe_uniffi_checksum_method_nativespeechmodels_transcribe_with_intent() != 63180
   {
     return InitializationResult.apiChecksumMismatch
   }
@@ -14967,7 +16489,12 @@ private let initializationResult: InitializationResult = {
   {
     return InitializationResult.apiChecksumMismatch
   }
-  if uniffi_open_scribe_uniffi_checksum_method_nativetranscriptlibrary_conversation_text() != 39867
+  if uniffi_open_scribe_uniffi_checksum_method_nativetranscriptlibrary_conversation_document()
+    != 62813
+  {
+    return InitializationResult.apiChecksumMismatch
+  }
+  if uniffi_open_scribe_uniffi_checksum_method_nativetranscriptlibrary_conversation_text() != 15978
   {
     return InitializationResult.apiChecksumMismatch
   }
@@ -15030,12 +16557,7 @@ private let initializationResult: InitializationResult = {
     return InitializationResult.apiChecksumMismatch
   }
   if uniffi_open_scribe_uniffi_checksum_method_nativetranscriptlibrary_prepare_speaker_diarization()
-    != 59089
-  {
-    return InitializationResult.apiChecksumMismatch
-  }
-  if uniffi_open_scribe_uniffi_checksum_method_nativetranscriptlibrary_recover_retained_transcripts()
-    != 15127
+    != 29945
   {
     return InitializationResult.apiChecksumMismatch
   }
@@ -15066,7 +16588,7 @@ private let initializationResult: InitializationResult = {
   {
     return InitializationResult.apiChecksumMismatch
   }
-  if uniffi_open_scribe_uniffi_checksum_method_nativetranscriptlibrary_suggest_title() != 39023 {
+  if uniffi_open_scribe_uniffi_checksum_method_nativetranscriptlibrary_suggest_title() != 57698 {
     return InitializationResult.apiChecksumMismatch
   }
   if uniffi_open_scribe_uniffi_checksum_method_nativeworkcoordinator_admit() != 6138 {
@@ -15078,7 +16600,7 @@ private let initializationResult: InitializationResult = {
   if uniffi_open_scribe_uniffi_checksum_method_nativeworkcoordinator_finish() != 24016 {
     return InitializationResult.apiChecksumMismatch
   }
-  if uniffi_open_scribe_uniffi_checksum_method_nativeworkcoordinator_maintain_retained() != 36604 {
+  if uniffi_open_scribe_uniffi_checksum_method_nativeworkcoordinator_maintain_retained() != 12232 {
     return InitializationResult.apiChecksumMismatch
   }
   if uniffi_open_scribe_uniffi_checksum_method_nativeworkcoordinator_outcomes() != 5170 {
@@ -15087,7 +16609,7 @@ private let initializationResult: InitializationResult = {
   if uniffi_open_scribe_uniffi_checksum_method_nativeworkcoordinator_queue() != 20194 {
     return InitializationResult.apiChecksumMismatch
   }
-  if uniffi_open_scribe_uniffi_checksum_method_nativeworkcoordinator_recover_intent() != 43198 {
+  if uniffi_open_scribe_uniffi_checksum_method_nativeworkcoordinator_recover_intent() != 52015 {
     return InitializationResult.apiChecksumMismatch
   }
   if uniffi_open_scribe_uniffi_checksum_method_nativeworkcoordinator_request() != 4520 {

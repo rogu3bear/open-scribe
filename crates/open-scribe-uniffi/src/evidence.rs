@@ -84,6 +84,7 @@ impl NativeTranscriptLibrary {
     ) -> Result<String, NativeStorageError> {
         encode(
             self.library()?
+                .store()
                 .cite_context_event(
                     &SessionId(session_id),
                     &event_id,
@@ -101,6 +102,7 @@ impl NativeTranscriptLibrary {
     ) -> Result<String, NativeStorageError> {
         encode(
             self.library()?
+                .store()
                 .cite_transcript_segment(&SessionId(session_id), &revision_id, sequence)
                 .map_err(map_storage_error)?,
         )
@@ -129,6 +131,7 @@ impl NativeTranscriptLibrary {
         };
         let resolved = self
             .library()?
+            .store()
             .resolve_evidence(&reference)
             .map_err(map_storage_error)?;
         Ok(NativeResolvedEvidence {
@@ -184,6 +187,7 @@ impl NativeTranscriptLibrary {
         let claim = open_scribe_core::DerivedClaim::parse(&claim_json)
             .map_err(|_| NativeStorageError::InvalidRequest)?;
         self.library()?
+            .store_mut()
             .insert_derived_claim(&claim)
             .map_err(map_storage_error)
     }
@@ -194,6 +198,7 @@ impl NativeTranscriptLibrary {
         session_id: String,
     ) -> Result<String, NativeStorageError> {
         self.library()?
+            .store()
             .meeting_memory_revision(&SessionId(session_id))
             .map_err(map_storage_error)
     }
@@ -230,6 +235,7 @@ impl NativeTranscriptLibrary {
     ) -> Result<NativeClaimNavigation, NativeStorageError> {
         let navigation = self
             .library()?
+            .store()
             .navigate_derived_claim(&SessionId(session_id), &claim_id)
             .map_err(map_storage_error)?;
         Ok(NativeClaimNavigation {

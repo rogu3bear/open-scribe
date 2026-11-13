@@ -262,10 +262,7 @@ fn adjudicate_derived_claim_locks_human_text_without_advancing_meeting_memory() 
         .unwrap();
     assert_eq!(effective.revision_id, rejected.revision_id);
     assert_eq!(effective.text, "The team deferred the remote recorder.");
-    assert_eq!(
-        body(&fixture.store, "revision-a").contains("upload every"),
-        false
-    );
+    assert!(!body(&fixture.store, "revision-a").contains("upload every"));
     assert_eq!(
         fixture.store.meeting_memory_revision(&session).unwrap(),
         "0"

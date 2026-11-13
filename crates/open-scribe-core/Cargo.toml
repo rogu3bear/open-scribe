@@ -29,7 +29,7 @@ path = "src/bin/emit_runtime_capabilities.rs"
 
 [[bin]]
 name = "open-scribe-drift"
-path = "src/bin/open_scribe_drift.rs"
+path = "src/bin/open_scribe_drift/main.rs"
 
 [dev-dependencies]
 rusqlite = { version = "0.40.2", features = ["bundled"] }

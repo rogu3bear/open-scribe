@@ -366,7 +366,8 @@ final class TranscriptionSchedulerTests: XCTestCase {
     // render the selected Final projection beside the real held native request.
     let session = RuntimeSessionPresentation(
       native: NativeRuntimeSessionSnapshot(
-        sessionId: saved.sessionId, title: saved.title, lifecycle: saved.lifecycle,
+        sessionId: saved.sessionId, title: saved.title, titleSource: .person,
+        lifecycle: saved.lifecycle,
         health: saved.health, elapsedSeconds: saved.elapsedSeconds,
         journalDurable: saved.journalDurable, mediaFilesOpen: saved.mediaFilesOpen,
         interruptionReason: saved.interruptionReason, recovered: saved.recovered,
@@ -385,7 +386,7 @@ final class TranscriptionSchedulerTests: XCTestCase {
           startNanoseconds: 0, endNanoseconds: 100_000_000,
           verbatimText: "Machine reading", effectiveText: "Human corrected reading",
           corrected: true, speakerLabel: "You", speakerNamedByUser: false,
-          namedSpeakerId: nil, finality: "final")
+          namedSpeakerId: nil, finality: .final)
       ], speakers: [])
     let section = TranscriptSection(
       session: session, transcripts: transcript,
@@ -475,21 +476,21 @@ final class TranscriptionSchedulerTests: XCTestCase {
         completedChunks: 43, totalChunks: 83,
         failureClass: nil))
     XCTAssertEqual(running.state, .running)
-    XCTAssertEqual(running.statusText, "Transcript ready for 1 of 2 tracks · transcription running")
+    XCTAssertEqual(running.statusText, "Transcript ready for 1 of 2 sources · transcribing")
     XCTAssertEqual(running.runningFraction.map { ($0 * 100).rounded() }, 52)
     let failed = RuntimeTranscriptPresentation(
       native: NativeRuntimeTranscriptSnapshot(
         document: .partial, replacementResumable: true,
         state: .failed, selectedRevisionIds: ["reviewed-A"], documentVersion: "v1",
-        attempt: .failed, attemptFailure: "invalid_result", totalTracks: 2,
+        attempt: .failed, attemptFailure: .invalidResult, totalTracks: 2,
         finalTracks: 1, completedChunks: 0, totalChunks: 0,
-        failureClass: "invalid_result"))
-    XCTAssertEqual(failed.statusText, "Transcript ready for 1 of 2 tracks · latest attempt failed")
+        failureClass: .invalidResult))
+    XCTAssertEqual(failed.statusText, "Transcript ready for 1 of 2 sources · transcription failed")
     XCTAssertTrue(failed.replacementResumable)
     XCTAssertEqual(failed.selectedRevisionIds, ["reviewed-A"])
     XCTAssertTrue(
-      RuntimeTranscriptPresentation.failureText(failed.failureClass).contains(
-        "rebuilds it from the parts that were kept"))
+      TranscriptStatusPresentation.failureReason(failed.failureClass).contains(
+        "rebuilds the transcript from them"))
     let absent = RuntimeTranscriptPresentation(native: nil)
     XCTAssertEqual(absent.state, .unknown)
     XCTAssertEqual(absent.documentAvailability, .unavailable)
@@ -503,7 +504,7 @@ final class TranscriptionSchedulerTests: XCTestCase {
           completedChunks: 0, totalChunks: 0,
           failureClass: nil)
       ).statusText,
-      "Transcript ready for 1 of 2 tracks")
+      "Transcript ready for 1 of 2 sources")
   }
 
   func testReadableFinalAndReplacementOutcomesShareOneProjection() {
@@ -512,49 +513,56 @@ final class TranscriptionSchedulerTests: XCTestCase {
         native: NativeRuntimeTranscriptSnapshot(
           document: .final, replacementResumable: attempt == .failed,
           state: .final, selectedRevisionIds: ["reviewed"], documentVersion: "reviewed-v1",
-          attempt: attempt, attemptFailure: attempt == .failed ? "engine_error" : nil,
+          attempt: attempt, attemptFailure: attempt == .failed ? .engineError : nil,
           totalTracks: 1, finalTracks: 1, completedChunks: 0, totalChunks: 0, failureClass: nil))
       XCTAssertEqual(document.documentAvailability, .final)
-      XCTAssertTrue(document.line(for: nil).text.hasPrefix("Transcript ready · replacement"))
+      XCTAssertTrue(document.line(for: nil).text.hasPrefix("Transcript ready · retranscri"))
       XCTAssertEqual(document.line(for: nil).text, document.statusText)
     }
     let available = RuntimeTranscriptPresentation(state: .final, finalTracks: 1)
-    XCTAssertTrue(available.line(for: .preempted).text.contains("yielded to capture"))
+    XCTAssertTrue(available.line(for: .preempted).text.contains("paused for a recording"))
     XCTAssertTrue(available.line(for: .cancelled).text.contains("cancelled"))
     XCTAssertFalse(available.line(for: .cancelled).text.contains("failed"))
   }
 
   func testIsolatedHistoricalCaptureCannotClaimRecordingOrLeaveTheAttentionList() {
-    for lifecycle in ["preparing", "recording", "paused", "finalizing"] {
+    for lifecycle: NativeSessionLifecycle in [.preparing, .recording, .paused, .finalizing] {
       let session = RuntimeSessionPresentation(
         native: NativeRuntimeSessionSnapshot(
-          sessionId: "historical", title: "Unavailable history", lifecycle: lifecycle,
-          health: "healthy", elapsedSeconds: 1, journalDurable: true, mediaFilesOpen: true,
+          sessionId: "historical", title: "Unavailable history", titleSource: .person,
+          lifecycle: lifecycle,
+          health: .healthy, elapsedSeconds: 1, journalDurable: true, mediaFilesOpen: true,
           interruptionReason: nil, recovered: false, hasCaptureTimeline: true,
-          sources: [], playableMedia: nil, captureRecoveryIsolated: true))
+          sources: [], playableMedia: nil, captureRecoveryIsolated: true, preservedAudio: true))
       XCTAssertEqual(session.lifecycle, lifecycle)
       XCTAssertFalse(session.isRecording)
       XCTAssertFalse(session.isDegradedRecording)
       XCTAssertNil(session.pausedStatusSymbolName)
       XCTAssertTrue(session.needsAttention)
-      XCTAssertEqual(session.statusText, "Capture recovery unavailable")
-      XCTAssertTrue(session.interruptionText?.contains(lifecycle) == true)
+      XCTAssertEqual(session.statusText, "Audio couldn't be opened")
+      XCTAssertTrue(session.interruptionText?.contains("couldn't open the audio") == true)
       XCTAssertNotNil(session.transcriptionUnavailableReason)
-      XCTAssertTrue(session.deletionUnavailableReason?.contains("recovery") == true)
-      XCTAssertEqual(
-        LibraryConversationLists.interrupted([session]).map(\.sessionId), ["historical"])
+      XCTAssertTrue(
+        LibraryPresentation.trashUnavailableReason(session, recorderIdle: true)?.contains(
+          "couldn't be opened") == true)
+      let library = LibraryPresentation(current: session, saved: [], now: Date())
+      XCTAssertNil(library.now)
+      XCTAssertEqual(library.needsAttention.map(\.sessionId), ["historical"])
+      XCTAssertTrue(library.didNotRecord.isEmpty)
     }
   }
 
   func testSavedAndInterruptedConversationsRetainTheirTrashAction() {
-    for lifecycle in ["ready_for_review", "interrupted"] {
+    for lifecycle: NativeSessionLifecycle in [.readyForReview, .interrupted] {
       let session = RuntimeSessionPresentation(
         native: NativeRuntimeSessionSnapshot(
-          sessionId: "saved", title: "Saved conversation", lifecycle: lifecycle,
-          health: "healthy", elapsedSeconds: 1, journalDurable: true, mediaFilesOpen: false,
-          interruptionReason: nil, recovered: lifecycle == "interrupted", hasCaptureTimeline: true,
-          sources: [], playableMedia: nil))
-      XCTAssertNil(session.deletionUnavailableReason)
+          sessionId: "saved", title: "Saved conversation", titleSource: .person,
+          lifecycle: lifecycle,
+          health: .healthy, elapsedSeconds: 1, journalDurable: true, mediaFilesOpen: false,
+          interruptionReason: nil, recovered: lifecycle == .interrupted, hasCaptureTimeline: true,
+          sources: [], playableMedia: nil, preservedAudio: true, canMoveToTrash: true))
+      XCTAssertNil(LibraryPresentation.trashUnavailableReason(session, recorderIdle: true))
+      XCTAssertNotNil(LibraryPresentation.trashUnavailableReason(session, recorderIdle: false))
     }
   }
 
@@ -606,7 +614,8 @@ final class TranscriptionSchedulerTests: XCTestCase {
         currentSession: nil,
         savedSessions: [
           NativeRuntimeSessionSnapshot(
-            sessionId: "s1", title: title, lifecycle: "ready_for_review", health: "healthy",
+            sessionId: "s1", title: title, titleSource: .person, lifecycle: .readyForReview,
+            health: .healthy,
             elapsedSeconds: 1, journalDurable: true, mediaFilesOpen: false,
             interruptionReason: nil, recovered: false, hasCaptureTimeline: true,
             sources: [], playableMedia: nil,

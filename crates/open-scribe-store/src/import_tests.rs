@@ -2,6 +2,7 @@ use std::fs::OpenOptions;
 use std::io::{SeekFrom, Write};
 use std::os::unix::fs::{FileExt, MetadataExt, symlink};
 
+use sha2::{Digest, Sha256};
 use tempfile::TempDir;
 
 use super::*;
@@ -1223,4 +1224,22 @@ fn compressed_import_transcribes_only_through_a_matching_decoded_companion() {
             .open_decoded_transcription_input(&input, &decoded)
             .is_err()
     );
+}
+
+#[test]
+fn a_file_name_with_control_characters_imports_under_a_cleaned_title() {
+    let temp = TempDir::new().unwrap();
+    let source = temp.path().join("call.caf");
+    write_recoverable_caf(&source, 960);
+    let mut store = SessionStore::open(temp.path().join("Open Scribe")).unwrap();
+    store
+        .import_recoverable_caf(ImportMediaRequest {
+            title: "Weekly\tcall\u{7}".into(),
+            source_path: source,
+        })
+        .unwrap();
+    let snapshot = store.runtime_library_snapshot().unwrap();
+    assert_eq!(snapshot.saved_sessions[0].title, "Weekly call");
+    assert!(snapshot.saved_sessions[0].preserved_audio);
+    assert!(snapshot.saved_sessions[0].can_move_to_trash);
 }

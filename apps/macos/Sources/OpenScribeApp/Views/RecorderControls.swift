@@ -1,23 +1,16 @@
 import AppKit
 import SwiftUI
 
+/// Pause, Resume, the microphone choices, and Add Marker for the recording in
+/// progress. The toolbar and the menu bar show the same controls.
 struct RecorderControls: View {
-  /// A `.menu`-style `MenuBarExtra` never shows a `.popover`, so the menu bar
-  /// presents Sources as a native submenu instead. The main window keeps the
-  /// popover.
-  enum SourcesPresentation { case popover, menu }
-
   @ObservedObject var recorder: LiveMicrophoneRecordingController
   @ObservedObject var store: RuntimeLibraryStore
-  var sourcesPresentation: SourcesPresentation = .popover
-  @StateObject private var picker = RecorderApplicationPicker()
-  @State private var showsSources = false
 
   var body: some View {
     if recorder.canPause {
-      RecordingShortcutMount(
-        title: ConversationControlLabels.pause,
-        identifier: "Pause recording",
+      HostedButton(
+        title: ConversationControlLabels.pause, identifier: "Pause recording",
         shortcut: ConversationControlLabels.pauseShortcut
       ) {
         Task {
@@ -25,12 +18,10 @@ struct RecorderControls: View {
           store.refresh()
         }
       }
-      .frame(width: 120, height: 32, alignment: .leading)
     }
     if recorder.canResume {
-      RecordingShortcutMount(
-        title: ConversationControlLabels.resume,
-        identifier: "Resume recording",
+      HostedButton(
+        title: ConversationControlLabels.resume, identifier: "Resume recording",
         shortcut: ConversationControlLabels.pauseShortcut
       ) {
         Task {
@@ -38,7 +29,6 @@ struct RecorderControls: View {
           store.refresh()
         }
       }
-      .frame(width: 120, height: 32, alignment: .leading)
     }
     if let microphoneName = recorder.replacementMicrophoneName {
       Button {
@@ -62,18 +52,34 @@ struct RecorderControls: View {
       }
     }
     if recorder.canMark {
-      RecordingShortcutMount(
-        title: ConversationControlLabels.addMarker,
-        identifier: "Add marker",
+      HostedButton(
+        title: ConversationControlLabels.addMarker, identifier: "Add marker",
         shortcut: ConversationControlLabels.markerShortcut
       ) {
         recorder.addMarker()
         store.refresh()
       }
-      .frame(width: 140, height: 32, alignment: .leading)
     }
+  }
+}
+
+/// Which sources the next recording captures. It is its own control, apart
+/// from Record, in the toolbar and in the menu bar.
+struct RecorderSourcesControl: View {
+  /// A `.menu`-style `MenuBarExtra` never shows a `.popover`, so the menu bar
+  /// presents Sources as a native submenu instead. The main window keeps the
+  /// popover.
+  enum Presentation { case popover, menu }
+
+  @ObservedObject var recorder: LiveMicrophoneRecordingController
+  @ObservedObject var store: RuntimeLibraryStore
+  var presentation: Presentation = .popover
+  @StateObject private var picker = RecorderApplicationPicker()
+  @State private var showsSources = false
+
+  var body: some View {
     let sourcesEnabled = recorder.canStart || recorder.canResume
-    switch sourcesPresentation {
+    switch presentation {
     case .popover:
       Button("Sources", systemImage: "slider.horizontal.3") { showsSources = true }
         .disabled(!sourcesEnabled)
@@ -134,74 +140,6 @@ struct RecorderControls: View {
   }
 }
 
-/// A recording shortcut button. Created with the first layout so Pause, Resume,
-/// and Add Marker call the recorder actions directly.
-private struct RecordingShortcutMount: NSViewRepresentable {
-  let title: String
-  let identifier: String
-  let shortcut: ConversationShortcut
-  let onAction: () -> Void
-
-  func makeNSView(context: Context) -> RecordingShortcutControl {
-    let view = RecordingShortcutControl(title: title, identifier: identifier, shortcut: shortcut)
-    view.bind(onAction: onAction)
-    return view
-  }
-
-  func updateNSView(_ view: RecordingShortcutControl, context: Context) {
-    view.bind(onAction: onAction)
-  }
-}
-
-private final class RecordingShortcutControl: NSView {
-  private let button: NSButton
-  private var onAction: (() -> Void)?
-
-  init(title: String, identifier: String, shortcut: ConversationShortcut) {
-    let button = NSButton(title: title, target: nil, action: nil)
-    self.button = button
-    super.init(frame: .zero)
-    setAccessibilityIdentifier(identifier)
-    button.bezelStyle = .rounded
-    button.setAccessibilityLabel(title)
-    button.setAccessibilityIdentifier(identifier)
-    button.keyEquivalent = String(shortcut.key.character)
-    button.keyEquivalentModifierMask = Self.modifierMask(shortcut.modifiers)
-    button.target = self
-    button.action = #selector(activate)
-    button.translatesAutoresizingMaskIntoConstraints = false
-    addSubview(button)
-    NSLayoutConstraint.activate([
-      button.leadingAnchor.constraint(equalTo: leadingAnchor),
-      button.centerYAnchor.constraint(equalTo: centerYAnchor),
-      button.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor),
-    ])
-  }
-
-  required init?(coder: NSCoder) {
-    nil
-  }
-
-  func bind(onAction: @escaping () -> Void) {
-    self.onAction = onAction
-    button.isEnabled = true
-  }
-
-  @objc private func activate() {
-    guard button.isEnabled else { return }
-    onAction?()
-  }
-
-  private static func modifierMask(_ modifiers: EventModifiers) -> NSEvent.ModifierFlags {
-    var mask: NSEvent.ModifierFlags = []
-    if modifiers.contains(.command) { mask.insert(.command) }
-    if modifiers.contains(.shift) { mask.insert(.shift) }
-    if modifiers.contains(.option) { mask.insert(.option) }
-    if modifiers.contains(.control) { mask.insert(.control) }
-    return mask
-  }
-}
-
 struct RecorderEventList: View {
   let events: [NativeRecorderEvent]
   var heading = "Markers and recording events"
@@ -226,18 +164,20 @@ struct RecorderEventList: View {
   }
   private func title(_ event: NativeRecorderEvent) -> String {
     switch event.kind {
-    case "marker_added": event.label.isEmpty ? "Marker" : event.label
-    case "capture_paused": "Paused"
-    case "capture_resumed": "Resumed"
-    case "source_scope_selected": "Selected: \(event.label)"
-    case "storage_observed": "Storage: \(event.label)"
-    case "source_failed": "\(event.label) stopped"
-    case "microphone_restore_requested": "Reconnect microphone"
-    case "microphone_restore_cancelled": "Microphone reconnect cancelled"
-    case "microphone_retired_unstarted": "Microphone stopped"
-    case "system_sleep_observed": "Mac went to sleep"
-    case "system_wake_observed": "Mac woke"
-    default: event.kind
+    case .markerAdded: event.label.isEmpty ? "Marker" : event.label
+    case .pauseRequested: "Pausing"
+    case .capturePaused: "Paused"
+    case .resumeRequested: "Resuming"
+    case .captureResumed: "Resumed"
+    case .pausedSessionFinalized: "Saved while paused"
+    case .sourceScopeSelected: "Selected: \(event.label)"
+    case .storageObserved: "Storage: \(event.label)"
+    case .sourceFailed: "\(event.label) stopped"
+    case .microphoneRestoreRequested: "Reconnect microphone"
+    case .microphoneRestoreCancelled: "Microphone reconnect cancelled"
+    case .microphoneRetiredUnstarted: "Microphone stopped"
+    case .systemSleepObserved: "Mac went to sleep"
+    case .systemWakeObserved: "Mac woke"
     }
   }
 }

@@ -23,6 +23,8 @@ struct ConversationWorkspaceView: View {
   /// Markdown and the other transcript formats ask for a destination. The
   /// panel is the shipped default; a hosted proof supplies a file URL.
   var exportDestination: @MainActor (String) -> URL? = ConversationExportPanel.choose
+  /// The window's own notices, set in this document's notice position.
+  var windowNotices: WindowNotices = .none
 
   @AppStorage(ConversationWorkspaceView.detailsDefaultsKey) private var showsDetails = false
   @StateObject private var speakerActions = SpeakerActionController()
@@ -31,16 +33,20 @@ struct ConversationWorkspaceView: View {
   @State private var editingDetails: ConversationMetadataPresentation?
   @State private var contextSeek: ContextSeekRequest?
   @State private var copyNote: String?
-  @State private var showingModels = false
 
   static let detailsDefaultsKey = "OpenScribeShowsConversationDetails"
 
   private var title: String { ConversationIdentityPresentation.title(for: session) }
-  private var isLoaded: Bool { transcripts.sessionId == session.sessionId }
+  /// This conversation's document, once the model holds it.
+  private var loaded: LoadedConversation? { transcripts.loaded(session.sessionId) }
+  private var actions: ConversationActions {
+    ConversationActions(
+      store: store, transcripts: transcripts, playback: playbackController,
+      recorderIdle: canStartNewRecording)
+  }
   private var canSeek: Bool {
     session.hasCaptureTimeline || session.playableMedia?.isPlayable == true
   }
-  private var hasText: Bool { isLoaded && !transcripts.segments.isEmpty }
   private var hasPreservedAudio: Bool {
     session.hasVerifiedPreservedAudio(from: playbackController.sessions)
   }
@@ -77,8 +83,9 @@ struct ConversationWorkspaceView: View {
         .keyboardShortcut("i", modifiers: [.command, .option])
       }
     }
-    .task(id: loadIdentity) {
-      await transcripts.load(session: session)
+    // One read per document identity; Details reads the same document.
+    .task(id: TranscriptLibraryModel.documentIdentity(session)) {
+      await transcripts.open(session)
       suggestions.considerOpen(session)
     }
     .task(id: "\(session.sessionId)|\(contextSeek?.id.uuidString ?? "")") {
@@ -104,26 +111,15 @@ struct ConversationWorkspaceView: View {
     .sheet(item: $editingDetails) { presentation in
       ConversationDetailsSheet(
         session: presentation.session,
-        declaration: transcripts.sessionId == presentation.session.sessionId
-          ? transcripts.contextDetail?.declaration : nil,
+        declaration: transcripts.loaded(presentation.session.sessionId)?.contextDetail?
+          .declaration,
         store: store,
         onSaved: {
           Task { await transcripts.reloadAfterDetailsSave(session: presentation.session) }
         },
         onClose: { presentation.close(&editingDetails) })
     }
-    .sheet(isPresented: $showingModels) {
-      SpeechModelSheet(speech: speech) { showingModels = false }
-    }
-  }
-
-  /// Launch recovery, a finished run, a correction, or new Draft windows
-  /// change the document, and it rereads itself.
-  private var loadIdentity: String {
-    session.sessionId
-      + (session.transcriptionUnavailableReason == nil ? ":timed" : ":untimed")
-      + ":\(session.transcript.state.rawValue):\(session.transcript.documentVersion)"
-      + ":\(session.transcript.draftWindows)"
+    .speechModelSheet(speech, in: .conversation)
   }
 
   // MARK: Document
@@ -136,25 +132,13 @@ struct ConversationWorkspaceView: View {
             header
               .padding(.top, 36)
             notices
-              .padding(.leading, Interview.shoulder)
               .padding(.top, 16)
-            MarkerListMount(
-              events: recorderEvents, canSeek: canSeek, onSeek: seek
-            )
-            .frame(
-              maxWidth: .infinity,
-              minHeight: Self.markerListHeight(recorderEvents),
-              alignment: .topLeading
-            )
-            .padding(.leading, Interview.shoulder)
-            .padding(.top, recorderEvents.contains { $0.kind == "marker_added" } ? 18 : 0)
-            if session.needsAttention {
-              preservedAudio
-                .padding(.leading, Interview.shoulder)
+            markers
+            if session.needsAttention, !session.didNotRecord {
+              keptAudio
                 .padding(.top, 18)
             }
             InterviewRule()
-              .padding(.leading, Interview.shoulder)
               .padding(.top, 24)
               .padding(.bottom, 22)
             transcript(proxy: proxy)
@@ -182,10 +166,8 @@ struct ConversationWorkspaceView: View {
         correctionActions: correctionActions, sessionId: session.sessionId,
         suggestedNames: suggestions.suggestions[session.sessionId]?.people ?? []
       )
-      .fixedSize(horizontal: false, vertical: true)
-      .frame(maxWidth: Interview.documentWidth, alignment: .leading)
-      .padding(.leading, Interview.shoulder)
-      .padding(.horizontal, 28)
+      .frame(maxWidth: Interview.measure, alignment: .leading)
+      .padding(.horizontal, Interview.pageMargin)
       .padding(.vertical, 14)
       .frame(maxWidth: .infinity, alignment: .center)
     }
@@ -197,22 +179,19 @@ struct ConversationWorkspaceView: View {
 
   private var header: some View {
     VStack(alignment: .leading, spacing: 10) {
-      ConversationTitleLabel(title: title) {
-        store.beginRename(session)
-      }
-      .frame(maxWidth: .infinity, alignment: .leading)
-      .fixedSize(horizontal: false, vertical: true)
+      HostedText(
+        text: title, label: "Conversation name", font: .interviewTitle(30),
+        color: NSColor(Interview.ink), maximumLines: 3, isSelectable: true,
+        help: "Double-click to rename", onDoubleClick: { actions.rename(session) })
       InterviewFacts(items: facts)
-      if session.titleSource == "suggested" {
+      if session.titleSource == .suggested {
         HStack(spacing: 10) {
           Text("Title suggested from the conversation.")
             .font(.system(size: 12))
             .foregroundStyle(Interview.quiet)
-          Button("Keep") {
-            Task { await store.rename(sessionId: session.sessionId, title: session.displayTitle) }
-          }
-          .help("Keep this title. Open Scribe will not change it again.")
-          Button("Rename…") { store.beginRename(session) }
+          Button("Keep") { actions.keepTitle(session) }
+            .help("Keep this title. Open Scribe will not change it again.")
+          Button("Rename…") { actions.rename(session) }
         }
         .buttonStyle(.link)
         .font(.system(size: 12))
@@ -220,7 +199,6 @@ struct ConversationWorkspaceView: View {
       actionRow
         .padding(.top, 10)
     }
-    .padding(.leading, Interview.shoulder)
   }
 
   private var facts: [String] {
@@ -228,24 +206,13 @@ struct ConversationWorkspaceView: View {
     if let created = session.createdAt {
       items.append(created.formatted(date: .abbreviated, time: .shortened))
     }
-    if session.elapsedSeconds > 0 {
-      items.append(InterviewTime.length(seconds: session.elapsedSeconds))
-    }
-    if isLoaded {
-      let people = peopleNames
-      if !people.isEmpty { items.append(ListFormatter.localizedString(byJoining: people)) }
+    if let length = session.lengthText { items.append(length) }
+    if let people = loaded?.people, !people.isEmpty {
+      items.append(ListFormatter.localizedString(byJoining: people))
     }
     if session.playableMedia != nil, !session.hasCaptureTimeline { items.append("Imported") }
     if let reference { items.append(reference) }
     return items
-  }
-
-  private var peopleNames: [String] {
-    var names: [String] = []
-    for segment in transcripts.segments where !names.contains(segment.speakerLabel) {
-      names.append(segment.speakerLabel)
-    }
-    return names
   }
 
   // MARK: Actions
@@ -254,8 +221,13 @@ struct ConversationWorkspaceView: View {
     HStack(spacing: 10) {
       copyButton
       if session.hasCaptureTimeline || session.playableMedia != nil {
-        ConversationPlayMount(session: session, playback: playbackController)
-          .frame(width: 92, height: 30)
+        let play = actions.playback(for: session)
+        HostedButton(
+          title: play.action.title, symbol: play.action == .play ? "play.fill" : "stop.fill",
+          identifier: "Conversation playback",
+          label: ConversationControlLabels.playConversationAudio(play.action), style: .large,
+          isEnabled: play.isEnabled, isHidden: !play.isAvailable
+        ) { actions.togglePlayback(session) }
       }
       if let copyNote {
         Label(copyNote, systemImage: "checkmark")
@@ -265,12 +237,11 @@ struct ConversationWorkspaceView: View {
           .accessibilityHidden(true)
       }
       Spacer(minLength: 12)
-      ExportTranscriptMount(
-        enabled: hasText && !transcripts.isExporting,
-        visible: hasText,
-        onExport: exportTranscript
-      )
-      .frame(width: 92, height: 30)
+      HostedButton(
+        title: "Export…", label: ConversationControlLabels.exportTranscript,
+        help: "Save the transcript as Markdown, plain text, subtitles, or JSON", style: .large,
+        isEnabled: actions.canExport(session), isHidden: loaded?.segments.isEmpty ?? true
+      ) { actions.export(session, choose: exportDestination) }
     }
   }
 
@@ -300,53 +271,41 @@ struct ConversationWorkspaceView: View {
       .padding(.leading, 4)
       .accessibilityLabel("Copy options")
     }
-    .disabled(!hasText)
+    .disabled(!actions.canCopy(session))
   }
 
   private func copy(timestamps: Bool) {
-    let sessionId = session.sessionId
-    let title = title
+    let session = session
     Task {
-      do {
-        let copied = try await transcripts.clipboardText(
-          sessionId: sessionId, title: title,
-          options: ConversationClipboard.Options(timestamps: timestamps))
-        ConversationClipboard.copy(copied.text)
-        let turns = copied.turns == 1 ? "1 turn" : "\(copied.turns) turns"
-        let note = copied.hasDraft ? "Copied \(turns) · Draft" : "Copied \(turns)"
-        AccessibilityAnnouncer.post(note)
-        withAnimation(.easeOut(duration: 0.15)) { copyNote = note }
-        try? await Task.sleep(nanoseconds: 2_500_000_000)
-        withAnimation(.easeOut(duration: 0.4)) {
-          if copyNote == note { copyNote = nil }
-        }
-      } catch {
+      guard let note = await actions.copy(session, timestamps: timestamps) else {
         withAnimation { copyNote = "Could not copy" }
-        AccessibilityAnnouncer.post("The conversation could not be copied.")
+        return
+      }
+      withAnimation(.easeOut(duration: 0.15)) { copyNote = note }
+      try? await Task.sleep(nanoseconds: 2_500_000_000)
+      withAnimation(.easeOut(duration: 0.4)) {
+        if copyNote == note { copyNote = nil }
       }
     }
   }
 
-  private func exportTranscript() {
-    guard hasText, !transcripts.isExporting else { return }
-    let suggested = TranscriptSection.fileName(
-      title, type: UTType(filenameExtension: "md") ?? .plainText)
-    guard let destination = exportDestination(suggested) else { return }
-    let format = ConversationExportPanel.format(for: destination)
-    let sessionId = session.sessionId
-    Task { await transcripts.export(format: format, to: destination, from: sessionId) }
-  }
-
   // MARK: Notices
 
+  /// The window's notices first, then this conversation's own.
   private var notices: some View {
+    VStack(alignment: .leading, spacing: 0) {
+      WindowNoticeList(notices: windowNotices)
+      conversationNotices
+    }
+  }
+
+  private var conversationNotices: some View {
     VStack(alignment: .leading, spacing: 10) {
-      if session.needsAttention {
+      if let attention = session.interruptionText {
         InterviewNotice(
-          message: session.interruptionText
-            ?? "Open Scribe kept the audio it could verify. Each source is listed below.",
-          isProblem: true,
-          actions: session.lifecycle == "interrupted" && canStartNewRecording
+          message: attention,
+          isProblem: !session.didNotRecord,
+          actions: session.lifecycle == .interrupted && canStartNewRecording
             ? [("Start New Recording", onStartNewRecording)] : [])
       }
       if playbackController.errorSessionId == session.sessionId,
@@ -359,27 +318,31 @@ struct ConversationWorkspaceView: View {
       {
         InterviewNotice(message: "Checking the local audio before it plays…")
       } else if let media = session.playableMedia, !media.isPlayable {
-        InterviewNotice(message: ImportedPlaybackEligibility.status(media))
+        InterviewNotice(message: media.statusText)
       }
-      if session.lifecycle == "ready_for_review" {
+      if session.lifecycle == .readyForReview {
         TranscriptStatusNotice(
           session: session, transcripts: transcripts, speech: speech, scheduler: scheduler,
-          onSetUp: {
-            speech.dismissMessage()
-            showingModels = true
-          })
+          onSetUp: { speech.showModels(in: .conversation) })
         nameSuggestion
       }
     }
   }
 
+  /// Computer audio carries the other participants (founding PRD 11.3).
+  private static func carriesOthers(_ kind: NativeTrackSourceKind) -> Bool {
+    switch kind {
+    case .systemAudio, .applicationAudio: true
+    case .microphone, .importedAudio: false
+    }
+  }
+
   @ViewBuilder private var nameSuggestion: some View {
-    if isLoaded, !suggestions.dismissedNames.contains(session.sessionId),
+    if let loaded, !suggestions.dismissedNames.contains(session.sessionId),
       let suggestion = suggestions.suggestions[session.sessionId],
       let name = suggestion.othersName,
-      let others = transcripts.speakers.first(where: {
-        ($0.sourceKind == "system_audio" || $0.sourceKind == "application_audio")
-          && !$0.namedByUser && $0.label != name
+      let others = loaded.speakers.first(where: {
+        Self.carriesOthers($0.sourceKind) && !$0.namedByUser && $0.label != name
       })
     {
       InterviewNotice(
@@ -400,27 +363,28 @@ struct ConversationWorkspaceView: View {
     }
   }
 
-  @ViewBuilder private var preservedAudio: some View {
+  /// The audio a stopped recording kept, on its page while it needs attention.
+  @ViewBuilder private var keptAudio: some View {
     VStack(alignment: .leading, spacing: 8) {
-      Text("Preserved audio")
+      Text("Audio")
         .font(Interview.sectionLabel)
         .foregroundStyle(Interview.quiet)
         .accessibilityAddTraits(.isHeader)
       ConversationAudioList(
         session: session, playbackController: playbackController, showsMix: false)
-      if session.lifecycle == "interrupted", !hasPreservedAudio {
+      if session.lifecycle == .interrupted, !hasPreservedAudio {
         Text(
           playbackController.phase == .scanning
-            ? "Checking for preserved local audio…"
+            ? "Looking for the saved audio…"
             : playbackController.phase == .failed
-              ? "Preserved audio could not be checked. Review the recovery error before continuing."
-              : "No verified playable audio is available for this conversation."
+              ? "Open Scribe couldn't look for the saved audio. Try again after restarting Open Scribe."
+              : "The saved audio plays after Open Scribe restarts and recovers it."
         )
         .font(Interview.meta)
         .foregroundStyle(Interview.quiet)
         .fixedSize(horizontal: false, vertical: true)
       }
-      if session.lifecycle == "interrupted", !canStartNewRecording {
+      if session.lifecycle == .interrupted, !canStartNewRecording {
         Text(newRecordingUnavailableReason)
           .font(Interview.meta)
           .foregroundStyle(Interview.quiet)
@@ -432,7 +396,7 @@ struct ConversationWorkspaceView: View {
   // MARK: Transcript
 
   @ViewBuilder private func transcript(proxy: ScrollViewProxy) -> some View {
-    if session.lifecycle != "ready_for_review" {
+    if session.lifecycle != .readyForReview {
       EmptyView()
     } else if TranscriptSection.showsReader(session: session, transcripts: transcripts) {
       TranscriptReader(
@@ -452,10 +416,9 @@ struct ConversationWorkspaceView: View {
         correctionActions: correctionActions
       )
       .id(session.sessionId)
-    } else if !isLoaded || transcripts.isLoading {
+    } else if loaded == nil || transcripts.isLoading {
       ProgressView()
         .controlSize(.small)
-        .padding(.leading, Interview.shoulder)
     } else {
       Text(
         session.transcriptionUnavailableReason
@@ -464,7 +427,6 @@ struct ConversationWorkspaceView: View {
       .font(Interview.speech())
       .foregroundStyle(Interview.quiet)
       .fixedSize(horizontal: false, vertical: true)
-      .padding(.leading, Interview.shoulder)
     }
   }
 
@@ -477,18 +439,33 @@ struct ConversationWorkspaceView: View {
     }
   }
 
-  /// The marker list is created with the document. Its height grows only when
-  /// a saved marker exists, so an empty conversation does not reserve a row.
-  static func markerListHeight(_ events: [NativeRecorderEvent]) -> CGFloat {
-    let count = events.filter { $0.kind == "marker_added" }.count
-    return count == 0 ? 0 : CGFloat(22 + count * 24)
+  /// Saved markers. Each plays from its moment when the conversation has
+  /// playable audio.
+  private var markers: some View {
+    let markers = recorderEvents.filter { $0.kind == .markerAdded }
+    let positions = Dictionary(
+      markers.map { ($0.id, $0.sessionNanoseconds) }, uniquingKeysWith: { first, _ in first })
+    return HostedList(
+      heading: "Markers", identifier: "Markers",
+      rows: markers.map { marker in
+        let stamp = TranscriptSection.timestamp(marker.sessionNanoseconds)
+        return HostedListRow(
+          id: marker.id, lead: stamp, detail: marker.label.isEmpty ? "Marker" : marker.label,
+          label: ConversationControlLabels.markerAccessibility(
+            stamp: stamp, label: marker.label, canSeek: canSeek),
+          isEnabled: canSeek)
+      },
+      lead: .stampButton,
+      onSelect: { id in if let start = positions[id] { seek(start) } }
+    )
+    .padding(.top, markers.isEmpty ? 0 : 18)
   }
 }
 
 extension ConversationSuggestionModel {
   /// A model that never suggests, for documents shown outside the library.
   @MainActor static let inert = ConversationSuggestionModel(
-    library: { throw NativeStorageError.InvalidState }, suggest: { _ in nil })
+    library: { throw NativeStorageError.InvalidState }, suspended: true)
 }
 
 /// What the transcript is waiting for, in one line, with the one useful action.
@@ -501,57 +478,41 @@ struct TranscriptStatusNotice: View {
 
   var body: some View {
     let job = scheduler.state(for: session.sessionId)
-    let hasDraft = session.transcript.hasDraftText
-    let isFinal = session.transcript.documentAvailability == .final
-    if session.transcriptionUnavailableReason == nil, session.transcript.hasTranscribableAudio {
-      if speech.transcribingSessionId == session.sessionId || job == .running {
+    let context = TranscriptStatusPresentation.Context(
+      job: job, isTranscribingHere: speech.transcribingSessionId == session.sessionId,
+      loaded: transcripts.loaded(session.sessionId)?.availability,
+      modelInstalled: speech.installedModel != nil, modelChecking: speech.isRefreshing,
+      automatic: scheduler.isAutomatic, paused: scheduler.isPaused,
+      canPrioritize: scheduler.canPrioritize(sessionId: session.sessionId))
+    if let notice = TranscriptStatusPresentation.notice(session: session, context: context) {
+      if notice.showsProgress {
         HStack(spacing: 10) {
           ProgressView(value: speech.progressFraction ?? 0)
             .progressViewStyle(.linear)
             .frame(width: 120)
-          Text(hasDraft ? "Making the final transcript on this Mac…" : "Transcribing on this Mac…")
+          Text(notice.message)
             .font(Interview.meta)
             .foregroundStyle(Interview.quiet)
-          Button("Cancel") { scheduler.cancel(sessionId: session.sessionId) }
-            .buttonStyle(.link)
-            .font(Interview.meta)
+          if let action = notice.action {
+            Button(action.title) { perform(action) }
+              .buttonStyle(.link)
+              .font(Interview.meta)
+          }
         }
         .accessibilityElement(children: .combine)
-      } else if case .queued(let position, let hold) = job {
+      } else {
         InterviewNotice(
-          message: hold.map { "Waiting to transcribe. \($0.text)" }
-            ?? (position == 1 ? "Transcribing next." : "Waiting to transcribe, \(position) in line."),
-          actions: scheduler.canPrioritize(sessionId: session.sessionId)
-            ? [("Transcribe Now", { scheduler.request(sessionId: session.sessionId) })] : [])
-      } else if transcripts.sessionId == session.sessionId, transcripts.availability == .failed {
-        InterviewNotice(
-          message: "Transcription failed. "
-            + RuntimeTranscriptPresentation.failureText(session.transcript.failureClass)
-            + " The audio is unchanged.",
-          isProblem: true,
-          actions: speech.installedModel == nil
-            ? [(TranscriptSection.installSpeechModelTitle, onSetUp)]
-            : [("Try Again", { scheduler.request(sessionId: session.sessionId) })])
-      } else if case .failed(let message) = job {
-        InterviewNotice(
-          message: message, isProblem: true,
-          actions: [("Try Again", { scheduler.request(sessionId: session.sessionId) })])
-      } else if !isFinal, speech.installedModel == nil, !speech.isRefreshing {
-        InterviewNotice(
-          message: hasDraft
-            ? "This is the live draft. Add a speech model to make a more accurate transcript on this Mac."
-            : "No transcript yet. Add a speech model to transcribe this recording on this Mac.",
-          actions: [(TranscriptSection.installSpeechModelTitle, onSetUp)])
-      } else if !isFinal, speech.installedModel != nil, !scheduler.isAutomatic || scheduler.isPaused
-      {
-        InterviewNotice(
-          message: hasDraft
-            ? "This is the live draft. The final transcript has not been made yet."
-            : "Not transcribed yet.",
-          actions: [("Transcribe", { scheduler.request(sessionId: session.sessionId) })])
-      } else if hasDraft, !isFinal {
-        InterviewNotice(message: "This is the live draft. Some words may be misheard.")
+          message: notice.message, isProblem: notice.isProblem,
+          actions: notice.action.map { action in [(action.title, { perform(action) })] } ?? [])
       }
+    }
+  }
+
+  private func perform(_ action: TranscriptStatusPresentation.Action) {
+    switch action {
+    case .cancel: scheduler.cancel(sessionId: session.sessionId)
+    case .transcribeNow, .transcribe, .tryAgain: scheduler.request(sessionId: session.sessionId)
+    case .setUp: onSetUp()
     }
   }
 }
@@ -614,304 +575,4 @@ private struct ContextSeekRequest {
   let id = UUID()
   let sessionId: String
   let event: NativeContextEvent
-}
-
-/// The conversation name, set in New York. It is an AppKit label created
-/// with the document, so a later title change updates this field. Double-click
-/// opens the title editor.
-private struct ConversationTitleLabel: NSViewRepresentable {
-  let title: String
-  let onRename: () -> Void
-
-  func makeNSView(context: Context) -> TitleField {
-    let field = TitleField(labelWithString: title)
-    let base = NSFont.systemFont(ofSize: 30, weight: .semibold)
-    field.font =
-      base.fontDescriptor.withDesign(.serif).flatMap { NSFont(descriptor: $0, size: 30) } ?? base
-    field.textColor = NSColor(Interview.ink)
-    field.isSelectable = true
-    field.lineBreakMode = .byWordWrapping
-    field.setAccessibilityLabel("Conversation name")
-    field.setAccessibilityRole(.staticText)
-    field.cell?.wraps = true
-    field.cell?.isScrollable = false
-    field.maximumNumberOfLines = 3
-    field.toolTip = "Double-click to rename"
-    field.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-    field.onRename = onRename
-    return field
-  }
-
-  func updateNSView(_ field: TitleField, context: Context) {
-    field.stringValue = title
-    field.onRename = onRename
-    field.setAccessibilityLabel("Conversation name")
-  }
-
-  func sizeThatFits(_ proposal: ProposedViewSize, nsView: TitleField, context: Context) -> CGSize?
-  {
-    let width = proposal.width ?? Interview.measure
-    nsView.preferredMaxLayoutWidth = width
-    let height = nsView.cell?.cellSize(forBounds: NSRect(x: 0, y: 0, width: width, height: 400))
-      .height ?? 40
-    return CGSize(width: width, height: ceil(height))
-  }
-
-  final class TitleField: NSTextField {
-    var onRename: (() -> Void)?
-
-    override func mouseDown(with event: NSEvent) {
-      if event.clickCount == 2 {
-        onRename?()
-      } else {
-        super.mouseDown(with: event)
-      }
-    }
-  }
-}
-
-/// Play and Stop for the whole conversation: the verified mix for a capture,
-/// the imported file for an import. Recovered single tracks stay in Details.
-private struct ConversationPlayMount: NSViewRepresentable {
-  let session: RuntimeSessionPresentation
-  @ObservedObject var playback: RecoveredSessionController
-
-  func makeNSView(context: Context) -> ConversationPlayControl {
-    let view = ConversationPlayControl()
-    view.bind(session: session, playback: playback)
-    return view
-  }
-
-  func updateNSView(_ view: ConversationPlayControl, context: Context) {
-    view.bind(session: session, playback: playback)
-  }
-}
-
-private final class ConversationPlayControl: NSView {
-  private let button = NSButton(title: "Play", target: nil, action: nil)
-  private var session: RuntimeSessionPresentation?
-  private weak var playback: RecoveredSessionController?
-
-  override init(frame frameRect: NSRect) {
-    super.init(frame: frameRect)
-    setAccessibilityIdentifier("Conversation playback")
-    button.bezelStyle = .rounded
-    button.controlSize = .large
-    button.imagePosition = .imageLeading
-    button.target = self
-    button.action = #selector(toggle)
-    button.translatesAutoresizingMaskIntoConstraints = false
-    addSubview(button)
-    NSLayoutConstraint.activate([
-      button.leadingAnchor.constraint(equalTo: leadingAnchor),
-      button.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor),
-      button.centerYAnchor.constraint(equalTo: centerYAnchor),
-    ])
-  }
-
-  required init?(coder: NSCoder) { nil }
-
-  private var isMix: Bool {
-    guard let session else { return false }
-    return session.lifecycle == "ready_for_review" && session.hasCaptureTimeline
-  }
-
-  func bind(session: RuntimeSessionPresentation, playback: RecoveredSessionController) {
-    self.session = session
-    self.playback = playback
-    let active = playback.activePlaybackSessionId == session.sessionId
-    let isPlaying = playback.playingSessionId == session.sessionId
-    let action = PlaybackControlAction.resolve(isPending: active && !isPlaying, isPlaying: isPlaying)
-    let canPlay =
-      isMix || (session.playableMedia.map(ImportedPlaybackEligibility.canPlay) ?? false)
-    button.title = action.title
-    button.image = NSImage(
-      systemSymbolName: action == .play ? "play.fill" : "stop.fill",
-      accessibilityDescription: nil)
-    button.setAccessibilityLabel(ConversationControlLabels.playConversationAudio(action))
-    button.isEnabled =
-      action != .play
-      || (canPlay && action.isEnabled(hasActivePlayback: playback.activePlaybackSessionId != nil))
-    let mixReady = session.lifecycle == "ready_for_review" || session.playableMedia != nil
-    isHidden = !mixReady
-  }
-
-  @objc private func toggle() {
-    guard let playback, let session, button.isEnabled else { return }
-    let active = playback.activePlaybackSessionId == session.sessionId
-    let isMix = isMix
-    Task { @MainActor in
-      if active {
-        playback.stopPlayback()
-      } else if isMix {
-        playback.playMixdown(sessionId: session.sessionId)
-      } else {
-        playback.play(session)
-      }
-    }
-  }
-}
-
-/// Export for the transcript. One button opens one panel; the panel's format
-/// menu chooses the file type.
-private struct ExportTranscriptMount: NSViewRepresentable {
-  let enabled: Bool
-  let visible: Bool
-  let onExport: () -> Void
-
-  func makeNSView(context: Context) -> ExportTranscriptControl {
-    let view = ExportTranscriptControl()
-    view.bind(enabled: enabled, visible: visible, onExport: onExport)
-    return view
-  }
-
-  func updateNSView(_ view: ExportTranscriptControl, context: Context) {
-    view.bind(enabled: enabled, visible: visible, onExport: onExport)
-  }
-}
-
-private final class ExportTranscriptControl: NSView {
-  private let button = NSButton(title: "Export…", target: nil, action: nil)
-  private var onExport: (() -> Void)?
-
-  override init(frame frameRect: NSRect) {
-    super.init(frame: frameRect)
-    button.bezelStyle = .rounded
-    button.controlSize = .large
-    button.setAccessibilityLabel(ConversationControlLabels.exportTranscript)
-    button.toolTip = "Save the transcript as Markdown, plain text, subtitles, or JSON"
-    button.target = self
-    button.action = #selector(export)
-    button.translatesAutoresizingMaskIntoConstraints = false
-    addSubview(button)
-    NSLayoutConstraint.activate([
-      button.trailingAnchor.constraint(equalTo: trailingAnchor),
-      button.leadingAnchor.constraint(greaterThanOrEqualTo: leadingAnchor),
-      button.centerYAnchor.constraint(equalTo: centerYAnchor),
-    ])
-  }
-
-  required init?(coder: NSCoder) { nil }
-
-  func bind(enabled: Bool, visible: Bool, onExport: @escaping () -> Void) {
-    self.onExport = onExport
-    button.isHidden = !visible
-    button.isEnabled = enabled
-  }
-
-  @objc private func export() {
-    guard button.isEnabled else { return }
-    let onExport = onExport
-    Task { @MainActor in onExport?() }
-  }
-}
-
-/// Saved markers for one conversation. The control is created with the
-/// document and fills in when the journal events arrive, so a hosted window
-/// can play from a marker without inserting a new SwiftUI row.
-private struct MarkerListMount: NSViewRepresentable {
-  let events: [NativeRecorderEvent]
-  let canSeek: Bool
-  let onSeek: (Int64) -> Void
-
-  func makeNSView(context: Context) -> MarkerListControl {
-    let view = MarkerListControl()
-    view.bind(events: events, canSeek: canSeek, onSeek: onSeek)
-    return view
-  }
-
-  func updateNSView(_ view: MarkerListControl, context: Context) {
-    view.bind(events: events, canSeek: canSeek, onSeek: onSeek)
-  }
-}
-
-private final class MarkerListControl: NSView {
-  private let heading = NSTextField(labelWithString: "Markers")
-  private let column = NSStackView()
-  private var onSeek: ((Int64) -> Void)?
-  private var positions: [String: Int64] = [:]
-  private var signature: [String] = []
-
-  override init(frame frameRect: NSRect) {
-    super.init(frame: frameRect)
-    setAccessibilityIdentifier("Markers")
-    heading.font = .systemFont(ofSize: 11, weight: .semibold)
-    heading.textColor = .secondaryLabelColor
-    heading.setAccessibilityLabel("Markers")
-    heading.setAccessibilityIdentifier("Markers")
-    column.orientation = .vertical
-    column.alignment = .leading
-    column.spacing = 4
-    column.detachesHiddenViews = false
-    heading.translatesAutoresizingMaskIntoConstraints = false
-    column.translatesAutoresizingMaskIntoConstraints = false
-    addSubview(heading)
-    addSubview(column)
-    NSLayoutConstraint.activate([
-      heading.leadingAnchor.constraint(equalTo: leadingAnchor),
-      heading.topAnchor.constraint(equalTo: topAnchor),
-      heading.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor),
-      column.leadingAnchor.constraint(equalTo: leadingAnchor),
-      column.topAnchor.constraint(equalTo: heading.bottomAnchor, constant: 4),
-      column.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor),
-      column.bottomAnchor.constraint(lessThanOrEqualTo: bottomAnchor),
-    ])
-  }
-
-  required init?(coder: NSCoder) {
-    nil
-  }
-
-  func bind(events: [NativeRecorderEvent], canSeek: Bool, onSeek: @escaping (Int64) -> Void) {
-    self.onSeek = onSeek
-    let markers = events.filter { $0.kind == "marker_added" }
-    let next = markers.map { "\($0.id)\n\($0.label)\n\($0.sessionNanoseconds)\n\(canSeek)" }
-    isHidden = markers.isEmpty
-    heading.isHidden = markers.isEmpty
-    column.isHidden = markers.isEmpty
-    guard next != signature else { return }
-    signature = next
-    positions = Dictionary(uniqueKeysWithValues: markers.map { ($0.id, $0.sessionNanoseconds) })
-    for view in column.arrangedSubviews {
-      column.removeArrangedSubview(view)
-      view.removeFromSuperview()
-    }
-    for marker in markers {
-      let stamp = TranscriptSection.timestamp(marker.sessionNanoseconds)
-      let row = NSStackView()
-      row.orientation = .horizontal
-      row.alignment = .firstBaseline
-      row.spacing = ScribeSpacing.related
-      let button = NSButton(title: stamp, target: self, action: #selector(playMarker(_:)))
-      button.bezelStyle = .inline
-      button.isBordered = false
-      button.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
-      button.contentTintColor = NSColor(Interview.accent)
-      button.isEnabled = canSeek
-      button.identifier = NSUserInterfaceItemIdentifier(marker.id)
-      button.setAccessibilityLabel(
-        ConversationControlLabels.markerAccessibility(
-          stamp: stamp, label: marker.label, canSeek: canSeek))
-      let name = NSTextField(labelWithString: marker.label.isEmpty ? "Marker" : marker.label)
-      name.font = .systemFont(ofSize: 13)
-      name.textColor = .labelColor
-      name.setAccessibilityLabel(marker.label.isEmpty ? "Marker" : marker.label)
-      for item in [button, name] {
-        item.setContentCompressionResistancePriority(.required, for: .horizontal)
-        item.setContentCompressionResistancePriority(.required, for: .vertical)
-        row.addArrangedSubview(item)
-      }
-      button.widthAnchor.constraint(greaterThanOrEqualToConstant: 44).isActive = true
-      button.heightAnchor.constraint(greaterThanOrEqualToConstant: 16).isActive = true
-      column.addArrangedSubview(row)
-    }
-  }
-
-  @objc private func playMarker(_ sender: NSButton) {
-    guard let id = sender.identifier?.rawValue, let start = positions[id], sender.isEnabled else {
-      return
-    }
-    let onSeek = onSeek
-    Task { @MainActor in onSeek?(start) }
-  }
 }

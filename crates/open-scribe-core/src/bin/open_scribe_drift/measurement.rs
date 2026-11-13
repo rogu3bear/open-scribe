@@ -9,10 +9,12 @@
 //! computer`; `drift = offset - first offset` removes the fixed acoustic
 //! latency. Every detection, rejected or not, stays in the report.
 
-use crate::drift_stimulus::{
+use crate::stimulus::{
     DriftError, MAX_PULSE_FRAMES, STIMULUS_SAMPLE_RATE, StimulusSpec, stimulus_sha256,
 };
-use open_scribe_store::{SealedTrackReader, SessionStore, TimelineSegment};
+use open_scribe_store::{
+    MediaSourceKind, RecorderEventKind, SealedTrackReader, SessionStore, TimelineSegment,
+};
 use open_scribe_types::SessionId;
 use serde_json::{Value, json};
 
@@ -300,8 +302,11 @@ pub fn measure_drift(
             )),
         }
     };
-    let microphone_track = pick(&["microphone"])?;
-    let computer_track = pick(&["system_audio", "application_audio"])?;
+    let microphone_track = pick(&[MediaSourceKind::Microphone.as_str()])?;
+    let computer_track = pick(&[
+        MediaSourceKind::SystemAudio.as_str(),
+        MediaSourceKind::ApplicationAudio.as_str(),
+    ])?;
     let timeline = store.playback_timeline(session)?;
     let mut microphone = Track::open(store, session, "microphone", microphone_track, &timeline)?;
     let mut computer = Track::open(store, session, "computer", computer_track, &timeline)?;
@@ -373,7 +378,7 @@ pub fn measure_drift(
         .recorder_detail(session)?
         .events
         .iter()
-        .filter(|event| event.kind == "source_failed")
+        .filter(|event| event.kind == RecorderEventKind::SourceFailed)
         .count();
 
     let mut reasons = Vec::new();

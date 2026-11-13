@@ -8,9 +8,10 @@
 //! and renamed, so a failure never leaves an apparently complete export.
 
 use open_scribe_evidence::{EVIDENCE_REF_SCHEMA, EvidenceKind, EvidenceRef};
+pub(crate) use open_scribe_store::rfc3339_utc;
 use open_scribe_store::{
-    SessionSpeaker, SessionStore, SpeakerLabelOrigin, StoreError, TranscriptDocumentSegment,
-    TranscriptExportContext,
+    DocumentScope, SessionSpeaker, SessionStore, SpeakerLabelOrigin, StoreError,
+    TranscriptDocumentSegment, TranscriptExportContext, UNKNOWN_SOURCE_SPEAKER_LABEL,
 };
 use open_scribe_types::SessionId;
 use serde_json::{Value, json};
@@ -60,6 +61,27 @@ pub enum TranscriptAvailability {
 }
 
 impl TranscriptAvailability {
+    /// Availability from which tracks have a selected Final revision.
+    #[must_use]
+    pub fn of(context: &TranscriptExportContext) -> Self {
+        if context.selected.is_empty() {
+            if context.failed_tracks.is_empty() {
+                Self::Unavailable
+            } else {
+                Self::Failed
+            }
+        } else if context.transcribable_tracks.iter().all(|track| {
+            context
+                .selected
+                .iter()
+                .any(|revision| &revision.track_id == track)
+        }) {
+            Self::Final
+        } else {
+            Self::Draft
+        }
+    }
+
     const fn code(self) -> &'static str {
         match self {
             Self::Final => "final",
@@ -122,7 +144,8 @@ impl From<serde_json::Error> for TranscriptExportError {
     }
 }
 
-/// Everything one export renders, read in one pass from the store.
+/// Everything one export renders: the export facts and the Final-only
+/// document.
 #[derive(Clone, Debug)]
 pub struct TranscriptExport {
     pub context: TranscriptExportContext,
@@ -146,33 +169,19 @@ impl TranscriptExport {
         session: &SessionId,
         exported_at_ms: i64,
     ) -> Result<Self, TranscriptExportError> {
+        let context = store.transcript_export_context(session)?;
+        let document = store.conversation_document(session, DocumentScope::FinalOnly)?;
         Ok(Self {
-            context: store.transcript_export_context(session)?,
-            speakers: store.session_speakers(session)?,
-            segments: store.transcript_document(session)?,
+            context,
+            speakers: document.speakers,
+            segments: document.segments,
             exported_at_ms,
         })
     }
 
     #[must_use]
     pub fn availability(&self) -> TranscriptAvailability {
-        let context = &self.context;
-        if context.selected.is_empty() {
-            if context.failed_tracks.is_empty() {
-                TranscriptAvailability::Unavailable
-            } else {
-                TranscriptAvailability::Failed
-            }
-        } else if context.transcribable_tracks.iter().all(|track| {
-            context
-                .selected
-                .iter()
-                .any(|revision| &revision.track_id == track)
-        }) {
-            TranscriptAvailability::Final
-        } else {
-            TranscriptAvailability::Draft
-        }
+        TranscriptAvailability::of(&self.context)
     }
 
     pub fn render(&self, format: TranscriptExportFormat) -> Result<String, TranscriptExportError> {
@@ -209,7 +218,7 @@ impl TranscriptExport {
         } else if self
             .speakers
             .iter()
-            .all(|speaker| source_kind_is_declared(&speaker.source_kind))
+            .all(|speaker| speaker.source_kind.capture().is_some())
         {
             "capture_source"
         } else {
@@ -249,7 +258,9 @@ impl TranscriptExport {
         for revision in &context.selected {
             let speaker = self
                 .speaker(&revision.track_id)
-                .map_or("Speaker", |speaker| speaker.label.as_str());
+                .map_or(UNKNOWN_SOURCE_SPEAKER_LABEL, |speaker| {
+                    speaker.label.as_str()
+                });
             let _ = writeln!(
                 output,
                 "{bullet}Model ({}): {} · {} {}",
@@ -317,7 +328,7 @@ impl TranscriptExport {
             let speaker = (segment.speaker_origin == SpeakerLabelOrigin::Human
                 || self
                     .speaker(&segment.track_id)
-                    .is_some_and(|speaker| source_kind_is_declared(&speaker.source_kind)))
+                    .is_some_and(|speaker| speaker.source_kind.capture().is_some()))
             .then_some(segment.speaker_label.as_str());
             (start, end, speaker, single_line(&segment.effective_text))
         })
@@ -383,10 +394,7 @@ impl TranscriptExport {
         let speaker_json = |label: &str, origin: SpeakerLabelOrigin| {
             json!({
                 "label": label,
-                "origin": match origin {
-                    SpeakerLabelOrigin::SourceDefault => "source_default",
-                    SpeakerLabelOrigin::Human => "human",
-                },
+                "origin": origin.as_str(),
             })
         };
         let tracks: Vec<Value> = context
@@ -411,7 +419,7 @@ impl TranscriptExport {
                     "input_digest": input_digest,
                     "finality": finality,
                     "speaker": speaker.map_or_else(
-                        || speaker_json("Speaker", SpeakerLabelOrigin::SourceDefault),
+                        || speaker_json(UNKNOWN_SOURCE_SPEAKER_LABEL, SpeakerLabelOrigin::SourceDefault),
                         |speaker| speaker_json(&speaker.label, speaker.origin),
                     ),
                     "revision": revision.map(|revision| json!({
@@ -515,7 +523,7 @@ fn write_atomically(destination: &Path, bytes: &[u8]) -> Result<(), TranscriptEx
 
 /// Writes a hidden sibling, synchronizes it, and renames it over `destination`;
 /// a failure leaves no partial file behind.
-pub(crate) fn write_atomically_with(
+pub fn write_atomically_with(
     destination: &Path,
     write: impl FnOnce(&mut File) -> std::io::Result<()>,
 ) -> Result<(), TranscriptExportError> {
@@ -565,7 +573,12 @@ fn stage_and_rename(
     file.sync_all()?;
     drop(file);
     fs::rename(staging, destination)?;
-    File::open(parent)?.sync_all()
+    sync_directory(parent)
+}
+
+/// Makes a rename or creation inside `directory` durable.
+pub(crate) fn sync_directory(directory: &Path) -> std::io::Result<()> {
+    File::open(directory)?.sync_all()
 }
 
 fn transcript_schema_id() -> &'static str {
@@ -578,14 +591,7 @@ fn transcript_schema_id() -> &'static str {
     })
 }
 
-fn source_kind_is_declared(source_kind: &str) -> bool {
-    matches!(
-        source_kind,
-        "microphone" | "application_audio" | "system_audio"
-    )
-}
-
-fn single_line(text: &str) -> String {
+pub(crate) fn single_line(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
@@ -627,34 +633,6 @@ fn clock_milliseconds(milliseconds: i64, separator: char) -> String {
         seconds / 60 % 60,
         seconds % 60,
         milliseconds % 1000
-    )
-}
-
-/// UTC RFC 3339 with millisecond precision from Unix milliseconds.
-pub(crate) fn rfc3339_utc(milliseconds: i64) -> String {
-    let days = milliseconds.div_euclid(86_400_000);
-    let of_day = milliseconds.rem_euclid(86_400_000);
-    // Howard Hinnant's civil-from-days algorithm.
-    let shifted = days + 719_468;
-    let era = shifted.div_euclid(146_097);
-    let day_of_era = shifted.rem_euclid(146_097);
-    let year_of_era =
-        (day_of_era - day_of_era / 1460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
-    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
-    let month_index = (5 * day_of_year + 2) / 153;
-    let day = day_of_year - (153 * month_index + 2) / 5 + 1;
-    let month = if month_index < 10 {
-        month_index + 3
-    } else {
-        month_index - 9
-    };
-    let year = year_of_era + era * 400 + i64::from(month <= 2);
-    format!(
-        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}.{:03}Z",
-        of_day / 3_600_000,
-        of_day / 60_000 % 60,
-        of_day / 1000 % 60,
-        of_day % 1000
     )
 }
 

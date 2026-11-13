@@ -3,9 +3,10 @@
 
 use std::sync::OnceLock;
 
-pub const SOURCE_SAMPLE_RATE_HZ: u32 = 48_000;
+pub use open_scribe_types::MEDIA_SAMPLE_RATE_HZ as SOURCE_SAMPLE_RATE_HZ;
 pub const MODEL_SAMPLE_RATE_HZ: u32 = 16_000;
 pub const DECIMATION_FACTOR: usize = 3;
+const _: () = assert!(SOURCE_SAMPLE_RATE_HZ == MODEL_SAMPLE_RATE_HZ * DECIMATION_FACTOR as u32);
 
 const TAPS: usize = 127;
 const HALF: usize = TAPS / 2;

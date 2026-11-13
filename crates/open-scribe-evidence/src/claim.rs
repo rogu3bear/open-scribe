@@ -124,12 +124,11 @@ impl DerivedClaim {
         if self.requires_support() && self.supporting.is_empty() {
             return Err(ClaimError::UnsupportedMaterial);
         }
-        if let Some(adjudication) = &self.adjudication {
-            if !identifier_is_valid(&adjudication.id)
-                || adjudication.claim_revision_id != self.revision_id
-            {
-                return Err(ClaimError::AdjudicationMismatch);
-            }
+        if let Some(adjudication) = &self.adjudication
+            && (!identifier_is_valid(&adjudication.id)
+                || adjudication.claim_revision_id != self.revision_id)
+        {
+            return Err(ClaimError::AdjudicationMismatch);
         }
         Ok(())
     }

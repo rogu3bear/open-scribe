@@ -26,7 +26,11 @@ final class DiagnosticJournal: @unchecked Sendable {
 
   func record(category: String, message: String) {
     CrashReportContent.observe(message)
-    let safe = DiagnosticPrivacy.sanitize(category: category, message: message)
+    append(DiagnosticPrivacy.sanitize(category: category, message: message))
+  }
+
+  /// Stores a record that `AppTelemetry` already observed and sanitized.
+  func append(_ safe: (category: String, message: String)) {
     lock.lock()
     events.append(DiagnosticEvent(category: safe.category, message: safe.message))
     if events.count > Self.limit {

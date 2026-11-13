@@ -35,7 +35,11 @@ fn transcribe(store: &mut SessionStore, session: &SessionId, track: &str) {
 
 /// Corrects the first segment and names the first track's speaker.
 fn review(store: &mut SessionStore, session: &SessionId) {
-    let first = store.transcript_document(session).unwrap().remove(0);
+    let first = store
+        .conversation_document(session, crate::DocumentScope::FinalOnly)
+        .map(|document| document.segments)
+        .unwrap()
+        .remove(0);
     store
         .correct_transcript_segment(
             session,

@@ -11,7 +11,10 @@
 //! Emptying Trash is the separate, user-owned permanent deletion.
 
 use super::library_recovery::isolated_disposition;
-use super::{MixdownWork, SCHEMA_VERSION, SessionStore, StoreError, wall_time_milliseconds};
+use super::{
+    EXPORTS_DIRECTORY, MixdownWork, SCHEMA_VERSION, SESSION_OWNED_TABLES, SessionLifecycle,
+    SessionStore, StoreError, wall_time_milliseconds,
+};
 use open_scribe_types::SessionId;
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use std::fs;
@@ -20,9 +23,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 use uuid::Uuid;
 
-pub(super) const DELETION_MIGRATION_VERSION: i64 = 7;
 const MAX_TRASH_REFERENCE_BYTES: usize = 4096;
-const EXPORTS_DIRECTORY: &str = "exports";
 
 pub(super) fn apply_deletion_schema(transaction: &Transaction<'_>) -> Result<(), StoreError> {
     transaction.execute_batch(
@@ -37,7 +38,7 @@ pub(super) fn apply_deletion_schema(transaction: &Transaction<'_>) -> Result<(),
 /// Called under the library writer guard before changing session-owned work.
 /// The confirmation inventory remains stable until completion or abandonment.
 pub(super) fn require_available(connection: &Connection, session: &str) -> Result<(), StoreError> {
-    let state: Option<(String, bool)> = connection
+    let state: Option<(SessionLifecycle, bool)> = connection
         .query_row(
             "SELECT lifecycle,
                     EXISTS(SELECT 1 FROM session_deletion_intents WHERE session_id = sessions.id)
@@ -47,12 +48,33 @@ pub(super) fn require_available(connection: &Connection, session: &str) -> Resul
         )
         .optional()?;
     match state {
-        Some((lifecycle, false)) if lifecycle != "deleted" => Ok(()),
+        Some((lifecycle, false)) if lifecycle != SessionLifecycle::Deleted => Ok(()),
         Some(_) => Err(StoreError::InvalidState(
             "session is being deleted or was deleted",
         )),
         None => Err(StoreError::InvalidRequest("session does not exist")),
     }
+}
+
+/// Whether the session holds audio anyone could hear or recover: a segment
+/// that accepted samples, or media launch recovery promoted. Expects
+/// `sessions` in scope.
+pub(super) const HOLDS_AUDIO_SQL: &str = "(EXISTS(SELECT 1 FROM segments held
+        WHERE held.session_id = sessions.id
+          AND (held.lifecycle = 'capturing' OR COALESCE(held.sample_count, 0) > 0))
+    OR EXISTS(SELECT 1 FROM recovery_runs promoted
+        WHERE promoted.session_id = sessions.id
+          AND promoted.disposition IN ('playable_media_recovered', 'timeline_recovered')))";
+
+/// The one Trash rule, shared by the library snapshot and deletion itself. A
+/// capture launch recovery isolated may go only when it never held audio, so
+/// nothing recoverable is ever discarded as an empty attempt.
+pub(super) fn trash_eligible(
+    lifecycle: SessionLifecycle,
+    isolated: bool,
+    holds_audio: bool,
+) -> bool {
+    lifecycle.is_trashable() || (isolated && lifecycle.is_open_capture() && !holds_audio)
 }
 
 /// Exactly what a confirmed deletion removes, for the confirmation surface.
@@ -91,26 +113,23 @@ impl SessionStore {
     ) -> Result<SessionDeletionInventory, StoreError> {
         let _writer = self.write_guard()?;
         let transaction = self.connection.transaction()?;
-        let title: Option<(String, String)> = transaction
+        let state: Option<(String, SessionLifecycle, bool)> = transaction
             .query_row(
-                "SELECT title, lifecycle FROM sessions WHERE id = ?1",
+                &format!("SELECT title, lifecycle, {HOLDS_AUDIO_SQL} FROM sessions WHERE id = ?1"),
                 [&session.0],
-                |row| Ok((row.get(0)?, row.get(1)?)),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .optional()?;
-        let title = match title {
-            Some((title, lifecycle))
-                if matches!(lifecycle.as_str(), "ready_for_review" | "interrupted") =>
-            {
-                title
-            }
-            Some(_) => {
-                return Err(StoreError::InvalidState(
-                    "only saved or interrupted sessions can be deleted",
-                ));
-            }
-            None => return Err(StoreError::InvalidRequest("session does not exist")),
+        let Some((title, lifecycle, holds_audio)) = state else {
+            return Err(StoreError::InvalidRequest("session does not exist"));
         };
+        let isolated = lifecycle.is_open_capture()
+            && super::library_recovery::capture_isolated(&transaction, &session.0)?;
+        if !trash_eligible(lifecycle, isolated, holds_audio) {
+            return Err(StoreError::InvalidState(
+                "only saved, interrupted, or empty isolated sessions can be deleted",
+            ));
+        }
         let admitted: bool = transaction.query_row(
             "SELECT EXISTS(SELECT 1 FROM transcription_intent
                            WHERE session_id = ?1 AND admission IS NOT NULL)",
@@ -218,43 +237,11 @@ impl SessionStore {
         if !begun {
             return Err(StoreError::InvalidState("session deletion was not begun"));
         }
-        // Derived and human-review rows first, then evidence rows in foreign
-        // key order. The session row survives only as a tombstone.
-        for statement in [
-            "DELETE FROM meeting_memory_delta_operations WHERE session_id = ?1",
-            "DELETE FROM meeting_memory_delta_receipts WHERE session_id = ?1",
-            "DELETE FROM meeting_memory_projection WHERE session_id = ?1",
-            "DELETE FROM derived_claim_revisions WHERE session_id = ?1",
-            "DELETE FROM transcript_search WHERE session_id = ?1",
-            "DELETE FROM speaker_adjudications WHERE session_id = ?1",
-            // Sessions remain tombstones; remove people explicitly so their
-            // append-only names and turn assignments cascade in this transaction.
-            "DELETE FROM transcript_named_speakers WHERE session_id = ?1",
-            "DELETE FROM transcript_corrections WHERE session_id = ?1",
-            "DELETE FROM transcript_selections WHERE session_id = ?1",
-            "DELETE FROM transcript_selection_epochs WHERE session_id = ?1",
-            "DELETE FROM transcription_runs WHERE session_id = ?1",
-            "DELETE FROM transcription_intent WHERE session_id = ?1",
-            "DELETE FROM segments WHERE session_id = ?1",
-            // Diarization tracks reference media tracks without cascade.
-            "DELETE FROM conversation_titles WHERE session_id = ?1",
-            "DELETE FROM speaker_diarization_tracks WHERE session_id = ?1",
-            "DELETE FROM speaker_diarization_runs WHERE session_id = ?1",
-            "DELETE FROM tracks WHERE session_id = ?1",
-            "DELETE FROM sources WHERE session_id = ?1",
-            "DELETE FROM required_sources WHERE session_id = ?1",
-            "DELETE FROM context_events WHERE session_id = ?1",
-            "DELETE FROM context_scopes WHERE session_id = ?1",
-            "DELETE FROM session_declarations WHERE session_id = ?1",
-            "DELETE FROM markers WHERE session_id = ?1",
-            "DELETE FROM imports WHERE session_id = ?1",
-            "DELETE FROM session_events WHERE session_id = ?1",
-            "DELETE FROM recovery_runs WHERE session_id = ?1",
-            "DELETE FROM session_restorations WHERE session_id = ?1",
-            "DELETE FROM session_metadata_times WHERE session_id = ?1",
-            "DELETE FROM session_deletion_intents WHERE session_id = ?1",
-        ] {
-            transaction.execute(statement, [&session.0])?;
+        for table in SESSION_OWNED_TABLES {
+            transaction.execute(
+                &format!("DELETE FROM {table} WHERE session_id = ?1"),
+                [&session.0],
+            )?;
         }
         transaction.execute(
             "UPDATE sessions SET lifecycle = 'deleted', title = '', media_files_open = 0,

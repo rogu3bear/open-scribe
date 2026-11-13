@@ -17,6 +17,9 @@ final class SpeechTranscriptionModel: ObservableObject {
   @Published private(set) var progress: NativeTranscriptionProgress?
   @Published private(set) var message: String?
   @Published private(set) var messageIsFailure = false
+  /// Where the speech-model sheet is open. One state for every window, so
+  /// only the window that asked shows it.
+  @Published private(set) var modelSheet: SpeechModelSheetHost?
 
   private let speech: NativeSpeechModels?
   private var loggedCatalogSummary = ""
@@ -139,7 +142,7 @@ final class SpeechTranscriptionModel: ObservableObject {
           failure: true)
         return false
       }
-      report("\(fileName) verified and installed.")
+      report("\(fileName) is installed.")
       AppTelemetry.libraryNote(
         stage: "speech-download", detail: "model=\(modelToken) result=installed")
       return true
@@ -185,7 +188,7 @@ final class SpeechTranscriptionModel: ObservableObject {
           stage: "speech-install", detail: "model=\(modelToken) result=readiness_unavailable")
         return false
       }
-      report("\(model.fileName) verified and installed.")
+      report("\(model.fileName) is installed.")
       AppTelemetry.libraryNote(
         stage: "speech-install", detail: "model=\(modelToken) result=installed")
       return true
@@ -391,6 +394,16 @@ final class SpeechTranscriptionModel: ObservableObject {
 
   func dismissMessage() {
     report(nil)
+  }
+
+  /// Opens the speech-model sheet in `host`, with the last status cleared.
+  func showModels(in host: SpeechModelSheetHost) {
+    dismissMessage()
+    modelSheet = host
+  }
+
+  func closeModels() {
+    modelSheet = nil
   }
 
   /// Completed fraction of all tracks' verified audio.

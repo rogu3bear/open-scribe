@@ -15,7 +15,7 @@ use open_scribe_store::{
     PackageRestoreRequest, RestoredMarker, RestoredSegment, RestoredTrack, RestoredTranscript,
     RestoredTranscriptSegment, SessionOrigin, SessionStore,
 };
-use open_scribe_types::SessionId;
+use open_scribe_types::{SessionId, lowercase_hex};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
@@ -135,7 +135,7 @@ pub fn import_portable_package(
             label: text(marker, "label")?.to_owned(),
         });
     }
-    let title = text(&session["session"], "title")?.to_owned();
+    let title = open_scribe_store::imported_title(text(&session["session"], "title")?);
     let receipt = store.restore_portable_session(&PackageRestoreRequest {
         title: title.clone(),
         origin,
@@ -245,7 +245,7 @@ fn read_document(
     open_regular(&package.join(path))?
         .take(MAX_DOCUMENT_BYTES)
         .read_to_end(&mut bytes)?;
-    if bytes.len() as u64 != *length || hex(&Sha256::digest(&bytes)) != *digest {
+    if bytes.len() as u64 != *length || lowercase_hex(&Sha256::digest(&bytes)) != *digest {
         return Err(invalid("a document changed after verification"));
     }
     serde_json::from_slice(&bytes).map_err(|_| invalid("a document is not JSON"))
@@ -277,8 +277,4 @@ fn array<'a>(value: &'a Value, key: &str) -> Result<&'a Vec<Value>, SessionExpor
     value[key]
         .as_array()
         .ok_or(invalid("a document list is missing or malformed"))
-}
-
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }

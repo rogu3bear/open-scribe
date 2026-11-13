@@ -15,11 +15,11 @@ enum SpeechFailurePresentation {
   static func outcomeText(_ outcome: NativeWorkOutcome) -> String {
     switch outcome {
     case .completed: "Transcript ready."
-    case .userCancelled: "Transcription was cancelled. The recorded audio is unchanged."
-    case .capturePreempted: "Transcription yielded to capture. Finished parts are kept."
-    case .failed: "Transcription did not finish. The recorded audio is unchanged."
+    case .userCancelled: "Transcription was cancelled. The audio is unchanged."
+    case .capturePreempted: "Transcription paused for a recording. Finished parts are kept."
+    case .failed: "Transcription didn't finish. The audio is unchanged."
     case .deferred: "Transcription is waiting to start."
-    case .incomplete: "Saved parts were checked. Some tracks still need transcription."
+    case .incomplete: "Some sources still need transcription."
     }
   }
 
@@ -75,7 +75,7 @@ enum SpeechFailurePresentation {
         "The decoded audio length does not match the saved recording. Your original recording is unchanged."
     case .EvidenceChanged:
       return
-        "Saved conversation data no longer matches its verified state. Transcription stopped without changing any recording."
+        "The conversation changed while it was being transcribed. Transcription stopped without changing any recording."
     case .Cancelled: return outcomeText(.userCancelled)
     case .CapturePreempted: return outcomeText(.capturePreempted)
     case .Deferred: return outcomeText(.deferred)

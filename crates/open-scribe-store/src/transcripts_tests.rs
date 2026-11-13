@@ -220,7 +220,8 @@ fn cancellation_wins_selection_even_when_a_completed_revision_crosses_the_stop_b
     assert!(
         fixture
             .store
-            .transcript_document(&fixture.session)
+            .conversation_document(&fixture.session, crate::DocumentScope::FinalOnly)
+            .map(|document| document.segments)
             .unwrap()
             .is_empty()
     );
@@ -417,7 +418,10 @@ fn failed_runs_keep_their_evidence_and_retries_reuse_only_matching_chunks() {
 
     let runs = fixture.store.transcription_runs(&fixture.session).unwrap();
     assert_eq!(runs[0].state, "failed");
-    assert_eq!(runs[0].failure_class.as_deref(), Some("engine_error"));
+    assert_eq!(
+        runs[0].failure_class.map(|class| class.as_str()),
+        Some("engine_error")
+    );
     assert_eq!((runs[0].completed_chunks, runs[0].total_chunks), (1, 2));
     assert_eq!(runs[1].state, "complete");
 
@@ -518,7 +522,11 @@ fn replacement_preserves_audio_and_the_selected_revision_until_completion() {
         .begin_transcription_run(&first_identity, &plan())
         .unwrap();
     let first = complete_all(&mut fixture, &first_run, ["kept meadow", "kept close"]);
-    let selected = fixture.store.transcript_document(&session).unwrap();
+    let selected = fixture
+        .store
+        .conversation_document(&session, crate::DocumentScope::FinalOnly)
+        .map(|document| document.segments)
+        .unwrap();
     assert_eq!(selected.len(), 2);
     assert!(selected.iter().all(|segment| segment.revision_id == first));
     assert_eq!(selected[0].effective_text, "kept meadow");
@@ -537,7 +545,11 @@ fn replacement_preserves_audio_and_the_selected_revision_until_completion() {
         .complete_transcript_chunk(&running.run_id, 0, "en", &hypothesis("partial replacement"))
         .unwrap();
 
-    let during = fixture.store.transcript_document(&session).unwrap();
+    let during = fixture
+        .store
+        .conversation_document(&session, crate::DocumentScope::FinalOnly)
+        .map(|document| document.segments)
+        .unwrap();
     assert_eq!(during.len(), 2);
     assert!(during.iter().all(|segment| segment.revision_id == first));
     assert_eq!(during[0].effective_text, "kept meadow");
@@ -583,7 +595,12 @@ fn replacement_preserves_audio_and_the_selected_revision_until_completion() {
             .any(|revision| revision.revision_id == second && revision.selected)
     );
     assert_eq!(
-        fixture.store.transcript_document(&session).unwrap()[0].effective_text,
+        fixture
+            .store
+            .conversation_document(&session, crate::DocumentScope::FinalOnly)
+            .map(|document| document.segments)
+            .unwrap()[0]
+            .effective_text,
         "partial replacement"
     );
     assert_eq!(
@@ -605,7 +622,11 @@ fn replacement_preserves_audio_and_the_selected_revision_until_completion() {
         "kept meadow"
     );
     assert_eq!(
-        reopened.transcript_document(&session).unwrap()[0].effective_text,
+        reopened
+            .conversation_document(&session, crate::DocumentScope::FinalOnly)
+            .map(|document| document.segments)
+            .unwrap()[0]
+            .effective_text,
         "partial replacement"
     );
     assert_eq!(std::fs::read(&fixture.media).unwrap(), media_before);
@@ -813,7 +834,10 @@ fn launch_fails_incomplete_running_transcription_as_orphaned() {
     let runs = fixture.store.transcription_runs(&fixture.session).unwrap();
     assert_eq!(runs.len(), 1);
     assert_eq!(runs[0].state, "failed");
-    assert_eq!(runs[0].failure_class.as_deref(), Some("orphaned"));
+    assert_eq!(
+        runs[0].failure_class.map(|class| class.as_str()),
+        Some("orphaned")
+    );
     assert_eq!(
         findings
             .iter()
@@ -1044,7 +1068,10 @@ fn retained_candidates_select_the_newest_complete_stale_run_per_unselected_track
     assert_eq!(record.identity, stale);
     assert_eq!(record.plan, plan());
     assert_eq!(record.state, "failed");
-    assert_eq!(record.failure_class.as_deref(), Some("invalid_result"));
+    assert_eq!(
+        record.failure_class.map(|class| class.as_str()),
+        Some("invalid_result")
+    );
     assert_eq!((record.complete_chunks, record.total_chunks), (2, 2));
     assert!(matches!(
         fixture.store.transcription_run_record("missing"),
@@ -1089,7 +1116,10 @@ fn runtime_snapshot_reports_transcript_posture_from_runs_and_selections() {
         .unwrap();
     let failed = posture(&fixture);
     assert_eq!(failed.state, RuntimeTranscriptState::Failed);
-    assert_eq!(failed.failure_class.as_deref(), Some("engine_error"));
+    assert_eq!(
+        failed.failure_class,
+        Some(crate::TranscriptionFailureClass::EngineError)
+    );
     assert_eq!((failed.completed_chunks, failed.total_chunks), (0, 0));
 
     let stopped = fixture
@@ -1137,11 +1167,15 @@ fn runtime_snapshot_reports_transcript_posture_from_runs_and_selections() {
     let after = posture(&fixture);
     assert_eq!(after.state, RuntimeTranscriptState::Final);
     assert_eq!(after.attempt, open_scribe_types::AttemptState::Failed);
-    assert_eq!(after.attempt_failure.as_deref(), Some("engine_error"));
+    assert_eq!(
+        after.attempt_failure,
+        Some(crate::TranscriptionFailureClass::EngineError)
+    );
     assert!(
         !fixture
             .store
-            .transcript_document(&fixture.session)
+            .conversation_document(&fixture.session, crate::DocumentScope::FinalOnly)
+            .map(|document| document.segments)
             .unwrap()
             .is_empty()
     );
@@ -1203,7 +1237,7 @@ fn accepted_capture_preemption_projects_honestly_without_rewriting_engine_histor
             .transcription_run_record(&replacement.run_id)
             .unwrap()
             .failure_class
-            .as_deref(),
+            .map(|class| class.as_str()),
         Some("cancelled")
     );
 }
@@ -1263,6 +1297,8 @@ fn revision_finality(fixture: &Fixture, revision_id: &str) -> String {
         .find(|revision| revision.revision_id == revision_id)
         .unwrap()
         .finality
+        .as_str()
+        .to_owned()
 }
 
 fn revision_text(fixture: &Fixture, revision_id: &str) -> String {
@@ -1334,11 +1370,16 @@ fn a_final_range_supersedes_an_overlapping_draft_and_leaves_its_text() {
     assert!(
         fixture
             .store
-            .transcript_document(&fixture.session)
+            .conversation_document(&fixture.session, crate::DocumentScope::FinalOnly)
+            .map(|document| document.segments)
             .unwrap()
             .is_empty()
     );
-    let provisional = fixture.store.readable_transcript(&fixture.session).unwrap();
+    let provisional = fixture
+        .store
+        .conversation_document(&fixture.session, crate::DocumentScope::Readable)
+        .map(|document| document.segments)
+        .unwrap();
     assert_eq!(
         provisional
             .iter()
@@ -1381,7 +1422,8 @@ fn a_final_range_supersedes_an_overlapping_draft_and_leaves_its_text() {
     assert_eq!(
         fixture
             .store
-            .transcript_document(&fixture.session)
+            .conversation_document(&fixture.session, crate::DocumentScope::FinalOnly)
+            .map(|document| document.segments)
             .unwrap()
             .iter()
             .map(|segment| segment.effective_text.as_str())
@@ -1391,12 +1433,17 @@ fn a_final_range_supersedes_an_overlapping_draft_and_leaves_its_text() {
     assert!(
         fixture
             .store
-            .transcript_document(&fixture.session)
+            .conversation_document(&fixture.session, crate::DocumentScope::FinalOnly)
+            .map(|document| document.segments)
             .unwrap()
             .iter()
             .all(|segment| segment.finality == "final")
     );
-    let readable = fixture.store.readable_transcript(&fixture.session).unwrap();
+    let readable = fixture
+        .store
+        .conversation_document(&fixture.session, crate::DocumentScope::Readable)
+        .map(|document| document.segments)
+        .unwrap();
     assert_eq!(
         readable
             .iter()
@@ -1558,7 +1605,8 @@ fn migration_19_keeps_an_existing_final_revision_and_accepts_a_draft() {
     assert_eq!(
         fixture
             .store
-            .transcript_document(&fixture.session)
+            .conversation_document(&fixture.session, crate::DocumentScope::FinalOnly)
+            .map(|document| document.segments)
             .unwrap()
             .iter()
             .map(|segment| segment.effective_text.as_str())
@@ -1568,7 +1616,8 @@ fn migration_19_keeps_an_existing_final_revision_and_accepts_a_draft() {
     assert!(
         fixture
             .store
-            .readable_transcript(&fixture.session)
+            .conversation_document(&fixture.session, crate::DocumentScope::Readable)
+            .map(|document| document.segments)
             .unwrap()
             .iter()
             .any(

@@ -10,15 +10,15 @@ final class ConversationSidebarRowTests: XCTestCase {
   /// in-process renders for visual inspection, not screen-capture evidence.
   func testTwoLineRowsMountInLightAndDarkSidebars() async throws {
     let sessions = [
-      session("reviewed", title: "Reviewed agreement", lifecycle: "ready_for_review"),
-      session("recording", title: "Deliberate recording", lifecycle: "recording"),
-      session("interrupted", title: "Interrupted conversation", lifecycle: "interrupted"),
+      session("reviewed", title: "Reviewed agreement", lifecycle: .readyForReview),
+      session("recording", title: "Deliberate recording", lifecycle: .recording),
+      session("interrupted", title: "Interrupted conversation", lifecycle: .interrupted),
       session(
-        "unavailable", title: "Missing source audio", lifecycle: "ready_for_review",
-        media: unavailableMedia("unavailable")),
+        "unavailable", title: "Missing source audio", lifecycle: .readyForReview,
+        media: unavailableMedia(.unavailable)),
       session(
-        "corrupt", title: "Damaged source audio", lifecycle: "ready_for_review",
-        media: unavailableMedia("corrupt")),
+        "corrupt", title: "Damaged source audio", lifecycle: .readyForReview,
+        media: unavailableMedia(.corrupt)),
     ]
     for appearance in [NSAppearance.Name.aqua, .darkAqua] {
       for selected in sessions {
@@ -60,33 +60,34 @@ final class ConversationSidebarRowTests: XCTestCase {
   }
 
   func testUnavailableAudioTakesPriorityOverTranscriptPosture() {
-    for availability in ["unavailable", "corrupt"] {
+    for availability in [NativePlayableMediaAvailability.unavailable, .corrupt] {
       for state in [NativeRuntimeTranscriptState.none, .final] {
         let saved = session(
-          "unreadable", title: "Preserved import", lifecycle: "ready_for_review",
+          "unreadable", title: "Preserved import", lifecycle: .readyForReview,
           media: unavailableMedia(availability), transcriptState: state)
         XCTAssertFalse(
           saved.needsAttention, "capture health and media availability are independent")
         XCTAssertTrue(saved.transcript.hasTranscribableAudio, "sealed track metadata survives")
         let row = ConversationSidebarRow(session: saved, reference: nil, isSelected: true)
         XCTAssertEqual(row.detailStatusText, saved.statusText)
-        XCTAssertEqual(row.statusSymbolName, "exclamationmark.triangle")
+        XCTAssertEqual(row.statusSymbolName, saved.captureStatus.symbolName)
+        XCTAssertNotEqual(saved.captureStatus.tint, .quiet)
         XCTAssertEqual(
           row.detailStatusText,
-          availability == "corrupt" ? "Audio appears corrupt" : "Audio unavailable")
+          availability == .corrupt ? "Audio file damaged" : "Audio file missing")
       }
     }
   }
 
   func testReplacementFailureKeepsAVisibleWarningWithoutAddingRoutineIcons() {
     let failed = session(
-      "failed-replacement", title: "Reviewed agreement", lifecycle: "ready_for_review",
+      "failed-replacement", title: "Reviewed agreement", lifecycle: .readyForReview,
       attempt: .failed)
     let failedRow = ConversationSidebarRow(session: failed, reference: nil, isSelected: true)
-    XCTAssertEqual(failedRow.detailStatusText, "Transcript ready · replacement failed")
+    XCTAssertEqual(failedRow.detailStatusText, "Transcript ready · retranscription failed")
     XCTAssertEqual(failedRow.statusSymbolName, "exclamationmark.circle")
     let complete = session(
-      "reviewed", title: "Reviewed agreement", lifecycle: "ready_for_review")
+      "reviewed", title: "Reviewed agreement", lifecycle: .readyForReview)
     let completeRow = ConversationSidebarRow(session: complete, reference: nil, isSelected: false)
     XCTAssertEqual(completeRow.detailStatusText, "Transcript ready")
     XCTAssertNil(completeRow.statusSymbolName)
@@ -96,7 +97,7 @@ final class ConversationSidebarRowTests: XCTestCase {
   /// controlActiveState does not change AppKit's List highlight and is not this test.
   func testSelectedRowAcrossNativeFocusAndWindowTransitions() async throws {
     let saved = session(
-      "failed-replacement", title: "Reviewed agreement", lifecycle: "ready_for_review",
+      "failed-replacement", title: "Reviewed agreement", lifecycle: .readyForReview,
       attempt: .failed)
     for appearance in [NSAppearance.Name.aqua, .darkAqua] {
       for width in [220.0, 260.0] {
@@ -154,7 +155,9 @@ final class ConversationSidebarRowTests: XCTestCase {
     }
   }
 
-  private func unavailableMedia(_ availability: String) -> NativeRuntimePlayableMediaSnapshot {
+  private func unavailableMedia(
+    _ availability: NativePlayableMediaAvailability
+  ) -> NativeRuntimePlayableMediaSnapshot {
     NativeRuntimePlayableMediaSnapshot(
       sourceDisplayName: "Fixture import", availability: availability, absolutePath: nil,
       durationNanoseconds: 125_000_000_000, sampleCount: 6_000_000, byteLength: 12_000_068)
@@ -222,7 +225,7 @@ final class ConversationSidebarRowTests: XCTestCase {
   }
 
   private func session(
-    _ id: String, title: String, lifecycle: String,
+    _ id: String, title: String, lifecycle: NativeSessionLifecycle,
     media: NativeRuntimePlayableMediaSnapshot? = nil,
     transcriptState: NativeRuntimeTranscriptState = .final, attempt: NativeAttemptState = .complete
   )
@@ -230,19 +233,20 @@ final class ConversationSidebarRowTests: XCTestCase {
   {
     RuntimeSessionPresentation(
       native: NativeRuntimeSessionSnapshot(
-        sessionId: id, title: title, lifecycle: lifecycle,
-        health: lifecycle == "interrupted" ? "degraded" : "healthy",
+        sessionId: id, title: title, titleSource: .person, lifecycle: lifecycle,
+        health: lifecycle == .interrupted ? .degraded : .healthy,
         elapsedSeconds: 125, journalDurable: true,
-        mediaFilesOpen: lifecycle == "recording", interruptionReason: nil,
+        mediaFilesOpen: lifecycle == .recording, interruptionReason: nil,
         recovered: false, hasCaptureTimeline: false, sources: [], playableMedia: media,
         transcript: NativeRuntimeTranscriptSnapshot(
           document: transcriptState == .final ? .final : .none, replacementResumable: false,
           state: transcriptState,
           selectedRevisionIds: transcriptState == .final ? ["reviewed-final"] : [],
           documentVersion: "visual-fixture",
-          attempt: attempt, attemptFailure: attempt == .failed ? "engine_error" : nil,
+          attempt: attempt, attemptFailure: attempt == .failed ? .engineError : nil,
           totalTracks: 1, finalTracks: transcriptState == .final ? 1 : 0,
-          completedChunks: 1, totalChunks: 1, failureClass: nil)
+          completedChunks: 1, totalChunks: 1, failureClass: nil),
+        preservedAudio: true, canMoveToTrash: lifecycle != .recording
       ))
   }
 }

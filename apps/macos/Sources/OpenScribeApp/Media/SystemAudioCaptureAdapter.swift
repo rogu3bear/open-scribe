@@ -33,13 +33,9 @@ extension SCStream: SystemAudioStreamControlling {}
 final class SystemAudioCaptureAdapter: NSObject, SCStreamOutput, SCStreamDelegate,
   @unchecked Sendable
 {
-  typealias FirstSampleHandler = @Sendable (NativeFirstSampleReceipt) -> Void
-  typealias FailureHandler = @Sendable (SystemAudioCaptureAdapterError) -> Void
-
-  private let writer: CapturedAudioWriting
+  private let core: CaptureSourceCore
   private var stream: SystemAudioStreamControlling!
-  /// Live captions listen to audio after it is written; see `LiveAudioListening`.
-  let liveAudio = LiveAudioListenerSlot()
+  var liveAudio: LiveAudioListenerSlot { core.liveAudio }
   private let writerQueue = DispatchQueue(
     label: "app.open-scribe.system-audio-writer",
     qos: .userInitiated
@@ -50,21 +46,19 @@ final class SystemAudioCaptureAdapter: NSObject, SCStreamOutput, SCStreamDelegat
   private var stopping = false
   private var startTask: Task<Void, Error>?
   private var stopTask: Task<UInt64?, Error>?
-  private var firstSampleReported = false
   private var failureReported = false
-  private var lastHostTime: UInt64?
-  private var onFirstSample: FirstSampleHandler?
-  private var onFailure: FailureHandler?
+  private var onFirstSample: SystemAudioFirstSampleHandler?
+  private var onFailure: SystemAudioFailureHandler?
 
   init(writer: CapturedAudioWriting, filter: SCContentFilter) {
-    self.writer = writer
+    core = CaptureSourceCore(writer: writer)
     let configuration = SCStreamConfiguration()
     configuration.width = 2
     configuration.height = 2
     configuration.minimumFrameInterval = CMTime(seconds: 1, preferredTimescale: 1)
     configuration.queueDepth = 1
     configuration.capturesAudio = true
-    configuration.sampleRate = 48_000
+    configuration.sampleRate = Int(NativeCapturePolicy.current.sampleRateHz)
     configuration.channelCount = 2
     configuration.excludesCurrentProcessAudio = true
     super.init()
@@ -72,7 +66,7 @@ final class SystemAudioCaptureAdapter: NSObject, SCStreamOutput, SCStreamDelegat
   }
 
   init(writer: CapturedAudioWriting, stream: SystemAudioStreamControlling) {
-    self.writer = writer
+    core = CaptureSourceCore(writer: writer)
     self.stream = stream
     super.init()
   }
@@ -118,8 +112,8 @@ final class SystemAudioCaptureAdapter: NSObject, SCStreamOutput, SCStreamDelegat
   }
 
   func start(
-    onFirstSample: @escaping FirstSampleHandler,
-    onFailure: @escaping FailureHandler
+    onFirstSample: @escaping SystemAudioFirstSampleHandler,
+    onFailure: @escaping SystemAudioFailureHandler
   ) async throws {
     let task = try beginStart(onFirstSample: onFirstSample, onFailure: onFailure)
     try await task.value
@@ -183,8 +177,8 @@ final class SystemAudioCaptureAdapter: NSObject, SCStreamOutput, SCStreamDelegat
   }
 
   private func beginStart(
-    onFirstSample: @escaping FirstSampleHandler,
-    onFailure: @escaping FailureHandler
+    onFirstSample: @escaping SystemAudioFirstSampleHandler,
+    onFailure: @escaping SystemAudioFailureHandler
   ) throws -> Task<Void, Error> {
     stateLock.lock()
     defer { stateLock.unlock() }
@@ -193,9 +187,8 @@ final class SystemAudioCaptureAdapter: NSObject, SCStreamOutput, SCStreamDelegat
     }
     started = true
     hasStarted = true
-    firstSampleReported = false
     failureReported = false
-    lastHostTime = nil
+    core.reset()
     self.onFirstSample = onFirstSample
     self.onFailure = onFailure
     let task = Task { try await self.startStream() }
@@ -219,7 +212,7 @@ final class SystemAudioCaptureAdapter: NSObject, SCStreamOutput, SCStreamDelegat
     started = false
     onFirstSample = nil
     onFailure = nil
-    return lastHostTime
+    return core.lastWrittenHostTime
   }
 
   func stream(
@@ -295,23 +288,12 @@ final class SystemAudioCaptureAdapter: NSObject, SCStreamOutput, SCStreamDelegat
       return
     }
     do {
-      let written = try withExtendedLifetime(retainedBlockBuffer) {
-        let written = try writer.writeCapturedBuffer(pcm, hostTime: hostTime)
-        if written > 0 {
-          liveAudio.deliver(pcm, writtenFrames: AVAudioFrameCount(written), hostTime: hostTime)
-        }
-        return written
+      let (_, receipt) = try withExtendedLifetime(retainedBlockBuffer) {
+        try core.write(pcm, hostTime: hostTime)
       }
-      guard written > 0 else { return }
-      stateLock.lock()
-      lastHostTime = hostTime
-      let shouldReport = !firstSampleReported
-      firstSampleReported = true
-      let handler = onFirstSample
-      stateLock.unlock()
-      if shouldReport {
-        handler?(try writer.firstSampleReceipt(hostTime: hostTime, frameCount: UInt64(written)))
-      }
+      guard let receipt else { return }
+      let handler = stateLock.withLock { onFirstSample }
+      handler?(receipt)
     } catch {
       reportFailure(.writerFailed)
     }

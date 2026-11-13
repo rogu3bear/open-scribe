@@ -5,37 +5,24 @@
 //! state this migration accepts is `unavailable`. Nothing here renames a
 //! speaker, edits transcript text, changes a selection, or touches media.
 
-use super::transcript_review::{SOURCE_CLUSTER, default_speaker_label, require_reviewable_session};
-use super::{SessionStore, StoreError, wall_time_milliseconds};
+use super::transcript_review::{SpeakerLabelOrigin, require_reviewable_session, speaker_labels};
+use super::{SessionStore, StoreError, TrackSourceKind, wall_time_milliseconds};
+use open_scribe_diarize::{
+    ALGORITHM_ID, CLUSTERING_UNAVAILABLE, SpeakerDisposition, UNAVAILABLE_REASON,
+    disposition_for_source_kind,
+};
 use open_scribe_types::SessionId;
 use rusqlite::{OptionalExtension, Transaction, params};
-use std::collections::BTreeMap;
 use uuid::Uuid;
-
-pub(super) const SPEAKER_DIARIZATION_MIGRATION_VERSION: i64 = 20;
-
-/// Same words as `open-scribe-diarize`. Any other algorithm, clustering
-/// state, or reason is refused so a caller cannot store a calibrated split.
-const ALGORITHM_ID: &str = "topology-before-clustering-v1";
-const CLUSTERING_UNAVAILABLE: &str = "unavailable";
-const UNAVAILABLE_REASON: &str = "no calibrated diarization model";
-
-/// One track the caller has already classified. The store checks the
-/// disposition against the track's stored source and snapshots the label.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct SpeakerDiarizationTrackInput {
-    pub track_id: String,
-    pub disposition: String,
-}
 
 /// The label review was showing when this decision was recorded.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SpeakerDiarizationTrack {
     pub track_id: String,
-    pub source_kind: String,
-    pub disposition: String,
+    pub source_kind: TrackSourceKind,
+    pub disposition: SpeakerDisposition,
     pub label: String,
-    pub label_origin: String,
+    pub label_origin: SpeakerLabelOrigin,
 }
 
 /// One idempotent diarization decision for a reviewable session.
@@ -85,144 +72,43 @@ pub(super) fn apply_schema(transaction: &Transaction<'_>) -> Result<(), StoreErr
             BEFORE UPDATE ON speaker_diarization_tracks
             BEGIN SELECT RAISE(ABORT, 'diarization tracks are append-only'); END;",
     )?;
-    transaction.execute(
-        "INSERT OR IGNORE INTO schema_migrations(version, applied_at_ms) VALUES(?1, ?2)",
-        params![
-            SPEAKER_DIARIZATION_MIGRATION_VERSION,
-            wall_time_milliseconds()
-        ],
-    )?;
     Ok(())
 }
 
-struct CurrentSpeaker {
-    track_id: String,
-    source_kind: String,
-    label: String,
-    label_origin: String,
-}
-
-fn required_disposition(source_kind: &str) -> &'static str {
-    match source_kind {
-        "microphone" | "application_audio" | "system_audio" => "topology",
-        _ => "unresolved",
-    }
-}
-
-fn current_speakers(
+/// The decision for the session's tracks as they are now: each source kind's
+/// disposition and the label review shows.
+fn current_tracks(
     transaction: &Transaction<'_>,
     session_id: &str,
-) -> Result<Vec<CurrentSpeaker>, StoreError> {
-    let mut statement = transaction.prepare(
-        "SELECT tracks.id, sources.kind,
-                (SELECT adjudications.label FROM speaker_adjudications AS adjudications
-                 WHERE adjudications.session_id = tracks.session_id
-                   AND adjudications.track_id = tracks.id
-                   AND adjudications.cluster = ?2
-                 ORDER BY adjudications.created_at_ms DESC, adjudications.rowid DESC
-                 LIMIT 1)
-         FROM tracks
-         JOIN sources ON sources.id = tracks.source_id
-         WHERE tracks.session_id = ?1
-         ORDER BY tracks.id",
-    )?;
-    let rows = statement
-        .query_map(params![session_id, SOURCE_CLUSTER], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, Option<String>>(2)?,
-            ))
-        })?
-        .collect::<Result<Vec<_>, _>>()?;
-    Ok(rows
+) -> Result<Vec<SpeakerDiarizationTrack>, StoreError> {
+    Ok(speaker_labels(transaction, session_id)?
         .into_iter()
-        .map(|(track_id, source_kind, human)| {
-            let (label, label_origin) = match human {
-                Some(label) => (label, "human".to_owned()),
-                None => (
-                    default_speaker_label(&source_kind).to_owned(),
-                    "source_default".to_owned(),
-                ),
-            };
-            CurrentSpeaker {
-                track_id,
-                source_kind,
-                label,
-                label_origin,
-            }
+        .map(|speaker| SpeakerDiarizationTrack {
+            disposition: disposition_for_source_kind(speaker.source_kind.as_str()).disposition,
+            track_id: speaker.track_id,
+            source_kind: speaker.source_kind,
+            label: speaker.label,
+            label_origin: speaker.origin,
         })
         .collect())
 }
 
-fn decided_tracks(
-    speakers: &[CurrentSpeaker],
-    decisions: &[SpeakerDiarizationTrackInput],
-) -> Result<Vec<SpeakerDiarizationTrack>, StoreError> {
-    let mut supplied: BTreeMap<&str, &str> = BTreeMap::new();
-    for decision in decisions {
-        if decision.track_id.is_empty()
-            || supplied
-                .insert(decision.track_id.as_str(), decision.disposition.as_str())
-                .is_some()
-        {
-            return Err(StoreError::InvalidRequest(
-                "diarization tracks do not match the session",
-            ));
-        }
-    }
-    if supplied.len() != speakers.len()
-        || speakers
-            .iter()
-            .any(|speaker| !supplied.contains_key(speaker.track_id.as_str()))
-    {
-        return Err(StoreError::InvalidRequest(
-            "diarization tracks do not match the session",
-        ));
-    }
-    let mut tracks = Vec::with_capacity(speakers.len());
-    for speaker in speakers {
-        let disposition = supplied[speaker.track_id.as_str()];
-        if disposition != required_disposition(&speaker.source_kind) {
-            return Err(StoreError::InvalidRequest(
-                "diarization disposition does not match the audio source",
-            ));
-        }
-        tracks.push(SpeakerDiarizationTrack {
-            track_id: speaker.track_id.clone(),
-            source_kind: speaker.source_kind.clone(),
-            disposition: disposition.to_owned(),
-            label: speaker.label.clone(),
-            label_origin: speaker.label_origin.clone(),
-        });
-    }
-    Ok(tracks)
-}
-
-struct StoredRun {
-    run_id: String,
-    algorithm_id: String,
-    clustering_state: String,
-    reason: String,
-    tracks: Vec<SpeakerDiarizationTrack>,
-}
-
+/// The latest recorded run and its tracks.
 fn latest_run(
     transaction: &Transaction<'_>,
     session_id: &str,
-) -> Result<Option<StoredRun>, StoreError> {
-    let existing: Option<(String, String, String, String)> = transaction
+) -> Result<Option<(String, Vec<SpeakerDiarizationTrack>)>, StoreError> {
+    let run_id: Option<String> = transaction
         .query_row(
-            "SELECT id, algorithm_id, clustering_state, reason
-             FROM speaker_diarization_runs
+            "SELECT id FROM speaker_diarization_runs
              WHERE session_id = ?1
              ORDER BY created_at_ms DESC, rowid DESC
              LIMIT 1",
             [session_id],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            |row| row.get(0),
         )
         .optional()?;
-    let Some((run_id, algorithm_id, clustering_state, reason)) = existing else {
+    let Some(run_id) = run_id else {
         return Ok(None);
     };
     let mut statement = transaction.prepare(
@@ -231,70 +117,105 @@ fn latest_run(
          WHERE run_id = ?1
          ORDER BY track_id",
     )?;
-    let tracks = statement
+    let rows = statement
         .query_map([&run_id], |row| {
-            Ok(SpeakerDiarizationTrack {
-                track_id: row.get(0)?,
-                source_kind: row.get(1)?,
-                disposition: row.get(2)?,
-                label: row.get(3)?,
-                label_origin: row.get(4)?,
-            })
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, TrackSourceKind>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+            ))
         })?
         .collect::<Result<Vec<_>, _>>()?;
-    Ok(Some(StoredRun {
+    let tracks = rows
+        .into_iter()
+        .map(
+            |(track_id, source_kind, disposition, label, label_origin)| {
+                Ok(SpeakerDiarizationTrack {
+                    track_id,
+                    source_kind,
+                    disposition: match disposition.as_str() {
+                        "topology" => SpeakerDisposition::Topology,
+                        "unresolved" => SpeakerDisposition::Unresolved,
+                        _ => {
+                            return Err(StoreError::IntegrityMismatch(
+                                "diarization disposition is unsupported",
+                            ));
+                        }
+                    },
+                    label,
+                    label_origin: match label_origin.as_str() {
+                        "human" => SpeakerLabelOrigin::Human,
+                        "source_default" => SpeakerLabelOrigin::SourceDefault,
+                        _ => {
+                            return Err(StoreError::IntegrityMismatch(
+                                "diarization label origin is unsupported",
+                            ));
+                        }
+                    },
+                })
+            },
+        )
+        .collect::<Result<_, StoreError>>()?;
+    Ok(Some((run_id, tracks)))
+}
+
+/// The stored run when it already records `tracks`.
+fn recorded(
+    transaction: &Transaction<'_>,
+    session_id: &str,
+) -> Result<(Vec<SpeakerDiarizationTrack>, Option<String>), StoreError> {
+    require_reviewable_session(transaction, session_id)?;
+    let tracks = current_tracks(transaction, session_id)?;
+    let unchanged = latest_run(transaction, session_id)?
+        .filter(|(_, stored)| *stored == tracks)
+        .map(|(run_id, _)| run_id);
+    Ok((tracks, unchanged))
+}
+
+fn decision(
+    run_id: String,
+    inserted: bool,
+    tracks: Vec<SpeakerDiarizationTrack>,
+) -> SpeakerDiarization {
+    SpeakerDiarization {
         run_id,
-        algorithm_id,
-        clustering_state,
-        reason,
+        algorithm_id: ALGORITHM_ID.to_owned(),
+        clustering_state: CLUSTERING_UNAVAILABLE.to_owned(),
+        reason: UNAVAILABLE_REASON.to_owned(),
+        inserted,
         tracks,
-    }))
+    }
 }
 
 impl SessionStore {
-    /// Records the review decision. A second call with the same source
-    /// dispositions and labels does not insert another run. Clustering other
-    /// than `unavailable` is rejected. Media, transcript text, selections,
-    /// and human turn names are not written.
-    pub fn record_speaker_diarization(
+    /// Records that known sources keep their topology and that voice
+    /// clustering is unavailable. Reading a session whose dispositions and
+    /// labels are already recorded writes nothing; a new run is appended
+    /// only when they changed. Media, transcript text, selections, and human
+    /// turn names are not written.
+    pub fn prepare_speaker_diarization(
         &mut self,
         session: &SessionId,
-        algorithm_id: &str,
-        clustering_state: &str,
-        reason: &str,
-        decisions: &[SpeakerDiarizationTrackInput],
     ) -> Result<SpeakerDiarization, StoreError> {
-        if algorithm_id != ALGORITHM_ID
-            || clustering_state != CLUSTERING_UNAVAILABLE
-            || reason != UNAVAILABLE_REASON
         {
-            return Err(StoreError::InvalidRequest(
-                "diarization clustering is not calibrated",
-            ));
+            // Deferred, so an unchanged decision never takes the write lock.
+            let read = rusqlite::Transaction::new_unchecked(
+                &self.connection,
+                rusqlite::TransactionBehavior::Deferred,
+            )?;
+            if let (tracks, Some(run_id)) = recorded(&read, &session.0)? {
+                return Ok(decision(run_id, false, tracks));
+            }
         }
         let _writer = self.write_guard()?;
         let transaction = self.connection.transaction()?;
-        require_reviewable_session(&transaction, &session.0)?;
-        let speakers = current_speakers(&transaction, &session.0)?;
-        let tracks = decided_tracks(&speakers, decisions)?;
-        let existing = latest_run(&transaction, &session.0)?;
-        if let Some(existing) = existing
-            && existing.algorithm_id == algorithm_id
-            && existing.clustering_state == clustering_state
-            && existing.reason == reason
-            && existing.tracks == tracks
-        {
-            return Ok(SpeakerDiarization {
-                run_id: existing.run_id,
-                algorithm_id: existing.algorithm_id,
-                clustering_state: existing.clustering_state,
-                reason: existing.reason,
-                inserted: false,
-                tracks,
-            });
+        let (tracks, unchanged) = recorded(&transaction, &session.0)?;
+        if let Some(run_id) = unchanged {
+            return Ok(decision(run_id, false, tracks));
         }
         let run_id = Uuid::now_v7().to_string();
-        let created_at_ms = wall_time_milliseconds();
         transaction.execute(
             "INSERT INTO speaker_diarization_runs(
                 id, session_id, algorithm_id, clustering_state, reason, created_at_ms)
@@ -302,10 +223,10 @@ impl SessionStore {
             params![
                 run_id,
                 session.0,
-                algorithm_id,
-                clustering_state,
-                reason,
-                created_at_ms
+                ALGORITHM_ID,
+                CLUSTERING_UNAVAILABLE,
+                UNAVAILABLE_REASON,
+                wall_time_milliseconds()
             ],
         )?;
         for track in &tracks {
@@ -319,34 +240,39 @@ impl SessionStore {
                     session.0,
                     track.track_id,
                     track.source_kind,
-                    track.disposition,
+                    track.disposition.as_str(),
                     track.label,
-                    track.label_origin
+                    track.label_origin.as_str()
                 ],
             )?;
         }
         transaction.commit()?;
-        Ok(SpeakerDiarization {
-            run_id,
-            algorithm_id: algorithm_id.to_owned(),
-            clustering_state: clustering_state.to_owned(),
-            reason: reason.to_owned(),
-            inserted: true,
-            tracks,
-        })
+        Ok(decision(run_id, true, tracks))
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::required_disposition;
+    use super::*;
 
     #[test]
     fn topology_is_only_the_known_capture_sources() {
-        assert_eq!(required_disposition("microphone"), "topology");
-        assert_eq!(required_disposition("application_audio"), "topology");
-        assert_eq!(required_disposition("system_audio"), "topology");
-        assert_eq!(required_disposition("imported_audio"), "unresolved");
-        assert_eq!(required_disposition("other"), "unresolved");
+        for kind in TrackSourceKind::ALL {
+            let expected = if kind.capture().is_some() {
+                SpeakerDisposition::Topology
+            } else {
+                SpeakerDisposition::Unresolved
+            };
+            assert_eq!(
+                disposition_for_source_kind(kind.as_str()).disposition,
+                expected
+            );
+        }
+        assert_eq!(
+            disposition_for_source_kind(TrackSourceKind::ImportedAudio.as_str())
+                .disposition
+                .as_str(),
+            "unresolved"
+        );
     }
 }

@@ -8,6 +8,9 @@ final class MicrophoneRestoreMonitor {
   private let wait: Wait
   private var task: Task<Void, Never>?
 
+  /// How long one restore attempt waits for the microphone's first sample.
+  nonisolated static let timeout: Duration = .seconds(10)
+
   init(wait: @escaping Wait) { self.wait = wait }
 
   nonisolated static func waitForTimeout(_ deadline: ContinuousClock.Instant) async throws {
@@ -15,7 +18,7 @@ final class MicrophoneRestoreMonitor {
   }
 
   func start(
-    deadline: ContinuousClock.Instant = ContinuousClock.now.advanced(by: .seconds(10)),
+    deadline: ContinuousClock.Instant = ContinuousClock.now.advanced(by: timeout),
     onTimeout: @escaping @MainActor () async -> Void
   ) {
     cancel()

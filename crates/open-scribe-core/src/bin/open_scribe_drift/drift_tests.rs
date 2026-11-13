@@ -1,5 +1,5 @@
 use super::*;
-use crate::drift_stimulus::write_stimulus_wav;
+use crate::stimulus::write_stimulus_wav;
 use open_scribe_store::{PackageRestoreRequest, RestoredSegment, RestoredTrack, SessionOrigin};
 use sha2::{Digest, Sha256};
 use std::fs::{self, File};

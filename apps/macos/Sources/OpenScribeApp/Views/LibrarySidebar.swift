@@ -1,8 +1,9 @@
 import SwiftUI
 
 /// The library: search across every transcript, the recording in progress,
-/// conversations that need attention, then saved conversations grouped by
-/// day. Rows lead with the title; one quiet line carries length and state.
+/// conversations that need attention, saved conversations grouped by day,
+/// and last one quiet row for attempts that never recorded. Rows lead with
+/// the title; one quiet line carries length and state.
 struct LibrarySidebar: View {
   @ObservedObject var store: RuntimeLibraryStore
   @ObservedObject var importedMediaAuthority: ImportedMediaAuthorityAdapter
@@ -13,17 +14,14 @@ struct LibrarySidebar: View {
   @ObservedObject var pressure: SystemPressureMonitor
   @ObservedObject var navigation: MainWorkspaceNavigation
   @ObservedObject var search: LibrarySearchState
+  /// Copy, Rename and Move to Trash, as the document and the menu bar act.
+  let actions: ConversationActions
   let onOpenSearchHit: (NativeTranscriptSearchHit) -> Void
-  let onRequestDeletion: (RuntimeSessionPresentation) -> Void
-  let onCopy: (RuntimeSessionPresentation) -> Void
+
+  @State private var confirmingEmptyRemoval = false
 
   private var selection: Binding<String?> {
     Binding(get: { navigation.selectedSessionId }, set: { navigation.select($0) })
-  }
-
-  private var references: [String: String] {
-    ConversationIdentityPresentation.references(
-      for: store.savedSessions + (store.currentSession.map { [$0] } ?? []))
   }
 
   var body: some View {
@@ -34,96 +32,178 @@ struct LibrarySidebar: View {
         search.query = text
         Task { await transcripts.search(text) }
       }
-      .frame(maxWidth: .infinity, minHeight: 28, alignment: .leading)
       .padding(.horizontal, 10)
       .padding(.top, 8)
       .padding(.bottom, 4)
-      SearchResultMount(transcripts: transcripts, store: store, search: search) { hit in
-        onOpenSearchHit(hit)
-      }
-      .frame(
-        maxWidth: .infinity, minHeight: search.query.isEmpty ? 0 : 120,
-        maxHeight: search.query.isEmpty ? 0 : 260, alignment: .topLeading)
+      searchMatches
+        .padding(.horizontal, 10)
       conversationList
       LibraryActivityFooter(
         scheduler: scheduler, speech: speech, pressure: pressure,
-        titles: Dictionary(
-          uniqueKeysWithValues: store.savedSessions.map {
-            ($0.sessionId, ConversationIdentityPresentation.title(for: $0))
-          }))
+        titles: store.library.titles)
       bottomBar
     }
     .navigationSplitViewColumnWidth(min: 230, ideal: 270, max: 360)
   }
 
+  /// Matching passages across every transcript, shown while there is a
+  /// query. Each row opens its conversation at that passage.
+  private var searchMatches: some View {
+    let query = search.query.trimmingCharacters(in: .whitespacesAndNewlines)
+    let hits = query.isEmpty ? [] : transcripts.searchResults
+    let references = store.library.references
+    return HostedList(
+      identifier: "Transcript matches",
+      rows: hits.map { hit in
+        let reference = references[hit.sessionId]
+        return HostedListRow(
+          id: Self.matchKey(hit), lead: hit.effectiveText,
+          label:
+            "\(ConversationIdentityPresentation.title(for: hit))\(reference.map { ", reference \($0)" } ?? ""): \(hit.effectiveText)"
+        )
+      },
+      lead: .button,
+      emptyText: !query.isEmpty && !transcripts.isSearching ? "No matching transcript text" : nil,
+      maximumHeight: 260,
+      onSelect: { key in
+        if let hit = transcripts.searchResults.first(where: { Self.matchKey($0) == key }) {
+          onOpenSearchHit(hit)
+        }
+      })
+  }
+
+  private static func matchKey(_ hit: NativeTranscriptSearchHit) -> String {
+    "\(hit.sessionId)#\(hit.sequence)"
+  }
+
+  private var selectedSession: RuntimeSessionPresentation? {
+    store.library.session(navigation.selectedSessionId)
+  }
+
+  private var canImportAudio: Bool {
+    liveRecording.canStart && !importedMediaAuthority.isBusy
+      && !importedMediaAuthority.hasPendingAudioImports
+  }
+
+  /// Import, Rename and Move to Trash. Each shows only while it can act on
+  /// the selected conversation.
   private var bottomBar: some View {
-    VStack(spacing: 0) {
+    let renamable = selectedSession.flatMap { actions.canRename($0) ? $0 : nil }
+    let trashable = selectedSession.flatMap { actions.trashUnavailableReason($0) == nil ? $0 : nil }
+    return VStack(spacing: 0) {
       Divider()
       HStack(spacing: 2) {
-        AudioFileImportMount(authority: importedMediaAuthority, recording: liveRecording)
-          .frame(width: 28, height: 24)
+        barButton(
+          title: ConversationControlLabels.audioFiles, symbol: "plus",
+          identifier: "Audio file import",
+          help: canImportAudio ? ImportedMediaAuthorityAdapter.importLimitHelp : nil,
+          isAvailable: canImportAudio
+        ) { importedMediaAuthority.chooseAndImport() }
         Spacer(minLength: 0)
-        RenameRequestMount(
-          store: store, liveRecording: liveRecording, navigation: navigation
-        ) { session in
-          store.beginRename(session)
-        }
-        .frame(width: 28, height: 24)
-        DeletionRequestMount(
-          store: store, liveRecording: liveRecording, navigation: navigation
-        ) { session in
-          onRequestDeletion(session)
-        }
-        .frame(width: 28, height: 24)
+        barButton(
+          title: "Rename…", label: "Rename the selected conversation", symbol: "pencil",
+          identifier: "Rename conversation", help: "Rename…", isAvailable: renamable != nil
+        ) { if let renamable { actions.rename(renamable) } }
+        barButton(
+          title: "Move to Trash…", label: "Move the selected conversation to Trash",
+          symbol: "trash", identifier: "Delete conversation", help: "Move to Trash…",
+          isAvailable: trashable != nil
+        ) { if let trashable { actions.moveToTrash(trashable) } }
       }
       .padding(.horizontal, 8)
       .padding(.vertical, 4)
     }
   }
 
+  private func barButton(
+    title: String, label: String? = nil, symbol: String, identifier: String, help: String?,
+    isAvailable: Bool, action: @escaping @MainActor () -> Void
+  ) -> some View {
+    HostedButton(
+      title: title, symbol: symbol, identifier: identifier, label: label, help: help,
+      style: .symbol(pointSize: 13), minimumSize: CGSize(width: 26, height: 22),
+      isEnabled: isAvailable, isHidden: !isAvailable, action: action)
+  }
+
   private var conversationList: some View {
-    let references = references
-    let saved = LibraryConversationLists.saved(store.savedSessions)
-    let groups = LibraryConversationLists.dayGroups(saved, now: Date())
-    let interrupted = LibraryConversationLists.interrupted(store.savedSessions)
+    let library = store.library
     return List(selection: selection) {
-      if let current = store.currentSession {
-        Section(current.lifecycle == "interrupted" ? "Needs Attention" : "Now") {
-          row(current, references: references, menu: current.lifecycle == "interrupted")
-        }
+      if let now = library.now {
+        Section("Now") { row(now, references: library.references, menu: false) }
       }
-      if !interrupted.isEmpty {
+      if !library.needsAttention.isEmpty {
         Section("Needs Attention") {
-          ForEach(interrupted) { session in
-            row(session, references: references, menu: true)
+          ForEach(library.needsAttention) { session in
+            row(session, references: library.references, menu: true)
           }
         }
       }
-      if saved.isEmpty, store.currentSession == nil, interrupted.isEmpty {
+      if library.isEmpty {
         Text("Recordings and imported audio appear here.")
           .font(.callout)
           .foregroundStyle(.secondary)
       }
-      ForEach(groups, id: \.title) { group in
+      ForEach(library.days) { group in
         Section(group.title) {
           ForEach(group.sessions) { session in
-            row(session, references: references, menu: true)
+            row(session, references: library.references, menu: true)
           }
         }
+      }
+      if !library.didNotRecord.isEmpty {
+        Section { didNotRecordRow(library.didNotRecord) }
       }
     }
     .listStyle(.sidebar)
     .onDeleteCommand {
       // Delete (or Edit > Delete) moves the selected saved conversation to
       // Trash through the same confirmation as the context menu.
-      guard liveRecording.canStart,
-        let session = store.savedSessions.first(where: {
-          $0.sessionId == navigation.selectedSessionId
-        })
-      else { return }
-      onRequestDeletion(session)
+      guard let session = library.session(navigation.selectedSessionId) else { return }
+      actions.moveToTrash(session)
     }
     .navigationTitle("Open Scribe")
+  }
+
+  /// Attempts that stopped before any audio was saved, folded into one quiet
+  /// row. They hold nothing to review, so the row offers only removal.
+  private func didNotRecordRow(_ attempts: [RuntimeSessionPresentation]) -> some View {
+    let removable = attempts.filter(\.canMoveToTrash).map(\.sessionId)
+    let canRemove =
+      !removable.isEmpty && liveRecording.canStart && !transcripts.isDeleting
+      && transcripts.pendingDeletion == nil
+    let count = attempts.count
+    return HStack(alignment: .firstTextBaseline, spacing: 8) {
+      Image(systemName: "minus.circle")
+        .font(.system(size: 11))
+        .foregroundStyle(.tertiary)
+      Text("Didn't record (\(count))")
+        .font(.system(size: 12))
+        .foregroundStyle(.secondary)
+      Spacer(minLength: 4)
+      Button("Remove") { confirmingEmptyRemoval = true }
+        .buttonStyle(.link)
+        .font(.system(size: 11))
+        .disabled(!canRemove)
+    }
+    .padding(.vertical, 2)
+    .help("Recordings that stopped before any audio was saved. They have no audio or transcript.")
+    .contextMenu {
+      Button("Remove…") { confirmingEmptyRemoval = true }
+        .disabled(!canRemove)
+    }
+    .accessibilityElement(children: .combine)
+    .accessibilityLabel(
+      count == 1 ? "1 recording didn't record" : "\(count) recordings didn't record")
+    .confirmationDialog(
+      count == 1 ? "Remove 1 recording that didn't start?" : "Remove \(count) recordings that didn't start?",
+      isPresented: $confirmingEmptyRemoval
+    ) {
+      Button("Remove", role: .destructive) {
+        Task { await transcripts.removeEmptyAttempts(removable) }
+      }
+    } message: {
+      Text("They have no audio. Their folders move to the Trash.")
+    }
   }
 
   @ViewBuilder
@@ -137,17 +217,16 @@ struct LibrarySidebar: View {
     )
     .tag(session.sessionId)
     if menu {
+      let trashReason = actions.trashUnavailableReason(session)
       view.contextMenu {
-        Button("Copy Transcript") { onCopy(session) }
-          .disabled(
-            session.lifecycle != "ready_for_review"
-              || (session.transcript.documentAvailability == .unavailable
-                && !session.transcript.hasDraftText))
+        Button("Copy Transcript") { Task { await actions.copy(session) } }
+          .disabled(!actions.canCopy(session))
         Divider()
-        Button("Rename…") { store.beginRename(session) }
-        Button("Move to Trash…", role: .destructive) { onRequestDeletion(session) }
-          .disabled(!liveRecording.canStart || session.deletionUnavailableReason != nil)
-          .help(session.deletionUnavailableReason ?? "Move this conversation to Trash.")
+        Button("Rename…") { actions.rename(session) }
+          .disabled(!actions.canRename(session))
+        Button("Move to Trash…", role: .destructive) { actions.moveToTrash(session) }
+          .disabled(trashReason != nil)
+          .help(trashReason ?? "Move this conversation to Trash.")
       }
     } else {
       view
@@ -165,11 +244,12 @@ struct ConversationSidebarRow: View {
 
   private var secondaryText: Color { isSelected ? selectedText.opacity(0.85) : .secondary }
 
-  private var hasMediaWarning: Bool { session.playableMedia.map { !$0.isPlayable } ?? false }
+  private var status: CaptureStatusPresentation { session.captureStatus }
 
+  /// A symbol only when something needs a look: recording, a problem with
+  /// the capture or its audio, or a transcript that failed.
   var statusSymbolName: String? {
-    if session.isRecording { return "record.circle.fill" }
-    if session.needsAttention || hasMediaWarning { return "exclamationmark.triangle" }
+    if status.tint != .quiet { return status.symbolName }
     if transcriptLine?.symbol == "exclamationmark.circle" { return "exclamationmark.circle" }
     return nil
   }
@@ -177,30 +257,28 @@ struct ConversationSidebarRow: View {
   /// Transcript posture for saved conversations only: the store's committed
   /// state, or the scheduler's position for work that has not started.
   private var transcriptLine: (symbol: String, text: String)? {
-    guard session.lifecycle == "ready_for_review", session.transcriptionUnavailableReason == nil,
+    guard session.lifecycle == .readyForReview, session.transcriptionUnavailableReason == nil,
       session.transcript.hasTranscribableAudio
     else { return nil }
     return session.transcript.line(for: transcription)
   }
 
   var detailStatusText: String {
-    if let transcriptLine, !session.needsAttention, !hasMediaWarning { return transcriptLine.text }
-    return session.statusText
+    if let transcriptLine, status.tint == .quiet { return transcriptLine.text }
+    return status.text
   }
 
   /// The quiet line under the title. A finished, transcribed conversation
   /// shows only its time and length; anything still happening says so.
-  private var subtitle: String {
+  private var subtitleParts: [String] {
     var parts: [String] = []
-    if let created = session.createdAt, session.lifecycle == "ready_for_review" {
+    if let created = session.createdAt, session.lifecycle == .readyForReview {
       parts.append(created.formatted(date: .omitted, time: .shortened))
     }
-    parts.append(
-      session.elapsedSeconds > 0
-        ? InterviewTime.length(seconds: session.elapsedSeconds) : session.timerText)
-    let status = detailStatusText
-    if status != "Transcript ready" { parts.append(status) }
-    return parts.joined(separator: " · ")
+    if let length = status.timer ?? session.lengthText { parts.append(length) }
+    let detail = detailStatusText
+    if detail != "Transcript ready" { parts.append(detail) }
+    return parts
   }
 
   var body: some View {
@@ -209,7 +287,7 @@ struct ConversationSidebarRow: View {
       if let symbolName = statusSymbolName {
         Image(systemName: symbolName)
           .foregroundStyle(
-            isSelected ? selectedText : session.isRecording ? Color.red : Color.orange)
+            isSelected ? selectedText : status.tint == .recording ? status.tint.color : .orange)
           .font(.system(size: 11))
       }
       VStack(alignment: .leading, spacing: 3) {
@@ -219,7 +297,7 @@ struct ConversationSidebarRow: View {
             .lineLimit(1)
             .truncationMode(.tail)
             .foregroundStyle(
-              ConversationIdentityPresentation.isPlaceholder(session.displayTitle) && !isSelected
+              session.titleSource == .placeholder && !isSelected
                 ? Color.secondary : isSelected ? selectedText : Color.primary)
           if let reference {
             Text(reference)
@@ -228,7 +306,7 @@ struct ConversationSidebarRow: View {
               .fixedSize()
           }
         }
-        Text(subtitle)
+        Text(subtitleParts.joined(separator: " · "))
           .font(.system(size: 11))
           .monospacedDigit()
           .foregroundStyle(secondaryText)
@@ -239,9 +317,9 @@ struct ConversationSidebarRow: View {
     .accessibilityElement(children: .combine)
     .help(title)
     .accessibilityLabel(
-      "\(title), \(session.timerText), \(session.statusText)"
-        + (transcriptLine.map { ", \($0.text)" } ?? "")
-        + (reference.map { ", reference \($0)" } ?? "")
+      ([title, session.lengthText, status.accessibilityText].compactMap { $0 }
+        + (transcriptLine.map { [$0.text] } ?? [])
+        + (reference.map { ["reference \($0)"] } ?? [])).joined(separator: ", ")
     )
   }
 }

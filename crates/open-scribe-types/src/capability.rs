@@ -1,3 +1,6 @@
+/// The sentence a product surface shows while no signed release exists.
+pub const NO_PUBLIC_RELEASE: &str = "No public release is available.";
+
 /// Words a public surface may show for a capability maturity.
 /// `Available` is reserved for a signed release that proved the capability.
 /// Every other value stays visibly excluded.

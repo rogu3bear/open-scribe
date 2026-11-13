@@ -49,6 +49,15 @@ fn runtime_library_snapshot_projects_recording_timer_and_required_sources() {
         .current_session
         .unwrap();
     assert_eq!(interrupted.lifecycle, "interrupted");
+    assert!(
+        interrupted.preserved_audio,
+        "accepted samples are audio a later launch recovers"
+    );
+    assert!(interrupted.can_move_to_trash);
+    assert!(
+        !current.can_move_to_trash,
+        "an open capture is never offered for Trash"
+    );
     assert_eq!(
         interrupted.interruption_reason,
         Some(SessionInterruptionReason::CaptureFailed)
@@ -101,6 +110,10 @@ fn an_older_interrupted_session_stays_listed_beside_a_newer_one() {
     assert_eq!(listed.session_id, older);
     assert_eq!(listed.lifecycle, "interrupted");
     assert!(listed.playable_media.is_none());
+    for attempt in [&current, listed] {
+        assert!(!attempt.preserved_audio, "a start failure kept no audio");
+        assert!(attempt.can_move_to_trash);
+    }
 }
 
 #[test]

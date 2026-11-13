@@ -221,14 +221,7 @@ impl SpeechModels {
                         &path,
                     ) {
                         Ok(_) => (ModelReadiness::Ready, None),
-                        Err(error) => (
-                            if matches!(error.class(), "incompatible_engine" | "engine_version") {
-                                ModelReadiness::Incompatible
-                            } else {
-                                ModelReadiness::Invalid
-                            },
-                            Some(error.class().to_owned()),
-                        ),
+                        Err(error) => (verify_readiness(&error), Some(error.class().to_owned())),
                     },
                 };
                 SpeechModelStatus {
@@ -418,9 +411,7 @@ impl SpeechModels {
         WhisperRecognizer::load(&path, &record.id, &record.sha256).map_err(SpeechModelError::Load)
     }
 
-    /// Whether the session is a compressed import that the platform must first
-    /// decode to a PCM companion for transcription.
-    pub fn needs_decoded_companion(&self, session: &SessionId) -> Result<bool, StoreError> {
+    fn needs_decoded_companion(&self, session: &SessionId) -> Result<bool, StoreError> {
         let store = SessionStore::open(&self.managed_root)?;
         for track in store.transcription_tracks(session)? {
             if store.transcription_input(session, &track)?.compressed {
@@ -430,6 +421,8 @@ impl SpeechModels {
         Ok(false)
     }
 
+    /// Whether this intent's run reads a compressed import that the platform
+    /// must first decode to a PCM companion.
     pub fn needs_decoded_companion_for_intent(
         &self,
         session: &SessionId,
@@ -569,6 +562,16 @@ impl SpeechModels {
             .get(model_id)
             .filter(|record| record.purpose == "asr")
             .ok_or(SpeechModelError::UnknownModel)
+    }
+}
+
+/// The readiness a failed verification reports: a model built for another
+/// engine is incompatible, anything else is invalid.
+pub(crate) fn verify_readiness(error: &VerifyError) -> ModelReadiness {
+    if matches!(error, VerifyError::IncompatibleEngine) {
+        ModelReadiness::Incompatible
+    } else {
+        ModelReadiness::Invalid
     }
 }
 

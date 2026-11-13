@@ -17,7 +17,8 @@ final class MediaOpenProtocolTests: XCTestCase {
 
   func testSwiftCAFWriterRoundTripsCoarseEvidenceWithoutRecording() throws {
     let (controller, root) = try makeController()
-    let prepared = try controller.prepareSession(title: "Deterministic media-open proof")
+    let prepared = try controller.prepareSessionWithRequiredSources(
+      title: "Deterministic media-open proof", requiredSources: [.microphone])
     XCTAssertTrue(prepared.journalDurable)
     XCTAssertFalse(prepared.mediaFilesOpen)
     XCTAssertFalse(prepared.recordingStarted)
@@ -88,7 +89,8 @@ final class MediaOpenProtocolTests: XCTestCase {
 
   func testWriterUsesCreateNewAndRustRejectsStaleToken() throws {
     let (controller, _) = try makeController()
-    let prepared = try controller.prepareSession(title: "Exclusive writer proof")
+    let prepared = try controller.prepareSessionWithRequiredSources(
+      title: "Exclusive writer proof", requiredSources: [.microphone])
     let authorization = try controller.authorizeInitialMedia(
       sessionId: prepared.sessionId,
       sourceKind: .microphone,
@@ -172,7 +174,8 @@ final class MediaOpenProtocolTests: XCTestCase {
     -> (NativeRecordingPreparation, SegmentedCAFWriter, UInt64)
   {
     let (controller, _) = try makeController()
-    let prepared = try controller.prepareSession(title: "Segmented writer proof")
+    let prepared = try controller.prepareSessionWithRequiredSources(
+      title: "Segmented writer proof", requiredSources: [.microphone])
     let anchor = mach_absolute_time()
     try SegmentedCAFWriter.anchor(
       preparation: controller, sessionId: prepared.sessionId, hostAnchor: anchor)

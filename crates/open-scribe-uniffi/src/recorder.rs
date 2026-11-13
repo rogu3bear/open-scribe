@@ -35,16 +35,52 @@ pub enum NativeRecorderAction {
 #[derive(uniffi::Record)]
 pub struct NativeRecorderEvent {
     pub id: String,
-    pub kind: String,
+    pub kind: NativeRecorderEventKind,
     pub session_nanoseconds: i64,
     pub label: String,
 }
 
+/// One provisional caption window and the engine identity that produced it.
+#[derive(uniffi::Record)]
+pub struct NativeLiveDraftWindow {
+    pub session_id: String,
+    pub track_id: String,
+    pub start_nanoseconds: i64,
+    pub end_nanoseconds: i64,
+    pub text: String,
+    pub engine: String,
+    pub engine_version: String,
+    pub model_id: String,
+    pub model_sha256: String,
+    pub options_digest: String,
+    pub reconciliation_version: String,
+}
+
+impl From<NativeLiveDraftWindow> for open_scribe_core::LiveDraftWindow {
+    fn from(value: NativeLiveDraftWindow) -> Self {
+        Self {
+            session_id: open_scribe_types::SessionId(value.session_id),
+            track_id: value.track_id,
+            start_nanoseconds: value.start_nanoseconds,
+            end_nanoseconds: value.end_nanoseconds,
+            text: value.text,
+            mean_probability: None,
+            no_speech_probability: None,
+            engine: value.engine,
+            engine_version: value.engine_version,
+            model_id: value.model_id,
+            model_sha256: value.model_sha256,
+            options_digest: value.options_digest,
+            reconciliation_version: value.reconciliation_version,
+        }
+    }
+}
+
 #[derive(uniffi::Record)]
 pub struct NativeRecorderDetail {
-    pub lifecycle: String,
+    pub lifecycle: NativeSessionLifecycle,
     pub captured_nanoseconds: i64,
-    pub storage_level: String,
+    pub storage_level: NativeStorageLevel,
     pub events: Vec<NativeRecorderEvent>,
 }
 
@@ -62,17 +98,7 @@ impl From<NativeRecorderAction> for open_scribe_core::RecorderAction {
                 identity,
                 display_name,
             } => Self::SelectAudio {
-                kind: kind.map(|k| match k {
-                    NativeMediaSourceKind::Microphone => {
-                        open_scribe_core::MediaSourceKind::Microphone
-                    }
-                    NativeMediaSourceKind::SystemAudio => {
-                        open_scribe_core::MediaSourceKind::SystemAudio
-                    }
-                    NativeMediaSourceKind::ApplicationAudio => {
-                        open_scribe_core::MediaSourceKind::ApplicationAudio
-                    }
-                }),
+                kind: kind.map(Into::into),
                 identity,
                 display_name,
             },
@@ -92,15 +118,15 @@ impl From<NativeRecorderAction> for open_scribe_core::RecorderAction {
 impl From<open_scribe_core::RecorderDetail> for NativeRecorderDetail {
     fn from(value: open_scribe_core::RecorderDetail) -> Self {
         Self {
-            lifecycle: value.lifecycle,
+            lifecycle: value.lifecycle.into(),
             captured_nanoseconds: value.captured_nanoseconds,
-            storage_level: value.storage_level,
+            storage_level: value.storage_level.into(),
             events: value
                 .events
                 .into_iter()
                 .map(|e| NativeRecorderEvent {
                     id: e.id,
-                    kind: e.kind,
+                    kind: e.kind.into(),
                     session_nanoseconds: e.session_nanoseconds,
                     label: e.label,
                 })
@@ -117,6 +143,7 @@ impl NativeRecordingPreparation {
         action: NativeRecorderAction,
     ) -> Result<NativeRecorderDetail, NativeStorageError> {
         self.controller()?
+            .store_mut()
             .recorder_action(open_scribe_types::SessionId(session_id), action.into())
             .map(Into::into)
             .map_err(map_storage_error)
@@ -126,7 +153,8 @@ impl NativeRecordingPreparation {
         session_id: String,
     ) -> Result<NativeRecorderDetail, NativeStorageError> {
         self.controller()?
-            .recorder_detail(open_scribe_types::SessionId(session_id))
+            .store()
+            .recorder_detail(&open_scribe_types::SessionId(session_id))
             .map(Into::into)
             .map_err(map_storage_error)
     }
@@ -136,35 +164,11 @@ impl NativeRecordingPreparation {
     /// by the store.
     pub fn commit_live_draft_window(
         &self,
-        session_id: String,
-        track_id: String,
-        start_nanoseconds: i64,
-        end_nanoseconds: i64,
-        text: String,
-        engine: String,
-        engine_version: String,
-        model_id: String,
-        model_sha256: String,
-        options_digest: String,
-        reconciliation_version: String,
+        window: NativeLiveDraftWindow,
     ) -> Result<String, NativeStorageError> {
-        let window = open_scribe_core::LiveDraftWindow {
-            session_id: open_scribe_types::SessionId(session_id),
-            track_id,
-            start_nanoseconds,
-            end_nanoseconds,
-            text,
-            mean_probability: None,
-            no_speech_probability: None,
-            engine,
-            engine_version,
-            model_id,
-            model_sha256,
-            options_digest,
-            reconciliation_version,
-        };
         self.controller()?
-            .commit_live_draft_window(window)
+            .store_mut()
+            .commit_live_draft_window(&window.into())
             .map_err(map_storage_error)
     }
 

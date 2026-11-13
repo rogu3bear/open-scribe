@@ -216,8 +216,8 @@ final class DiagnosticsReportTests: XCTestCase {
   func testEveryTelemetryEntryUsesTheValidatedJournalRecord() {
     let canary = "FICTIONAL_PRIVATE_CANARY_6C27"
     AppTelemetry.commandInvoked(canary)
-    AppTelemetry.captureProof(stage: "phase", detail: canary)
-    AppTelemetry.recoveryProof(stage: "scan-failed", detail: canary)
+    AppTelemetry.captureProof(stage: .phase, detail: canary)
+    AppTelemetry.recoveryProof(stage: .scanFailed, detail: canary)
     AppTelemetry.launchFailed(canary)
     AppTelemetry.libraryNote(stage: "snapshot", detail: canary)
     AppTelemetry.performanceStall(operation: canary, milliseconds: 100)
@@ -274,7 +274,7 @@ final class DiagnosticsReportTests: XCTestCase {
     let screen = "Quarterly revenue slide"
     let detail =
       "\(transcript) \(secret) \(path) \(prompt) participant=\(participant) ocr=\(screen)"
-    AppTelemetry.captureProof(stage: "failed", detail: detail)
+    AppTelemetry.captureProof(stage: .failed, detail: detail)
     let journal = DiagnosticJournal.shared.recent()
     XCTAssertEqual(journal.count, 1)
     let stored = journal[0].message
@@ -353,7 +353,7 @@ final class DiagnosticsReportTests: XCTestCase {
     let button = try XCTUnwrap(self.exportButton(in: host))
     XCTAssertTrue(offered && button.isDescendant(of: host) && window.contentView === host)
     AppTelemetry.captureProof(
-      stage: "failed",
+      stage: .failed,
       detail: "\(transcript) \(secret) \(path) \(prompt) participant=\(participant) ocr=\(screen)")
     button.performClick(nil)
 
@@ -380,7 +380,7 @@ final class DiagnosticsReportTests: XCTestCase {
   }
 
   func testCrashReportCheckKeepsAnOperationalRecoveryNote() {
-    AppTelemetry.recoveryProof(stage: "recovered", detail: "count=1")
+    AppTelemetry.recoveryProof(stage: .recovered, detail: "count=1")
     let text = report(events: DiagnosticJournal.shared.recent())
     XCTAssertTrue(text.contains("stage=recovered detail=count=1"))
     XCTAssertTrue(text.contains("crash_report=content_free"))

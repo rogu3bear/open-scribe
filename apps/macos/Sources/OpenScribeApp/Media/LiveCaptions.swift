@@ -181,15 +181,18 @@ struct LiveCaptionEngineIdentity: Sendable {
   }
 
   private static func sha256(_ text: String) -> String {
-    SHA256.hash(data: Data(text.utf8)).map { String(format: "%02x", $0) }.joined()
+    SHA256.hash(data: Data(text.utf8)).lowercaseHex
   }
 }
 
-/// Splits settled phrases into windows the store accepts (at most 12 s) and
-/// commits them in order on one serial queue. A refused window is dropped:
-/// live Draft text is a convenience, and capture never waits on it.
+/// Splits settled phrases into windows the store accepts and commits them in
+/// order on one serial queue. A refused window is dropped: live Draft text is
+/// a convenience, and capture never waits on it.
 final class LiveDraftCommitter: @unchecked Sendable {
-  static let maximumWindowNanoseconds: Int64 = 11_500_000_000
+  /// Room left under Rust's window limit for word timings that end late.
+  static let windowMarginNanoseconds: Int64 = 500_000_000
+  static let maximumWindowNanoseconds =
+    NativeCapturePolicy.current.liveDraftWindowMaxNanoseconds - windowMarginNanoseconds
   private let queue = DispatchQueue(label: "app.open-scribe.live-draft-commit", qos: .utility)
   private let preparation: NativeRecordingPreparationProtocol
   private let sessionId: String
@@ -216,12 +219,13 @@ final class LiveDraftCommitter: @unchecked Sendable {
       for window in windows {
         do {
           _ = try preparation.commitLiveDraftWindow(
-            sessionId: sessionId, trackId: trackId,
-            startNanoseconds: window.start, endNanoseconds: window.end, text: window.text,
-            engine: LiveCaptionEngineIdentity.engine, engineVersion: identity.engineVersion,
-            modelId: identity.modelId, modelSha256: identity.modelSha256,
-            optionsDigest: identity.optionsDigest,
-            reconciliationVersion: LiveCaptionEngineIdentity.reconciliationVersion)
+            window: NativeLiveDraftWindow(
+              sessionId: sessionId, trackId: trackId,
+              startNanoseconds: window.start, endNanoseconds: window.end, text: window.text,
+              engine: LiveCaptionEngineIdentity.engine, engineVersion: identity.engineVersion,
+              modelId: identity.modelId, modelSha256: identity.modelSha256,
+              optionsDigest: identity.optionsDigest,
+              reconciliationVersion: LiveCaptionEngineIdentity.reconciliationVersion))
         } catch {
           lock.withLock { refused += 1 }
         }
@@ -287,26 +291,32 @@ struct LiveCaptionTrack: Sendable {
 }
 
 extension LiveCaptionTrack {
-  /// The caption tracks for one capture span: the microphone as "You" and
-  /// computer audio as "Others", each with a fresh clock for the span.
+  /// The caption tracks for one capture span, each labeled with its source's
+  /// default speaker and given a fresh clock for the span.
   static func span(
     sessionId: String,
     microphone: (NativeMediaOpenAuthorization, LiveAudioListenerSlot)?,
-    computer: (NativeMediaOpenAuthorization, LiveAudioListenerSlot)?
+    computer: (NativeMediaSourceKind, NativeMediaOpenAuthorization, LiveAudioListenerSlot)?
   ) -> [(LiveCaptionTrack, LiveAudioListenerSlot)] {
-    var tracks: [(LiveCaptionTrack, LiveAudioListenerSlot)] = []
-    for (entry, source, speaker) in [
-      (microphone, LiveCaptionSource.microphone, "You"), (computer, .computer, "Others"),
-    ] {
-      guard let (authorization, slot) = entry else { continue }
-      tracks.append(
-        (
-          LiveCaptionTrack(
-            sessionId: sessionId, trackId: authorization.trackId, source: source,
-            speaker: speaker, clock: LiveCaptionClock()),
-          slot
-        ))
+    typealias Entry = (
+      kind: NativeMediaSourceKind, source: LiveCaptionSource,
+      authorization: NativeMediaOpenAuthorization, slot: LiveAudioListenerSlot
+    )
+    var entries: [Entry] = []
+    if let (authorization, slot) = microphone {
+      entries.append((.microphone, .microphone, authorization, slot))
     }
-    return tracks
+    if let (kind, authorization, slot) = computer {
+      entries.append((kind, .computer, authorization, slot))
+    }
+    return entries.map { entry in
+      let speaker = NativeCapturePolicy.current.source(entry.kind).speakerLabel
+      return (
+        LiveCaptionTrack(
+          sessionId: sessionId, trackId: entry.authorization.trackId, source: entry.source,
+          speaker: speaker, clock: LiveCaptionClock()),
+        entry.slot
+      )
+    }
   }
 }

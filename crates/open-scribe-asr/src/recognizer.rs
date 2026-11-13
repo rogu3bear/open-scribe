@@ -52,11 +52,7 @@ impl DecodeOptions {
         let mut hasher = Sha256::new();
         hasher.update(b"open-scribe.decode-options/v1\n");
         hasher.update(canonical);
-        hasher
-            .finalize()
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect()
+        open_scribe_types::lowercase_hex(&hasher.finalize())
     }
 }
 

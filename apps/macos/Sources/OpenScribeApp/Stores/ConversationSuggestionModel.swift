@@ -22,79 +22,61 @@ final class ConversationSuggestionModel: ObservableObject {
   private struct Request: Equatable {
     let sessionId: String
     let key: String
-    let turns: [SuggestionTurn]?
-    let basis: String?
     /// The open conversation also wants names, even when its title is settled.
     var wantsNames = false
   }
 
+  /// A suspended model never suggests and never opens the library: proof and
+  /// hosted launches keep titles and names as stored.
   init(
     library: @escaping () async throws -> NativeTranscriptLibrary,
+    suspended: Bool = false,
     suggest: @escaping @Sendable ([SuggestionTurn]) async -> ConversationSuggestion? = {
       await ConversationSuggester.suggest($0)
     }
   ) {
-    self.library = library
-    self.suggest = suggest
+    if suspended {
+      self.library = { throw NativeStorageError.InvalidState }
+      self.suggest = { @Sendable _ in nil }
+    } else {
+      self.library = library
+      self.suggest = suggest
+    }
   }
 
   /// Queues saved conversations whose title is still a placeholder, or whose
   /// suggestion came from Draft text that is now Final.
   func considerLibrary(_ sessions: [RuntimeSessionPresentation]) {
-    for session in sessions where session.lifecycle == "ready_for_review" {
-      guard session.titleSource != "person" else { continue }
+    for session in sessions where session.lifecycle == .readyForReview {
+      guard session.titleSource != .person else { continue }
       let transcript = session.transcript
       let hasText = transcript.documentAvailability != .unavailable || transcript.hasDraftText
       guard hasText else { continue }
       let key = "\(session.sessionId)|\(transcript.documentVersion)|\(transcript.state.rawValue)"
-      enqueue(Request(sessionId: session.sessionId, key: key, turns: nil, basis: nil))
+      enqueue(Request(sessionId: session.sessionId, key: key))
     }
   }
 
-  /// Suggests a provisional title while recording, from settled live
-  /// captions, after about a minute of speech and then every few minutes.
+  /// Suggests a provisional title while recording, after about a minute of
+  /// settled speech and then every few minutes. It reads the Draft windows
+  /// Rust has stored so far, the text Copy So Far copies.
   func considerLive(sessionId: String, lines: [LiveCaptionLine]) {
     let words = lines.reduce(0) { $0 + $1.text.split(separator: " ").count }
     let step = words >= 600 ? 3 : words >= 250 ? 2 : words >= 80 ? 1 : 0
     guard step > (liveAttempts[sessionId] ?? 0) else { return }
     liveAttempts[sessionId] = step
-    let turns = Self.turns(from: lines)
-    enqueue(
-      Request(sessionId: sessionId, key: "\(sessionId)|live|\(step)", turns: turns, basis: "draft"))
+    enqueue(Request(sessionId: sessionId, key: "\(sessionId)|live|\(step)"))
   }
 
   /// Names for the open conversation; computed once per transcript version.
   func considerOpen(_ session: RuntimeSessionPresentation) {
-    guard session.lifecycle == "ready_for_review" else { return }
+    guard session.lifecycle == .readyForReview else { return }
     let key = "\(session.sessionId)|open|\(session.transcript.documentVersion)"
-    enqueue(
-      Request(sessionId: session.sessionId, key: key, turns: nil, basis: nil, wantsNames: true))
+    enqueue(Request(sessionId: session.sessionId, key: key, wantsNames: true))
   }
 
   func dismissNames(sessionId: String) {
     dismissedNames.insert(sessionId)
-  }
-
-  static func turns(from lines: [LiveCaptionLine]) -> [SuggestionTurn] {
-    var turns: [SuggestionTurn] = []
-    for line in lines where line.isFinal {
-      if let last = turns.last, last.speaker == line.speaker {
-        turns[turns.count - 1] = SuggestionTurn(speaker: last.speaker, text: last.text + " " + line.text)
-      } else {
-        turns.append(SuggestionTurn(speaker: line.speaker, text: line.text))
-      }
-    }
-    return turns
-  }
-
-  /// Splits the clipboard body ("Name: text" paragraphs) back into turns.
-  static func turns(fromBody body: String) -> [SuggestionTurn] {
-    body.components(separatedBy: "\n\n").compactMap { paragraph in
-      guard let separator = paragraph.range(of: ": ") else { return nil }
-      let speaker = String(paragraph[..<separator.lowerBound])
-      let text = String(paragraph[separator.upperBound...])
-      return speaker.isEmpty || text.isEmpty ? nil : SuggestionTurn(speaker: speaker, text: text)
-    }
   }
 
   private func enqueue(_ request: Request) {
@@ -121,44 +103,30 @@ final class ConversationSuggestionModel: ObservableObject {
       let current = try? await StructuredNativeIO.read {
         try library.conversationTitle(sessionId: sessionId)
       }
-      var storesTitle = current.map(Self.acceptsSuggestion) ?? true
-      guard storesTitle || request.wantsNames else { return }
-      var turns = request.turns
-      var basis = request.basis ?? "final"
-      if turns == nil {
-        let text = try await StructuredNativeIO.read {
-          try library.conversationText(sessionId: sessionId, includeTimestamps: false)
-        }
-        turns = Self.turns(fromBody: text.body)
-        basis = text.hasDraft ? "draft" : "final"
-        // Saved Draft text adds little to the live suggestion; wait for Final.
-        if current?.source == "suggested", basis == "draft" { storesTitle = false }
+      // Rust decides which suggestions it would store; ask before reading text.
+      let accepts = { (basis: NativeSuggestionBasis) in
+        current.map { basis == .draft ? $0.acceptsDraftSuggestion : $0.acceptsFinalSuggestion }
+          ?? true
       }
+      guard accepts(.draft) || accepts(.final) || request.wantsNames else { return }
+      let text = try await StructuredNativeIO.read {
+        try library.conversationText(sessionId: sessionId, includeTimestamps: false)
+      }
+      let basis: NativeSuggestionBasis = text.hasDraft ? .draft : .final
+      let storesTitle = accepts(basis)
       guard storesTitle || request.wantsNames else { return }
-      guard let turns, let suggestion = await suggest(turns) else { return }
+      let turns = text.turns.map { SuggestionTurn(speaker: $0.speaker, text: $0.text) }
+      guard let suggestion = await suggest(turns) else { return }
       suggestions[sessionId] = suggestion
       if storesTitle, let title = suggestion.title {
         let engine = suggestion.engine
-        let settledBasis = basis
         let stored = try await StructuredNativeIO.mutation {
-          try library.suggestTitle(
-            sessionId: sessionId, title: title, engine: engine, basis: settledBasis)
+          try library.suggestTitle(sessionId: sessionId, title: title, engine: engine, basis: basis)
         }
         if stored { onTitleStored() }
       }
     } catch {
       // A suggestion is optional; the conversation keeps its current title.
-    }
-  }
-
-  /// A suggestion may replace a placeholder or a Draft-based suggestion. A
-  /// person's title, or one suggested from Final text, stays put, so later
-  /// corrections and launches do not rerun the model or change the title.
-  static func acceptsSuggestion(_ title: NativeConversationTitle) -> Bool {
-    switch title.source {
-    case "placeholder": true
-    case "suggested": title.suggestionBasis != "final"
-    default: false
     }
   }
 }

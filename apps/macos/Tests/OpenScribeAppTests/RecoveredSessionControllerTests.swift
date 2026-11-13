@@ -23,14 +23,14 @@ final class RecoveredSessionControllerTests: RecoveredSessionTestCase {
       recoveryFactory: { RecoveryPreparationFake() },
       importedPlaybackLeaseProvider: { _ in ImportedPlaybackLeaseFake(path: "/owned/fixture") },
       player: player)
-    let session = savedSession(availability: "available", absolutePath: "/owned/fixture")
+    let session = savedSession(availability: .available, absolutePath: "/owned/fixture")
     let hit = NativeTranscriptSearchHit(
-      sessionId: session.sessionId, sessionTitle: "Fixture", revisionId: "selected",
+      sessionId: session.sessionId, sessionTitle: "Fixture", titleSource: .person, revisionId: "selected",
       trackId: "track",
       sequence: 1, startNanoseconds: 750_000_000, endNanoseconds: 1_000_000_000,
       effectiveText: "Passage")
     controller.playTranscriptSearchHit(
-      hit, in: savedSession(sessionId: "another", availability: "available", absolutePath: "/other")
+      hit, in: savedSession(sessionId: "another", availability: .available, absolutePath: "/other")
     )
     XCTAssertNil(controller.activePlaybackSessionId)
     controller.playTranscriptSearchHit(hit, in: session)
@@ -46,7 +46,7 @@ final class RecoveredSessionControllerTests: RecoveredSessionTestCase {
       recoveryFactory: { RecoveryPreparationFake() },
       importedPlaybackLeaseProvider: { _ in ImportedPlaybackLeaseFake(path: "/owned/fixture") },
       player: player)
-    let first = savedSession(availability: "available", absolutePath: "/owned/fixture")
+    let first = savedSession(availability: .available, absolutePath: "/owned/fixture")
     XCTAssertNil(controller.transcriptPlaybackPosition(sessionId: first.sessionId))
     controller.play(first, startNanoseconds: 750_000_000)
     await assertEventually { controller.playingSessionId == first.sessionId }
@@ -57,7 +57,7 @@ final class RecoveredSessionControllerTests: RecoveredSessionTestCase {
     XCTAssertNil(controller.transcriptPlaybackPosition(sessionId: "wrong-session"))
 
     let second = savedSession(
-      sessionId: "replacement", availability: "available", absolutePath: "/owned/fixture")
+      sessionId: "replacement", availability: .available, absolutePath: "/owned/fixture")
     controller.play(second)
     XCTAssertNil(controller.transcriptPlaybackPosition(sessionId: first.sessionId))
     await assertEventually { controller.playingSessionId == second.sessionId }
@@ -79,11 +79,12 @@ final class RecoveredSessionControllerTests: RecoveredSessionTestCase {
       })
     let capture = RuntimeSessionPresentation(
       native: NativeRuntimeSessionSnapshot(
-        sessionId: "capture", title: "Capture", lifecycle: "ready_for_review", health: "healthy",
+        sessionId: "capture", title: "Capture", titleSource: .person, lifecycle: .readyForReview,
+        health: .healthy,
         elapsedSeconds: 1, journalDurable: true, mediaFilesOpen: false, interruptionReason: nil,
         recovered: false, hasCaptureTimeline: true, sources: [], playableMedia: nil))
     let hit = NativeTranscriptSearchHit(
-      sessionId: capture.sessionId, sessionTitle: capture.title, revisionId: "revision",
+      sessionId: capture.sessionId, sessionTitle: capture.title, titleSource: .person, revisionId: "revision",
       trackId: "track",
       sequence: 0, startNanoseconds: 500_000_000, endNanoseconds: 1_000_000_000,
       effectiveText: "Captured passage")
@@ -704,10 +705,10 @@ final class RecoveredSessionControllerTests: RecoveredSessionTestCase {
     let segments = try library.document(sessionId: receipt.sessionId)
     let alpha = try XCTUnwrap(segments.first { $0.sequence == 0 })
     let bravo = try XCTUnwrap(segments.first { $0.sequence == 1 })
-    XCTAssertEqual(alpha.finality, "final")
+    XCTAssertEqual(alpha.finality, .final)
     XCTAssertFalse(alpha.corrected)
     XCTAssertEqual(alpha.effectiveText, alpha.verbatimText)
-    XCTAssertEqual(bravo.finality, "final")
+    XCTAssertEqual(bravo.finality, .final)
     XCTAssertTrue(bravo.corrected)
     XCTAssertNotEqual(bravo.effectiveText, bravo.verbatimText)
     XCTAssertGreaterThan(bravo.startNanoseconds, alpha.endNanoseconds)
@@ -823,19 +824,19 @@ final class RecoveredSessionControllerTests: RecoveredSessionTestCase {
     await model.load(sessionId: session.sessionId)
     XCTAssertEqual(model.availability, .draft)
     XCTAssertEqual(
-      model.availabilityText, "Draft — a Final transcript does not cover every range yet")
+      model.availabilityText, "Draft — the final transcript isn't finished yet")
     XCTAssertEqual(model.segments.count, 3)
     let alpha = try XCTUnwrap(model.segments.first { $0.effectiveText == "alpha" })
     let bravo = try XCTUnwrap(model.segments.first { $0.effectiveText == "bravo corrected" })
     let cedar = try XCTUnwrap(model.segments.first { $0.effectiveText == "provisional cedar" })
-    XCTAssertEqual(alpha.finality, "final")
+    XCTAssertEqual(alpha.finality, .final)
     XCTAssertFalse(alpha.corrected)
     XCTAssertEqual(alpha.effectiveText, alpha.verbatimText)
-    XCTAssertEqual(bravo.finality, "final")
+    XCTAssertEqual(bravo.finality, .final)
     XCTAssertTrue(bravo.corrected)
     XCTAssertEqual(bravo.verbatimText, "bravo")
     XCTAssertNotEqual(bravo.effectiveText, bravo.verbatimText)
-    XCTAssertEqual(cedar.finality, "draft")
+    XCTAssertEqual(cedar.finality, .draft)
     XCTAssertFalse(cedar.corrected)
     XCTAssertEqual(cedar.verbatimText, "provisional cedar")
     XCTAssertGreaterThan(bravo.startNanoseconds, alpha.endNanoseconds)
@@ -959,7 +960,7 @@ final class RecoveredSessionControllerTests: RecoveredSessionTestCase {
     let listed = await waitUntil { !store.savedSessions.isEmpty }
     XCTAssertTrue(listed, "saved=\(store.savedSessions.map(\.sessionId))")
     let session = try XCTUnwrap(store.savedSessions.first)
-    XCTAssertEqual(session.lifecycle, "ready_for_review")
+    XCTAssertEqual(session.lifecycle, .readyForReview)
     XCTAssertEqual(session.playableMedia?.isPlayable, true)
     XCTAssertFalse(session.hasCaptureTimeline)
     await model.load(sessionId: session.sessionId)
@@ -1032,15 +1033,15 @@ final class RecoveredSessionControllerTests: RecoveredSessionTestCase {
     window.orderFrontRegardless()
     defer { window.close() }
 
+    // The state word is spoken in each timestamp's name, not printed beside
+    // it (DESIGN.md §0), so the three labels above carry Final, Corrected,
+    // and Draft.
     let shown = await waitUntil(timeoutNanoseconds: 5_000_000_000) {
       host.layoutSubtreeIfNeeded()
       window.displayIfNeeded()
       return self.claimButton(labeled: alphaLabel, in: host) != nil
         && self.claimButton(labeled: bravoLabel, in: host) != nil
         && self.claimButton(labeled: cedarLabel, in: host) != nil
-        && self.passageStateField(labeled: "Final", in: host) != nil
-        && self.passageStateField(labeled: "Corrected", in: host) != nil
-        && self.passageStateField(labeled: "Draft", in: host) != nil
     }
     XCTAssertTrue(
       shown && window.contentView === host,
@@ -1078,10 +1079,10 @@ final class RecoveredSessionControllerTests: RecoveredSessionTestCase {
     withExtendedLifetime((store, live, playback, player, window, host)) {}
   }
 
-  /// The transcript text-size menu is the shipped control. Choosing Largest
-  /// renders the same final passage taller and keeps its spoken name. The
-  /// test does not call `load` after the view is hosted and does not change
-  /// the passage text.
+  /// View ▸ Bigger Transcript Text is the shipped control; it writes the next
+  /// step to the reader's stored scale. Stepping to Largest renders the same
+  /// final passage taller and keeps its spoken name. The test does not call
+  /// `load` after the view is hosted and does not change the passage text.
   func testHostedTranscriptTextSizeRendersThePassageLarger() async throws {
     let suite = "OpenScribe.Proof.TextSize.\(UUID().uuidString)"
     let preferences = try XCTUnwrap(UserDefaults(suiteName: suite))
@@ -1107,7 +1108,7 @@ final class RecoveredSessionControllerTests: RecoveredSessionTestCase {
     let listed = await waitUntil { !store.savedSessions.isEmpty }
     XCTAssertTrue(listed, "saved=\(store.savedSessions.map(\.sessionId))")
     let session = try XCTUnwrap(store.savedSessions.first)
-    XCTAssertEqual(session.lifecycle, "ready_for_review")
+    XCTAssertEqual(session.lifecycle, .readyForReview)
     await model.load(sessionId: session.sessionId)
     XCTAssertEqual(model.segments.count, 3)
     let alpha = try XCTUnwrap(model.segments.first { $0.effectiveText == "alpha" })
@@ -1168,44 +1169,40 @@ final class RecoveredSessionControllerTests: RecoveredSessionTestCase {
     let shown = await waitUntil(timeoutNanoseconds: 8_000_000_000) {
       host.layoutSubtreeIfNeeded()
       window.displayIfNeeded()
-      return self.hostedPopup(labeled: TranscriptTextScale.controlLabel, in: host) != nil
-        && self.claimButton(labeled: playLabel, in: host) != nil
+      guard let play = self.claimButton(labeled: playLabel, in: host) else { return false }
+      return self.passageRowHeight(of: play) > 0
     }
     XCTAssertTrue(
       shown && window.contentView === host,
       "segments=\(model.segments.count) session=\(model.sessionId ?? "")\n\(self.hostedControlProbe(in: host))")
-    let popup = try XCTUnwrap(self.hostedPopup(labeled: TranscriptTextScale.controlLabel, in: host))
-    XCTAssertEqual(popup.titleOfSelectedItem, "Standard")
-    XCTAssertEqual(popup.accessibilityValue() as? String, TranscriptTextScale.standard.spokenValue)
-    XCTAssertTrue(popup.isDescendant(of: host))
     let playAtStandard = try XCTUnwrap(self.claimButton(labeled: playLabel, in: host))
     let standardRow = self.passageRowHeight(of: playAtStandard)
-    let largestIndex = popup.indexOfItem(withTitle: "Largest")
-    XCTAssertGreaterThanOrEqual(largestIndex, 0)
-    popup.selectItem(at: largestIndex)
-    XCTAssertEqual(popup.titleOfSelectedItem, "Largest")
-    XCTAssertTrue(popup.sendAction(popup.action, to: popup.target))
+    XCTAssertGreaterThan(standardRow, 0, "the next passage's timestamp bounds this one")
+    // Bigger Transcript Text twice, as the View menu command steps it.
+    var scale = TranscriptTextScale.resolve(
+      preferences.string(forKey: TranscriptTextScale.storageKey))
+    XCTAssertEqual(scale, .standard)
+    for _ in 0..<2 {
+      scale = scale.stepped(1)
+      preferences.set(scale.rawValue, forKey: TranscriptTextScale.storageKey)
+    }
+    XCTAssertEqual(scale, .largest)
 
     let grew = await waitUntil(timeoutNanoseconds: 5_000_000_000) {
       host.layoutSubtreeIfNeeded()
       window.displayIfNeeded()
-      guard popup.titleOfSelectedItem == "Largest",
-        let play = self.claimButton(labeled: playLabel, in: host)
-      else { return false }
+      guard let play = self.claimButton(labeled: playLabel, in: host) else { return false }
       return self.passageRowHeight(of: play) > standardRow + 1
     }
     let playAtLargest = self.claimButton(labeled: playLabel, in: host)
     XCTAssertTrue(
       grew,
-      "standardRow=\(standardRow) now=\(playAtLargest.map { self.passageRowHeight(of: $0) } ?? -1) selected=\(popup.titleOfSelectedItem ?? "") stored=\(preferences.string(forKey: TranscriptTextScale.storageKey) ?? "") ancestors=\(playAtLargest.map { self.ancestorHeights(of: $0) } ?? [])")
+      "standardRow=\(standardRow) now=\(playAtLargest.map { self.passageRowHeight(of: $0) } ?? -1) stored=\(preferences.string(forKey: TranscriptTextScale.storageKey) ?? "") stamps=\(self.passageStampTops(in: host).values.sorted())")
     XCTAssertEqual(
       preferences.string(forKey: TranscriptTextScale.storageKey),
       TranscriptTextScale.largest.rawValue)
-    XCTAssertEqual(popup.accessibilityValue() as? String, TranscriptTextScale.largest.spokenValue)
     let largestRow = self.passageRowHeight(of: try XCTUnwrap(playAtLargest))
     XCTAssertGreaterThan(largestRow, standardRow)
-    XCTAssertTrue(window.makeFirstResponder(popup))
-    XCTAssertTrue(window.firstResponder === popup || popup.currentEditor() != nil)
 
     let play = try XCTUnwrap(self.claimButton(labeled: playLabel, in: host))
     XCTAssertTrue(play.isDescendant(of: host) && window.contentView === host)
@@ -2185,10 +2182,10 @@ final class RecoveredSessionControllerTests: RecoveredSessionTestCase {
       let segments = try library.document(sessionId: sessionId)
       let alpha = try XCTUnwrap(segments.first { $0.sequence == 0 })
       let bravo = try XCTUnwrap(segments.first { $0.sequence == 1 })
-      XCTAssertEqual(alpha.finality, "final")
+      XCTAssertEqual(alpha.finality, .final)
       XCTAssertFalse(alpha.corrected)
       XCTAssertEqual(alpha.effectiveText, alpha.verbatimText)
-      XCTAssertEqual(bravo.finality, "final")
+      XCTAssertEqual(bravo.finality, .final)
       XCTAssertTrue(bravo.corrected)
       XCTAssertNotEqual(bravo.effectiveText, bravo.verbatimText)
       XCTAssertGreaterThan(bravo.startNanoseconds, alpha.endNanoseconds)
@@ -2306,7 +2303,7 @@ final class RecoveredSessionControllerTests: RecoveredSessionTestCase {
       let segments = try library.document(sessionId: sessionId)
       let alpha = try XCTUnwrap(segments.first { $0.sequence == 0 })
       let bravo = try XCTUnwrap(segments.first { $0.sequence == 1 })
-      XCTAssertEqual(bravo.finality, "final")
+      XCTAssertEqual(bravo.finality, .final)
       XCTAssertTrue(bravo.corrected)
       XCTAssertEqual(bravo.effectiveText, "bravo corrected")
       XCTAssertGreaterThan(bravo.startNanoseconds, alpha.endNanoseconds)
@@ -2461,10 +2458,10 @@ final class RecoveredSessionControllerTests: RecoveredSessionTestCase {
     let stored = try library.document(sessionId: receipt.sessionId)
     let alpha = try XCTUnwrap(stored.first { $0.sequence == 0 })
     let bravo = try XCTUnwrap(stored.first { $0.sequence == 1 })
-    XCTAssertEqual(alpha.finality, "final")
+    XCTAssertEqual(alpha.finality, .final)
     XCTAssertFalse(alpha.corrected)
     XCTAssertEqual(alpha.effectiveText, alpha.verbatimText)
-    XCTAssertEqual(bravo.finality, "final")
+    XCTAssertEqual(bravo.finality, .final)
     XCTAssertTrue(bravo.corrected)
     XCTAssertEqual(bravo.effectiveText, "bravo corrected")
     XCTAssertNotEqual(bravo.effectiveText, bravo.verbatimText)
@@ -2642,7 +2639,7 @@ final class RecoveredSessionControllerTests: RecoveredSessionTestCase {
     let segments = try library.document(sessionId: receipt.sessionId)
     let alpha = try XCTUnwrap(segments.first { $0.sequence == 0 })
     let bravo = try XCTUnwrap(segments.first { $0.sequence == 1 })
-    XCTAssertEqual(alpha.finality, "final")
+    XCTAssertEqual(alpha.finality, .final)
     XCTAssertGreaterThan(alpha.startNanoseconds, 0)
     XCTAssertGreaterThan(bravo.startNanoseconds, alpha.endNanoseconds)
     let supporting = try library.citeTranscriptSegment(
@@ -2659,7 +2656,7 @@ final class RecoveredSessionControllerTests: RecoveredSessionTestCase {
         $0.sessionId == receipt.sessionId
       })
     let session = RuntimeSessionPresentation(native: native)
-    XCTAssertEqual(session.lifecycle, "ready_for_review")
+    XCTAssertEqual(session.lifecycle, .readyForReview)
     XCTAssertFalse(session.hasCaptureTimeline)
     XCTAssertEqual(session.playableMedia?.isPlayable, true)
     let libraryMedia = try regularFiles(under: managed.appendingPathComponent("Sessions"))
@@ -2811,6 +2808,7 @@ final class RecoveredSessionControllerTests: RecoveredSessionTestCase {
   /// claim. The test does not call `openClaimEvidence`, `returnToClaim`, or
   /// `adjudicateClaim`.
   func testHostedClaimButtonsSeekHighlightReturnAndAdjudicate() async throws {
+    let preferences = try detailsShownPreferences()
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(
       "open-scribe-claim-buttons-\(UUID().uuidString)", isDirectory: true)
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -2880,7 +2878,7 @@ final class RecoveredSessionControllerTests: RecoveredSessionTestCase {
         topology: { [] }
       ),
       navigation: navigation
-    )
+    ).defaultAppStorage(preferences)
     let host = NSHostingView(rootView: view)
     host.sizingOptions = []
     let window = NSWindow(
@@ -2926,7 +2924,12 @@ final class RecoveredSessionControllerTests: RecoveredSessionTestCase {
     await assertEventually { !model.claimEvidenceOpen && model.claimHighlightSegmentId == nil }
     XCTAssertEqual(model.focusedClaim?.claimId, claim.claimId)
     XCTAssertEqual(model.claimFocusGeneration, generation + 1)
-    XCTAssertNil(self.claimButton(labeled: "Return to claim", in: host))
+    let returnGone = await waitUntil(timeoutNanoseconds: 5_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      window.displayIfNeeded()
+      return self.claimButton(labeled: "Return to claim", in: host) == nil
+    }
+    XCTAssertTrue(returnGone, "Return to claim stayed visible after returning")
 
     let contradict = try XCTUnwrap(self.claimButton(labeled: "Contradicting evidence, 1", in: host))
     XCTAssertTrue(contradict.isDescendant(of: host))
@@ -2952,6 +2955,9 @@ final class RecoveredSessionControllerTests: RecoveredSessionTestCase {
     let correctedText = "The team deferred the remote recorder."
     field.stringValue = correctedText
     let correct = try XCTUnwrap(self.claimButton(labeled: "Correct claim", in: host))
+    // The banner disables its buttons while a review is saved and enables them
+    // when the model publishes the result; a disabled button ignores clicks.
+    await assertEventually { correct.isEnabled }
     correct.performClick(nil)
     await assertEventually {
       model.derivedClaims.first { $0.claimId == claim.claimId }?.text == correctedText
@@ -2961,6 +2967,7 @@ final class RecoveredSessionControllerTests: RecoveredSessionTestCase {
       model.derivedClaims.first { $0.claimId == claim.claimId }?.revisionId, accepted.revisionId)
 
     let reject = try XCTUnwrap(self.claimButton(labeled: "Reject claim", in: host))
+    await assertEventually { reject.isEnabled }
     reject.performClick(nil)
     await assertEventually {
       model.derivedClaims.first { $0.claimId == claim.claimId }?.adjudication == "rejected"
@@ -2981,6 +2988,7 @@ final class RecoveredSessionControllerTests: RecoveredSessionTestCase {
   /// appears only after that click. The test does not call `load` or
   /// `openClaimEvidence` after the later delta.
   func testHostedClaimEvidenceReloadsTheHumanClaimAfterALaterModelDelta() async throws {
+    let preferences = try detailsShownPreferences()
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(
       "open-scribe-claim-reload-\(UUID().uuidString)", isDirectory: true)
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -3058,7 +3066,7 @@ final class RecoveredSessionControllerTests: RecoveredSessionTestCase {
         topology: { [] }
       ),
       navigation: navigation
-    )
+    ).defaultAppStorage(preferences)
     let host = NSHostingView(rootView: view)
     host.sizingOptions = []
     let window = NSWindow(
@@ -3209,7 +3217,7 @@ final class RecoveredSessionControllerTests: RecoveredSessionTestCase {
     let imported = try library.importPortablePackage(packagePath: package.path)
     let segments = try library.document(sessionId: imported.sessionId)
     let alpha = try XCTUnwrap(segments.first { $0.sequence == 0 })
-    XCTAssertEqual(alpha.finality, "final")
+    XCTAssertEqual(alpha.finality, .final)
     let supporting = try library.citeTranscriptSegment(
       sessionId: imported.sessionId, revisionId: alpha.revisionId, sequence: alpha.sequence)
     let history = try library.speakerLabelHistory(sessionId: imported.sessionId)
@@ -3326,7 +3334,7 @@ final class RecoveredSessionControllerTests: RecoveredSessionTestCase {
     let imported = try library.importPortablePackage(packagePath: package.path)
     let segments = try library.document(sessionId: imported.sessionId)
     let alpha = try XCTUnwrap(segments.first { $0.sequence == 0 })
-    XCTAssertEqual(alpha.finality, "final")
+    XCTAssertEqual(alpha.finality, .final)
     let supporting = try library.citeTranscriptSegment(
       sessionId: imported.sessionId, revisionId: alpha.revisionId, sequence: alpha.sequence)
     let inputDigest = String(repeating: "d", count: 64)
@@ -3413,6 +3421,17 @@ final class RecoveredSessionControllerTests: RecoveredSessionTestCase {
     withExtendedLifetime((model, store, library)) {}
   }
 
+  /// Claims, Interpretation, and the audio source labels live in Details
+  /// (DESIGN.md §0). A hosted proof opens Details as its toolbar toggle does,
+  /// in a preferences domain of its own.
+  private func detailsShownPreferences() throws -> UserDefaults {
+    let suite = "OpenScribe.Proof.Details.\(UUID().uuidString)"
+    let preferences = try XCTUnwrap(UserDefaults(suiteName: suite))
+    preferences.set(true, forKey: ConversationWorkspaceView.detailsDefaultsKey)
+    addTeardownBlock { UserDefaults.standard.removePersistentDomain(forName: suite) }
+    return preferences
+  }
+
   private func readout(labeled label: String, in root: NSView) -> NSTextField? {
     if let field = root as? NSTextField, field.accessibilityLabel() == label {
       return field
@@ -3489,26 +3508,6 @@ final class RecoveredSessionControllerTests: RecoveredSessionTestCase {
         button.frame.height > 1
       {
         matched = button
-      }
-      for child in view.subviews { walk(child) }
-    }
-    walk(root)
-    return matched
-  }
-
-  private func passageStateField(labeled label: String, in root: NSView) -> NSTextField? {
-    var matched: NSTextField?
-    func walk(_ view: NSView) {
-      if matched != nil { return }
-      if let field = view as? NSTextField,
-        field.accessibilityLabel() == label,
-        field.stringValue == label,
-        field.isHidden == false,
-        field.isHiddenOrHasHiddenAncestor == false,
-        field.frame.width > 1,
-        field.frame.height > 1
-      {
-        matched = field
       }
       for child in view.subviews { walk(child) }
     }
@@ -3603,30 +3602,31 @@ final class RecoveredSessionControllerTests: RecoveredSessionTestCase {
     return matched
   }
 
-  /// The passage row is the first ancestor taller than the timestamp button
-  /// and still shorter than the whole transcript column.
+  /// The height a passage takes on screen: from its timestamp to the next
+  /// passage's timestamp, in window coordinates. Paragraph rows are SwiftUI
+  /// stacks with no AppKit view of their own, so the shoulder timestamps are
+  /// the passages' AppKit landmarks. Zero when no passage follows.
   private func passageRowHeight(of button: NSButton) -> CGFloat {
-    var view = button.superview
-    var steps = 0
-    while let current = view, steps < 12 {
-      let height = current.frame.height
-      if height > button.frame.height + 4, height < 180 { return height }
-      view = current.superview
-      steps += 1
-    }
-    return button.frame.height
+    let top = passageStampTops(in: button.window?.contentView)
+    guard let own = top[ObjectIdentifier(button)] else { return 0 }
+    guard let next = top.values.filter({ $0 < own - 1 }).max() else { return 0 }
+    return own - next
   }
 
-  private func ancestorHeights(of button: NSButton) -> [CGFloat] {
-    var heights: [CGFloat] = [button.frame.height]
-    var view = button.superview
-    var steps = 0
-    while let current = view, steps < 8 {
-      heights.append(current.frame.height)
-      view = current.superview
-      steps += 1
+  /// Every visible passage timestamp's top edge in window coordinates.
+  private func passageStampTops(in root: NSView?) -> [ObjectIdentifier: CGFloat] {
+    var tops: [ObjectIdentifier: CGFloat] = [:]
+    func walk(_ view: NSView) {
+      if let stamp = view as? NSButton,
+        stamp.accessibilityLabel()?.hasPrefix("Play from ") == true,
+        stamp.isHiddenOrHasHiddenAncestor == false
+      {
+        tops[ObjectIdentifier(stamp)] = stamp.convert(stamp.bounds, to: nil).maxY
+      }
+      for child in view.subviews { walk(child) }
     }
-    return heights
+    if let root { walk(root) }
+    return tops
   }
 
   private func hostedPopup(labeled label: String, in root: NSView) -> NSPopUpButton? {
@@ -3713,9 +3713,9 @@ final class RecoveredSessionControllerTests: RecoveredSessionTestCase {
     let stored = try library.document(sessionId: receipt.sessionId)
     let alpha = try XCTUnwrap(stored.first { $0.sequence == 0 })
     let bravo = try XCTUnwrap(stored.first { $0.sequence == 1 })
-    XCTAssertEqual(alpha.finality, "final")
+    XCTAssertEqual(alpha.finality, .final)
     XCTAssertFalse(alpha.corrected)
-    XCTAssertEqual(bravo.finality, "final")
+    XCTAssertEqual(bravo.finality, .final)
     XCTAssertTrue(bravo.corrected)
     XCTAssertNotEqual(bravo.effectiveText, bravo.verbatimText)
     XCTAssertGreaterThan(bravo.startNanoseconds, alpha.endNanoseconds)
@@ -3908,9 +3908,9 @@ final class RecoveredSessionControllerTests: RecoveredSessionTestCase {
     let stored = try library.document(sessionId: receipt.sessionId)
     let alpha = try XCTUnwrap(stored.first { $0.sequence == 0 })
     let bravo = try XCTUnwrap(stored.first { $0.sequence == 1 })
-    XCTAssertEqual(alpha.finality, "final")
+    XCTAssertEqual(alpha.finality, .final)
     XCTAssertFalse(alpha.corrected)
-    XCTAssertEqual(bravo.finality, "final")
+    XCTAssertEqual(bravo.finality, .final)
     XCTAssertTrue(bravo.corrected)
     XCTAssertGreaterThan(bravo.startNanoseconds, alpha.endNanoseconds)
     XCTAssertEqual(alpha.speakerLabel, "Speaker")
@@ -3994,6 +3994,17 @@ final class RecoveredSessionControllerTests: RecoveredSessionTestCase {
     window.makeKeyAndOrderFront(nil)
     window.orderFrontRegardless()
     defer { window.close() }
+    /// Clicks a passage's Name and waits for the tray's person controls.
+    func openReviewTray(from passageName: String, until controls: [String]) async throws {
+      let name = try XCTUnwrap(self.claimButton(labeled: passageName, in: host))
+      XCTAssertTrue(name.isDescendant(of: host) && window.contentView === host)
+      name.performClick(nil)
+      let opened = await waitUntil(timeoutNanoseconds: 5_000_000_000) {
+        host.layoutSubtreeIfNeeded()
+        return controls.allSatisfy { self.claimButton(labeled: $0, in: host) != nil }
+      }
+      XCTAssertTrue(opened, self.hostedControlProbe(in: host))
+    }
 
     let shown = await waitUntil(timeoutNanoseconds: 5_000_000_000) {
       host.layoutSubtreeIfNeeded()
@@ -4032,13 +4043,16 @@ final class RecoveredSessionControllerTests: RecoveredSessionTestCase {
     let saveMorgan = try XCTUnwrap(self.claimButton(labeled: "Save speaker", in: host))
     XCTAssertTrue(saveMorgan.isEnabled)
     saveMorgan.performClick(nil)
+    let bravoMorgan = speakerControl(bravoStamp, "Morgan")
     let named = await waitUntil(timeoutNanoseconds: 5_000_000_000) {
       host.layoutSubtreeIfNeeded()
       return model.segments.first { $0.sequence == bravo.sequence }?.speakerLabel == "Morgan"
-        && self.claimButton(labeled: "Rename Morgan", in: host) != nil
-        && self.claimButton(labeled: "Rename Dana", in: host) != nil
+        && self.claimButton(labeled: bravoMorgan, in: host) != nil
     }
     XCTAssertTrue(named && window.contentView === host, self.hostedControlProbe(in: host))
+    // Save closes the review tray, and the tray lists people only while a
+    // passage's Name has it open (DESIGN.md §0), so renaming starts there.
+    try await openReviewTray(from: bravoMorgan, until: ["Rename Morgan", "Rename Dana"])
 
     // Morgan is the person being edited, so merge absorbs Morgan and keeps Dana.
     let renameMorgan = try XCTUnwrap(self.claimButton(labeled: "Rename Morgan", in: host))
@@ -4073,6 +4087,7 @@ final class RecoveredSessionControllerTests: RecoveredSessionTestCase {
       Dana, named by you
       """)
 
+    try await openReviewTray(from: speakerControl(alphaStamp, "Dana"), until: ["Rename Dana"])
     let renameDana = try XCTUnwrap(self.claimButton(labeled: "Rename Dana", in: host))
     XCTAssertTrue(renameDana.isDescendant(of: host) && window.contentView === host)
     renameDana.performClick(nil)
@@ -4194,6 +4209,7 @@ final class RecoveredSessionControllerTests: RecoveredSessionTestCase {
   /// unassigned passage on the track and leaves a passage already given to a
   /// person, the machine words, and the audio bytes unchanged.
   func testHostedAudioSourceLabelRenamesUnassignedPassagesOnly() async throws {
+    let preferences = try detailsShownPreferences()
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(
       "open-scribe-source-label-\(UUID().uuidString)", isDirectory: true)
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -4286,7 +4302,7 @@ final class RecoveredSessionControllerTests: RecoveredSessionTestCase {
         topology: { [] }
       ),
       navigation: navigation
-    )
+    ).defaultAppStorage(preferences)
     let host = NSHostingView(rootView: view)
     host.sizingOptions = []
     let window = NSWindow(
@@ -5051,7 +5067,7 @@ final class RecoveredSessionControllerTests: RecoveredSessionTestCase {
     }
     XCTAssertTrue(asked && window.contentView === host, store.pendingRename?.sessionId ?? "nil")
     let field = try XCTUnwrap(self.renameTitleField(in: host))
-    XCTAssertEqual(field.stringValue, ConversationIdentityPresentation.title(originalTitle))
+    XCTAssertEqual(field.stringValue, ConversationIdentityPresentation.title(for: original))
     let summary = try XCTUnwrap(self.renameSummary(in: host))
     XCTAssertTrue(summary.stringValue.contains("recording and its transcript are unchanged"))
     self.replaceTitle("Cancelled name", in: field)
@@ -5072,7 +5088,7 @@ final class RecoveredSessionControllerTests: RecoveredSessionTestCase {
     }
     XCTAssertTrue(unchanged, "saved=\(store.savedSessions.map { "\($0.sessionId) \($0.title)" })")
     let displayed = try XCTUnwrap(self.conversationName(in: host))
-    XCTAssertEqual(displayed.stringValue, ConversationIdentityPresentation.title(originalTitle))
+    XCTAssertEqual(displayed.stringValue, ConversationIdentityPresentation.title(for: original))
 
     let again = try XCTUnwrap(
       self.deletionButton(labeled: "Rename the selected conversation", in: host))

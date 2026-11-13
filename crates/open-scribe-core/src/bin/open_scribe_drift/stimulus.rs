@@ -6,7 +6,8 @@
 //! regenerates each pulse rather than trusting a played file, and the WAV's
 //! SHA-256 binds the file that was played to that spec.
 
-use crate::export::write_atomically_with;
+use open_scribe_core::{TranscriptExportError, write_atomically_with};
+use open_scribe_types::lowercase_hex;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::fmt;
@@ -14,7 +15,8 @@ use std::io::{self, Write};
 use std::path::Path;
 
 pub const DRIFT_STIMULUS_SCHEMA: &str = "open-scribe.drift-stimulus/v1";
-pub const STIMULUS_SAMPLE_RATE: u32 = 48_000;
+/// The stimulus is played at, and its capture analyzed at, the media rate.
+pub use open_scribe_types::MEDIA_SAMPLE_RATE_HZ as STIMULUS_SAMPLE_RATE;
 /// A pulse occupies at most half the detector's FFT block. Besides fitting
 /// its buffer, this keeps every overlap-save block advancing by at least
 /// half a block; near-block-size templates cannot turn a run into one FFT
@@ -243,10 +245,10 @@ pub fn write_stimulus_wav(spec: &StimulusSpec, destination: &Path) -> Result<Str
         out.flush()
     })
     .map_err(|error| match error {
-        crate::TranscriptExportError::Io(error) => DriftError::Io(error),
+        TranscriptExportError::Io(error) => DriftError::Io(error),
         _ => DriftError::Invalid("the stimulus destination is invalid"),
     })?;
-    Ok(hex(&hasher.finalize()))
+    Ok(lowercase_hex(&hasher.finalize()))
 }
 
 /// The SHA-256 the spec's WAV must have, computed without writing it.
@@ -257,7 +259,7 @@ pub fn stimulus_sha256(spec: &StimulusSpec) -> Result<String, DriftError> {
         hasher.update(bytes);
         Ok(())
     })?;
-    Ok(hex(&hasher.finalize()))
+    Ok(lowercase_hex(&hasher.finalize()))
 }
 
 fn stream_stimulus(
@@ -317,8 +319,4 @@ fn split_mix(state: &mut u64) -> u64 {
     value = (value ^ (value >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
     value = (value ^ (value >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
     value ^ (value >> 31)
-}
-
-pub(crate) fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }

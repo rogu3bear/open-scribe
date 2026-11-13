@@ -34,13 +34,21 @@ fn one_imported_track_can_name_two_people_without_rewriting_text_or_audio() {
         .transcript_revision_segments(&revision)
         .unwrap();
     let first = named(&mut fixture, &revision, 0, "  Dana  ");
-    let partial = fixture.store.transcript_document(&fixture.session).unwrap();
+    let partial = fixture
+        .store
+        .conversation_document(&fixture.session, crate::DocumentScope::FinalOnly)
+        .map(|document| document.segments)
+        .unwrap();
     assert_eq!(partial[0].speaker_label, "Dana");
     assert_eq!(partial[0].named_speaker_id.as_deref(), Some(first.as_str()));
     assert_eq!(partial[1].speaker_label, "Speaker");
     assert!(partial[1].named_speaker_id.is_none());
     let second = named(&mut fixture, &revision, 1, "Morgan");
-    let doc = fixture.store.transcript_document(&fixture.session).unwrap();
+    let doc = fixture
+        .store
+        .conversation_document(&fixture.session, crate::DocumentScope::FinalOnly)
+        .map(|document| document.segments)
+        .unwrap();
     assert_ne!(first, second);
     assert_eq!(doc[1].speaker_label, "Morgan");
     assert_eq!(
@@ -144,7 +152,11 @@ fn a_speaker_review_during_background_work_preserves_the_selected_document() {
         ["Unreviewed replacement", "Second replacement"],
     );
     assert_ne!(reviewed, replacement);
-    let doc = fixture.store.transcript_document(&fixture.session).unwrap();
+    let doc = fixture
+        .store
+        .conversation_document(&fixture.session, crate::DocumentScope::FinalOnly)
+        .map(|document| document.segments)
+        .unwrap();
     assert_eq!(doc[0].revision_id, reviewed);
     assert_eq!(doc[0].named_speaker_id.as_deref(), Some(id.as_str()));
     assert_eq!(doc[0].effective_text, "First voice");
@@ -180,7 +192,8 @@ fn reuse_rename_and_reset_are_append_only_and_idempotent() {
     assert!(
         fixture
             .store
-            .transcript_document(&fixture.session)
+            .conversation_document(&fixture.session, crate::DocumentScope::FinalOnly)
+            .map(|document| document.segments)
             .unwrap()
             .iter()
             .all(|s| s.speaker_label == "D. Morgan")
@@ -194,7 +207,11 @@ fn reuse_rename_and_reset_are_append_only_and_idempotent() {
             &TranscriptSpeakerAssignment::Source,
         )
         .unwrap();
-    let doc = fixture.store.transcript_document(&fixture.session).unwrap();
+    let doc = fixture
+        .store
+        .conversation_document(&fixture.session, crate::DocumentScope::FinalOnly)
+        .map(|document| document.segments)
+        .unwrap();
     assert_eq!(doc[0].speaker_label, "Speaker");
     assert_eq!(doc[1].speaker_label, "D. Morgan");
     for table in [
@@ -275,7 +292,8 @@ fn assignments_survive_reopen_and_never_follow_a_replacement_by_ordinal() {
     assert!(
         fixture
             .store
-            .transcript_document(&fixture.session)
+            .conversation_document(&fixture.session, crate::DocumentScope::FinalOnly)
+            .map(|document| document.segments)
             .unwrap()
             .iter()
             .all(|s| s.named_speaker_id.is_none())
@@ -297,7 +315,10 @@ fn assignments_survive_reopen_and_never_follow_a_replacement_by_ordinal() {
         .unwrap();
     let root = fixture.store.managed_root().to_path_buf();
     let reopened = SessionStore::open(root).unwrap();
-    let doc = reopened.transcript_document(&fixture.session).unwrap();
+    let doc = reopened
+        .conversation_document(&fixture.session, crate::DocumentScope::FinalOnly)
+        .map(|document| document.segments)
+        .unwrap();
     assert_eq!(doc[0].named_speaker_id.as_deref(), Some(id.as_str()));
     assert_eq!(doc[0].speaker_label, "Dana");
     assert!(doc[1].named_speaker_id.is_none());
@@ -329,7 +350,8 @@ fn identical_names_do_not_merge_people_and_deletion_inventory_includes_them() {
     assert_eq!(
         fixture
             .store
-            .transcript_document(&fixture.session)
+            .conversation_document(&fixture.session, crate::DocumentScope::FinalOnly)
+            .map(|document| document.segments)
             .unwrap()
             .len(),
         2
@@ -467,7 +489,11 @@ fn merge_and_split_keep_each_named_assignment_and_the_source_default() {
             .unwrap(),
         0
     );
-    let merged = fixture.store.transcript_document(&fixture.session).unwrap();
+    let merged = fixture
+        .store
+        .conversation_document(&fixture.session, crate::DocumentScope::FinalOnly)
+        .map(|document| document.segments)
+        .unwrap();
     assert!(merged.iter().all(|segment| segment.speaker_label == "Dana"));
     assert_eq!(merged[1].named_speaker_id.as_deref(), Some(dana.as_str()));
     let people = fixture
@@ -514,7 +540,12 @@ fn merge_and_split_keep_each_named_assignment_and_the_source_default() {
         ("Speaker".into(), vec!["Morgan".into(), "Dana".into()])
     );
     assert_eq!(
-        fixture.store.transcript_document(&fixture.session).unwrap()[1].speaker_label,
+        fixture
+            .store
+            .conversation_document(&fixture.session, crate::DocumentScope::FinalOnly)
+            .map(|document| document.segments)
+            .unwrap()[1]
+            .speaker_label,
         "D. Morgan"
     );
     assert_eq!(
@@ -556,7 +587,11 @@ fn merge_and_split_keep_each_named_assignment_and_the_source_default() {
         )
         .unwrap();
     assert_ne!(mina, dana);
-    let split = fixture.store.transcript_document(&fixture.session).unwrap();
+    let split = fixture
+        .store
+        .conversation_document(&fixture.session, crate::DocumentScope::FinalOnly)
+        .map(|document| document.segments)
+        .unwrap();
     assert_eq!(split[0].speaker_label, "D. Morgan");
     assert_eq!(split[0].named_speaker_id.as_deref(), Some(dana.as_str()));
     assert_eq!(split[1].speaker_label, "Mina");

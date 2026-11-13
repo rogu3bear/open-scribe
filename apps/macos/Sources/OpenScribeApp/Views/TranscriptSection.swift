@@ -14,31 +14,23 @@ struct TranscriptSection: View {
   /// Captured recordings play from any timeline position and imported audio
   /// from any media position; without playable audio nothing can seek.
   let canSeek: Bool
-  let onSeek: (Int64) -> Void
+  let onSeek: @MainActor (Int64) -> Void
   var isPlaybackActive = false
   var playbackPosition: () -> TranscriptPlaybackPosition? = { nil }
   var onFollowPlayback: (String) -> Void = { _ in }
 
-  @State private var showingModels = false
+  @State private var confirmingReprocess = false
 
-  /// The reader is part of the document only after this model is bound to
-  /// this session and has passages. The view task performs that binding.
+  /// The reader is part of the document only once the model holds this
+  /// conversation's passages.
   static func showsReader(
     session: RuntimeSessionPresentation, transcripts: TranscriptLibraryModel
   ) -> Bool {
     session.transcriptionUnavailableReason == nil
-      && transcripts.sessionId == session.sessionId && !transcripts.segments.isEmpty
+      && transcripts.loaded(session.sessionId)?.segments.isEmpty == false
   }
 
-  /// The source-label editor is created with the section. Its height grows
-  /// only when this conversation has a track, so an empty document does not
-  /// reserve the row.
-  static func sourceLabelHeight(
-    _ transcripts: TranscriptLibraryModel, sessionId: String
-  ) -> CGFloat {
-    guard transcripts.sessionId == sessionId, !transcripts.speakers.isEmpty else { return 0 }
-    return CGFloat(80 + transcripts.speakers.count * 150)
-  }
+  private var loaded: LoadedConversation? { transcripts.loaded(session.sessionId) }
 
   var body: some View {
     VStack(alignment: .leading, spacing: ScribeSpacing.compact) {
@@ -74,8 +66,6 @@ struct TranscriptSection: View {
         label: "Model provenance",
         text: session.transcriptionUnavailableReason == nil ? transcripts.provenanceText : nil
       )
-      .frame(maxWidth: .infinity, alignment: .leading)
-      .fixedSize(horizontal: false, vertical: true)
       ProvenanceReadout(
         label: "Speaker assignment",
         text: TranscriptLibraryModel.speakerAssignmentText(
@@ -84,44 +74,29 @@ struct TranscriptSection: View {
           history: session.transcriptionUnavailableReason == nil
             ? transcripts.speakerLabelHistory : [])
       )
-      .frame(maxWidth: .infinity, alignment: .leading)
-      .fixedSize(horizontal: false, vertical: true)
       ProvenanceReadout(
         label: "Derived item provenance",
         text: session.transcriptionUnavailableReason == nil
           ? TranscriptLibraryModel.derivedItemProvenanceText(for: transcripts.derivedClaims) : nil
       )
-      .frame(maxWidth: .infinity, alignment: .leading)
-      .fixedSize(horizontal: false, vertical: true)
       if showsTranscriptionControls {
         transcriptionControls
       }
-      if !showingModels, session.transcriptionUnavailableReason == nil {
+      if speech.modelSheet == nil, session.transcriptionUnavailableReason == nil {
         outcomeNote
       }
       if session.transcript.documentAvailability == .final
         || session.transcript.replacementResumable
       {
-        ReprocessMount(sessionId: session.sessionId, scheduler: scheduler)
-          .frame(maxWidth: .infinity, minHeight: 96, alignment: .topLeading)
+        ReprocessMount(
+          sessionId: session.sessionId, scheduler: scheduler, confirming: $confirmingReprocess)
       }
       AudioSourceLabelMount(transcripts: transcripts, sessionId: session.sessionId)
-        .frame(
-          maxWidth: .infinity,
-          minHeight: Self.sourceLabelHeight(transcripts, sessionId: session.sessionId),
-          alignment: .topLeading)
     }
-    // Rust's transcript posture is part of the identity: launch recovery or a
-    // finished run changes it, and the document rereads itself.
-    .task(
-      id: session.sessionId
-        + (session.transcriptionUnavailableReason == nil ? ":timed" : ":untimed")
-        + ":\(session.transcript.state.rawValue):\(session.transcript.documentVersion)"
-    ) {
-      await transcripts.load(session: session)
-    }
-    .sheet(isPresented: $showingModels) {
-      SpeechModelSheet(speech: speech) { showingModels = false }
+    // The model reads each document once, however many views ask; the
+    // document view and this section share that read.
+    .task(id: TranscriptLibraryModel.documentIdentity(session)) {
+      await transcripts.open(session)
     }
   }
 
@@ -139,10 +114,7 @@ struct TranscriptSection: View {
   @ViewBuilder
   private var transcriptionMenu: some View {
     Menu("Transcription") {
-      Button("Speech Models…") {
-        speech.dismissMessage()
-        showingModels = true
-      }
+      Button("Speech Models…") { speech.showModels(in: .conversation) }
       if speech.installedModel == nil, session.transcriptionUnavailableReason == nil,
         speech.transcribingSessionId != session.sessionId,
         scheduler.state(for: session.sessionId) != .running
@@ -164,41 +136,29 @@ struct TranscriptSection: View {
     return false
   }
 
-  /// The last thing the scheduler did for this conversation, in the speech
-  /// model's own words, until the next request replaces it.
+  /// The last thing the scheduler did for this conversation, until the next
+  /// request replaces it.
   @ViewBuilder
   private var outcomeNote: some View {
-    switch scheduler.state(for: session.sessionId) {
-    case .finished(let message):
-      Label(message, systemImage: "checkmark.circle")
-        .font(.callout)
-        .foregroundStyle(.secondary)
-    case .failed(let message):
-      CaptureIssueLabel(message: message, isFailure: true).font(.callout)
-    case .cancelled:
-      Text("Transcription was cancelled. The recorded audio is unchanged.")
-        .font(.callout)
-        .foregroundStyle(.secondary)
-    case .preempted:
-      Text("Transcription yielded to capture. Finished parts are kept.").font(.callout)
-        .foregroundStyle(.secondary)
-    case .deferred:
-      Text("Transcription is waiting to start.").font(.callout).foregroundStyle(.secondary)
-    case .incomplete:
-      Text("Saved parts were checked. Some tracks still need transcription.")
-        .font(.callout).foregroundStyle(.secondary)
-    default:
-      EmptyView()
+    if let outcome = TranscriptStatusPresentation.outcome(scheduler.state(for: session.sessionId)) {
+      if outcome.isProblem {
+        CaptureIssueLabel(message: outcome.text, isFailure: true).font(.callout)
+      } else if case .finished = scheduler.state(for: session.sessionId) {
+        Label(outcome.text, systemImage: "checkmark.circle")
+          .font(.callout)
+          .foregroundStyle(.secondary)
+      } else {
+        Text(outcome.text).font(.callout).foregroundStyle(.secondary)
+      }
     }
   }
 
   /// Opens the speech-model sheet. Shown when the catalog has no installed model.
-  static let installSpeechModelTitle = "Set Up Transcription…"
+  static let installSpeechModelTitle = TranscriptStatusPresentation.setUpTitle
 
   /// Opening a playable conversation with no installed model. Playback and
   /// conversation management stay available; this line is the transcript status.
-  static let speechModelUnavailableStatus =
-    "Transcription is unavailable until a speech model is installed on this Mac."
+  static let speechModelUnavailableStatus = TranscriptStatusPresentation.modelUnavailable
 
   /// The catalog has been read and none of its models are installed.
   static func showsInstallSpeechModel(
@@ -212,27 +172,15 @@ struct TranscriptSection: View {
   }
 
   /// What the transcript line says: the library's committed state, with the
-  /// plain-words reason when the latest run ended without a transcript.
+  /// reason when the latest run ended without a transcript.
   static func statusLine(
     session: RuntimeSessionPresentation,
     transcripts: TranscriptLibraryModel,
     speech: SpeechTranscriptionModel
   ) -> String {
-    if session.transcript.state == .final, session.transcript.attempt == .failed {
-      return "The reviewed transcript remains selected. Replacement transcription failed. "
-        + RuntimeTranscriptPresentation.failureText(session.transcript.attemptFailure)
-    }
-    if transcripts.availability == .failed {
-      return "Transcription failed. "
-        + RuntimeTranscriptPresentation.failureText(session.transcript.failureClass)
-        + " The recorded audio is unaffected."
-    }
-    if showsInstallSpeechModel(session: session, speech: speech),
-      transcripts.availability == .unavailable
-    {
-      return speechModelUnavailableStatus
-    }
-    return transcripts.availabilityText
+    TranscriptStatusPresentation.detail(
+      session: session, loaded: transcripts.availability, loadedText: transcripts.availabilityText,
+      modelMissing: showsInstallSpeechModel(session: session, speech: speech))
   }
 
   private var availabilityText: String {
@@ -252,15 +200,16 @@ struct TranscriptSection: View {
         } else {
           ProgressView { Text(speech.progressText) }
         }
-        Button("Cancel Transcription") { scheduler.cancel(sessionId: session.sessionId) }
+        Button(TranscriptStatusPresentation.Action.cancel.title) {
+          scheduler.cancel(sessionId: session.sessionId)
+        }
       }
       .frame(maxWidth: 420, alignment: .leading)
     } else if session.transcriptionUnavailableReason == nil || hasQueuedWork {
       VStack(alignment: .leading, spacing: ScribeSpacing.related) {
         if case .queued(let position, let hold) = job {
           Label(
-            position == 1
-              ? "Queued next for transcription." : "Queued for transcription, \(position) in line.",
+            TranscriptStatusPresentation.queued(position: position, hold: nil),
             systemImage: "clock"
           )
           .font(.callout)
@@ -274,25 +223,25 @@ struct TranscriptSection: View {
             if (position > 1 || hold == .pausedByUser)
               && scheduler.canPrioritize(sessionId: session.sessionId)
             {
-              Button("Prioritize Transcription") { scheduler.request(sessionId: session.sessionId) }
-                .help(
-                  "Request transcription ahead of automatic work. Earlier requests keep their place."
-                )
+              Button(TranscriptStatusPresentation.Action.transcribeNow.title) {
+                scheduler.request(sessionId: session.sessionId)
+              }
+              .help(
+                "Transcribe this conversation ahead of automatic work. Earlier requests keep their place."
+              )
             }
             Button("Remove from Queue") { scheduler.cancel(sessionId: session.sessionId) }
           }
         } else if speech.installedModel != nil {
           HStack(spacing: ScribeSpacing.compact) {
-            Button(
+            let action: TranscriptStatusPresentation.Action =
               transcripts.availability == .failed || job == .cancelled
                 || session.transcript.state == .failed || session.transcript.state == .cancelled
-                ? "Retry Transcription" : "Transcribe on This Mac"
-            ) {
+              ? .tryAgain : .transcribe
+            Button(action.title) {
               scheduler.request(sessionId: session.sessionId)
             }
-            .help(
-              "Resume incomplete tracks. Compatible selected Final transcripts and their corrections stay selected."
-            )
+            .help("Transcribe on this Mac. Finished sources and your corrections are kept.")
           }
           if scheduler.isPaused {
             HStack(spacing: ScribeSpacing.compact) {
@@ -311,10 +260,7 @@ struct TranscriptSection: View {
             .fixedSize(horizontal: false, vertical: true)
           }
         } else {
-          Button(Self.installSpeechModelTitle) {
-            speech.dismissMessage()
-            showingModels = true
-          }
+          Button(Self.installSpeechModelTitle) { speech.showModels(in: .conversation) }
         }
       }
     }
@@ -338,7 +284,7 @@ struct TranscriptSection: View {
             }
             Button("Transcript JSON…") { export(.transcriptJson, type: .json) }
           }
-          .disabled(session.transcriptionUnavailableReason != nil || transcripts.segments.isEmpty)
+          .disabled(session.transcriptionUnavailableReason != nil || loaded?.segments.isEmpty != false)
         }
         Section("Audio") { audioExports }
         Section("Conversation") {
@@ -354,26 +300,24 @@ struct TranscriptSection: View {
         }
       }
       .fixedSize()
-      .disabled(transcripts.isExporting || transcripts.sessionId != session.sessionId)
+      .disabled(transcripts.isExporting || !transcripts.hasLoaded(session.sessionId))
       .help("Export the transcript, audio, or a portable package of this conversation")
     }
   }
 
   /// Only exports the session can honestly produce are offered.
-  private var loadedAudioOptions: NativeAudioExportOptions? {
-    transcripts.sessionId == session.sessionId ? transcripts.audioOptions : nil
-  }
+  private var loadedAudioOptions: NativeAudioExportOptions? { loaded?.audioOptions }
 
   @ViewBuilder
   private var audioExports: some View {
     if loadedAudioOptions?.hasValidatedMix == true {
-      Button("Verified Mix (M4A)…") { exportConversation(.validatedMix, type: .mpeg4Audio) }
+      Button("Stereo Mix (M4A)…") { exportConversation(.validatedMix, type: .mpeg4Audio) }
     }
     if session.hasCaptureTimeline {
       Button("Lossless Mix (WAV)…") { exportConversation(.mixWAV, type: .wav) }
     }
     ForEach(loadedAudioOptions?.pcmTracks ?? [], id: \.self) { track in
-      let label = transcripts.speakers.first { $0.trackId == track }?.label ?? "Track"
+      let label = loaded?.speakers.first { $0.trackId == track }?.label ?? "Track"
       Button("\(label) Track (WAV)…") {
         exportConversation(.track(track), type: .wav, suffix: " - \(label)")
       }
@@ -406,10 +350,8 @@ struct TranscriptSection: View {
     Task { await transcripts.export(kind, to: url, from: session.sessionId) }
   }
 
-  /// A `.openscribe` package is a directory; the name always keeps its extension.
   private var hasTurnSpeakerNames: Bool {
-    transcripts.sessionId == session.sessionId
-      && transcripts.segments.contains { $0.namedSpeakerId != nil }
+    loaded?.segments.contains { $0.namedSpeakerId != nil } ?? false
   }
 
   private var packageUnavailableReason: String? {
@@ -451,11 +393,9 @@ struct TranscriptSection: View {
     return type.preferredFilenameExtension.map { "\(stem).\($0)" } ?? stem
   }
 
+  /// Rust's transcript stamp, the one Copy prints.
   nonisolated static func timestamp(_ nanoseconds: Int64) -> String {
-    let seconds = max(0, nanoseconds) / 1_000_000_000
-    let (hours, minutes, remainder) = (seconds / 3600, seconds / 60 % 60, seconds % 60)
-    let pad = { (value: Int64) in value < 10 ? "0\(value)" : "\(value)" }
-    return hours > 0 ? "\(hours):\(pad(minutes)):\(pad(remainder))" : "\(minutes):\(pad(remainder))"
+    transcriptClock(nanoseconds: nanoseconds)
   }
 }
 
@@ -468,14 +408,10 @@ struct InterpretationSection: View {
     let refusal = transcripts.refuseLocalIntelligence()
     VStack(alignment: .leading, spacing: ScribeSpacing.related) {
       ProvenanceReadout(label: "Interpretation", text: refusal.readout)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .fixedSize(horizontal: false, vertical: true)
       ProvenanceReadout(
         label: "Structured memory",
         text: StructuredMemory.text(for: transcripts.derivedClaims)
       )
-      .frame(maxWidth: .infinity, alignment: .leading)
-      .fixedSize(horizontal: false, vertical: true)
     }
   }
 }
@@ -484,7 +420,7 @@ struct InterpretationSection: View {
 struct ClaimReviewSection: View {
   @ObservedObject var transcripts: TranscriptLibraryModel
   let canSeek: Bool
-  let onSeek: (Int64) -> Void
+  let onSeek: @MainActor (Int64) -> Void
 
   var body: some View {
     VStack(alignment: .leading, spacing: ScribeSpacing.related) {
@@ -510,7 +446,6 @@ struct ClaimReviewSection: View {
         canSeek: canSeek,
         onSeek: onSeek
       )
-      .frame(maxWidth: .infinity, minHeight: 120, alignment: .topLeading)
     }
     .padding(.vertical, ScribeSpacing.tight)
     .accessibilityElement(children: .contain)
@@ -535,9 +470,9 @@ struct ClaimReviewSection: View {
   }
 }
 
-/// Track names for unassigned passages. The control is created with the
-/// transcript section and fills when that conversation's speakers arrive, so
-/// a hosted window can rename the source without opening a disclosure.
+/// Track names for unassigned passages. The control fills when that
+/// conversation's speakers arrive, so a hosted window can rename the source
+/// without opening a disclosure.
 private struct AudioSourceLabelMount: NSViewRepresentable {
   @ObservedObject var transcripts: TranscriptLibraryModel
   let sessionId: String
@@ -550,6 +485,12 @@ private struct AudioSourceLabelMount: NSViewRepresentable {
 
   func updateNSView(_ view: AudioSourceLabelControl, context: Context) {
     view.bind(transcripts: transcripts, sessionId: sessionId)
+  }
+
+  func sizeThatFits(
+    _ proposal: ProposedViewSize, nsView: AudioSourceLabelControl, context: Context
+  ) -> CGSize? {
+    nsView.hostedSize(width: proposal.width)
   }
 }
 
@@ -566,7 +507,7 @@ private final class AudioSourceNameField: NSTextField {
   }
 }
 
-private final class AudioSourceLabelControl: NSView, NSTextFieldDelegate {
+private final class AudioSourceLabelControl: HostedPanel, NSTextFieldDelegate {
   static let headingText = "Audio source labels"
   static let explanationText =
     "Source labels apply to every unassigned passage on that audio track. This does not identify individual voices."
@@ -580,6 +521,7 @@ private final class AudioSourceLabelControl: NSView, NSTextFieldDelegate {
   private var signature: [String] = []
   private var fields: [String: AudioSourceNameField] = [:]
   private var renameButtons: [String: NSButton] = [:]
+  private var historyFields: [NSTextField] = []
 
   override init(frame frameRect: NSRect) {
     super.init(frame: frameRect)
@@ -592,51 +534,38 @@ private final class AudioSourceLabelControl: NSView, NSTextFieldDelegate {
     explanation.textColor = .secondaryLabelColor
     explanation.maximumNumberOfLines = 3
     explanation.lineBreakMode = .byWordWrapping
-    explanation.preferredMaxLayoutWidth = 640
     explanation.setAccessibilityLabel(Self.explanationText)
     failure.font = .preferredFont(forTextStyle: .callout)
     failure.textColor = .systemRed
     failure.maximumNumberOfLines = 3
     failure.lineBreakMode = .byWordWrapping
-    failure.preferredMaxLayoutWidth = 640
     failure.setAccessibilityLabel("Audio source label")
     column.orientation = .vertical
     column.alignment = .leading
     column.spacing = ScribeSpacing.related
     column.detachesHiddenViews = false
-    let stack = NSStackView(views: [heading, explanation, failure, column])
-    stack.orientation = .vertical
-    stack.alignment = .leading
-    stack.spacing = ScribeSpacing.tight
-    stack.translatesAutoresizingMaskIntoConstraints = false
-    explanation.translatesAutoresizingMaskIntoConstraints = false
-    failure.translatesAutoresizingMaskIntoConstraints = false
-    explanation.widthAnchor.constraint(lessThanOrEqualToConstant: 640).isActive = true
-    failure.widthAnchor.constraint(lessThanOrEqualToConstant: 640).isActive = true
-    addSubview(stack)
-    NSLayoutConstraint.activate([
-      stack.leadingAnchor.constraint(equalTo: leadingAnchor),
-      stack.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor),
-      stack.topAnchor.constraint(equalTo: topAnchor),
-      stack.bottomAnchor.constraint(lessThanOrEqualTo: bottomAnchor),
-    ])
+    for view in [heading, explanation, failure, column] { content.addArrangedSubview(view) }
+    content.spacing = ScribeSpacing.tight
     applyVisibility(hasSpeakers: false)
   }
 
   required init?(coder: NSCoder) { nil }
 
-  override var intrinsicContentSize: NSSize {
-    let count = column.arrangedSubviews.count
-    let height: CGFloat = isHidden || count == 0 ? 0 : 80 + CGFloat(count) * 150
-    return NSSize(width: NSView.noIntrinsicMetric, height: height)
+  /// Wrapping text never runs wider than the reading measure.
+  override func prepareLayout(width: CGFloat) {
+    let measure = min(width, 640)
+    explanation.preferredMaxLayoutWidth = measure
+    failure.preferredMaxLayoutWidth = measure
+    for field in historyFields { field.preferredMaxLayoutWidth = measure }
   }
 
   func bind(transcripts: TranscriptLibraryModel, sessionId: String) {
     self.transcripts = transcripts
     self.sessionId = sessionId
-    let speakers = transcripts.sessionId == sessionId ? transcripts.speakers : []
+    let loaded = transcripts.loaded(sessionId)
+    let speakers = loaded?.speakers ?? []
     let next = speakers.map { speaker -> String in
-      let history = transcripts.speakerLabelHistory.first { $0.trackId == speaker.trackId }
+      let history = loaded?.speakerLabelHistory.first { $0.trackId == speaker.trackId }
       let historyText = history.map { TranscriptLibraryModel.speakerLabelHistoryText(for: $0) } ?? ""
       return "\(speaker.trackId)\n\(speaker.label)\n\(speaker.namedByUser)\n\(historyText)"
     }
@@ -648,6 +577,7 @@ private final class AudioSourceLabelControl: NSView, NSTextFieldDelegate {
     signature = next
     fields = [:]
     renameButtons = [:]
+    historyFields = []
     for view in column.arrangedSubviews {
       column.removeArrangedSubview(view)
       view.removeFromSuperview()
@@ -691,7 +621,9 @@ private final class AudioSourceLabelControl: NSView, NSTextFieldDelegate {
   private func row(
     for speaker: NativeSessionSpeaker, transcripts: TranscriptLibraryModel
   ) -> NSView {
-    let history = transcripts.speakerLabelHistory.first { $0.trackId == speaker.trackId }
+    let history = sessionId.flatMap { transcripts.loaded($0) }?.speakerLabelHistory.first {
+      $0.trackId == speaker.trackId
+    }
     let historyText = history.map { TranscriptLibraryModel.speakerLabelHistoryText(for: $0) } ?? ""
     let name = NSTextField(labelWithString: speaker.label)
     name.font = .preferredFont(forTextStyle: .body)
@@ -700,7 +632,6 @@ private final class AudioSourceLabelControl: NSView, NSTextFieldDelegate {
     historyField.font = .preferredFont(forTextStyle: .caption1)
     historyField.textColor = .secondaryLabelColor
     historyField.maximumNumberOfLines = 6
-    historyField.preferredMaxLayoutWidth = 640
     historyField.setAccessibilityLabel("Name history for \(speaker.label)")
     historyField.isHidden = historyText.isEmpty
     if historyText.isEmpty { historyField.stringValue = "" }
@@ -737,13 +668,8 @@ private final class AudioSourceLabelControl: NSView, NSTextFieldDelegate {
     row.alignment = .leading
     row.spacing = ScribeSpacing.tight
     field.translatesAutoresizingMaskIntoConstraints = false
-    historyField.translatesAutoresizingMaskIntoConstraints = false
-    NSLayoutConstraint.activate([
-      field.widthAnchor.constraint(greaterThanOrEqualToConstant: 240),
-      field.heightAnchor.constraint(greaterThanOrEqualToConstant: 22),
-      rename.heightAnchor.constraint(greaterThanOrEqualToConstant: 24),
-      historyField.widthAnchor.constraint(lessThanOrEqualToConstant: 640),
-    ])
+    field.widthAnchor.constraint(greaterThanOrEqualToConstant: 240).isActive = true
+    historyFields.append(historyField)
     fields[speaker.trackId] = field
     renameButtons[speaker.trackId] = rename
     return row
@@ -785,22 +711,38 @@ private final class AudioSourceLabelControl: NSView, NSTextFieldDelegate {
 /// Replacement processing for a transcript that is already final. The request
 /// and its confirmation are AppKit controls so the hosted window can read and
 /// click them. One control starts the replacement; the menu does not repeat it.
+/// Whether the confirmation shows is SwiftUI state, so the section measures
+/// the control again when it opens or closes.
 private struct ReprocessMount: NSViewRepresentable {
   let sessionId: String
   @ObservedObject var scheduler: TranscriptionScheduler
+  @Binding var confirming: Bool
 
   func makeNSView(context: Context) -> ReprocessControl {
     let view = ReprocessControl()
-    view.bind(sessionId: sessionId, scheduler: scheduler)
+    update(view)
     return view
   }
 
   func updateNSView(_ view: ReprocessControl, context: Context) {
-    view.bind(sessionId: sessionId, scheduler: scheduler)
+    update(view)
+  }
+
+  func sizeThatFits(_ proposal: ProposedViewSize, nsView: ReprocessControl, context: Context)
+    -> CGSize?
+  {
+    nsView.hostedSize(width: proposal.width)
+  }
+
+  private func update(_ view: ReprocessControl) {
+    let binding = $confirming
+    view.bind(
+      sessionId: sessionId, scheduler: scheduler, confirming: confirming,
+      onConfirming: { binding.wrappedValue = $0 })
   }
 }
 
-private final class ReprocessControl: NSView {
+private final class ReprocessControl: HostedPanel {
   static let requestLabel = "Reprocess All Tracks…"
   static let confirmLabel = "Reprocess All Tracks"
   static let explanation =
@@ -814,6 +756,7 @@ private final class ReprocessControl: NSView {
   private var sessionId: String?
   private var scheduler: TranscriptionScheduler?
   private var showingConfirmation = false
+  private var onConfirming: ((Bool) -> Void)?
 
   override init(frame frameRect: NSRect) {
     super.init(frame: frameRect)
@@ -840,33 +783,26 @@ private final class ReprocessControl: NSView {
     actions.orientation = .horizontal
     actions.alignment = .centerY
     actions.spacing = ScribeSpacing.related
-    let column = NSStackView(views: [requestButton, explanationField, actions])
-    column.orientation = .vertical
-    column.alignment = .leading
-    column.spacing = ScribeSpacing.compact
-    column.translatesAutoresizingMaskIntoConstraints = false
-    explanationField.translatesAutoresizingMaskIntoConstraints = false
-    explanationField.widthAnchor.constraint(lessThanOrEqualToConstant: 640).isActive = true
-    addSubview(column)
-    NSLayoutConstraint.activate([
-      column.leadingAnchor.constraint(equalTo: leadingAnchor),
-      column.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor),
-      column.topAnchor.constraint(equalTo: topAnchor),
-      column.bottomAnchor.constraint(lessThanOrEqualTo: bottomAnchor),
-    ])
+    for view in [requestButton, explanationField, actions] { content.addArrangedSubview(view) }
+    content.spacing = ScribeSpacing.compact
     apply()
   }
 
   required init?(coder: NSCoder) { nil }
 
-  override var intrinsicContentSize: NSSize {
-    NSSize(width: NSView.noIntrinsicMetric, height: showingConfirmation ? 96 : 32)
+  override func prepareLayout(width: CGFloat) {
+    explanationField.preferredMaxLayoutWidth = min(width, 640)
   }
 
-  func bind(sessionId: String, scheduler: TranscriptionScheduler) {
+  func bind(
+    sessionId: String, scheduler: TranscriptionScheduler, confirming: Bool,
+    onConfirming: @escaping (Bool) -> Void
+  ) {
     let same = self.sessionId == sessionId && self.scheduler === scheduler
     self.sessionId = sessionId
     self.scheduler = scheduler
+    self.onConfirming = onConfirming
+    showingConfirmation = confirming
     if !same {
       subscription = scheduler.objectWillChange.sink { [weak self] _ in
         DispatchQueue.main.async { self?.apply() }
@@ -893,80 +829,38 @@ private final class ReprocessControl: NSView {
     return false
   }
 
+  private func setConfirming(_ confirming: Bool) {
+    showingConfirmation = confirming
+    apply()
+    onConfirming?(confirming)
+  }
+
   @objc private func ask() {
     guard !isBusy else { return }
-    showingConfirmation = true
-    apply()
+    setConfirming(true)
   }
 
   @objc private func cancel() {
-    showingConfirmation = false
-    apply()
+    setConfirming(false)
   }
 
   @objc private func confirm() {
     guard let sessionId, let scheduler, !isBusy else { return }
-    showingConfirmation = false
-    apply()
+    setConfirming(false)
     scheduler.request(sessionId: sessionId, intent: .reprocessAll)
   }
 }
 
-/// The stored run, shown with the transcript section. The field exists on the
-/// first layout and fills when the section loads provenance.
-private struct ProvenanceReadout: NSViewRepresentable {
+/// The stored run, shown with the transcript section. The field fills when
+/// the section loads provenance and takes no space while it is empty.
+private struct ProvenanceReadout: View {
   let label: String
   let text: String?
 
-  func makeNSView(context: Context) -> ProvenanceReadoutControl {
-    let view = ProvenanceReadoutControl()
-    view.apply(label: label, text: text)
-    return view
-  }
-
-  func updateNSView(_ view: ProvenanceReadoutControl, context: Context) {
-    view.apply(label: label, text: text)
-  }
-}
-
-private final class ProvenanceReadoutControl: NSView {
-  private let field = NSTextField(wrappingLabelWithString: "")
-
-  override init(frame frameRect: NSRect) {
-    super.init(frame: frameRect)
-    field.font = .preferredFont(forTextStyle: .callout)
-    field.textColor = .secondaryLabelColor
-    field.setAccessibilityRole(.staticText)
-    field.isSelectable = true
-    field.maximumNumberOfLines = 0
-    field.cell?.wraps = true
-    field.cell?.isScrollable = false
-    field.translatesAutoresizingMaskIntoConstraints = false
-    addSubview(field)
-    NSLayoutConstraint.activate([
-      field.leadingAnchor.constraint(equalTo: leadingAnchor),
-      field.trailingAnchor.constraint(equalTo: trailingAnchor),
-      field.topAnchor.constraint(equalTo: topAnchor),
-      field.bottomAnchor.constraint(equalTo: bottomAnchor),
-    ])
-  }
-
-  required init?(coder: NSCoder) { nil }
-
-  override var intrinsicContentSize: NSSize {
-    guard !field.isHidden else { return NSSize(width: NSView.noIntrinsicMetric, height: 0) }
-    field.preferredMaxLayoutWidth = 680
-    let height = max(field.intrinsicContentSize.height, 28)
-    return NSSize(width: NSView.noIntrinsicMetric, height: height)
-  }
-
-  func apply(label: String, text: String?) {
-    let shown = text ?? ""
-    field.stringValue = shown
-    field.setAccessibilityLabel(label)
-    field.isHidden = shown.isEmpty
-    field.preferredMaxLayoutWidth = 680
-    invalidateIntrinsicContentSize()
+  var body: some View {
+    HostedText(
+      text: text, label: label, font: .preferredFont(forTextStyle: .callout),
+      color: .secondaryLabelColor, isSelectable: true)
   }
 }
 
@@ -977,7 +871,7 @@ private struct ClaimActionMount: NSViewRepresentable {
   @ObservedObject var transcripts: TranscriptLibraryModel
   let claimId: String
   let canSeek: Bool
-  let onSeek: (Int64) -> Void
+  let onSeek: @MainActor (Int64) -> Void
 
   func makeNSView(context: Context) -> ClaimActionBanner {
     let view = ClaimActionBanner()
@@ -988,9 +882,15 @@ private struct ClaimActionMount: NSViewRepresentable {
   func updateNSView(_ view: ClaimActionBanner, context: Context) {
     view.bind(transcripts: transcripts, claimId: claimId, canSeek: canSeek, onSeek: onSeek)
   }
+
+  func sizeThatFits(_ proposal: ProposedViewSize, nsView: ClaimActionBanner, context: Context)
+    -> CGSize?
+  {
+    nsView.hostedSize(width: proposal.width)
+  }
 }
 
-private final class ClaimActionBanner: NSView {
+private final class ClaimActionBanner: HostedPanel {
   private let supporting = NSButton(title: "Supporting evidence", target: nil, action: nil)
   private let contradicting = NSButton(title: "Contradicting evidence", target: nil, action: nil)
   private let returnButton = NSButton(title: "Return to claim", target: nil, action: nil)
@@ -1036,29 +936,15 @@ private final class ClaimActionBanner: NSView {
     review.orientation = .horizontal
     review.alignment = .centerY
     review.spacing = ScribeSpacing.related
-    let column = NSStackView(views: [evidence, correctionField, review])
-    column.orientation = .vertical
-    column.alignment = .leading
-    column.spacing = ScribeSpacing.compact
-    column.translatesAutoresizingMaskIntoConstraints = false
+    for view in [evidence, correctionField, review] { content.addArrangedSubview(view) }
+    content.spacing = ScribeSpacing.compact
     correctionField.translatesAutoresizingMaskIntoConstraints = false
     correctionField.widthAnchor.constraint(greaterThanOrEqualToConstant: 280).isActive = true
-    addSubview(column)
-    NSLayoutConstraint.activate([
-      column.leadingAnchor.constraint(equalTo: leadingAnchor),
-      column.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor),
-      column.topAnchor.constraint(equalTo: topAnchor),
-      column.bottomAnchor.constraint(lessThanOrEqualTo: bottomAnchor),
-    ])
     apply()
   }
 
   required init?(coder: NSCoder) {
     nil
-  }
-
-  override var intrinsicContentSize: NSSize {
-    NSSize(width: NSView.noIntrinsicMetric, height: 120)
   }
 
   func bind(
@@ -1081,17 +967,23 @@ private final class ClaimActionBanner: NSView {
         DispatchQueue.main.async { self?.apply() }
       }
     }
-    DispatchQueue.main.async { [weak self] in self?.apply() }
+    apply()
   }
 
   private func apply() {
     guard let transcripts,
       let claim = transcripts.derivedClaims.first(where: { $0.claimId == claimId })
     else {
-      isHidden = true
+      if !isHidden {
+        isHidden = true
+        invalidateIntrinsicContentSize()
+      }
       return
     }
-    isHidden = false
+    if isHidden {
+      isHidden = false
+      invalidateIntrinsicContentSize()
+    }
     let returning =
       transcripts.claimEvidenceOpen && transcripts.focusedClaim?.claimId == claim.claimId
     supporting.isHidden = claim.supportingCount == 0

@@ -6,10 +6,10 @@ struct AppStatus: Equatable, Sendable {
     let intelligence: String
 }
 
-enum RustStatusSource {
+extension AppStatus {
+    /// The status the Rust core reports for this build.
     static func load() -> AppStatus {
         let status = nativeStatus()
-
         return AppStatus(
             productName: status.productName,
             coreVersion: status.coreVersion,
@@ -17,13 +17,5 @@ enum RustStatusSource {
             capture: status.capture,
             intelligence: status.intelligence
         )
-    }
-}
-
-/// The release sentence and capability rows Settings shows. The words come
-/// from the embedded Rust registry.
-enum ReleaseCapabilityClaims {
-    static func load() -> NativeReleaseClaims {
-        nativeReleaseClaims()
     }
 }

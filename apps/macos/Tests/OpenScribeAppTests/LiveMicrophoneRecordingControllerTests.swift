@@ -45,7 +45,11 @@ private final class RecordingPreparationFake: NativeRecordingPreparation, @unche
     super.init(unsafeFromHandle: handle)
   }
 
-  override func prepareSession(title _: String) throws -> NativePreparedSession {
+  override func prepareSessionWithRequiredSources(
+    title _: String?,
+    requiredSources: [NativeMediaSourceKind]
+  ) throws -> NativePreparedSession {
+    XCTAssertEqual(requiredSources, self.requiredSources)
     authorizedSourceCount = 0
     return NativePreparedSession(
       sessionId: "session-live",
@@ -56,14 +60,6 @@ private final class RecordingPreparationFake: NativeRecordingPreparation, @unche
       mediaFilesOpen: false,
       recordingStarted: false
     )
-  }
-
-  override func prepareSessionWithRequiredSources(
-    title _: String,
-    requiredSources: [NativeMediaSourceKind]
-  ) throws -> NativePreparedSession {
-    XCTAssertEqual(requiredSources, self.requiredSources)
-    return try prepareSession(title: "")
   }
 
   override func confirmRecording(sessionId: String) throws -> NativeRecordingStartedEvidence {
@@ -99,6 +95,7 @@ private final class RecordingPreparationFake: NativeRecordingPreparation, @unche
       relativePath: "audio/\(sourceName)/segment-live.caf",
       absolutePath: "/tmp/segment-\(sourceName).caf",
       channels: sourceKind == .microphone ? 1 : 2,
+      sampleRateHz: nativeCapturePolicy().sampleRateHz,
       mappedStartNanoseconds: 0
     )
   }
@@ -180,9 +177,9 @@ private final class RecordingPreparationFake: NativeRecordingPreparation, @unche
   override func recorderDetail(sessionId _: String) throws -> NativeRecorderDetail {
     // This double has no Rust handle. The generated clone would fault.
     NativeRecorderDetail(
-      lifecycle: "recording",
+      lifecycle: .recording,
       capturedNanoseconds: 0,
-      storageLevel: "unchecked",
+      storageLevel: .unchecked,
       events: []
     )
   }
@@ -209,6 +206,7 @@ private final class RecordingPreparationFake: NativeRecordingPreparation, @unche
 }
 
 private final class SystemAudioCaptureFake: SystemAudioCapturing, @unchecked Sendable {
+  let liveAudio = LiveAudioListenerSlot()
   private var firstSampleHandler: SystemAudioFirstSampleHandler?
   private var failureHandler: SystemAudioFailureHandler?
   var lastHostTime: UInt64? = 53_000
@@ -327,6 +325,7 @@ private final class SegmentWriterFake: ManagedSegmentWriting, @unchecked Sendabl
 }
 
 private final class MicrophoneCaptureFake: MicrophoneCapturing, @unchecked Sendable {
+  let liveAudio = LiveAudioListenerSlot()
   private var firstSampleHandler: MicrophoneFirstSampleHandler?
   private var healthHandler: MicrophoneHealthHandler?
   private var failureHandler: MicrophoneFailureHandler?
@@ -618,8 +617,8 @@ final class LiveMicrophoneRecordingControllerTests: XCTestCase {
   func testInertPreparationDetailStaysOffTheRustHandle() throws {
     let preparation = RecordingPreparationFake()
     let detail = try preparation.recorderDetail(sessionId: "session-live")
-    XCTAssertEqual(detail.lifecycle, "recording")
-    XCTAssertEqual(detail.storageLevel, "unchecked")
+    XCTAssertEqual(detail.lifecycle, .recording)
+    XCTAssertEqual(detail.storageLevel, .unchecked)
     XCTAssertTrue(detail.events.isEmpty)
   }
 
@@ -1391,7 +1390,7 @@ final class LiveMicrophoneRecordingControllerTests: XCTestCase {
   #if DEBUG
     func testCaptureProofDispatchWaitsForSuccessfulCaptureSafetyRecovery() async throws {
       let actions: [LaunchConfiguration.Action] = [
-        .injected("storage-warning"), .microphone, .forcedCapture, .drift(1),
+        .injected(.storageWarning), .microphone, .forcedCapture, .drift(1),
       ]
       for action in actions {
         let preparation = RecoveryPreparationFake()
@@ -1446,7 +1445,7 @@ final class LiveMicrophoneRecordingControllerTests: XCTestCase {
         snapshotProvider: { NativeRuntimeLibrarySnapshot(currentSession: nil, savedSessions: []) },
         startsPolling: false)
       let configuration = LaunchConfiguration(
-        mode: .synthetic, action: .injected("storage-warning"),
+        mode: .synthetic, action: .injected(.storageWarning),
         libraryRoot: FileManager.default.temporaryDirectory, proofRoot: nil,
         mediaRoot: nil, preferences: UserDefaults(suiteName: "OpenScribe.Proof.Dispatch.\(UUID())")!
       )
@@ -1518,7 +1517,7 @@ final class LiveMicrophoneRecordingControllerTests: XCTestCase {
     XCTAssertEqual(
       controller.errorMessage,
       "Microphone access is denied. Enable it in System Settings.")
-    XCTAssertEqual(controller.statusText, "Conversation capture failed")
+    XCTAssertEqual(controller.statusText, "Couldn't record")
     XCTAssertTrue(controller.canStart)
     XCTAssertEqual(preparationCalls.value, 0)
 
@@ -1542,7 +1541,7 @@ final class LiveMicrophoneRecordingControllerTests: XCTestCase {
     XCTAssertEqual(controller.phase, .failed)
     XCTAssertNotEqual(controller.phase, .capturing)
     XCTAssertFalse(controller.isCapturing)
-    XCTAssertEqual(controller.statusText, "Conversation capture failed")
+    XCTAssertEqual(controller.statusText, "Couldn't record")
     XCTAssertFalse(controller.statusText.hasPrefix("Recording "))
     XCTAssertEqual(preparation.interruptionReasons, [.captureStartFailed])
     XCTAssertTrue(

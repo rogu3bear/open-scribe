@@ -24,7 +24,7 @@ enum ConversationControlLabels {
   static let pause = "Pause"
   static let resume = "Resume"
   static let addMarker = "Add Marker"
-  static let reviewPreservedAudio = "Review Preserved Audio"
+  static let reviewPreservedAudio = "Review Audio"
   static let findInTranscript = "Find in this transcript"
   static let searchTranscripts = "Search transcripts"
   static let clearTranscriptSearch = "Clear transcript search"
@@ -81,11 +81,11 @@ enum ConversationControlLabels {
   /// says Corrected; an uncorrected final says Final; a draft says Draft.
   /// Search matches are named too, so the hit is not carried by color alone.
   static func passageAccessibility(
-    speaker: String, text: String, finality: String, corrected: Bool, isPlaying: Bool,
-    isCited: Bool, matches: [String] = []
+    speaker: String, text: String, finality: NativeTranscriptFinality, corrected: Bool,
+    isPlaying: Bool, isCited: Bool, matches: [String] = []
   ) -> String {
-    let provisional = finality == "draft"
-    let final = finality == "final" && !corrected
+    let provisional = finality == .draft
+    let final = finality == .final && !corrected
     return "\(speaker). \(text)"
       + (provisional ? " Draft." : "")
       + (final ? " Final." : "")
@@ -96,17 +96,16 @@ enum ConversationControlLabels {
   }
 }
 
-/// Transcript text size. The reader stores `rawValue` under `storageKey` in the
-/// scene's app storage. Standard, Larger, and Largest use semantic text styles,
-/// so the system text size and this control both apply. The spoken value is the
-/// non-color signal.
+/// Transcript text size: View ▸ Bigger, Smaller and Actual Size. The reader
+/// stores `rawValue` under `storageKey` in the scene's app storage and scales
+/// its 17-point standard by `multiplier`. The spoken value is the non-color
+/// signal.
 enum TranscriptTextScale: String, CaseIterable, Identifiable, Sendable {
   case standard
   case larger
   case largest
 
   static let storageKey = "transcriptTextScale"
-  static let controlLabel = "Transcript text size"
 
   var id: String { rawValue }
 
@@ -126,64 +125,16 @@ enum TranscriptTextScale: String, CaseIterable, Identifiable, Sendable {
     }
   }
 
-  /// AppKit style measured for the SwiftUI font this step applies.
-  /// Standard is body, Larger is title2, and Largest is title.
-  var textStyle: NSFont.TextStyle {
-    switch self {
-    case .standard: .body
-    case .larger: .title2
-    case .largest: .title1
-    }
-  }
-
-  var passageFont: Font {
-    switch self {
-    case .standard: .body
-    case .larger: .title2
-    case .largest: .title
-    }
-  }
-
-  var emphasisFont: Font {
-    switch self {
-    case .standard: .body.weight(.semibold)
-    case .larger: .title2.weight(.semibold)
-    case .largest: .title.weight(.semibold)
-    }
-  }
-
-  var pointSize: CGFloat {
-    NSFont.preferredFont(forTextStyle: textStyle).pointSize
+  /// The next step bigger (`delta` 1) or smaller (-1), held at the ends.
+  func stepped(_ delta: Int) -> TranscriptTextScale {
+    let all = Self.allCases
+    guard let index = all.firstIndex(of: self) else { return self }
+    return all[min(max(index + delta, 0), all.count - 1)]
   }
 
   static func resolve(_ stored: String?) -> TranscriptTextScale {
     guard let stored, let scale = TranscriptTextScale(rawValue: stored) else { return .standard }
     return scale
-  }
-}
-
-/// The passage text and spoken label the reader shows for one segment.
-struct TranscriptPassagePresentation {
-  let text: AttributedString
-  let spoken: String
-
-  static func make(
-    speaker: String, text: String, finality: String, corrected: Bool, isPlaying: Bool,
-    isCited: Bool, query: String, scale: TranscriptTextScale
-  ) -> TranscriptPassagePresentation {
-    let matches = TranscriptSearch.ranges(in: text, query: query).map { String(text[$0]) }
-    var attributed = AttributedString(text)
-    for match in TranscriptSearch.ranges(in: text, query: query) {
-      guard let range = Range(match, in: attributed) else { continue }
-      attributed[range].backgroundColor = Color.yellow.opacity(0.25)
-      attributed[range].font = scale.emphasisFont
-      attributed[range].underlineStyle = .single
-    }
-    return TranscriptPassagePresentation(
-      text: attributed,
-      spoken: ConversationControlLabels.passageAccessibility(
-        speaker: speaker, text: text, finality: finality, corrected: corrected,
-        isPlaying: isPlaying, isCited: isCited, matches: matches))
   }
 }
 

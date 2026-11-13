@@ -20,7 +20,11 @@ fn media(directory: &Path, name: &str, frames: u64) -> (PathBuf, u64, String) {
     let path = directory.join(name);
     write_caf(&path, frames, sample);
     let bytes = fs::read(&path).unwrap();
-    (path, bytes.len() as u64, hex(&Sha256::digest(&bytes)))
+    (
+        path,
+        bytes.len() as u64,
+        lowercase_hex(&Sha256::digest(&bytes)),
+    )
 }
 
 fn segment(directory: &Path, id: &str, sequence: u64, start: i64, frames: u64) -> RestoredSegment {
@@ -209,7 +213,11 @@ fn a_restored_capture_plays_its_placements_and_keeps_its_transcript() {
     assert_eq!(inventory.markers[0].at_nanoseconds, 2 * SECOND);
     assert_eq!(inventory.markers[0].label, "Decision");
 
-    let document = package.store.transcript_document(&session).unwrap();
+    let document = package
+        .store
+        .conversation_document(&session, crate::DocumentScope::FinalOnly)
+        .map(|document| document.segments)
+        .unwrap();
     let texts: Vec<(&str, &str, bool, &str)> = document
         .iter()
         .map(|segment| {
@@ -382,7 +390,12 @@ fn a_restored_import_keeps_its_origin_and_plays_its_original() {
     let lease = package.store.lease_imported_playback(&session).unwrap();
     assert_eq!(lease.digest_sha256(), original.digest_sha256);
     assert_eq!(
-        package.store.transcript_document(&session).unwrap().len(),
+        package
+            .store
+            .conversation_document(&session, crate::DocumentScope::FinalOnly)
+            .map(|document| document.segments)
+            .unwrap()
+            .len(),
         1
     );
     let saved = package.store.runtime_library_snapshot().unwrap();
@@ -419,7 +432,12 @@ fn a_silent_tracks_empty_final_transcript_restores_and_journals_in_one_batch() {
     let context = package.store.transcript_export_context(&session).unwrap();
     assert_eq!(context.selected.len(), 2, "the silent track is Final too");
     assert_eq!(
-        package.store.transcript_document(&session).unwrap().len(),
+        package
+            .store
+            .conversation_document(&session, crate::DocumentScope::FinalOnly)
+            .map(|document| document.segments)
+            .unwrap()
+            .len(),
         2
     );
 
@@ -487,7 +505,7 @@ fn a_restored_compressed_import_keeps_its_m4a_bytes_and_transcript() {
     let mut bytes = b"\x00\x00\x00\x1cftypM4A \x00\x00\x00\x00M4A isommp42".to_vec();
     bytes.extend_from_slice(&[42; 256]);
     fs::write(&path, &bytes).unwrap();
-    let digest = hex(&Sha256::digest(&bytes));
+    let digest = lowercase_hex(&Sha256::digest(&bytes));
     let segment = RestoredSegment {
         source_segment_id: "import-0".into(),
         sequence: 0,
@@ -548,7 +566,10 @@ fn a_restored_compressed_import_keeps_its_m4a_bytes_and_transcript() {
     assert_eq!(lease.media_format(), "m4a-alac-or-aac");
     assert_eq!(lease.byte_length(), bytes.len() as u64);
     assert_eq!(lease.digest_sha256(), digest);
-    let document = store.transcript_document(&session).unwrap();
+    let document = store
+        .conversation_document(&session, crate::DocumentScope::FinalOnly)
+        .map(|document| document.segments)
+        .unwrap();
     assert_eq!(document.len(), 1);
     assert_eq!(document[0].effective_text, "Corrected words");
     assert_eq!(document[0].speaker_label, "Grace");

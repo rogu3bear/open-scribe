@@ -59,8 +59,8 @@ final class LaunchConfigurationTests: XCTestCase {
     let bytes = Data("production sentinel; no schema migration".utf8)
     try bytes.write(to: sentinel)
     let flags = [
-      "--m1-injected-proof-root", "--m1-injected-recovery-root", "--foundation-review-root",
-      "--foundation-live-recovery-root", "--foundation-synthetic-capture-root",
+      "--m1-injected-proof-root", "--m1-injected-recovery-root", "--foundation-live-recovery-root",
+      "--foundation-synthetic-capture-root",
       "--foundation-synthetic-recovery-root", "--m1-live-microphone-proof-root",
       "--m1-forced-termination-capture-root", "--m1-forced-termination-recovery-root",
       "--local-only-proof-root", "--local-only-synthetic-proof-root", "--m1-drift-run-root",
@@ -215,7 +215,7 @@ final class LaunchConfigurationTests: XCTestCase {
     defer {
       if let child, child.isRunning {
         kill(pid_t(child.processIdentifier), SIGKILL)
-        child.waitUntilExit()
+        Self.reap(child)
       }
     }
 
@@ -247,7 +247,10 @@ final class LaunchConfigurationTests: XCTestCase {
     XCTAssertFalse(String(decoding: journalBeforeKill, as: UTF8.self).contains("recording_started"))
 
     kill(pid_t(capture.processIdentifier), SIGKILL)
-    capture.waitUntilExit()
+    guard await Self.waitForExit(capture, seconds: 10) else {
+      XCTFail(Self.launchFailure("process did not exit after SIGKILL", proof: proof, process: capture))
+      return
+    }
     child = nil
     XCTAssertEqual(capture.terminationReason, .uncaughtSignal)
     XCTAssertEqual(capture.terminationStatus, SIGKILL)
@@ -266,7 +269,10 @@ final class LaunchConfigurationTests: XCTestCase {
       XCTFail(Self.launchFailure("recovery did not report", proof: proof, process: firstRecovery))
       return
     }
-    firstRecovery.waitUntilExit()
+    guard await Self.waitForExit(firstRecovery, seconds: 20) else {
+      XCTFail(Self.launchFailure("recovery did not exit after reporting", proof: proof, process: firstRecovery))
+      return
+    }
     child = nil
     XCTAssertEqual(firstRecovery.terminationStatus, 0)
     XCTAssertFalse(FileManager.default.fileExists(atPath: proof.appendingPathComponent("proof-error").path))
@@ -279,7 +285,7 @@ final class LaunchConfigurationTests: XCTestCase {
     XCTAssertEqual((report?["rendered_frames"] as? NSNumber)?.intValue, 0)
     let preparation = try NativeRecordingPreparation.open(managedRoot: media.path)
     let detail = try preparation.recorderDetail(sessionId: sessionId)
-    XCTAssertEqual(detail.lifecycle, "interrupted")
+    XCTAssertEqual(detail.lifecycle, .interrupted)
     let kinds = try Self.journalKinds(journal)
     XCTAssertFalse(kinds.contains("recording_started"))
     XCTAssertTrue(kinds.contains("session_interrupted"), kinds.joined(separator: ","))
@@ -295,8 +301,10 @@ final class LaunchConfigurationTests: XCTestCase {
       standardError: proof.appendingPathComponent("recovery-second-err.log"))
     child = secondRecovery
     let sawSecond = await Self.waitUntil(seconds: 45) { secondRecovery.isRunning == false }
-    XCTAssertTrue(sawSecond, Self.launchFailure("second recovery did not exit", proof: proof, process: secondRecovery))
-    secondRecovery.waitUntilExit()
+    guard sawSecond else {
+      XCTFail(Self.launchFailure("second recovery did not exit", proof: proof, process: secondRecovery))
+      return
+    }
     child = nil
     XCTAssertEqual(secondRecovery.terminationStatus, 0)
     XCTAssertEqual(try Data(contentsOf: recoveryURL), firstReport)
@@ -319,7 +327,7 @@ final class LaunchConfigurationTests: XCTestCase {
     defer {
       if let child, child.isRunning {
         kill(pid_t(child.processIdentifier), SIGKILL)
-        child.waitUntilExit()
+        Self.reap(child)
       }
     }
 
@@ -356,7 +364,10 @@ final class LaunchConfigurationTests: XCTestCase {
     XCTAssertFalse(kindsBeforeKill.contains("marker_added"))
 
     kill(pid_t(capture.processIdentifier), SIGKILL)
-    capture.waitUntilExit()
+    guard await Self.waitForExit(capture, seconds: 10) else {
+      XCTFail(Self.launchFailure("process did not exit after SIGKILL", proof: proof, process: capture))
+      return
+    }
     child = nil
     XCTAssertEqual(capture.terminationReason, .uncaughtSignal)
     XCTAssertEqual(capture.terminationStatus, SIGKILL)
@@ -375,7 +386,10 @@ final class LaunchConfigurationTests: XCTestCase {
       XCTFail(Self.launchFailure("recording recovery did not report", proof: proof, process: firstRecovery))
       return
     }
-    firstRecovery.waitUntilExit()
+    guard await Self.waitForExit(firstRecovery, seconds: 20) else {
+      XCTFail(Self.launchFailure("recovery did not exit after reporting", proof: proof, process: firstRecovery))
+      return
+    }
     child = nil
     XCTAssertEqual(firstRecovery.terminationStatus, 0)
     XCTAssertFalse(FileManager.default.fileExists(atPath: proof.appendingPathComponent("proof-error").path))
@@ -409,8 +423,10 @@ final class LaunchConfigurationTests: XCTestCase {
       standardError: proof.appendingPathComponent("recovery-second-err.log"))
     child = secondRecovery
     let sawSecond = await Self.waitUntil(seconds: 45) { secondRecovery.isRunning == false }
-    XCTAssertTrue(sawSecond, Self.launchFailure("second recording recovery did not exit", proof: proof, process: secondRecovery))
-    secondRecovery.waitUntilExit()
+    guard sawSecond else {
+      XCTFail(Self.launchFailure("second recording recovery did not exit", proof: proof, process: secondRecovery))
+      return
+    }
     child = nil
     XCTAssertEqual(secondRecovery.terminationStatus, 0)
     XCTAssertEqual(try Data(contentsOf: recoveryURL), firstReport)
@@ -436,7 +452,7 @@ final class LaunchConfigurationTests: XCTestCase {
     defer {
       if let child, child.isRunning {
         kill(pid_t(child.processIdentifier), SIGKILL)
-        child.waitUntilExit()
+        Self.reap(child)
       }
     }
 
@@ -473,7 +489,10 @@ final class LaunchConfigurationTests: XCTestCase {
     XCTAssertTrue(kindsBeforeKill.contains("marker_added"), kindsBeforeKill.joined(separator: ","))
 
     kill(pid_t(capture.processIdentifier), SIGKILL)
-    capture.waitUntilExit()
+    guard await Self.waitForExit(capture, seconds: 10) else {
+      XCTFail(Self.launchFailure("process did not exit after SIGKILL", proof: proof, process: capture))
+      return
+    }
     child = nil
     XCTAssertEqual(capture.terminationReason, .uncaughtSignal)
     XCTAssertEqual(capture.terminationStatus, SIGKILL)
@@ -492,7 +511,10 @@ final class LaunchConfigurationTests: XCTestCase {
       XCTFail(Self.launchFailure("stop recovery did not report", proof: proof, process: firstRecovery))
       return
     }
-    firstRecovery.waitUntilExit()
+    guard await Self.waitForExit(firstRecovery, seconds: 20) else {
+      XCTFail(Self.launchFailure("recovery did not exit after reporting", proof: proof, process: firstRecovery))
+      return
+    }
     child = nil
     XCTAssertEqual(firstRecovery.terminationStatus, 0)
     XCTAssertFalse(FileManager.default.fileExists(atPath: proof.appendingPathComponent("proof-error").path))
@@ -528,8 +550,10 @@ final class LaunchConfigurationTests: XCTestCase {
       standardError: proof.appendingPathComponent("recovery-second-err.log"))
     child = secondRecovery
     let sawSecond = await Self.waitUntil(seconds: 45) { secondRecovery.isRunning == false }
-    XCTAssertTrue(sawSecond, Self.launchFailure("second stop recovery did not exit", proof: proof, process: secondRecovery))
-    secondRecovery.waitUntilExit()
+    guard sawSecond else {
+      XCTFail(Self.launchFailure("second stop recovery did not exit", proof: proof, process: secondRecovery))
+      return
+    }
     child = nil
     XCTAssertEqual(secondRecovery.terminationStatus, 0)
     XCTAssertEqual(try Data(contentsOf: recoveryURL), firstReport)
@@ -556,7 +580,7 @@ final class LaunchConfigurationTests: XCTestCase {
     defer {
       if let child, child.isRunning {
         kill(pid_t(child.processIdentifier), SIGKILL)
-        child.waitUntilExit()
+        Self.reap(child)
       }
     }
 
@@ -595,7 +619,10 @@ final class LaunchConfigurationTests: XCTestCase {
     XCTAssertFalse(kindsBeforeKill.contains("playable_media_recovered"), kindsBeforeKill.joined(separator: ","))
 
     kill(pid_t(capture.processIdentifier), SIGKILL)
-    capture.waitUntilExit()
+    guard await Self.waitForExit(capture, seconds: 10) else {
+      XCTFail(Self.launchFailure("process did not exit after SIGKILL", proof: proof, process: capture))
+      return
+    }
     child = nil
     XCTAssertEqual(capture.terminationReason, .uncaughtSignal)
     XCTAssertEqual(capture.terminationStatus, SIGKILL)
@@ -614,7 +641,10 @@ final class LaunchConfigurationTests: XCTestCase {
       XCTFail(Self.launchFailure("seal recovery did not report", proof: proof, process: firstRecovery))
       return
     }
-    firstRecovery.waitUntilExit()
+    guard await Self.waitForExit(firstRecovery, seconds: 20) else {
+      XCTFail(Self.launchFailure("recovery did not exit after reporting", proof: proof, process: firstRecovery))
+      return
+    }
     child = nil
     XCTAssertEqual(firstRecovery.terminationStatus, 0)
     XCTAssertFalse(FileManager.default.fileExists(atPath: proof.appendingPathComponent("proof-error").path))
@@ -652,8 +682,10 @@ final class LaunchConfigurationTests: XCTestCase {
       standardError: proof.appendingPathComponent("recovery-second-err.log"))
     child = secondRecovery
     let sawSecond = await Self.waitUntil(seconds: 45) { secondRecovery.isRunning == false }
-    XCTAssertTrue(sawSecond, Self.launchFailure("second seal recovery did not exit", proof: proof, process: secondRecovery))
-    secondRecovery.waitUntilExit()
+    guard sawSecond else {
+      XCTFail(Self.launchFailure("second seal recovery did not exit", proof: proof, process: secondRecovery))
+      return
+    }
     child = nil
     XCTAssertEqual(secondRecovery.terminationStatus, 0)
     XCTAssertEqual(try Data(contentsOf: recoveryURL), firstReport)
@@ -679,7 +711,7 @@ final class LaunchConfigurationTests: XCTestCase {
     defer {
       if let child, child.isRunning {
         kill(pid_t(child.processIdentifier), SIGKILL)
-        child.waitUntilExit()
+        Self.reap(child)
       }
     }
 
@@ -721,7 +753,10 @@ final class LaunchConfigurationTests: XCTestCase {
     XCTAssertFalse(kindsBeforeKill.contains("playable_media_recovered"), kindsBeforeKill.joined(separator: ","))
 
     kill(pid_t(capture.processIdentifier), SIGKILL)
-    capture.waitUntilExit()
+    guard await Self.waitForExit(capture, seconds: 10) else {
+      XCTFail(Self.launchFailure("process did not exit after SIGKILL", proof: proof, process: capture))
+      return
+    }
     child = nil
     XCTAssertEqual(capture.terminationReason, .uncaughtSignal)
     XCTAssertEqual(capture.terminationStatus, SIGKILL)
@@ -740,7 +775,10 @@ final class LaunchConfigurationTests: XCTestCase {
       XCTFail(Self.launchFailure("processing recovery did not report", proof: proof, process: firstRecovery))
       return
     }
-    firstRecovery.waitUntilExit()
+    guard await Self.waitForExit(firstRecovery, seconds: 20) else {
+      XCTFail(Self.launchFailure("recovery did not exit after reporting", proof: proof, process: firstRecovery))
+      return
+    }
     child = nil
     XCTAssertEqual(firstRecovery.terminationStatus, 0)
     XCTAssertFalse(FileManager.default.fileExists(atPath: proof.appendingPathComponent("proof-error").path))
@@ -779,8 +817,10 @@ final class LaunchConfigurationTests: XCTestCase {
       standardError: proof.appendingPathComponent("recovery-second-err.log"))
     child = secondRecovery
     let sawSecond = await Self.waitUntil(seconds: 45) { secondRecovery.isRunning == false }
-    XCTAssertTrue(sawSecond, Self.launchFailure("second processing recovery did not exit", proof: proof, process: secondRecovery))
-    secondRecovery.waitUntilExit()
+    guard sawSecond else {
+      XCTFail(Self.launchFailure("second processing recovery did not exit", proof: proof, process: secondRecovery))
+      return
+    }
     child = nil
     XCTAssertEqual(secondRecovery.terminationStatus, 0)
     XCTAssertEqual(try Data(contentsOf: recoveryURL), firstReport)
@@ -813,7 +853,7 @@ final class LaunchConfigurationTests: XCTestCase {
       ],
       environment: [:], normalRoot: normal)
     XCTAssertEqual(synthetic.mode, .synthetic)
-    XCTAssertEqual(synthetic.action, .injected("pause-resume"))
+    XCTAssertEqual(synthetic.action, .injected(.pauseResume))
     synthetic.preferences.removePersistentDomain(forName: suite)
     let live = try LaunchConfiguration.resolve(
       arguments: [
@@ -823,15 +863,15 @@ final class LaunchConfigurationTests: XCTestCase {
         "--verification-preferences", suite,
       ],
       environment: [:], normalRoot: normal)
-    XCTAssertEqual(live.mode, .live)
-    XCTAssertEqual(live.action, .injected("live-pause-resume"))
+    XCTAssertEqual(live.mode, .synthetic)
+    XCTAssertEqual(live.action, .injected(.livePauseResume))
     live.preferences.removePersistentDomain(forName: suite)
 
     var child: Process?
     defer {
       if let child, child.isRunning {
         kill(pid_t(child.processIdentifier), SIGKILL)
-        child.waitUntilExit()
+        Self.reap(child)
       }
     }
     let capture = try Self.launchVerificationApp(
@@ -850,8 +890,10 @@ final class LaunchConfigurationTests: XCTestCase {
       return
     }
     let exited = await Self.waitUntil(seconds: 20) { capture.isRunning == false }
-    XCTAssertTrue(exited, Self.launchFailure("pause-resume launch did not exit", proof: proof, process: capture))
-    capture.waitUntilExit()
+    guard exited else {
+      XCTFail(Self.launchFailure("pause-resume launch did not exit", proof: proof, process: capture))
+      return
+    }
     child = nil
     XCTAssertEqual(capture.terminationStatus, 0)
     XCTAssertFalse(FileManager.default.fileExists(atPath: proof.appendingPathComponent("proof-error").path))
@@ -870,9 +912,9 @@ final class LaunchConfigurationTests: XCTestCase {
     let sessionId = try XCTUnwrap(outcome?["session_id"] as? String)
     let preparation = try NativeRecordingPreparation.open(managedRoot: media.path)
     let detail = try preparation.recorderDetail(sessionId: sessionId)
-    XCTAssertEqual(detail.lifecycle, "ready_for_review")
+    XCTAssertEqual(detail.lifecycle, .readyForReview)
     for kind in ["capture_paused", "capture_resumed", "marker_added"] {
-      XCTAssertTrue(detail.events.contains { $0.kind == kind }, kind)
+      XCTAssertTrue(detail.events.contains { $0.kind.description == kind }, kind)
     }
     let journal = media.appendingPathComponent("Sessions/\(sessionId)/recovery.jsonl")
     let kinds = try Self.journalKinds(journal)
@@ -883,7 +925,7 @@ final class LaunchConfigurationTests: XCTestCase {
     XCTAssertEqual(kinds.filter { $0 == "segment_sealed" }.count, 4)
     XCTAssertFalse(kinds.contains("playable_media_recovered"), kinds.joined(separator: ","))
     let pausedAt = try XCTUnwrap(
-      detail.events.last { $0.kind == "capture_paused" }?.sessionNanoseconds)
+      detail.events.last { $0.kind == .capturePaused }?.sessionNanoseconds)
     let plan = try preparation.playbackTimeline(sessionId: sessionId)
     XCTAssertEqual(plan.count, 4)
     let tracks = Set(plan.map(\.trackId))
@@ -924,13 +966,13 @@ final class LaunchConfigurationTests: XCTestCase {
       ],
       environment: [:], normalRoot: normal)
     XCTAssertEqual(resolved.mode, .synthetic)
-    XCTAssertEqual(resolved.action, .injected("storage-warning"))
+    XCTAssertEqual(resolved.action, .injected(.storageWarning))
 
     var child: Process?
     defer {
       if let child, child.isRunning {
         kill(pid_t(child.processIdentifier), SIGKILL)
-        child.waitUntilExit()
+        Self.reap(child)
       }
     }
     let capture = try Self.launchVerificationApp(
@@ -950,8 +992,10 @@ final class LaunchConfigurationTests: XCTestCase {
       return
     }
     let exited = await Self.waitUntil(seconds: 20) { capture.isRunning == false }
-    XCTAssertTrue(exited, Self.launchFailure("storage-warning launch did not exit", proof: proof, process: capture))
-    capture.waitUntilExit()
+    guard exited else {
+      XCTFail(Self.launchFailure("storage-warning launch did not exit", proof: proof, process: capture))
+      return
+    }
     child = nil
     XCTAssertEqual(capture.terminationStatus, 0)
     XCTAssertFalse(FileManager.default.fileExists(atPath: proof.appendingPathComponent("proof-error").path))
@@ -979,13 +1023,13 @@ final class LaunchConfigurationTests: XCTestCase {
 
     let preparation = try NativeRecordingPreparation.open(managedRoot: media.path)
     let detail = try preparation.recorderDetail(sessionId: sessionId)
-    XCTAssertEqual(detail.lifecycle, "ready_for_review")
-    XCTAssertEqual(detail.storageLevel, "warning")
+    XCTAssertEqual(detail.lifecycle, .readyForReview)
+    XCTAssertEqual(detail.storageLevel, .warning)
     XCTAssertEqual(
-      detail.events.filter { $0.kind == "storage_observed" }.map(\.label),
+      detail.events.filter { $0.kind == .storageObserved }.map(\.label),
       ["normal", "warning"])
     XCTAssertEqual(
-      detail.events.last { $0.kind == "marker_added" }?.label,
+      detail.events.last { $0.kind == .markerAdded }?.label,
       "Injected failure boundary")
     let plan = try preparation.playbackTimeline(sessionId: sessionId)
     let tracks = Set(plan.map(\.trackId))
@@ -1052,13 +1096,13 @@ final class LaunchConfigurationTests: XCTestCase {
       ],
       environment: [:], normalRoot: normal)
     XCTAssertEqual(resolved.mode, .synthetic)
-    XCTAssertEqual(resolved.action, .injected("storage-critical"))
+    XCTAssertEqual(resolved.action, .injected(.storageCritical))
 
     var child: Process?
     defer {
       if let child, child.isRunning {
         kill(pid_t(child.processIdentifier), SIGKILL)
-        child.waitUntilExit()
+        Self.reap(child)
       }
     }
     let capture = try Self.launchVerificationApp(
@@ -1078,8 +1122,10 @@ final class LaunchConfigurationTests: XCTestCase {
       return
     }
     let exited = await Self.waitUntil(seconds: 20) { capture.isRunning == false }
-    XCTAssertTrue(exited, Self.launchFailure("storage-critical launch did not exit", proof: proof, process: capture))
-    capture.waitUntilExit()
+    guard exited else {
+      XCTFail(Self.launchFailure("storage-critical launch did not exit", proof: proof, process: capture))
+      return
+    }
     child = nil
     XCTAssertEqual(capture.terminationStatus, 0)
     XCTAssertFalse(FileManager.default.fileExists(atPath: proof.appendingPathComponent("proof-error").path))
@@ -1111,13 +1157,13 @@ final class LaunchConfigurationTests: XCTestCase {
 
     let preparation = try NativeRecordingPreparation.open(managedRoot: media.path)
     let detail = try preparation.recorderDetail(sessionId: sessionId)
-    XCTAssertEqual(detail.lifecycle, "ready_for_review")
-    XCTAssertEqual(detail.storageLevel, "critical")
+    XCTAssertEqual(detail.lifecycle, .readyForReview)
+    XCTAssertEqual(detail.storageLevel, .critical)
     XCTAssertEqual(
-      detail.events.filter { $0.kind == "storage_observed" }.map(\.label),
+      detail.events.filter { $0.kind == .storageObserved }.map(\.label),
       ["normal", "critical"])
     XCTAssertEqual(
-      detail.events.last { $0.kind == "marker_added" }?.label,
+      detail.events.last { $0.kind == .markerAdded }?.label,
       "Injected failure boundary")
     let plan = try preparation.playbackTimeline(sessionId: sessionId)
     let tracks = Set(plan.map(\.trackId))
@@ -1156,13 +1202,13 @@ final class LaunchConfigurationTests: XCTestCase {
       ],
       environment: [:], normalRoot: normal)
     XCTAssertEqual(resolved.mode, .synthetic)
-    XCTAssertEqual(resolved.action, .injected("storage-exhaustion"))
+    XCTAssertEqual(resolved.action, .injected(.storageExhaustion))
 
     var child: Process?
     defer {
       if let child, child.isRunning {
         kill(pid_t(child.processIdentifier), SIGKILL)
-        child.waitUntilExit()
+        Self.reap(child)
       }
     }
     let capture = try Self.launchVerificationApp(
@@ -1197,8 +1243,10 @@ final class LaunchConfigurationTests: XCTestCase {
       return
     }
     let exited = await Self.waitUntil(seconds: 20) { capture.isRunning == false }
-    XCTAssertTrue(exited, Self.launchFailure("storage-exhaustion launch did not exit", proof: proof, process: capture))
-    capture.waitUntilExit()
+    guard exited else {
+      XCTFail(Self.launchFailure("storage-exhaustion launch did not exit", proof: proof, process: capture))
+      return
+    }
     child = nil
     XCTAssertEqual(capture.terminationStatus, 0)
     XCTAssertFalse(FileManager.default.fileExists(atPath: proof.appendingPathComponent("proof-error").path))
@@ -1243,11 +1291,11 @@ final class LaunchConfigurationTests: XCTestCase {
     })
     let preparation = try NativeRecordingPreparation.open(managedRoot: media.path)
     let detail = try preparation.recorderDetail(sessionId: sessionId)
-    XCTAssertEqual(detail.storageLevel, "critical")
+    XCTAssertEqual(detail.storageLevel, .critical)
     XCTAssertEqual(
-      detail.events.filter { $0.kind == "storage_observed" }.map(\.label).last, "critical")
+      detail.events.filter { $0.kind == .storageObserved }.map(\.label).last, "critical")
     XCTAssertEqual(
-      detail.events.last { $0.kind == "marker_added" }?.label, "Injected failure boundary")
+      detail.events.last { $0.kind == .markerAdded }?.label, "Injected failure boundary")
     let plan = try preparation.playbackTimeline(sessionId: sessionId)
     XCTAssertEqual(Set(plan.map(\.trackId)).count, 2)
     XCTAssertTrue(plan.allSatisfy { $0.sampleCount >= 48_000 })
@@ -1266,7 +1314,10 @@ final class LaunchConfigurationTests: XCTestCase {
       XCTFail(Self.launchFailure("exhaustion recovery did not report", proof: proof, process: firstRecovery))
       return
     }
-    firstRecovery.waitUntilExit()
+    guard await Self.waitForExit(firstRecovery, seconds: 20) else {
+      XCTFail(Self.launchFailure("recovery did not exit after reporting", proof: proof, process: firstRecovery))
+      return
+    }
     child = nil
     XCTAssertEqual(firstRecovery.terminationStatus, 0)
     XCTAssertFalse(FileManager.default.fileExists(atPath: proof.appendingPathComponent("proof-error").path))
@@ -1291,8 +1342,10 @@ final class LaunchConfigurationTests: XCTestCase {
       standardError: proof.appendingPathComponent("recovery-second-err.log"))
     child = secondRecovery
     let sawSecond = await Self.waitUntil(seconds: 60) { secondRecovery.isRunning == false }
-    XCTAssertTrue(sawSecond, Self.launchFailure("second exhaustion recovery did not exit", proof: proof, process: secondRecovery))
-    secondRecovery.waitUntilExit()
+    guard sawSecond else {
+      XCTFail(Self.launchFailure("second exhaustion recovery did not exit", proof: proof, process: secondRecovery))
+      return
+    }
     child = nil
     XCTAssertEqual(secondRecovery.terminationStatus, 0)
     XCTAssertEqual(try Data(contentsOf: recoveryURL), firstReport)
@@ -1325,13 +1378,13 @@ final class LaunchConfigurationTests: XCTestCase {
       ],
       environment: [:], normalRoot: normal)
     XCTAssertEqual(resolved.mode, .synthetic)
-    XCTAssertEqual(resolved.action, .injected("microphone-loss"))
+    XCTAssertEqual(resolved.action, .injected(.microphoneLoss))
 
     var child: Process?
     defer {
       if let child, child.isRunning {
         kill(pid_t(child.processIdentifier), SIGKILL)
-        child.waitUntilExit()
+        Self.reap(child)
       }
     }
     let capture = try Self.launchVerificationApp(
@@ -1351,8 +1404,10 @@ final class LaunchConfigurationTests: XCTestCase {
       return
     }
     let exited = await Self.waitUntil(seconds: 20) { capture.isRunning == false }
-    XCTAssertTrue(exited, Self.launchFailure("microphone-loss launch did not exit", proof: proof, process: capture))
-    capture.waitUntilExit()
+    guard exited else {
+      XCTFail(Self.launchFailure("microphone-loss launch did not exit", proof: proof, process: capture))
+      return
+    }
     child = nil
     XCTAssertEqual(capture.terminationStatus, 0)
     XCTAssertFalse(FileManager.default.fileExists(atPath: proof.appendingPathComponent("proof-error").path))
@@ -1380,10 +1435,10 @@ final class LaunchConfigurationTests: XCTestCase {
 
     let preparation = try NativeRecordingPreparation.open(managedRoot: media.path)
     let detail = try preparation.recorderDetail(sessionId: sessionId)
-    XCTAssertEqual(detail.lifecycle, "ready_for_review")
-    XCTAssertTrue(detail.events.contains { $0.kind == "source_failed" })
+    XCTAssertEqual(detail.lifecycle, .readyForReview)
+    XCTAssertTrue(detail.events.contains { $0.kind == .sourceFailed })
     XCTAssertEqual(
-      detail.events.last { $0.kind == "marker_added" }?.label, "Injected failure boundary")
+      detail.events.last { $0.kind == .markerAdded }?.label, "Injected failure boundary")
     let plan = try preparation.playbackTimeline(sessionId: sessionId)
     var totals: [String: UInt64] = [:]
     for segment in plan {
@@ -1421,13 +1476,13 @@ final class LaunchConfigurationTests: XCTestCase {
       ],
       environment: [:], normalRoot: normal)
     XCTAssertEqual(resolved.mode, .synthetic)
-    XCTAssertEqual(resolved.action, .injected("system-loss"))
+    XCTAssertEqual(resolved.action, .injected(.systemLoss))
 
     var child: Process?
     defer {
       if let child, child.isRunning {
         kill(pid_t(child.processIdentifier), SIGKILL)
-        child.waitUntilExit()
+        Self.reap(child)
       }
     }
     let capture = try Self.launchVerificationApp(
@@ -1447,8 +1502,10 @@ final class LaunchConfigurationTests: XCTestCase {
       return
     }
     let exited = await Self.waitUntil(seconds: 20) { capture.isRunning == false }
-    XCTAssertTrue(exited, Self.launchFailure("system-loss launch did not exit", proof: proof, process: capture))
-    capture.waitUntilExit()
+    guard exited else {
+      XCTFail(Self.launchFailure("system-loss launch did not exit", proof: proof, process: capture))
+      return
+    }
     child = nil
     XCTAssertEqual(capture.terminationStatus, 0)
     XCTAssertFalse(FileManager.default.fileExists(atPath: proof.appendingPathComponent("proof-error").path))
@@ -1476,11 +1533,11 @@ final class LaunchConfigurationTests: XCTestCase {
 
     let preparation = try NativeRecordingPreparation.open(managedRoot: media.path)
     let detail = try preparation.recorderDetail(sessionId: sessionId)
-    XCTAssertEqual(detail.lifecycle, "ready_for_review")
+    XCTAssertEqual(detail.lifecycle, .readyForReview)
     XCTAssertEqual(
-      detail.events.last { $0.kind == "source_failed" }?.label, "Mac system audio")
+      detail.events.last { $0.kind == .sourceFailed }?.label, "Mac system audio")
     XCTAssertEqual(
-      detail.events.last { $0.kind == "marker_added" }?.label, "Injected failure boundary")
+      detail.events.last { $0.kind == .markerAdded }?.label, "Injected failure boundary")
     let plan = try preparation.playbackTimeline(sessionId: sessionId)
     var totals: [String: UInt64] = [:]
     for segment in plan {
@@ -1518,13 +1575,13 @@ final class LaunchConfigurationTests: XCTestCase {
       ],
       environment: [:], normalRoot: normal)
     XCTAssertEqual(resolved.mode, .synthetic)
-    XCTAssertEqual(resolved.action, .injected("application-loss"))
+    XCTAssertEqual(resolved.action, .injected(.applicationLoss))
 
     var child: Process?
     defer {
       if let child, child.isRunning {
         kill(pid_t(child.processIdentifier), SIGKILL)
-        child.waitUntilExit()
+        Self.reap(child)
       }
     }
     let capture = try Self.launchVerificationApp(
@@ -1544,8 +1601,10 @@ final class LaunchConfigurationTests: XCTestCase {
       return
     }
     let exited = await Self.waitUntil(seconds: 20) { capture.isRunning == false }
-    XCTAssertTrue(exited, Self.launchFailure("application-loss launch did not exit", proof: proof, process: capture))
-    capture.waitUntilExit()
+    guard exited else {
+      XCTFail(Self.launchFailure("application-loss launch did not exit", proof: proof, process: capture))
+      return
+    }
     child = nil
     XCTAssertEqual(capture.terminationStatus, 0)
     XCTAssertFalse(FileManager.default.fileExists(atPath: proof.appendingPathComponent("proof-error").path))
@@ -1573,11 +1632,11 @@ final class LaunchConfigurationTests: XCTestCase {
 
     let preparation = try NativeRecordingPreparation.open(managedRoot: media.path)
     let detail = try preparation.recorderDetail(sessionId: sessionId)
-    XCTAssertEqual(detail.lifecycle, "ready_for_review")
+    XCTAssertEqual(detail.lifecycle, .readyForReview)
     XCTAssertEqual(
-      detail.events.last { $0.kind == "source_failed" }?.label, "Injected application")
+      detail.events.last { $0.kind == .sourceFailed }?.label, "Injected application")
     XCTAssertEqual(
-      detail.events.last { $0.kind == "marker_added" }?.label, "Injected failure boundary")
+      detail.events.last { $0.kind == .markerAdded }?.label, "Injected failure boundary")
     let plan = try preparation.playbackTimeline(sessionId: sessionId)
     var totals: [String: UInt64] = [:]
     for segment in plan {
@@ -1612,13 +1671,13 @@ final class LaunchConfigurationTests: XCTestCase {
       ],
       environment: [:], normalRoot: normal)
     XCTAssertEqual(resolved.mode, .synthetic)
-    XCTAssertEqual(resolved.action, .injected("selected-app-exit"))
+    XCTAssertEqual(resolved.action, .injected(.selectedAppExit))
 
     var child: Process?
     defer {
       if let child, child.isRunning {
         kill(pid_t(child.processIdentifier), SIGKILL)
-        child.waitUntilExit()
+        Self.reap(child)
       }
     }
     let capture = try Self.launchVerificationApp(
@@ -1638,8 +1697,10 @@ final class LaunchConfigurationTests: XCTestCase {
       return
     }
     let exited = await Self.waitUntil(seconds: 20) { capture.isRunning == false }
-    XCTAssertTrue(exited, Self.launchFailure("selected-app-exit launch did not exit", proof: proof, process: capture))
-    capture.waitUntilExit()
+    guard exited else {
+      XCTFail(Self.launchFailure("selected-app-exit launch did not exit", proof: proof, process: capture))
+      return
+    }
     child = nil
     XCTAssertEqual(capture.terminationStatus, 0)
     XCTAssertFalse(FileManager.default.fileExists(atPath: proof.appendingPathComponent("proof-error").path))
@@ -1667,11 +1728,11 @@ final class LaunchConfigurationTests: XCTestCase {
 
     let preparation = try NativeRecordingPreparation.open(managedRoot: media.path)
     let detail = try preparation.recorderDetail(sessionId: sessionId)
-    XCTAssertEqual(detail.lifecycle, "ready_for_review")
+    XCTAssertEqual(detail.lifecycle, .readyForReview)
     XCTAssertEqual(
-      detail.events.last { $0.kind == "source_failed" }?.label, "Injected application")
+      detail.events.last { $0.kind == .sourceFailed }?.label, "Injected application")
     XCTAssertEqual(
-      detail.events.last { $0.kind == "marker_added" }?.label, "Injected failure boundary")
+      detail.events.last { $0.kind == .markerAdded }?.label, "Injected failure boundary")
     let plan = try preparation.playbackTimeline(sessionId: sessionId)
     var totals: [String: UInt64] = [:]
     for segment in plan {
@@ -1706,13 +1767,13 @@ final class LaunchConfigurationTests: XCTestCase {
       ],
       environment: [:], normalRoot: normal)
     XCTAssertEqual(resolved.mode, .synthetic)
-    XCTAssertEqual(resolved.action, .injected("sleep-wake"))
+    XCTAssertEqual(resolved.action, .injected(.sleepWake))
 
     var child: Process?
     defer {
       if let child, child.isRunning {
         kill(pid_t(child.processIdentifier), SIGKILL)
-        child.waitUntilExit()
+        Self.reap(child)
       }
     }
     let capture = try Self.launchVerificationApp(
@@ -1732,8 +1793,10 @@ final class LaunchConfigurationTests: XCTestCase {
       return
     }
     let exited = await Self.waitUntil(seconds: 20) { capture.isRunning == false }
-    XCTAssertTrue(exited, Self.launchFailure("sleep-wake launch did not exit", proof: proof, process: capture))
-    capture.waitUntilExit()
+    guard exited else {
+      XCTFail(Self.launchFailure("sleep-wake launch did not exit", proof: proof, process: capture))
+      return
+    }
     child = nil
     XCTAssertEqual(capture.terminationStatus, 0)
     XCTAssertFalse(FileManager.default.fileExists(atPath: proof.appendingPathComponent("proof-error").path))
@@ -1764,8 +1827,8 @@ final class LaunchConfigurationTests: XCTestCase {
 
     let preparation = try NativeRecordingPreparation.open(managedRoot: media.path)
     let detail = try preparation.recorderDetail(sessionId: sessionId)
-    XCTAssertEqual(detail.lifecycle, "ready_for_review")
-    let eventKinds = detail.events.map(\.kind)
+    XCTAssertEqual(detail.lifecycle, .readyForReview)
+    let eventKinds = detail.events.map(\.kind.description)
     XCTAssertLessThan(
       try XCTUnwrap(eventKinds.firstIndex(of: "system_sleep_observed")),
       try XCTUnwrap(eventKinds.firstIndex(of: "capture_paused")))
@@ -1773,7 +1836,7 @@ final class LaunchConfigurationTests: XCTestCase {
       try XCTUnwrap(eventKinds.firstIndex(of: "capture_paused")),
       try XCTUnwrap(eventKinds.firstIndex(of: "system_wake_observed")))
     XCTAssertEqual(
-      detail.events.last { $0.kind == "marker_added" }?.label, "Injected failure boundary")
+      detail.events.last { $0.kind == .markerAdded }?.label, "Injected failure boundary")
     XCTAssertFalse(eventKinds.contains("source_failed"))
     let plan = try preparation.playbackTimeline(sessionId: sessionId)
     var totals: [String: UInt64] = [:]
@@ -1848,17 +1911,43 @@ final class LaunchConfigurationTests: XCTestCase {
     return predicate()
   }
 
+  /// Polls the child's exit with a deadline. `waitUntilExit` runs the calling
+  /// thread's run loop until a termination message arrives, and on a Swift
+  /// concurrency thread that message can never come, so it blocks forever.
+  private static func waitForExit(_ process: Process, seconds: Double) async -> Bool {
+    await waitUntil(seconds: seconds) { process.isRunning == false }
+  }
+
+  /// Cleanup after SIGKILL, bounded for the same reason.
+  private static func reap(_ process: Process) {
+    let deadline = Date().addingTimeInterval(10)
+    while process.isRunning, Date() < deadline { usleep(10_000) }
+  }
+
   private static func processIsStopped(_ process: Process) -> Bool {
-    let probe = Process()
-    probe.executableURL = URL(fileURLWithPath: "/bin/ps")
-    probe.arguments = ["-p", "\(process.processIdentifier)", "-o", "state="]
-    let pipe = Pipe()
-    probe.standardOutput = pipe
-    probe.standardError = FileHandle.nullDevice
-    guard (try? probe.run()) != nil else { return false }
-    probe.waitUntilExit()
-    let text = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-    return probe.terminationStatus == 0 && text.contains("T")
+    processRunState(process) == Int32(SSTOP)
+  }
+
+  /// The child's kernel run state (`p_stat`, what `ps` prints as T for
+  /// stopped), read in this process. `/bin/ps` is setuid, and a test host
+  /// under a Seatbelt profile cannot execute it.
+  private static func processRunState(_ process: Process) -> Int32? {
+    var info = kinfo_proc()
+    var size = MemoryLayout<kinfo_proc>.stride
+    var name: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, process.processIdentifier]
+    guard sysctl(&name, u_int(name.count), &info, &size, nil, 0) == 0, size > 0 else {
+      return nil
+    }
+    return Int32(info.kp_proc.p_stat)
+  }
+
+  /// `terminationStatus` raises while the task runs, so a running child is
+  /// described by its kernel run state instead.
+  private static func exitDescription(_ process: Process) -> String {
+    guard !process.isRunning else {
+      return "running p_stat=\(processRunState(process).map(String.init) ?? "unreadable")"
+    }
+    return "exited reason=\(process.terminationReason.rawValue) status=\(process.terminationStatus)"
   }
 
   private static func journalKinds(_ url: URL) throws -> [String] {
@@ -1891,7 +1980,7 @@ final class LaunchConfigurationTests: XCTestCase {
     let proofError = (try? String(contentsOf: errorURL, encoding: .utf8)) ?? "none"
     let appError = (try? String(contentsOf: proof.appendingPathComponent("app-err.log"), encoding: .utf8)) ?? ""
     let recoveryError = (try? String(contentsOf: proof.appendingPathComponent("recovery-err.log"), encoding: .utf8)) ?? ""
-    return "\(reason) running=\(process.isRunning) status=\(process.terminationStatus) proof_error=\(proofError) app_err=\(appError) recovery_err=\(recoveryError)"
+    return "\(reason) \(exitDescription(process)) proof_error=\(proofError) app_err=\(appError) recovery_err=\(recoveryError)"
   }
 }
 

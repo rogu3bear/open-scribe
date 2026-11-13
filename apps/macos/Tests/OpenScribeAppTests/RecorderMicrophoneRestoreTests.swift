@@ -188,7 +188,7 @@ final class RecorderMicrophoneRestoreTests: XCTestCase {
         let events = try harness.preparation.recorderDetail(
           sessionId: original.writer.authorization.sessionId
         ).events
-        XCTAssertFalse(events.contains { $0.kind == "microphone_restore_requested" })
+        XCTAssertFalse(events.contains { $0.kind == .microphoneRestoreRequested })
         if paused {
           XCTAssertFalse(harness.controller.errorMessage?.contains("is still recording") == true)
         }
@@ -386,7 +386,7 @@ final class RecorderMicrophoneRestoreTests: XCTestCase {
       let end = pair.0.nativeStartNanoseconds + Int64(pair.0.sampleCount * 1_000_000_000 / 48_000)
       XCTAssertGreaterThan(pair.1.nativeStartNanoseconds, end, "saved gaps survive reopen")
     }
-    XCTAssertEqual(try reopened.recorderDetail(sessionId: sessionId).lifecycle, "ready_for_review")
+    XCTAssertEqual(try reopened.recorderDetail(sessionId: sessionId).lifecycle, .readyForReview)
   }
 
   private func makeHarness(_ deadlines: ManualRestoreDeadlines) throws -> PauseHarness {

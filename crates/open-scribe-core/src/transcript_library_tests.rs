@@ -19,8 +19,8 @@ use sha2::{Digest, Sha256};
 use tempfile::TempDir;
 
 use crate::{
-    ClaimEvidenceSide, NamedSpeakerTurn, ResolutionState, SpeakerDiarizationTrackInput,
-    SpeakerLabelOrigin, StoreError, TranscriptLibrary, TranscriptSpeakerAssignment,
+    ClaimEvidenceSide, NamedSpeakerTurn, ResolutionState, SpeakerLabelOrigin, TranscriptLibrary,
+    TranscriptSpeakerAssignment,
 };
 
 const SECOND: i64 = 1_000_000_000;
@@ -198,10 +198,11 @@ fn human_adjudication_stays_effective_through_the_library_and_cancelled_deletion
         .correct_segment(session, &prepared.revision, 1, Some("Bravo two"))
         .unwrap();
     let cited = library
+        .store()
         .cite_transcript_segment(session, &prepared.revision, 0)
         .unwrap();
     let claim = agreed(session, cited.clone());
-    library.insert_derived_claim(&claim).unwrap();
+    library.store_mut().insert_derived_claim(&claim).unwrap();
 
     let mut corrected = claim
         .with_adjudication(
@@ -211,14 +212,18 @@ fn human_adjudication_stays_effective_through_the_library_and_cancelled_deletion
         )
         .unwrap();
     corrected.text = "The team deferred the remote recorder.".into();
-    library.insert_derived_claim(&corrected).unwrap();
+    library
+        .store_mut()
+        .insert_derived_claim(&corrected)
+        .unwrap();
 
     let mut rerun = claim;
     rerun.revision_id = "revision-c".into();
     rerun.text = "The team agreed to upload every recording.".into();
-    library.insert_derived_claim(&rerun).unwrap();
+    library.store_mut().insert_derived_claim(&rerun).unwrap();
 
     let navigation = library
+        .store()
         .navigate_derived_claim(session, "claim-decision")
         .unwrap();
     assert_eq!(navigation.revision_id, "revision-b");
@@ -233,13 +238,16 @@ fn human_adjudication_stays_effective_through_the_library_and_cancelled_deletion
     assert_eq!(target.start_ns, cited.start_ns);
     assert_eq!(target.end_ns, cited.end_ns);
 
-    let inventory = library.begin_deletion(session).unwrap();
+    let inventory = library.store_mut().begin_session_deletion(session).unwrap();
     assert!(inventory.media_files > 0);
     assert!(inventory.transcript_revisions > 0);
     assert!(inventory.human_corrections > 0);
-    library.abandon_deletion(session).unwrap();
+    library
+        .store_mut()
+        .abandon_session_deletion(session)
+        .unwrap();
 
-    let document = library.document(session).unwrap();
+    let document = library.document(session).unwrap().segments;
     let alpha = document
         .iter()
         .find(|segment| segment.sequence == 0)
@@ -255,6 +263,7 @@ fn human_adjudication_stays_effective_through_the_library_and_cancelled_deletion
     assert_eq!(bravo.effective_text, "Bravo two");
     assert!(bravo.corrected);
     let after_cancel = library
+        .store()
         .navigate_derived_claim(session, "claim-decision")
         .unwrap();
     assert_eq!(after_cancel.revision_id, "revision-b");
@@ -264,7 +273,7 @@ fn human_adjudication_stays_effective_through_the_library_and_cancelled_deletion
 
     let reopened = SessionStore::open(&prepared.root).unwrap();
     let saved = reopened.session_inventory(session).unwrap();
-    assert_eq!(saved.lifecycle, "ready_for_review");
+    assert_eq!(saved.lifecycle.as_str(), "ready_for_review");
     assert_eq!(saved.media[0].digest_sha256, prepared.digest_sha256);
 }
 
@@ -273,7 +282,10 @@ fn imported_review_keeps_unknown_speakers_when_diarization_is_uncalibrated() {
     let prepared = prepared_transcript();
     let mut library = TranscriptLibrary::open(&prepared.root).unwrap();
     let session = &prepared.session;
-    let first = library.prepare_speaker_diarization(session).unwrap();
+    let first = library
+        .store_mut()
+        .prepare_speaker_diarization(session)
+        .unwrap();
     assert!(first.inserted);
     assert_eq!(first.algorithm_id, open_scribe_diarize::ALGORITHM_ID);
     assert_eq!(
@@ -283,14 +295,15 @@ fn imported_review_keeps_unknown_speakers_when_diarization_is_uncalibrated() {
     assert_eq!(first.reason, open_scribe_diarize::UNAVAILABLE_REASON);
     assert_eq!(first.tracks.len(), 1);
     let track = &first.tracks[0];
-    assert_eq!(track.source_kind, "imported_audio");
-    assert_eq!(track.disposition, "unresolved");
+    assert_eq!(track.source_kind.as_str(), "imported_audio");
+    assert_eq!(track.disposition.as_str(), "unresolved");
     assert_eq!(track.label, "Speaker");
-    assert_eq!(track.label_origin, "source_default");
+    assert_eq!(track.label_origin.as_str(), "source_default");
     assert!(!track.label.contains("Speaker "));
 
     let named = library
-        .assign_speaker(
+        .store_mut()
+        .assign_transcript_speaker(
             session,
             &prepared.revision,
             0,
@@ -298,12 +311,15 @@ fn imported_review_keeps_unknown_speakers_when_diarization_is_uncalibrated() {
         )
         .unwrap();
     assert!(named.is_some());
-    let second = library.prepare_speaker_diarization(session).unwrap();
+    let second = library
+        .store_mut()
+        .prepare_speaker_diarization(session)
+        .unwrap();
     assert!(!second.inserted);
     assert_eq!(second.run_id, first.run_id);
     assert_eq!(second.tracks, first.tracks);
 
-    let document = library.document(session).unwrap();
+    let document = library.document(session).unwrap().segments;
     let alpha = document
         .iter()
         .find(|segment| segment.sequence == 0)
@@ -323,31 +339,17 @@ fn imported_review_keeps_unknown_speakers_when_diarization_is_uncalibrated() {
     assert_eq!(bravo.speaker_origin, SpeakerLabelOrigin::SourceDefault);
     assert_eq!(file_sha256(&prepared.media), prepared.digest_sha256);
 
+    // The store takes no clustering inputs, so no caller can record a
+    // calibrated split or a disposition the source kind does not have.
     let mut store = SessionStore::open(&prepared.root).unwrap();
-    let uncalibrated = store.record_speaker_diarization(
-        session,
-        open_scribe_diarize::ALGORITHM_ID,
-        "clustered",
-        open_scribe_diarize::UNAVAILABLE_REASON,
-        &[SpeakerDiarizationTrackInput {
-            track_id: track.track_id.clone(),
-            disposition: "unresolved".into(),
-        }],
-    );
-    assert!(matches!(uncalibrated, Err(StoreError::InvalidRequest(_))));
-    let mismatched = store.record_speaker_diarization(
-        session,
-        open_scribe_diarize::ALGORITHM_ID,
-        open_scribe_diarize::CLUSTERING_UNAVAILABLE,
-        open_scribe_diarize::UNAVAILABLE_REASON,
-        &[SpeakerDiarizationTrackInput {
-            track_id: track.track_id.clone(),
-            disposition: "topology".into(),
-        }],
-    );
-    assert!(matches!(mismatched, Err(StoreError::InvalidRequest(_))));
+    let repeated = store.prepare_speaker_diarization(session).unwrap();
+    assert!(!repeated.inserted);
+    assert_eq!(repeated.run_id, first.run_id);
     drop(store);
-    let third = library.prepare_speaker_diarization(session).unwrap();
+    let third = library
+        .store_mut()
+        .prepare_speaker_diarization(session)
+        .unwrap();
     assert!(!third.inserted);
     assert_eq!(third.run_id, first.run_id);
     assert_eq!(file_sha256(&prepared.media), prepared.digest_sha256);
@@ -358,12 +360,16 @@ fn library_merge_and_split_keep_passage_history_without_clustering() {
     let prepared = prepared_transcript();
     let mut library = TranscriptLibrary::open(&prepared.root).unwrap();
     let session = &prepared.session;
-    let before = library.prepare_speaker_diarization(session).unwrap();
+    let before = library
+        .store_mut()
+        .prepare_speaker_diarization(session)
+        .unwrap();
     assert_eq!(before.algorithm_id, "topology-before-clustering-v1");
     assert_eq!(before.clustering_state, "unavailable");
     assert_eq!(before.reason, "no calibrated diarization model");
     let dana = library
-        .assign_speaker(
+        .store_mut()
+        .assign_transcript_speaker(
             session,
             &prepared.revision,
             0,
@@ -372,7 +378,8 @@ fn library_merge_and_split_keep_passage_history_without_clustering() {
         .unwrap()
         .unwrap();
     let morgan = library
-        .assign_speaker(
+        .store_mut()
+        .assign_transcript_speaker(
             session,
             &prepared.revision,
             1,
@@ -382,23 +389,25 @@ fn library_merge_and_split_keep_passage_history_without_clustering() {
         .unwrap();
     assert_eq!(
         library
+            .store_mut()
             .merge_named_speakers(session, &dana, &morgan)
             .unwrap(),
         1
     );
     assert_eq!(
         library
+            .store_mut()
             .merge_named_speakers(session, &dana, &morgan)
             .unwrap(),
         0
     );
-    let merged = library.document(session).unwrap();
+    let merged = library.document(session).unwrap().segments;
     assert_eq!(merged[0].verbatim_text, "alpha");
     assert_eq!(merged[1].verbatim_text, "bravo");
     assert_eq!(merged[0].effective_text, "alpha");
     assert_eq!(merged[1].effective_text, "bravo");
     assert!(merged.iter().all(|segment| segment.speaker_label == "Dana"));
-    let people = library.named_speakers(session).unwrap();
+    let people = library.store().named_transcript_speakers(session).unwrap();
     assert_eq!(
         people
             .iter()
@@ -406,7 +415,7 @@ fn library_merge_and_split_keep_passage_history_without_clustering() {
             .collect::<Vec<_>>(),
         [("Dana", 2), ("Morgan", 0)]
     );
-    let history = library.named_speaker_turn_history(session).unwrap();
+    let history = library.store().named_speaker_turn_history(session).unwrap();
     let second = history.iter().find(|turn| turn.sequence == 1).unwrap();
     assert_eq!(second.source_default_label, "Speaker");
     assert_eq!(
@@ -418,6 +427,7 @@ fn library_merge_and_split_keep_passage_history_without_clustering() {
         ["Morgan", "Dana"]
     );
     let mina = library
+        .store_mut()
         .split_named_speaker(
             session,
             &dana,
@@ -428,14 +438,14 @@ fn library_merge_and_split_keep_passage_history_without_clustering() {
             "Mina",
         )
         .unwrap();
-    let split = library.document(session).unwrap();
+    let split = library.document(session).unwrap().segments;
     assert_eq!(split[0].speaker_label, "Dana");
     assert_eq!(split[0].named_speaker_id.as_deref(), Some(dana.as_str()));
     assert_eq!(split[1].speaker_label, "Mina");
     assert_eq!(split[1].named_speaker_id.as_deref(), Some(mina.as_str()));
     assert_eq!(split[0].verbatim_text, "alpha");
     assert_eq!(split[1].verbatim_text, "bravo");
-    let grown = library.named_speaker_turn_history(session).unwrap();
+    let grown = library.store().named_speaker_turn_history(session).unwrap();
     assert_eq!(
         grown
             .iter()
@@ -449,6 +459,7 @@ fn library_merge_and_split_keep_passage_history_without_clustering() {
     );
     assert!(
         library
+            .store_mut()
             .split_named_speaker(
                 session,
                 &dana,
@@ -466,16 +477,22 @@ fn library_merge_and_split_keep_passage_history_without_clustering() {
             )
             .is_err()
     );
-    let after = library.prepare_speaker_diarization(session).unwrap();
+    let after = library
+        .store_mut()
+        .prepare_speaker_diarization(session)
+        .unwrap();
     assert!(!after.inserted);
     assert_eq!(after.run_id, before.run_id);
     assert_eq!(after.algorithm_id, "topology-before-clustering-v1");
     assert_eq!(after.clustering_state, "unavailable");
     assert_eq!(after.reason, "no calibrated diarization model");
     assert_eq!(after.tracks, before.tracks);
-    assert_eq!(library.speakers(session).unwrap()[0].label, "Speaker");
     assert_eq!(
-        library.speakers(session).unwrap()[0].origin,
+        library.store().session_speakers(session).unwrap()[0].label,
+        "Speaker"
+    );
+    assert_eq!(
+        library.store().session_speakers(session).unwrap()[0].origin,
         SpeakerLabelOrigin::SourceDefault
     );
     assert_eq!(file_sha256(&prepared.media), prepared.digest_sha256);
@@ -495,9 +512,9 @@ fn library_loads_a_stored_final_and_a_stored_correction_at_its_audio_interval() 
         library.availability(&session).unwrap(),
         crate::TranscriptAvailability::Final
     ));
-    let loaded = library.document(&session).unwrap();
+    let loaded = library.document(&session).unwrap().segments;
     assert!(loaded.iter().all(|segment| {
-        segment.finality == "final"
+        segment.finality.as_str() == "final"
             && !segment.corrected
             && segment.effective_text == segment.verbatim_text
     }));
@@ -529,7 +546,7 @@ fn library_loads_a_stored_final_and_a_stored_correction_at_its_audio_interval() 
     drop(library);
 
     let reopened = TranscriptLibrary::open(&root).unwrap();
-    let corrected = reopened.document(&session).unwrap();
+    let corrected = reopened.document(&session).unwrap().segments;
     let alpha = corrected
         .iter()
         .find(|segment| segment.sequence == 0)
@@ -538,13 +555,13 @@ fn library_loads_a_stored_final_and_a_stored_correction_at_its_audio_interval() 
         .iter()
         .find(|segment| segment.sequence == 1)
         .unwrap();
-    assert_eq!(alpha.finality, "final");
+    assert_eq!(alpha.finality.as_str(), "final");
     assert!(!alpha.corrected);
     assert_eq!(alpha.verbatim_text, "alpha");
     assert_eq!(alpha.effective_text, "alpha");
     assert_eq!(alpha.start_nanoseconds, alpha_start);
     assert_eq!(alpha.end_nanoseconds, alpha_end);
-    assert_eq!(bravo.finality, "final");
+    assert_eq!(bravo.finality.as_str(), "final");
     assert!(bravo.corrected);
     assert_eq!(bravo.verbatim_text, "bravo");
     assert_eq!(bravo.effective_text, "bravo corrected");
@@ -615,12 +632,12 @@ fn stored_final_exports_a_package_the_player_can_import() {
         .unwrap();
     drop(library);
     let library = TranscriptLibrary::open(&root).unwrap();
-    let stored = library.document(&session).unwrap();
+    let stored = library.document(&session).unwrap().segments;
     let alpha = stored.iter().find(|segment| segment.sequence == 0).unwrap();
     let bravo = stored.iter().find(|segment| segment.sequence == 1).unwrap();
-    assert_eq!(alpha.finality, "final");
+    assert_eq!(alpha.finality.as_str(), "final");
     assert!(!alpha.corrected);
-    assert_eq!(bravo.finality, "final");
+    assert_eq!(bravo.finality.as_str(), "final");
     assert!(bravo.corrected);
     assert!(bravo.start_nanoseconds > alpha.end_nanoseconds);
     let alpha_start = alpha.start_nanoseconds;
@@ -657,16 +674,16 @@ fn stored_final_exports_a_package_the_player_can_import() {
         restored.availability(&receipt.session_id).unwrap(),
         crate::TranscriptAvailability::Final
     ));
-    let loaded = restored.document(&receipt.session_id).unwrap();
+    let loaded = restored.document(&receipt.session_id).unwrap().segments;
     let alpha = loaded.iter().find(|segment| segment.sequence == 0).unwrap();
     let bravo = loaded.iter().find(|segment| segment.sequence == 1).unwrap();
-    assert_eq!(alpha.finality, "final");
+    assert_eq!(alpha.finality.as_str(), "final");
     assert!(!alpha.corrected);
     assert_eq!(alpha.verbatim_text, "alpha");
     assert_eq!(alpha.effective_text, "alpha");
     assert_eq!(alpha.start_nanoseconds, alpha_start);
     assert_eq!(alpha.speaker_label, "Speaker");
-    assert_eq!(bravo.finality, "final");
+    assert_eq!(bravo.finality.as_str(), "final");
     assert!(bravo.corrected);
     assert_eq!(bravo.verbatim_text, "bravo");
     assert_eq!(bravo.effective_text, "bravo corrected");
@@ -773,21 +790,21 @@ fn a_provisional_passage_stays_beside_a_final_and_a_correction() {
         library.availability(&prepared.session).unwrap(),
         crate::TranscriptAvailability::Draft
     ));
-    let loaded = library.document(&prepared.session).unwrap();
+    let loaded = library.document(&prepared.session).unwrap().segments;
     assert_eq!(loaded.len(), 3);
     let alpha = loaded
         .iter()
-        .find(|segment| segment.sequence == 0 && segment.finality == "final")
+        .find(|segment| segment.sequence == 0 && segment.finality.as_str() == "final")
         .unwrap();
     let bravo = loaded.iter().find(|segment| segment.sequence == 1).unwrap();
     let cedar = loaded
         .iter()
-        .find(|segment| segment.finality == "draft")
+        .find(|segment| segment.finality.as_str() == "draft")
         .unwrap();
     assert!(!alpha.corrected);
     assert_eq!(alpha.effective_text, "alpha");
     assert_eq!(alpha.verbatim_text, "alpha");
-    assert_eq!(bravo.finality, "final");
+    assert_eq!(bravo.finality.as_str(), "final");
     assert!(bravo.corrected);
     assert_eq!(bravo.verbatim_text, "bravo");
     assert_eq!(bravo.effective_text, "bravo corrected");

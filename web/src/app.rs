@@ -235,7 +235,7 @@ fn DownloadPage() -> impl IntoView {
     view! {
         <SiteLayout title="Download" path=Some("/download")>
             <h1>"Download"</h1>
-            <p class="lede">"No public release is available."</p>
+            <p class="lede">{open_scribe_types::NO_PUBLIC_RELEASE}</p>
             <p>"Source compilation and development receipts are not signing, notarization, distribution, or release proof."</p>
             <p><a href=format!("{REPOSITORY}/blob/main/CONTRIBUTING.md")>"Contributor build instructions"</a></p>
         </SiteLayout>

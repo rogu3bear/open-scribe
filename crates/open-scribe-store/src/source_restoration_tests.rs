@@ -798,3 +798,71 @@ fn an_unstarted_microphone_can_be_retired_and_restored() {
             .all(|segment| segment.segment_id != microphone.segment_id)
     );
 }
+
+/// ADR 0005: a source with an accepted failure leaves the Recording verdict; the
+/// confirmation a live restore makes counts only the sources still required.
+#[test]
+fn confirmation_after_a_restore_excludes_a_source_whose_failure_was_accepted() {
+    let temp = TempDir::new().unwrap();
+    let mut store = SessionStore::open(temp.path()).unwrap();
+    let (session, sources, _) = retire_sealed_microphone(&mut store);
+    store
+        .recorder_action(session.clone(), RecorderAction::RestoreMicrophone)
+        .unwrap();
+    let restored = store
+        .authorize_media_open(AuthorizeMediaOpenRequest {
+            session_id: session.clone(),
+            source_kind: MediaSourceKind::Microphone,
+            source_display_name: "microphone".into(),
+        })
+        .unwrap();
+    create_media(&mut store, &restored);
+    capture(&mut store, &restored, 2_000_000_001, 48_000);
+    seal(&mut store, &sources[1], 2_500_000_001, 48_000);
+    assert!(
+        store
+            .record_source_failure(system_failure(&session))
+            .unwrap()
+            .recording_continues
+    );
+
+    let recording = store.confirm_recording(session.clone()).unwrap();
+    assert_eq!(
+        recording.required_sources,
+        vec![MediaSourceKind::Microphone]
+    );
+    assert_eq!(recording.active_sources, vec![MediaSourceKind::Microphone]);
+    assert!(recording.recording_started);
+}
+
+/// A source lost before the restored microphone took a sample left no durable
+/// source, so Rust refused that failure and the verdict does not pretend the
+/// recording continued (PRD 19.3, ADR 0005).
+#[test]
+fn a_source_lost_before_the_restored_microphone_sampled_is_not_degraded_recording() {
+    let temp = TempDir::new().unwrap();
+    let mut store = SessionStore::open(temp.path()).unwrap();
+    let (session, sources, _) = retire_sealed_microphone(&mut store);
+    store
+        .recorder_action(session.clone(), RecorderAction::RestoreMicrophone)
+        .unwrap();
+    let restored = store
+        .authorize_media_open(AuthorizeMediaOpenRequest {
+            session_id: session.clone(),
+            source_kind: MediaSourceKind::Microphone,
+            source_display_name: "microphone".into(),
+        })
+        .unwrap();
+    create_media(&mut store, &restored);
+    seal(&mut store, &sources[1], 1_500_000_001, 48_000);
+    assert!(matches!(
+        store.record_source_failure(system_failure(&session)),
+        Err(StoreError::InvalidState(_))
+    ));
+    capture(&mut store, &restored, 2_000_000_001, 48_000);
+
+    assert!(matches!(
+        store.confirm_recording(session.clone()),
+        Err(StoreError::InvalidState(_))
+    ));
+}

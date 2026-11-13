@@ -126,7 +126,8 @@ fn production_review(root: &Path) -> Reviewed {
         epoch: selected.epoch,
         corrections,
         effective_text: store
-            .transcript_document(&session)
+            .conversation_document(&session, crate::DocumentScope::FinalOnly)
+            .map(|document| document.segments)
             .unwrap()
             .into_iter()
             .filter(|s| s.track_id == track)
@@ -224,7 +225,8 @@ fn resume_production(root: &Path) -> Value {
     );
     assert!(
         store
-            .transcript_document(&session)
+            .conversation_document(&session, crate::DocumentScope::FinalOnly)
+            .map(|document| document.segments)
             .unwrap()
             .iter()
             .any(|s| s.track_id == second && s.effective_text == "Retained beta")
@@ -235,7 +237,10 @@ fn resume_production(root: &Path) -> Value {
         .into_iter()
         .find(|r| r.run_id == failure)
         .unwrap();
-    assert_eq!(old.failure_class.as_deref(), Some("storage_error"));
+    assert_eq!(
+        old.failure_class.map(|class| class.as_str()),
+        Some("storage_error")
+    );
     assert!(
         store
             .transcription_queue(observations())

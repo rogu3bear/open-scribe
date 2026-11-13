@@ -13,7 +13,7 @@ use open_scribe_asr::{
 };
 use open_scribe_store::{
     PlannedTranscriptChunk, RevisionSegmentInput, SessionStore, StoreError, TranscriptChunkState,
-    TranscriptionFailure, TranscriptionInput, TranscriptionRunIdentity,
+    TranscriptionFailure, TranscriptionInput, TranscriptionRunIdentity, TranscriptionRunState,
 };
 use open_scribe_types::SessionId as StoreSessionId;
 use open_scribe_types::SessionId;
@@ -53,6 +53,10 @@ pub struct TranscriptionOutcome {
 pub enum TranscriptionError {
     /// Durable capture took priority before the next derived checkpoint.
     Preempted,
+    /// The caller stopped the run before its next track.
+    Cancelled,
+    /// A planned track needs recognition and no model was loaded for it.
+    RecognizerRequired,
     /// Input could not be read or storage refused; no run may exist.
     Store(StoreError),
     /// The run ended without a revision; its committed chunks remain.
@@ -66,6 +70,8 @@ impl fmt::Display for TranscriptionError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Preempted => write!(f, "transcription yielded to capture"),
+            Self::Cancelled => write!(f, "transcription was cancelled"),
+            Self::RecognizerRequired => write!(f, "recognition required but no model loaded"),
             Self::Store(error) => write!(f, "transcription storage failed: {error}"),
             Self::RunEnded { failure, .. } => {
                 write!(f, "transcription run ended: {}", failure.class())
@@ -473,38 +479,39 @@ pub fn reconcile_retained_chunks_with_policy(
         )));
     }
     let current = stored.identity.reconciliation_version == RECONCILIATION_VERSION;
-    let (successor, reused_chunks) =
-        if current && stored.state == "running" && policy.operation_key.is_none() {
-            (run_id.to_owned(), 0)
-        } else {
-            let identity = TranscriptionRunIdentity {
-                reconciliation_version: RECONCILIATION_VERSION.to_owned(),
-                ..stored.identity.clone()
-            };
-            let handle =
-                store.begin_transcription_run_with_policy(&identity, &stored.plan, policy)?;
-            if handle.resumed {
-                // An interrupted current-version run already exists for this
-                // identity; its own chunks decide whether it can finalize.
-            } else if handle
-                .chunks
-                .iter()
-                .any(|chunk| chunk.state != TranscriptChunkState::Complete)
-            {
-                return Err(end_run(
-                    store,
-                    &handle.run_id,
-                    None,
-                    TranscriptionFailure::InvalidResult,
-                ));
-            }
-            let reused = handle
-                .chunks
-                .iter()
-                .filter(|chunk| chunk.reused_from_run.is_some())
-                .count() as u32;
-            (handle.run_id, reused)
+    let (successor, reused_chunks) = if current
+        && stored.state == TranscriptionRunState::Running
+        && policy.operation_key.is_none()
+    {
+        (run_id.to_owned(), 0)
+    } else {
+        let identity = TranscriptionRunIdentity {
+            reconciliation_version: RECONCILIATION_VERSION.to_owned(),
+            ..stored.identity.clone()
         };
+        let handle = store.begin_transcription_run_with_policy(&identity, &stored.plan, policy)?;
+        if handle.resumed {
+            // An interrupted current-version run already exists for this
+            // identity; its own chunks decide whether it can finalize.
+        } else if handle
+            .chunks
+            .iter()
+            .any(|chunk| chunk.state != TranscriptChunkState::Complete)
+        {
+            return Err(end_run(
+                store,
+                &handle.run_id,
+                None,
+                TranscriptionFailure::InvalidResult,
+            ));
+        }
+        let reused = handle
+            .chunks
+            .iter()
+            .filter(|chunk| chunk.reused_from_run.is_some())
+            .count() as u32;
+        (handle.run_id, reused)
+    };
     let (revision_id, segment_count, rejections) = finalize_transcription_run(store, &successor)?;
     Ok(RetainedTranscriptRecovery {
         session_id: stored.identity.session_id,
@@ -541,7 +548,11 @@ pub fn recover_retained_transcripts(
         match reconcile_retained_chunks(store, &run_id) {
             Ok(outcome) => recovered.push(outcome),
             Err(TranscriptionError::Preempted) => break,
-            Err(TranscriptionError::RunEnded { .. }) => {}
+            Err(
+                TranscriptionError::RunEnded { .. }
+                | TranscriptionError::Cancelled
+                | TranscriptionError::RecognizerRequired,
+            ) => {}
             Err(TranscriptionError::Store(error @ StoreError::Sqlite(_))) => return Err(error),
             Err(TranscriptionError::Store(_)) => {}
         }

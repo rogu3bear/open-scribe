@@ -7,23 +7,18 @@
 //! one, and voice clustering stays unavailable until a calibrated model exists.
 
 use crate::export::{
-    TranscriptAvailability, TranscriptExport, TranscriptExportError, TranscriptExportFormat,
-    TranscriptExportReceipt, write_transcript_export,
+    TranscriptAvailability, TranscriptExportError, TranscriptExportFormat, TranscriptExportReceipt,
+    write_transcript_export,
 };
 use crate::package_import::{PackageImportReceipt, import_portable_package};
 use crate::session_export::{
     FileExportReceipt, PortableSummary, SessionExportError, export_source_media, export_track_wav,
     export_validated_mix, write_portable_package, write_session_manifest,
 };
-use open_scribe_diarize::disposition_for_source_kind;
-use open_scribe_evidence::{AdjudicationAction, DerivedClaim, EvidenceRef};
+use open_scribe_evidence::AdjudicationAction;
 use open_scribe_store::{
-    ClaimNavigation, ContextDetail, ContextEventRecord, ConversationReviewMetadata,
-    NamedSpeakerTurn, NamedSpeakerTurnHistory, NamedTranscriptSpeaker, ResolvedEvidence,
-    SessionDeletionInventory, SessionDeletionReceipt, SessionSpeaker, SessionStore,
-    SpeakerDiarization, SpeakerDiarizationTrackInput, SpeakerLabelHistory, StoreError,
-    TranscriptDocumentSegment, TranscriptProvenance, TranscriptSearchHit,
-    TranscriptSpeakerAssignment,
+    ConversationDocument, DocumentScope, SessionDeletionReceipt, SessionLifecycle, SessionStore,
+    StoreError, TranscriptSearchHit,
 };
 use open_scribe_types::SessionId;
 use std::path::Path;
@@ -33,6 +28,17 @@ pub struct TranscriptLibrary {
 }
 
 impl TranscriptLibrary {
+    /// The library store. The platform adapter calls its review, speaker,
+    /// evidence and deletion methods directly; this type adds availability,
+    /// search syntax, export and memory receipts.
+    pub fn store(&self) -> &SessionStore {
+        &self.store
+    }
+
+    pub fn store_mut(&mut self) -> &mut SessionStore {
+        &mut self.store
+    }
+
     pub fn open(managed_root: impl AsRef<Path>) -> Result<Self, StoreError> {
         Ok(Self {
             store: SessionStore::open(managed_root)?,
@@ -43,19 +49,21 @@ impl TranscriptLibrary {
         &self,
         session: &SessionId,
     ) -> Result<TranscriptAvailability, TranscriptExportError> {
-        let export = match TranscriptExport::collect(&self.store, session, 0) {
-            Ok(export) => export,
+        let context = match self.store.transcript_export_context(session) {
+            Ok(context) => context,
             // A live draft is provisional before the session is saved. Export
             // stays refused; the reader still names the open text as Draft.
-            Err(TranscriptExportError::Store(StoreError::InvalidState(
-                "session is not saved for review",
-            ))) if self.store.has_open_transcript_draft(session)? => {
+            Err(StoreError::InvalidState(_))
+                if self.store.has_readable_draft(session)?
+                    && self.store.session_lifecycle(&session.0)?
+                        != SessionLifecycle::ReadyForReview =>
+            {
                 return Ok(TranscriptAvailability::Draft);
             }
-            Err(error) => return Err(error),
+            Err(error) => return Err(error.into()),
         };
-        let mut availability = export.availability();
-        if self.store.has_open_transcript_draft(session)?
+        let mut availability = TranscriptAvailability::of(&context);
+        if self.store.has_readable_draft(session)?
             && matches!(
                 availability,
                 TranscriptAvailability::Final | TranscriptAvailability::Unavailable
@@ -66,170 +74,10 @@ impl TranscriptLibrary {
         Ok(availability)
     }
 
-    pub fn document(
-        &self,
-        session: &SessionId,
-    ) -> Result<Vec<TranscriptDocumentSegment>, StoreError> {
-        self.store.readable_transcript(session)
-    }
-
-    /// The stored engine, model revision, input scope, run state, and evidence
-    /// ranges for the readable transcript. This does not claim that repeating
-    /// the model produces the same words.
-    pub fn provenance(&self, session: &SessionId) -> Result<Vec<TranscriptProvenance>, StoreError> {
-        self.store.transcript_provenance(session)
-    }
-
-    pub fn speakers(&self, session: &SessionId) -> Result<Vec<SessionSpeaker>, StoreError> {
-        self.store.session_speakers(session)
-    }
-
-    /// Oldest-first speaker names for each source track, including the
-    /// source-derived name and every stored rename.
-    pub fn speaker_label_history(
-        &self,
-        session: &SessionId,
-    ) -> Result<Vec<SpeakerLabelHistory>, StoreError> {
-        self.store.speaker_label_history(session)
-    }
-
-    /// Records source topology for this review and leaves voice clustering
-    /// unavailable. Microphone, application, and system tracks are not
-    /// reclustered. Imported and other unknown tracks stay unresolved.
-    /// Labels, transcript text, selections, and media bytes are unchanged.
-    /// A repeated call with the same decision does not insert another run.
-    pub fn prepare_speaker_diarization(
-        &mut self,
-        session: &SessionId,
-    ) -> Result<SpeakerDiarization, StoreError> {
-        let speakers = self.store.session_speakers(session)?;
-        let decisions = speakers
-            .iter()
-            .map(|speaker| SpeakerDiarizationTrackInput {
-                track_id: speaker.track_id.clone(),
-                disposition: disposition_for_source_kind(&speaker.source_kind)
-                    .disposition
-                    .as_str()
-                    .to_owned(),
-            })
-            .collect::<Vec<_>>();
-        self.store.record_speaker_diarization(
-            session,
-            open_scribe_diarize::ALGORITHM_ID,
-            open_scribe_diarize::CLUSTERING_UNAVAILABLE,
-            open_scribe_diarize::UNAVAILABLE_REASON,
-            &decisions,
-        )
-    }
-
-    pub fn named_speakers(
-        &self,
-        session: &SessionId,
-    ) -> Result<Vec<NamedTranscriptSpeaker>, StoreError> {
-        self.store.named_transcript_speakers(session)
-    }
-
-    pub fn review_metadata(
-        &self,
-        session: &SessionId,
-    ) -> Result<ConversationReviewMetadata, StoreError> {
-        self.store.conversation_review_metadata(session)
-    }
-
-    pub fn assign_speaker(
-        &mut self,
-        session: &SessionId,
-        revision_id: &str,
-        sequence: u32,
-        assignment: &TranscriptSpeakerAssignment,
-    ) -> Result<Option<String>, StoreError> {
+    /// The readable document: what the reader and Copy show.
+    pub fn document(&self, session: &SessionId) -> Result<ConversationDocument, StoreError> {
         self.store
-            .assign_transcript_speaker(session, revision_id, sequence, assignment)
-    }
-
-    pub fn rename_named_speaker(
-        &mut self,
-        session: &SessionId,
-        speaker_id: &str,
-        label: &str,
-    ) -> Result<(), StoreError> {
-        self.store
-            .rename_transcript_speaker(session, speaker_id, label)
-    }
-
-    /// Moves the absorbed person's selected turns onto the kept person.
-    /// Both identities remain. A repeated call returns zero.
-    pub fn merge_named_speakers(
-        &mut self,
-        session: &SessionId,
-        keep_id: &str,
-        absorb_id: &str,
-    ) -> Result<u32, StoreError> {
-        self.store.merge_named_speakers(session, keep_id, absorb_id)
-    }
-
-    /// Moves a strict subset of one person's selected turns to a new person.
-    pub fn split_named_speaker(
-        &mut self,
-        session: &SessionId,
-        speaker_id: &str,
-        turns: &[NamedSpeakerTurn],
-        label: &str,
-    ) -> Result<String, StoreError> {
-        self.store
-            .split_named_speaker(session, speaker_id, turns, label)
-    }
-
-    /// Oldest-first assignments for each selected passage, plus the source name.
-    pub fn named_speaker_turn_history(
-        &self,
-        session: &SessionId,
-    ) -> Result<Vec<NamedSpeakerTurnHistory>, StoreError> {
-        self.store.named_speaker_turn_history(session)
-    }
-
-    /// The scope receipts, declared metadata, and accepted-event count, read-only.
-    pub fn context_detail(&self, session: &SessionId) -> Result<ContextDetail, StoreError> {
-        self.store.context_detail(session)
-    }
-
-    pub fn context_events(
-        &self,
-        session: &SessionId,
-    ) -> Result<Vec<ContextEventRecord>, StoreError> {
-        self.store.context_events(session)
-    }
-
-    /// Rust derives every citation; callers never choose its identity.
-    pub fn cite_context_event(
-        &self,
-        session: &SessionId,
-        event_id: &str,
-        block: Option<usize>,
-    ) -> Result<EvidenceRef, StoreError> {
-        self.store.cite_context_event(session, event_id, block)
-    }
-
-    pub fn cite_transcript_segment(
-        &self,
-        session: &SessionId,
-        revision_id: &str,
-        sequence: u32,
-    ) -> Result<EvidenceRef, StoreError> {
-        self.store
-            .cite_transcript_segment(session, revision_id, sequence)
-    }
-
-    pub fn resolve_evidence(
-        &self,
-        reference: &EvidenceRef,
-    ) -> Result<ResolvedEvidence, StoreError> {
-        self.store.resolve_evidence(reference)
-    }
-
-    /// Stores one validated claim revision. The library does not invent its evidence.
-    pub fn insert_derived_claim(&mut self, claim: &DerivedClaim) -> Result<(), StoreError> {
-        self.store.insert_derived_claim(claim)
+            .conversation_document(session, DocumentScope::Readable)
     }
 
     /// Confirms, corrects, or rejects the effective claim. Rust chooses the new
@@ -244,20 +92,6 @@ impl TranscriptLibrary {
         self.store
             .adjudicate_derived_claim(session, claim_id, action, text)
             .map(|claim| claim.revision_id)
-    }
-
-    /// The effective claim and the evidence a review surface can open.
-    pub fn navigate_derived_claim(
-        &self,
-        session: &SessionId,
-        claim_id: &str,
-    ) -> Result<ClaimNavigation, StoreError> {
-        self.store.navigate_derived_claim(session, claim_id)
-    }
-
-    /// The revision a model delta must name. A session with no accepted delta is `"0"`.
-    pub fn meeting_memory_revision(&self, session: &SessionId) -> Result<String, StoreError> {
-        self.store.meeting_memory_revision(session)
     }
 
     /// Stores the proposal, then appends only the operations Rust accepts.
@@ -283,45 +117,6 @@ impl TranscriptLibrary {
         self.store
             .correct_transcript_segment(session, revision_id, sequence, text)
             .map(|_| ())
-    }
-
-    pub fn rename_speaker(
-        &mut self,
-        session: &SessionId,
-        track_id: &str,
-        label: Option<&str>,
-    ) -> Result<(), StoreError> {
-        self.store.rename_speaker(session, track_id, label)
-    }
-
-    /// The resolved conversation title and any stored suggestion.
-    pub fn conversation_title(
-        &self,
-        session: &SessionId,
-    ) -> Result<open_scribe_store::ConversationTitle, StoreError> {
-        self.store.conversation_title(session)
-    }
-
-    /// Stores a transcript-derived title; false when a person named it.
-    pub fn suggest_conversation_title(
-        &mut self,
-        session: &SessionId,
-        title: &str,
-        engine: &str,
-        basis: &str,
-    ) -> Result<bool, StoreError> {
-        self.store
-            .suggest_conversation_title(session, title, engine, basis)
-    }
-
-    /// Rebuilds Final transcripts from chunks an earlier run retained but
-    /// could not commit, for one session or the whole library. No model is
-    /// loaded; media, failed runs, and selected revisions are untouched.
-    pub fn recover_retained_transcripts(
-        &mut self,
-        session: Option<&SessionId>,
-    ) -> Result<Vec<crate::RetainedTranscriptRecovery>, StoreError> {
-        crate::recover_retained_transcripts(&mut self.store, session)
     }
 
     pub fn search(
@@ -352,19 +147,8 @@ impl TranscriptLibrary {
         &self,
         session: &SessionId,
         timestamps: bool,
-    ) -> Result<crate::ConversationText, TranscriptExportError> {
+    ) -> Result<crate::ConversationText, StoreError> {
         crate::conversation_text(&self.store, session, timestamps)
-    }
-
-    pub fn begin_deletion(
-        &mut self,
-        session: &SessionId,
-    ) -> Result<SessionDeletionInventory, StoreError> {
-        self.store.begin_session_deletion(session)
-    }
-
-    pub fn abandon_deletion(&mut self, session: &SessionId) -> Result<(), StoreError> {
-        self.store.abandon_session_deletion(session)
     }
 
     pub fn complete_deletion(

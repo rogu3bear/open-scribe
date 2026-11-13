@@ -45,7 +45,6 @@ final class ContextScopeModel: ObservableObject {
   @Published private(set) var acceptedPulse = 0 {
     didSet { overlay.pulse() }
   }
-  @Published private(set) var lastOutcome: ContextOutcome?
   @Published var selection = ContextSelection()
 
   let worker: ContextWorker
@@ -92,9 +91,14 @@ final class ContextScopeModel: ObservableObject {
     permission = permissionCheck()
   }
 
-  convenience init(recorder: LiveMicrophoneRecordingController) {
-    self.init(binding: { [weak recorder] in recorder?.contextBinding })
-    recorder.$phase.sink { [weak self] _ in
+  /// `bindingChanges` fires whenever the recording that owns the binding
+  /// changes phase.
+  convenience init(
+    binding: @escaping @MainActor () -> ContextBinding?,
+    bindingChanges: AnyPublisher<Void, Never>
+  ) {
+    self.init(binding: binding)
+    bindingChanges.sink { [weak self] _ in
       Task { @MainActor in self?.recordingChanged() }
     }.store(in: &cancellables)
   }
@@ -406,7 +410,6 @@ final class ContextScopeModel: ObservableObject {
     guard request.token.scopeId == current?.scopeId, request.token.epoch == current?.epoch else {
       return
     }
-    lastOutcome = outcome
     switch outcome {
     case .accepted:
       consecutiveFailures = 0

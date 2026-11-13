@@ -7,14 +7,15 @@
 //! it, it is shown only while the stored title is still a placeholder, and it
 //! is refused once a person has named the conversation.
 
-use super::{SessionStore, StoreError, wall_time_milliseconds};
+use super::{
+    MAX_TITLE_BYTES, SessionLifecycle, SessionOrigin, SessionStore, StoreError, SuggestionBasis,
+    wall_time_milliseconds,
+};
 use open_scribe_types::SessionId;
-use rusqlite::{OptionalExtension, Transaction, params};
-
-pub(super) const CONVERSATION_TITLE_MIGRATION_VERSION: i64 = 21;
+use rusqlite::{Transaction, params};
 
 /// Suggestions are short names, not summaries.
-pub const MAX_SUGGESTED_TITLE_CHARS: usize = 80;
+const MAX_SUGGESTED_TITLE_CHARS: usize = 80;
 
 /// Where the title a reader sees comes from.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -45,9 +46,32 @@ pub struct ConversationTitle {
     pub stored_title: String,
     pub display_title: String,
     pub source: TitleSource,
+    /// The capture time a placeholder names, while the placeholder is what a
+    /// reader sees. The app formats it in the reader's locale.
+    pub placeholder_at_ms: Option<i64>,
     pub suggested_title: Option<String>,
     pub suggestion_engine: Option<String>,
-    pub suggestion_basis: Option<String>,
+    pub suggestion_basis: Option<SuggestionBasis>,
+    /// Whether `suggest_conversation_title` would store a suggestion on each
+    /// basis now; see [`ConversationTitle::accepts_suggestion`].
+    pub accepts_draft_suggestion: bool,
+    pub accepts_final_suggestion: bool,
+}
+
+impl ConversationTitle {
+    /// The one acceptance rule. A person's title is never replaced and a
+    /// placeholder always is. A Final-based suggestion stays put, so later
+    /// corrections and launches do not rerun the model or change the title.
+    /// A Draft-based one is replaced by a Final-based one, or by a newer
+    /// Draft-based one while the conversation is still being recorded; saved
+    /// Draft text is the same text the live suggestion already read.
+    #[must_use]
+    pub const fn accepts_suggestion(&self, basis: SuggestionBasis) -> bool {
+        match basis {
+            SuggestionBasis::Draft => self.accepts_draft_suggestion,
+            SuggestionBasis::Final => self.accepts_final_suggestion,
+        }
+    }
 }
 
 pub(super) fn apply_schema(transaction: &Transaction<'_>) -> Result<(), StoreError> {
@@ -64,65 +88,81 @@ pub(super) fn apply_schema(transaction: &Transaction<'_>) -> Result<(), StoreErr
             CHECK ((suggested_title IS NULL) = (suggestion_basis IS NULL))
         );",
     )?;
-    transaction.execute(
-        "INSERT OR IGNORE INTO schema_migrations (version, applied_at_ms) VALUES (?1, ?2)",
-        params![
-            CONVERSATION_TITLE_MIGRATION_VERSION,
-            wall_time_milliseconds()
-        ],
-    )?;
     Ok(())
 }
 
-/// The capture default written when recording starts.
+/// A capture is named `Conversation <UTC time to the second>` until a person
+/// renames it. Titles the macOS app wrote before Rust named sessions have the
+/// same form, so they stay placeholders.
+const PLACEHOLDER_TITLE_PREFIX: &str = "Conversation ";
+
+/// The placeholder title for a capture prepared at `wall_time_ms`.
 #[must_use]
-pub fn is_placeholder_title(title: &str, origin: &str) -> bool {
-    let Some(stamp) = title.strip_prefix("Conversation ") else {
-        return false;
-    };
-    let bytes = stamp.as_bytes();
-    origin == "capture"
-        && bytes.len() >= 11
-        && bytes[..4].iter().all(u8::is_ascii_digit)
-        && bytes[4] == b'-'
-        && bytes[5..7].iter().all(u8::is_ascii_digit)
-        && bytes[7] == b'-'
-        && bytes[8..10].iter().all(u8::is_ascii_digit)
-        && bytes[10] == b'T'
+pub(super) fn placeholder_title(wall_time_ms: i64) -> String {
+    format!(
+        "{PLACEHOLDER_TITLE_PREFIX}{}",
+        super::session_times::iso8601_utc_seconds(wall_time_ms)
+    )
 }
 
-/// A person's title always wins; a suggestion replaces only a placeholder.
-#[must_use]
-pub fn resolve_title(
-    stored_title: &str,
-    origin: &str,
-    named_by_person: bool,
-    suggested_title: Option<&str>,
-) -> (String, TitleSource) {
-    if named_by_person || !is_placeholder_title(stored_title, origin) {
-        return (stored_title.to_owned(), TitleSource::Person);
+/// The capture time a placeholder title names. Only a capture's title can be
+/// a placeholder; an import keeps the name it was given.
+fn placeholder_time_ms(title: &str, origin: &str) -> Option<i64> {
+    if origin != SessionOrigin::Capture.as_str() {
+        return None;
     }
-    match suggested_title {
-        Some(suggested) => (suggested.to_owned(), TitleSource::Suggested),
-        None => (stored_title.to_owned(), TitleSource::Placeholder),
+    super::session_times::parse_iso8601_utc_seconds(title.strip_prefix(PLACEHOLDER_TITLE_PREFIX)?)
+}
+
+/// The one title rule for a person's, an import's, or a suggested title:
+/// trimmed, not empty, at most `MAX_TITLE_BYTES`, and free of control
+/// characters.
+pub(super) fn checked_title(title: &str) -> Result<&str, StoreError> {
+    let title = title.trim();
+    if title.is_empty() {
+        return Err(StoreError::InvalidRequest("title is empty"));
+    }
+    if title.len() > MAX_TITLE_BYTES {
+        return Err(StoreError::InvalidRequest("title exceeds byte limit"));
+    }
+    if title.chars().any(char::is_control) {
+        return Err(StoreError::InvalidRequest(
+            "title contains control characters",
+        ));
+    }
+    Ok(title)
+}
+
+/// The title an import stores: its file or package name with any control
+/// characters turned into spaces, so a name a person never typed cannot
+/// refuse the import. A name with nothing printable keeps a plain fallback.
+#[must_use]
+pub fn imported_title(name: &str) -> String {
+    let cleaned: String = name
+        .chars()
+        .map(|character| {
+            if character.is_control() {
+                ' '
+            } else {
+                character
+            }
+        })
+        .collect();
+    match cleaned.trim() {
+        "" => "Imported conversation".to_owned(),
+        trimmed => trimmed.to_owned(),
     }
 }
 
+/// Model output with its whitespace collapsed and surrounding quotes and
+/// periods removed, within the suggestion length.
 fn validated_suggestion(title: &str) -> Result<String, StoreError> {
     let collapsed = title.split_whitespace().collect::<Vec<_>>().join(" ");
     let trimmed = collapsed.trim_matches(|c: char| c == '"' || c == '\'' || c == '.');
-    if trimmed.is_empty() {
-        return Err(StoreError::InvalidRequest("suggested title is empty"));
-    }
     if trimmed.chars().count() > MAX_SUGGESTED_TITLE_CHARS {
         return Err(StoreError::InvalidRequest("suggested title is too long"));
     }
-    if trimmed.chars().any(char::is_control) {
-        return Err(StoreError::InvalidRequest(
-            "suggested title contains control characters",
-        ));
-    }
-    Ok(trimmed.to_owned())
+    Ok(checked_title(trimmed)?.to_owned())
 }
 
 /// Marks a conversation as named by a person inside the rename transaction.
@@ -138,79 +178,117 @@ pub(super) fn record_person_named(
     Ok(())
 }
 
-impl SessionStore {
-    /// The resolved title, including any stored suggestion and its basis.
-    pub fn conversation_title(&self, session: &SessionId) -> Result<ConversationTitle, StoreError> {
-        let (stored_title, origin): (String, String) = self.connection.query_row(
-            "SELECT title, origin FROM sessions WHERE id = ?1 AND lifecycle <> 'deleted'",
-            [&session.0],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )?;
-        let row: Option<(bool, Option<String>, Option<String>, Option<String>)> = self
-            .connection
-            .query_row(
-                "SELECT named_by_person, suggested_title, suggestion_engine, suggestion_basis
-                 FROM conversation_titles WHERE session_id = ?1",
-                [&session.0],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
-            )
-            .optional()?;
-        let (named, suggested_title, suggestion_engine, suggestion_basis) =
-            row.unwrap_or((false, None, None, None));
-        let (display_title, source) =
-            resolve_title(&stored_title, &origin, named, suggested_title.as_deref());
-        Ok(ConversationTitle {
-            stored_title,
-            display_title,
-            source,
-            suggested_title,
-            suggestion_engine,
-            suggestion_basis,
+/// The columns every title read selects from `sessions` joined with
+/// [`TITLE_JOIN`], in the order [`TitleRow::read`] reads them.
+pub(super) const TITLE_COLUMNS: &str = "sessions.title, sessions.origin, sessions.lifecycle,
+    COALESCE(titles.named_by_person, 0), titles.suggested_title, titles.suggestion_engine,
+    titles.suggestion_basis";
+pub(super) const TITLE_JOIN: &str =
+    "LEFT JOIN conversation_titles AS titles ON titles.session_id = sessions.id";
+
+/// One session's stored title facts, as read; [`TitleRow::resolve`] turns
+/// them into what a reader sees.
+pub(super) struct TitleRow {
+    stored_title: String,
+    origin: String,
+    lifecycle: String,
+    named_by_person: bool,
+    suggested_title: Option<String>,
+    suggestion_engine: Option<String>,
+    suggestion_basis: Option<String>,
+}
+
+impl TitleRow {
+    /// Reads [`TITLE_COLUMNS`] starting at column `first`.
+    pub(super) fn read(row: &rusqlite::Row<'_>, first: usize) -> rusqlite::Result<Self> {
+        Ok(Self {
+            stored_title: row.get(first)?,
+            origin: row.get(first + 1)?,
+            lifecycle: row.get(first + 2)?,
+            named_by_person: row.get(first + 3)?,
+            suggested_title: row.get(first + 4)?,
+            suggestion_engine: row.get(first + 5)?,
+            suggestion_basis: row.get(first + 6)?,
         })
     }
 
+    /// A person's title always wins; a suggestion replaces only a placeholder.
+    pub(super) fn resolve(self) -> Result<ConversationTitle, StoreError> {
+        let lifecycle = SessionLifecycle::parse(&self.lifecycle)?;
+        let suggestion_basis = self
+            .suggestion_basis
+            .as_deref()
+            .map(SuggestionBasis::parse)
+            .transpose()?;
+        let placeholder_at_ms =
+            placeholder_time_ms(&self.stored_title, &self.origin).filter(|_| !self.named_by_person);
+        let (display_title, source) = match (placeholder_at_ms, &self.suggested_title) {
+            (None, _) => (self.stored_title.clone(), TitleSource::Person),
+            (Some(_), Some(suggested)) => (suggested.clone(), TitleSource::Suggested),
+            (Some(_), None) => (self.stored_title.clone(), TitleSource::Placeholder),
+        };
+        let accepts = |basis: SuggestionBasis| match source {
+            TitleSource::Person => false,
+            TitleSource::Placeholder => true,
+            TitleSource::Suggested => {
+                suggestion_basis != Some(SuggestionBasis::Final)
+                    && (basis == SuggestionBasis::Final || lifecycle.is_open_capture())
+            }
+        };
+        Ok(ConversationTitle {
+            display_title,
+            source,
+            placeholder_at_ms: placeholder_at_ms.filter(|_| source == TitleSource::Placeholder),
+            accepts_draft_suggestion: accepts(SuggestionBasis::Draft),
+            accepts_final_suggestion: accepts(SuggestionBasis::Final),
+            stored_title: self.stored_title,
+            suggested_title: self.suggested_title,
+            suggestion_engine: self.suggestion_engine,
+            suggestion_basis,
+        })
+    }
+}
+
+/// The resolved title of one session that is not deleted.
+pub(super) fn conversation_title(
+    connection: &rusqlite::Connection,
+    session_id: &str,
+) -> Result<ConversationTitle, StoreError> {
+    connection
+        .query_row(
+            &format!(
+                "SELECT {TITLE_COLUMNS} FROM sessions {TITLE_JOIN}
+                 WHERE sessions.id = ?1 AND sessions.lifecycle <> 'deleted'"
+            ),
+            [session_id],
+            |row| TitleRow::read(row, 0),
+        )?
+        .resolve()
+}
+
+impl SessionStore {
+    /// The resolved title, including any stored suggestion and its basis.
+    pub fn conversation_title(&self, session: &SessionId) -> Result<ConversationTitle, StoreError> {
+        conversation_title(&self.connection, &session.0)
+    }
+
     /// Stores a transcript-derived title. Returns false, storing nothing, when
-    /// a person has already named the conversation. A Final-based suggestion
-    /// is never replaced by a Draft-based one.
+    /// [`ConversationTitle::accepts_suggestion`] refuses it.
     pub fn suggest_conversation_title(
         &mut self,
         session: &SessionId,
         title: &str,
         engine: &str,
-        basis: &str,
+        basis: SuggestionBasis,
     ) -> Result<bool, StoreError> {
         let title = validated_suggestion(title)?;
         if engine.trim().is_empty() {
             return Err(StoreError::InvalidRequest("suggestion engine is empty"));
         }
-        if basis != "draft" && basis != "final" {
-            return Err(StoreError::InvalidRequest(
-                "suggestion basis must be draft or final",
-            ));
-        }
         let _writer = self.write_guard()?;
         let transaction = self.connection.transaction()?;
         super::session_deletion::require_available(&transaction, &session.0)?;
-        let (stored_title, origin): (String, String) = transaction.query_row(
-            "SELECT title, origin FROM sessions WHERE id = ?1 AND lifecycle <> 'deleted'",
-            [&session.0],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )?;
-        let existing: Option<(bool, Option<String>)> = transaction
-            .query_row(
-                "SELECT named_by_person, suggestion_basis FROM conversation_titles
-                 WHERE session_id = ?1",
-                [&session.0],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .optional()?;
-        let named = existing.as_ref().is_some_and(|(named, _)| *named);
-        let has_final = existing
-            .as_ref()
-            .and_then(|(_, basis)| basis.as_deref())
-            .is_some_and(|basis| basis == "final");
-        if named || !is_placeholder_title(&stored_title, &origin) || (has_final && basis == "draft")
-        {
+        if !conversation_title(&transaction, &session.0)?.accepts_suggestion(basis) {
             return Ok(false);
         }
         transaction.execute(
@@ -236,9 +314,36 @@ impl SessionStore {
     }
 }
 
+/// Whether a stored session title would read as the capture placeholder.
+#[cfg(test)]
+pub(super) fn is_placeholder_title(title: &str, origin: &str) -> bool {
+    placeholder_time_ms(title, origin).is_some()
+}
+
 #[cfg(test)]
 mod tests {
+    use super::super::PrepareSessionRequest;
     use super::*;
+
+    fn resolve(
+        stored_title: &str,
+        origin: &str,
+        lifecycle: SessionLifecycle,
+        named_by_person: bool,
+        suggestion: Option<(&str, SuggestionBasis)>,
+    ) -> ConversationTitle {
+        TitleRow {
+            stored_title: stored_title.to_owned(),
+            origin: origin.to_owned(),
+            lifecycle: lifecycle.as_str().to_owned(),
+            named_by_person,
+            suggested_title: suggestion.map(|(title, _)| title.to_owned()),
+            suggestion_engine: suggestion.map(|_| "test-engine".to_owned()),
+            suggestion_basis: suggestion.map(|(_, basis)| basis.as_str().to_owned()),
+        }
+        .resolve()
+        .unwrap()
+    }
 
     #[test]
     fn only_the_capture_default_is_a_placeholder() {
@@ -253,26 +358,114 @@ mod tests {
         assert!(!is_placeholder_title("Conversation with Dana", "capture"));
         assert!(!is_placeholder_title("Conversation 2026", "capture"));
         assert!(!is_placeholder_title("Design review", "capture"));
+        assert!(!is_placeholder_title(
+            "Conversation 2026-11-12T19:30:05Z notes",
+            "capture"
+        ));
+        assert!(!is_placeholder_title(
+            "Conversation 2026-02-30T19:30:05Z",
+            "capture"
+        ));
+    }
+
+    #[test]
+    fn rust_names_captures_in_the_form_the_app_wrote() {
+        // ISO8601DateFormatter's default: UTC, whole seconds, `Z`.
+        assert_eq!(
+            placeholder_title(1_794_561_342_999),
+            "Conversation 2026-11-13T09:15:42Z"
+        );
+        assert_eq!(placeholder_title(0), "Conversation 1970-01-01T00:00:00Z");
+        assert_eq!(
+            placeholder_time_ms("Conversation 2026-11-13T09:15:42Z", "capture"),
+            Some(1_794_561_342_000)
+        );
+        assert!(is_placeholder_title(
+            &placeholder_title(wall_time_milliseconds()),
+            "capture"
+        ));
+        assert_eq!(
+            PrepareSessionRequest::capture(Some("Board prep".to_owned())).title,
+            "Board prep"
+        );
+        assert!(is_placeholder_title(
+            &PrepareSessionRequest::capture(None).title,
+            "capture"
+        ));
     }
 
     #[test]
     fn a_person_title_outranks_a_suggestion() {
         let placeholder = "Conversation 2026-11-12T19:30:05Z";
+        let saved = SessionLifecycle::ReadyForReview;
+        let suggested = resolve(
+            placeholder,
+            "capture",
+            saved,
+            false,
+            Some(("Mobile beta date", SuggestionBasis::Draft)),
+        );
+        assert_eq!(suggested.display_title, "Mobile beta date");
+        assert_eq!(suggested.source, TitleSource::Suggested);
+        assert_eq!(suggested.placeholder_at_ms, None);
+        let bare = resolve(placeholder, "capture", saved, false, None);
         assert_eq!(
-            resolve_title(placeholder, "capture", false, Some("Mobile beta date")),
-            ("Mobile beta date".to_owned(), TitleSource::Suggested)
+            (bare.display_title.as_str(), bare.source),
+            (placeholder, TitleSource::Placeholder)
+        );
+        assert_eq!(bare.placeholder_at_ms, Some(1_794_511_805_000));
+        let named = resolve(placeholder, "capture", saved, true, None);
+        assert_eq!(
+            (
+                named.display_title.as_str(),
+                named.source,
+                named.placeholder_at_ms
+            ),
+            (placeholder, TitleSource::Person, None)
+        );
+        let person = resolve(
+            "Board prep",
+            "capture",
+            saved,
+            false,
+            Some(("Mobile beta date", SuggestionBasis::Final)),
         );
         assert_eq!(
-            resolve_title(placeholder, "capture", false, None),
-            (placeholder.to_owned(), TitleSource::Placeholder)
+            (person.display_title.as_str(), person.source),
+            ("Board prep", TitleSource::Person)
         );
-        assert_eq!(
-            resolve_title(placeholder, "capture", true, Some("Mobile beta date")),
-            (placeholder.to_owned(), TitleSource::Person)
-        );
-        assert_eq!(
-            resolve_title("Board prep", "capture", false, Some("Mobile beta date")),
-            ("Board prep".to_owned(), TitleSource::Person)
+    }
+
+    #[test]
+    fn one_rule_decides_which_suggestions_are_stored() {
+        use SessionLifecycle::{ReadyForReview, Recording};
+        use SuggestionBasis::{Draft, Final};
+        let placeholder = "Conversation 2026-11-12T19:30:05Z";
+        let accepts = |lifecycle, named, suggestion, basis| {
+            resolve(placeholder, "capture", lifecycle, named, suggestion).accepts_suggestion(basis)
+        };
+        for basis in [Draft, Final] {
+            assert!(accepts(ReadyForReview, false, None, basis));
+            assert!(!accepts(ReadyForReview, true, None, basis));
+            assert!(!accepts(Recording, false, Some(("Plan", Final)), basis));
+            assert!(!accepts(
+                ReadyForReview,
+                false,
+                Some(("Plan", Final)),
+                basis
+            ));
+        }
+        assert!(accepts(Recording, false, Some(("Plan", Draft)), Draft));
+        assert!(!accepts(
+            ReadyForReview,
+            false,
+            Some(("Plan", Draft)),
+            Draft
+        ));
+        assert!(accepts(ReadyForReview, false, Some(("Plan", Draft)), Final));
+        assert!(
+            !resolve("Board prep", "capture", ReadyForReview, false, None)
+                .accepts_suggestion(Final)
         );
     }
 
@@ -284,5 +477,25 @@ mod tests {
         );
         assert!(validated_suggestion("   ").is_err());
         assert!(validated_suggestion(&"a".repeat(81)).is_err());
+        assert!(validated_suggestion("Line\u{7}break").is_err());
+        assert_eq!(checked_title("  Board prep ").unwrap(), "Board prep");
+        assert!(checked_title(&"x".repeat(MAX_TITLE_BYTES + 1)).is_err());
+    }
+
+    #[test]
+    fn imported_names_lose_control_characters_instead_of_refusing() {
+        assert_eq!(
+            imported_title("Board\tprep\u{7}notes\n"),
+            "Board prep notes"
+        );
+        assert_eq!(
+            checked_title(&imported_title("\u{1b}[31mCall")).unwrap(),
+            "[31mCall"
+        );
+        assert_eq!(imported_title(" \u{0}\r\n"), "Imported conversation");
+        assert!(
+            checked_title("Board\tprep").is_err(),
+            "a person's rename still refuses them"
+        );
     }
 }

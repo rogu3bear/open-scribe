@@ -58,10 +58,6 @@ pub(super) fn apply_schema(tx: &Transaction<'_>) -> Result<(), StoreError> {
         BEFORE UPDATE OF operation_key ON transcription_runs BEGIN
         SELECT RAISE(ABORT, 'transcription operation binding is immutable'); END;",
     )?;
-    tx.execute(
-        "INSERT OR IGNORE INTO schema_migrations VALUES(13, ?1)",
-        [wall_time_milliseconds()],
-    )?;
     Ok(())
 }
 
@@ -73,6 +69,8 @@ impl SessionStore {
         intent: open_scribe_types::TranscriptionIntent,
     ) -> Result<bool, StoreError> {
         use open_scribe_types::TranscriptionIntent;
+        let purpose = super::RetainedRunUse::for_intent(intent);
+        let runs = self.transcription_runs(session)?;
         for track in self.transcription_tracks(session)? {
             if intent != TranscriptionIntent::ReprocessAll {
                 let selected: bool = self.connection.query_row("SELECT EXISTS(SELECT 1 FROM transcript_selections WHERE session_id = ?1 AND track_id = ?2)", params![session.0, track], |r| r.get(0))?;
@@ -80,13 +78,10 @@ impl SessionStore {
                     continue;
                 }
             }
-            let retained: bool = self.connection.query_row("SELECT EXISTS(SELECT 1 FROM transcription_runs runs WHERE session_id = ?1 AND track_id = ?2
-                AND (state IN ('running','cancelled') OR (?3 AND state = 'complete')
-                  OR (state = 'failed' AND failure_class IN ('invalid_result','stale_reconciliation','orphaned','storage_error')))
-                AND EXISTS(SELECT 1 FROM transcript_chunks WHERE run_id = runs.id)
-                AND NOT EXISTS(SELECT 1 FROM transcript_chunks WHERE run_id = runs.id AND state <> 'complete'))",
-                params![session.0, track, intent == TranscriptionIntent::ReprocessAll], |r| r.get(0))?;
-            if !retained {
+            if !runs
+                .iter()
+                .any(|run| run.track_id == track && run.retains_chunks(purpose))
+            {
                 return Ok(false);
             }
         }

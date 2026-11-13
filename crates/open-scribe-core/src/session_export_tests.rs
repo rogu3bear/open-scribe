@@ -275,7 +275,8 @@ fn portable_v1_refuses_active_turn_names_without_replacing_an_existing_package()
     let manifest = fs::read(package.join("manifest.json")).unwrap();
     let turn = fixture
         .store
-        .transcript_document(&fixture.session)
+        .conversation_document(&fixture.session, crate::DocumentScope::FinalOnly)
+        .map(|document| document.segments)
         .unwrap()
         .remove(0);
     fixture
@@ -311,7 +312,11 @@ fn portable_export_keeps_evidence_apart_from_interpretation_and_names_the_local_
     let mut fixture = transcribed(30);
     let session = fixture.session.clone();
     let source_before = fs::read(&fixture.media).unwrap();
-    let document = fixture.store.transcript_document(&session).unwrap();
+    let document = fixture
+        .store
+        .conversation_document(&session, crate::DocumentScope::FinalOnly)
+        .map(|document| document.segments)
+        .unwrap();
     let cited_segment = document[0].clone();
     fixture
         .store
@@ -352,7 +357,11 @@ fn portable_export_keeps_evidence_apart_from_interpretation_and_names_the_local_
         .store
         .transcription_input(&session, &fixture.track)
         .unwrap();
-    let stored = fixture.store.transcript_document(&session).unwrap();
+    let stored = fixture
+        .store
+        .conversation_document(&session, crate::DocumentScope::FinalOnly)
+        .map(|document| document.segments)
+        .unwrap();
     let package = fixture.root.parent().unwrap().join("Reviewed.openscribe");
     let summary = write_portable_package(&fixture.store, &session, &package).unwrap();
     assert!(summary.files >= 3);

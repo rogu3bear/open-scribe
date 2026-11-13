@@ -20,7 +20,8 @@ enum DiagnosticPrivacy {
   ]
   // This is a log vocabulary, not a substring blacklist. Free text and unknown
   // upstream values have no diagnostic standing, even when short and path-free.
-  private static let words: Set<String> = [
+  // Stages and failure codes come from their enums below.
+  private static let words: Set<String> = Set([
     "none", "unknown", "redacted", "private_or_unbounded", "true", "false", "admitted",
     "primary", "menu-bar", "live-session", "settings", "quit", "open-primary",
     "export-diagnostics", "export-diagnostics-failed", "microphone", "system_audio",
@@ -29,17 +30,11 @@ enum DiagnosticPrivacy {
     "paused", "resuming", "stopping", "saved", "failed", "finalizing", "ready_for_review",
     "interrupted", "deleted", "progress", "route_interrupted", "route_recovered", "writer_failed",
     "notDetermined", "restricted", "denied", "authorized", "not_authorized", "unavailable",
-    "phase", "mixdown", "verified", "requested", "explicit-command", "first-sample-durable",
-    "capture-proof-refused", "media-recovery", "capture-requested", "capture-durable",
-    "awaiting-external-kill", "recovery-empty", "recovery-failed", "no-playable-session",
-    "capture-failed", "recovered", "playback-not-admitted", "playback-wait-cancelled",
-    "playback-open-failed",
-    "playback-open-superseded", "playback-open-timeout", "playback-opened",
-    "playback-open-state-unavailable", "native-audio-engine", "playback-failed", "playback-started",
-    "playback-stopped", "playback-requested", "scan-started", "launch", "scan-finished",
-    "scan-cancelled",
-    "scan-rejected",
-    "scan-failed", "scanning", "available", "invalid_evidence", "snapshot", "snapshot-failed",
+    "verified", "explicit-command", "first-sample-durable", "media-recovery",
+    "awaiting-external-kill", "no-playable-session", "playback-not-admitted",
+    "playback-wait-cancelled", "playback-open-failed", "playback-open-superseded",
+    "playback-open-timeout", "playback-open-state-unavailable", "native-audio-engine", "launch",
+    "scanning", "available", "invalid_evidence", "snapshot", "snapshot-failed",
     "rename", "renamed", "refused", "declare", "speech-catalog", "speech-install", "installed",
     "readiness_unavailable", "rejected", "transcription", "started", "committed", "cancelled",
     "ModelNotInstalled", "ModelRejected", "ModelReadiness", "NoTranscribableAudio",
@@ -47,11 +42,11 @@ enum DiagnosticPrivacy {
     "DecodedAudioLengthMismatch", "EvidenceChanged",
     "Cancelled", "CapturePreempted", "Deferred", "TranscriptionFailed",
     "StorageFailure", "alreadyRunning", "library_snapshot", "launch_recovery",
-    "launch_recovery_main",
-    "playback_copy", "playback_copy_main", "capture-start-or-setup", "first-sample-evidence",
-    "recording-authority",
-    "storage-observation-failed", "system-audio-unavailable", "segment-seal", "stop-without-sample",
-  ]
+    "launch_recovery_main", "playback_copy", "playback_copy_main",
+  ])
+  .union(CaptureProofStage.allCases.map(\.rawValue))
+  .union(RecoveryProofStage.allCases.map(\.rawValue))
+  .union(RecorderFailureCode.allCases.map(\.rawValue))
 
   static func isCategory(_ value: String) -> Bool {
     categories.contains(value)
@@ -167,4 +162,78 @@ enum DiagnosticPrivacy {
   private static func matches(_ value: String, _ pattern: String) -> Bool {
     value.range(of: pattern, options: .regularExpression) != nil
   }
+}
+
+/// `stage=` values of the CaptureProof category. Proof scripts read
+/// `requested`, `capturing`, `saved` and `failed`.
+enum CaptureProofStage: String, CaseIterable, Sendable {
+  case requested, capturing, saved, failed, phase, mixdown
+}
+
+/// `stage=` values of the RecoveryProof category. Proof scripts read the
+/// capture, recovery and playback stages.
+enum RecoveryProofStage: String, CaseIterable, Sendable {
+  case captureProofRefused = "capture-proof-refused"
+  case captureRequested = "capture-requested"
+  case captureDurable = "capture-durable"
+  case captureFailed = "capture-failed"
+  case recoveryEmpty = "recovery-empty"
+  case recoveryFailed = "recovery-failed"
+  case recovered
+  case playbackRequested = "playback-requested"
+  case playbackOpened = "playback-opened"
+  case playbackStarted = "playback-started"
+  case playbackStopped = "playback-stopped"
+  case playbackFailed = "playback-failed"
+  case scanStarted = "scan-started"
+  case scanFinished = "scan-finished"
+  case scanCancelled = "scan-cancelled"
+  case scanRejected = "scan-rejected"
+  case scanFailed = "scan-failed"
+}
+
+/// Why a recording failed or lost a source. `rawValue` reaches logs as
+/// `code=`; adapter errors map onto these exhaustively.
+enum RecorderFailureCode: String, CaseIterable, Sendable {
+  case permissionNotDetermined = "permission-notDetermined"
+  case permissionDenied = "permission-denied"
+  case permissionRestricted = "permission-restricted"
+  case permissionAuthorized = "permission-authorized"
+  case permissionRevoked = "permission-revoked"
+  case captureStartOrSetup = "capture-start-or-setup"
+  case captureRouteInterrupted = "capture-route-interrupted"
+  case captureInvalidInputFormat = "capture-invalidInputFormat"
+  case captureAlreadyStarted = "capture-alreadyStarted"
+  case captureBufferPoolExhausted = "capture-bufferPoolExhausted"
+  case captureBufferFrameCapacityExceeded = "capture-bufferFrameCapacityExceeded"
+  case captureBufferLayoutMismatch = "capture-bufferLayoutMismatch"
+  case captureBufferByteSizeMismatch = "capture-bufferByteSizeMismatch"
+  case captureMissingHostTime = "capture-missingHostTime"
+  case captureWriterFailed = "capture-writerFailed"
+  case captureInputDeviceUnavailable = "capture-inputDeviceUnavailable"
+  case captureInputDeviceChanged = "capture-inputDeviceChanged"
+  case systemAudioUnavailable = "system-audio-unavailable"
+  case systemAudioStop = "system-audio-stop"
+  case systemAudioNoDisplayAvailable = "system-audio-noDisplayAvailable"
+  case systemAudioAlreadyStarted = "system-audio-alreadyStarted"
+  case systemAudioOutputRegistrationFailed = "system-audio-outputRegistrationFailed"
+  case systemAudioInvalidSampleBuffer = "system-audio-invalidSampleBuffer"
+  case systemAudioWriterFailed = "system-audio-writerFailed"
+  case systemAudioStreamStopped = "system-audio-streamStopped"
+  case systemAudioUserStopped = "system-audio-userStopped"
+  case systemAudioPermissionDenied = "system-audio-permissionDenied"
+  case microphoneRestoreStart = "microphone-restore-start"
+  case microphoneRestoreTimeout = "microphone-restore-timeout"
+  case durablePreparation = "durable-preparation"
+  case mediaOpenEvidence = "media-open-evidence"
+  case firstSampleEvidence = "first-sample-evidence"
+  case recordingAuthority = "recording-authority"
+  case segmentSeal = "segment-seal"
+  case requiredSourcePlan = "required-source-plan"
+  case sourceFailureEvidence = "source-failure-evidence"
+  case sourceFailureSample = "source-failure-sample"
+  case managedRoot = "managed-root"
+  case noDurableSample = "no-durable-sample"
+  case storageObservationFailed = "storage-observation-failed"
+  case applicationExited = "application-exited"
 }

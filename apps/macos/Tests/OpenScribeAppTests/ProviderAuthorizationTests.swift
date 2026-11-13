@@ -16,22 +16,10 @@ final class ProviderAuthorizationTests: XCTestCase {
     XCTAssertFalse(model.networkUsed)
 
     let secret = "sk-live-example-secret"
-    XCTAssertThrowsError(try refuseContentProviderSecret(material: secret)) { error in
-      XCTAssertEqual(error as? NativeProviderError, .SecretMaterialRefused)
-      XCTAssertFalse(String(reflecting: error).contains(secret))
-    }
-    XCTAssertThrowsError(try grantContentCategory(name: "audio")) { error in
-      XCTAssertEqual(error as? NativeProviderError, .CategoryUnavailable)
-    }
-    XCTAssertThrowsError(try grantContentCategory(name: "snapshots")) { error in
-      XCTAssertEqual(error as? NativeProviderError, .CategoryUnavailable)
-    }
-    XCTAssertEqual(try grantContentCategory(name: "final_transcript"), .finalTranscript)
 
     try model.configureRemote(
       providerId: "example", modelId: "review", origin: "https://api.example.com/v1",
       credentialFingerprint: digest)
-    XCTAssertEqual(model.notice, providerConfiguredNotice())
     XCTAssertEqual(model.notice, "Provider configured — no conversation content authorized")
     XCTAssertTrue(model.grants.isEmpty)
 
@@ -54,7 +42,7 @@ final class ProviderAuthorizationTests: XCTestCase {
     let review = try model.prepare(sessionId: "session-1", offered: offered)
     XCTAssertFalse(review.outboundRequest)
     XCTAssertFalse(review.networkUsed)
-    XCTAssertEqual(review.notice, providerNoOutboundNotice())
+    XCTAssertEqual(review.notice, "No outbound request was made.")
     XCTAssertEqual(review.parts.map(\.category), [.finalTranscript])
     XCTAssertEqual(review.parts.map(\.text), [finalText])
     XCTAssertEqual(model.includedTexts, [finalText])
@@ -69,7 +57,7 @@ final class ProviderAuthorizationTests: XCTestCase {
   func testALocalGrantCannotAuthorizeARemoteOrigin() throws {
     let model = ProviderAuthorizationModel()
     try model.configureLocal(providerId: "example", modelId: "review")
-    XCTAssertEqual(model.notice, providerConfiguredNotice())
+    XCTAssertEqual(model.notice, "Provider configured — no conversation content authorized")
     model.grants = [.userNotes]
     XCTAssertThrowsError(
       try model.retargetRemote(sessionId: "session-1", origin: "https://api.example.com")
@@ -182,7 +170,7 @@ final class ProviderAuthorizationTests: XCTestCase {
     configure.performClick(nil)
     let configured = await waitUntil {
       host.layoutSubtreeIfNeeded()
-      return status.stringValue == providerConfiguredNotice() && outcome.stringValue.isEmpty
+      return status.stringValue == "Provider configured — no conversation content authorized" && outcome.stringValue.isEmpty
     }
     XCTAssertTrue(configured, "\(status.stringValue) \(outcome.stringValue)")
     XCTAssertEqual(status.stringValue, "Provider configured — no conversation content authorized")
@@ -203,11 +191,11 @@ final class ProviderAuthorizationTests: XCTestCase {
     prepare.performClick(nil)
     let prepared = await waitUntil {
       host.layoutSubtreeIfNeeded()
-      return outcome.stringValue == providerNoOutboundNotice()
+      return outcome.stringValue == "No outbound request was made."
     }
     XCTAssertTrue(prepared, outcome.stringValue)
     XCTAssertEqual(outcome.stringValue, "No outbound request was made.")
-    XCTAssertEqual(status.stringValue, providerConfiguredNotice())
+    XCTAssertEqual(status.stringValue, "Provider configured — no conversation content authorized")
     self.assertSecretAbsent(secret, in: host)
     XCTAssertTrue(window.contentView === host)
   }

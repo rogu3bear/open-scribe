@@ -2,7 +2,7 @@ import SwiftUI
 
 /// The record behind a conversation, beside the document: what was captured,
 /// who took part, every way to hear it, how the transcript was made, the
-/// less common exports, interpretation, context, and the recorder's journal.
+/// less common exports, interpretation, context, and the recorder's events.
 struct ConversationDetailsPanel: View {
   let session: RuntimeSessionPresentation
   @ObservedObject var store: RuntimeLibraryStore
@@ -13,12 +13,12 @@ struct ConversationDetailsPanel: View {
   let recorderEvents: [NativeRecorderEvent]
   let reference: String?
   let onEditDetails: () -> Void
-  let onSeek: (Int64) -> Void
+  let onSeek: @MainActor (Int64) -> Void
   let onContextSeek: (NativeContextEvent) -> Void
   @State private var showsRecordingDetails = false
 
-  private var isLoaded: Bool { transcripts.sessionId == session.sessionId }
-  private var isSaved: Bool { session.lifecycle == "ready_for_review" }
+  private var loaded: LoadedConversation? { transcripts.loaded(session.sessionId) }
+  private var isSaved: Bool { session.lifecycle == .readyForReview }
   private var canSeek: Bool {
     session.hasCaptureTimeline || session.playableMedia?.isPlayable == true
   }
@@ -41,18 +41,18 @@ struct ConversationDetailsPanel: View {
             session: session, transcripts: transcripts, speech: speech, scheduler: scheduler,
             canSeek: canSeek, onSeek: onSeek)
           InterpretationSection(transcripts: transcripts)
-          if isLoaded, !transcripts.derivedClaims.isEmpty {
+          if let loaded, !loaded.derivedClaims.isEmpty {
             ClaimReviewSection(transcripts: transcripts, canSeek: canSeek, onSeek: onSeek)
           }
         }
         ContextEventsSection(
-          detail: isLoaded ? transcripts.contextDetail : nil,
-          events: isLoaded ? transcripts.contextEvents : [],
+          detail: loaded?.contextDetail,
+          events: loaded?.contextEvents ?? [],
           canSeek: session.hasCaptureTimeline,
           onSeek: onContextSeek)
-        let diagnostics = recorderEvents.filter { $0.kind != "marker_added" }
+        let diagnostics = recorderEvents.filter { $0.kind != .markerAdded }
         if !diagnostics.isEmpty {
-          DisclosureGroup("Recording journal", isExpanded: $showsRecordingDetails) {
+          DisclosureGroup("Recording events", isExpanded: $showsRecordingDetails) {
             RecorderEventList(events: diagnostics, heading: "Recording events")
               .padding(.top, ScribeSpacing.compact)
               .frame(maxWidth: .infinity, alignment: .leading)
@@ -83,12 +83,14 @@ struct ConversationDetailsPanel: View {
   private var about: some View {
     section("About") {
       VStack(alignment: .leading, spacing: 6) {
-        row("Status", session.statusText, symbol: session.captureStatusSymbolName)
-        row("Length", session.timerText)
+        let status = session.captureStatus
+        row("Status", status.text, symbol: status.symbolName, tint: status.tint)
+        if let attention = session.interruptionText { row("What happened", attention) }
+        if let length = session.lengthText { row("Length", length) }
         if let created = session.createdAt {
           row("Recorded", created.formatted(date: .abbreviated, time: .shortened))
         }
-        if isLoaded, let metadata = transcripts.reviewMetadata {
+        if let metadata = loaded?.reviewMetadata {
           row(
             "Origin",
             metadata.origin == "import"
@@ -114,8 +116,8 @@ struct ConversationDetailsPanel: View {
               Text(source.name)
               Spacer()
               Text(source.stateText)
-                .foregroundStyle(source.lifecycle == "failed" ? .primary : .secondary)
-                .fontWeight(source.lifecycle == "failed" ? .semibold : nil)
+                .foregroundStyle(source.lifecycle == .failed ? .primary : .secondary)
+                .fontWeight(source.lifecycle == .failed ? .semibold : nil)
             }
             .font(Interview.meta)
             .accessibilityElement(children: .combine)
@@ -125,14 +127,17 @@ struct ConversationDetailsPanel: View {
     }
   }
 
-  private func row(_ label: String, _ value: String, symbol: String? = nil) -> some View {
+  private func row(
+    _ label: String, _ value: String, symbol: String? = nil,
+    tint: CaptureStatusPresentation.Tint = .quiet
+  ) -> some View {
     HStack(alignment: .firstTextBaseline, spacing: 8) {
       Text(label)
         .foregroundStyle(.secondary)
         .frame(width: 92, alignment: .leading)
       if let symbol {
         Image(systemName: symbol)
-          .foregroundStyle(session.needsAttention ? Color.orange : Color.secondary)
+          .foregroundStyle(tint == .quiet ? Color.secondary : tint.color)
       }
       Text(value)
         .textSelection(.enabled)
@@ -143,7 +148,7 @@ struct ConversationDetailsPanel: View {
   }
 
   private var people: some View {
-    let declaration = isLoaded ? transcripts.contextDetail?.declaration : nil
+    let declaration = loaded?.contextDetail?.declaration
     let participants = declaration?.participants ?? []
     let topic = declaration?.topic
     return section("People and topic") {
@@ -169,8 +174,9 @@ struct ConversationDetailsPanel: View {
   }
 }
 
-/// Every way to hear a conversation: the verified mix, the source tracks on
-/// the recorded timeline, an imported file, or preserved single tracks.
+/// Every way to hear a conversation: the stereo mix, the source tracks on
+/// the recorded timeline, an imported file, or the single tracks a stopped
+/// recording kept.
 struct ConversationAudioList: View {
   let session: RuntimeSessionPresentation
   @ObservedObject var playbackController: RecoveredSessionController
@@ -182,7 +188,7 @@ struct ConversationAudioList: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: ScribeSpacing.compact) {
-      if showsMix, session.lifecycle == "ready_for_review", session.hasCaptureTimeline {
+      if showsMix, session.lifecycle == .readyForReview, session.hasCaptureTimeline {
         let active =
           playbackController.activePlaybackSessionId == session.sessionId
           && playbackController.pendingRecoveredMediaIdentity == nil
@@ -201,14 +207,14 @@ struct ConversationAudioList: View {
         }
         .disabled(playbackController.activePlaybackSessionId != nil && !timelineActive)
         Text(
-          "Play uses a mix made from the saved source tracks and checked first. Source Tracks plays the recorded timeline, with its offsets and gaps."
+          "Play uses a stereo mix of the saved sources. Source Tracks plays each source on the recorded timeline, with its pauses and gaps."
         )
         .font(.caption)
         .foregroundStyle(.secondary)
         .fixedSize(horizontal: false, vertical: true)
         if timelineActive, playbackController.timelineClockAdjustmentNanoseconds > 0 {
           Text(
-            "Source clock alignment: up to \(Double(playbackController.timelineClockAdjustmentNanoseconds) / 1_000_000, specifier: "%.1f") ms. All recorded samples are preserved."
+            "Sources aligned to within \(Double(playbackController.timelineClockAdjustmentNanoseconds) / 1_000_000, specifier: "%.1f") ms. Nothing recorded is dropped."
           )
           .font(.caption)
           .foregroundStyle(.secondary)
@@ -217,7 +223,7 @@ struct ConversationAudioList: View {
       if let media = session.playableMedia {
         Text(media.sourceDisplayName)
           .font(Interview.meta.weight(.semibold))
-        Text(media.isPlayable ? "Playback uses the imported local audio file." : media.statusText)
+        Text(media.isPlayable ? "Plays the imported audio file." : media.statusText)
           .font(.caption)
           .foregroundStyle(.secondary)
           .fixedSize(horizontal: false, vertical: true)
@@ -235,7 +241,7 @@ struct ConversationAudioList: View {
           PlayableAudioRow(
             name: track.source.name, duration: track.durationText,
             segmentReference: references[track.id] ?? track.id,
-            status: isPending ? "Verifying local audio" : error ?? "Preserved local audio",
+            status: isPending ? "Opening the audio…" : error ?? "Saved audio",
             statusIsFailure: error != nil,
             actionEnabled: action.isEnabled(
               hasActivePlayback: playbackController.activePlaybackSessionId != nil),
@@ -244,7 +250,7 @@ struct ConversationAudioList: View {
           )
         }
       } else if !session.hasCaptureTimeline {
-        Text("No verified playable audio is available.")
+        Text("No audio was saved.")
           .font(Interview.meta)
           .foregroundStyle(.secondary)
       }

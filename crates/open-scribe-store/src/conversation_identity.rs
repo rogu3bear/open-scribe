@@ -7,7 +7,7 @@ use uuid::Uuid;
 
 use super::package_restore::{RestorationIntent, insert_restoration_intent};
 use super::{
-    FailurePoint, JOURNAL_NAME, JOURNAL_VERSION, MAX_TITLE_BYTES, MediaSourceKind, SCHEMA_VERSION,
+    FailurePoint, JOURNAL_NAME, JOURNAL_VERSION, MediaSourceKind, SCHEMA_VERSION,
     SESSION_SUBDIRECTORIES, SessionStore, StoreError, append_journal_record, event_digest,
     insert_event, interrupt_if, new_journal_record, normalized_source_kinds,
     require_real_directory, sync_directory, wall_time_milliseconds,
@@ -64,7 +64,7 @@ impl SessionStore {
 }
 
 impl SessionOrigin {
-    const fn as_str(self) -> &'static str {
+    pub(super) const fn as_str(self) -> &'static str {
         match self {
             Self::Capture => "capture",
             Self::Import => "import",
@@ -77,6 +77,20 @@ impl SessionOrigin {
 pub struct PrepareSessionRequest {
     pub title: String,
     pub origin: SessionOrigin,
+}
+
+impl PrepareSessionRequest {
+    /// A capture under `title`, or under the placeholder for this moment
+    /// when no title is given.
+    #[must_use]
+    pub fn capture(title: Option<String>) -> Self {
+        Self {
+            title: title.unwrap_or_else(|| {
+                super::conversation_titles::placeholder_title(wall_time_milliseconds())
+            }),
+            origin: SessionOrigin::Capture,
+        }
+    }
 }
 
 /// Coarse evidence returned after the journal and SQLite identity projection agree.
@@ -130,18 +144,7 @@ impl SessionStore {
         title: &str,
     ) -> Result<String, StoreError> {
         let _writer = self.write_guard()?;
-        let title = title.trim();
-        if title.is_empty() {
-            return Err(StoreError::InvalidRequest("title is empty"));
-        }
-        if title.len() > MAX_TITLE_BYTES {
-            return Err(StoreError::InvalidRequest("title exceeds byte limit"));
-        }
-        if title.chars().any(char::is_control) {
-            return Err(StoreError::InvalidRequest(
-                "title contains control characters",
-            ));
-        }
+        let title = super::conversation_titles::checked_title(title)?;
         let transaction = self.connection.transaction()?;
         let changed = transaction.execute(
             "UPDATE sessions SET title = ?2 WHERE id = ?1 AND lifecycle <> 'deleted'
@@ -177,7 +180,7 @@ impl SessionStore {
         restoration: Option<&RestorationIntent<'_>>,
     ) -> Result<PreparedSessionReceipt, StoreError> {
         let _writer = self.write_guard()?;
-        validate_request(&request)?;
+        let title = super::conversation_titles::checked_title(&request.title)?;
         require_real_directory(&self.sessions_root)?;
         if request.origin == SessionOrigin::Capture && restoration.is_none() {
             self.prepare_storage_reserve()?;
@@ -203,7 +206,7 @@ impl SessionStore {
                 params![
                     session_id,
                     SCHEMA_VERSION,
-                    request.title,
+                    title,
                     request.origin.as_str(),
                     now
                 ],
@@ -288,12 +291,5 @@ impl SessionStore {
 }
 
 pub(super) fn validate_request(request: &PrepareSessionRequest) -> Result<(), StoreError> {
-    let title = request.title.trim();
-    if title.is_empty() {
-        return Err(StoreError::InvalidRequest("title is empty"));
-    }
-    if request.title.len() > MAX_TITLE_BYTES {
-        return Err(StoreError::InvalidRequest("title exceeds byte limit"));
-    }
-    Ok(())
+    super::conversation_titles::checked_title(&request.title).map(|_| ())
 }

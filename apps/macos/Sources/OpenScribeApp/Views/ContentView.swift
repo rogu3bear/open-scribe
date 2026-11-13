@@ -29,15 +29,18 @@ struct ContentView: View {
   }
 
   private var selectedSession: RuntimeSessionPresentation? {
-    if store.currentSession?.sessionId == selectedSessionId {
-      return store.currentSession
-    }
-    return store.savedSessions.first { $0.sessionId == selectedSessionId }
+    store.library.session(selectedSessionId)
   }
 
   private var canRecord: Bool {
     MainWorkspaceActions.canRecord(
       liveCanStart: liveRecording.canStart, importIsBusy: importedMediaAuthority.isBusy)
+  }
+
+  private var actions: ConversationActions {
+    ConversationActions(
+      store: store, transcripts: transcripts, playback: recoveredSessions,
+      recorderIdle: liveRecording.canStart)
   }
 
   var body: some View {
@@ -46,10 +49,8 @@ struct ContentView: View {
         store: store, importedMediaAuthority: importedMediaAuthority,
         liveRecording: liveRecording, transcripts: transcripts, speech: speech,
         scheduler: scheduler, pressure: pressure, navigation: navigation,
-        search: librarySearch,
-        onOpenSearchHit: openSearchHit,
-        onRequestDeletion: requestDeletion,
-        onCopy: copyConversation
+        search: librarySearch, actions: actions,
+        onOpenSearchHit: openSearchHit
       )
     } detail: {
       detail
@@ -61,11 +62,16 @@ struct ContentView: View {
       }
     }
     .toolbar {
+      // Record is its own item, so it reads as the window's one capture
+      // action rather than sharing a capsule with Sources.
+      ToolbarItem(placement: .primaryAction) { captureButton }
       ToolbarItemGroup(placement: .primaryAction) {
-        captureButton
         RecorderControls(recorder: liveRecording, store: store)
-        importButton
       }
+      ToolbarItem(placement: .primaryAction) {
+        RecorderSourcesControl(recorder: liveRecording, store: store)
+      }
+      ToolbarItemGroup(placement: .primaryAction) { importButton }
     }
     .onAppear {
       store.refresh()
@@ -82,11 +88,7 @@ struct ContentView: View {
       synchronizeSelection(preferCurrentSession: false)
     }
     .onChange(of: store.savedSessions.map(\.sessionId)) { _ in
-      navigation.synchronize(
-        currentSessionId: store.currentSession?.sessionId,
-        savedSessionIds: store.savedSessions.map(\.sessionId),
-        preferCurrentSession: false
-      )
+      synchronizeSelection(preferCurrentSession: false)
     }
     .onReceive(store.$savedSessions) { sessions in
       suggestions.considerLibrary(sessions)
@@ -121,135 +123,95 @@ struct ContentView: View {
 
   // MARK: Detail
 
-  private var detail: some View {
-    VStack(spacing: 0) {
-      statusBanner
-      if let selectedSession {
-        if selectedSession.sessionId == store.currentSession?.sessionId,
-          selectedSession.lifecycle != "interrupted"
-        {
-          CompactLiveView(store: store, liveRecording: liveRecording, context: context)
-        } else {
-          ConversationWorkspaceView(
-            session: selectedSession,
-            store: store,
-            playbackController: recoveredSessions,
-            transcripts: transcripts,
-            speech: speech,
-            scheduler: scheduler,
-            reference: ConversationIdentityPresentation.references(
-              for: store.savedSessions + (store.currentSession.map { [$0] } ?? [])
-            )[selectedSession.sessionId],
-            audioReviewRequest: navigation.audioReviewRequest,
-            canStartNewRecording: canRecord,
-            newRecordingUnavailableReason: importedMediaAuthority.isBusy
-              ? "Wait for the current import to finish before starting a new recording."
-              : liveRecording.isLaunchRecoveryPending()
-                ? liveRecording.readinessText
-                : "Finish the current recording action before starting a new recording.",
-            onStartNewRecording: startRecording,
-            loadRecorderEvents: { (try? liveRecording.detail(sessionId: $0).events) ?? [] },
-            suggestions: suggestions,
-            exportDestination: exportTranscriptDestination
-          )
-          .id(selectedSession.sessionId)
-        }
+  /// The selected document fills the column from the toolbar down; the
+  /// window's notices sit inside it, in the document's notice position.
+  @ViewBuilder private var document: some View {
+    if let selectedSession {
+      if selectedSession.sessionId == store.currentSession?.sessionId,
+        selectedSession.lifecycle != .interrupted
+      {
+        CompactLiveView(
+          store: store, liveRecording: liveRecording, context: context,
+          actions: actions, notices: windowNotices)
       } else {
-        EmptyConversationWorkspace(
-          canRecord: canRecord,
-          canImport: canImport,
-          hasConversations: !store.savedSessions.isEmpty,
-          recordedAudio: liveRecording.captureSelection.recordedAudio,
-          onRecord: startRecording,
-          onOpenPackage: openPackageAction
+        ConversationWorkspaceView(
+          session: selectedSession,
+          store: store,
+          playbackController: recoveredSessions,
+          transcripts: transcripts,
+          speech: speech,
+          scheduler: scheduler,
+          reference: store.library.references[selectedSession.sessionId],
+          audioReviewRequest: navigation.audioReviewRequest,
+          canStartNewRecording: canRecord,
+          newRecordingUnavailableReason: importedMediaAuthority.isBusy
+            ? "Wait for the current import to finish before starting a new recording."
+            : liveRecording.isLaunchRecoveryPending()
+              ? liveRecording.readinessText
+              : "Finish the current recording action before starting a new recording.",
+          onStartNewRecording: startRecording,
+          loadRecorderEvents: { (try? liveRecording.detail(sessionId: $0).events) ?? [] },
+          suggestions: suggestions,
+          exportDestination: exportTranscriptDestination,
+          windowNotices: windowNotices
         )
+        .id(selectedSession.sessionId)
       }
-    }
-    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-    .background(Interview.paper)
-    .overlay(alignment: .top) {
-      DropConfirmationMount(authority: importedMediaAuthority)
-        .frame(maxWidth: .infinity)
-        .frame(height: 44)
-    }
-    .overlay(alignment: .bottom) {
-      // Pending rename and deletion are published after the first layout.
-      // These strips are created with it and reveal their own controls.
-      VStack(spacing: 0) {
-        RenameConfirmationMount(store: store)
-          .frame(maxWidth: .infinity)
-          .frame(height: 112)
-        DeletionConfirmationMount(transcripts: transcripts) {
-          store.refresh()
-        }
-        .frame(maxWidth: .infinity)
-        .frame(height: 96)
-      }
+    } else {
+      EmptyConversationWorkspace(
+        canRecord: canRecord,
+        canImport: canImport,
+        hasConversations: !store.library.isEmpty,
+        recordedAudio: liveRecording.captureSelection.recordedAudio,
+        notices: windowNotices,
+        onRecord: startRecording,
+        onOpenPackage: openPackageAction
+      )
     }
   }
 
-  private var statusBanner: some View {
-    VStack(spacing: 0) {
-      RecordingProblemMount(message: liveRecording.errorMessage)
-        .frame(
-          maxWidth: .infinity,
-          minHeight: liveRecording.errorMessage == nil ? 0 : 44,
-          alignment: .leading)
-      if !workspaceNotices.isEmpty {
-        VStack(alignment: .leading, spacing: 4) {
-          ForEach(workspaceNotices) { notice in
-            if notice.id == "edit" {
-              LibraryNoticeMount(message: notice.message, isFailure: notice.isFailure)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            } else {
-              HStack(alignment: .firstTextBaseline, spacing: ScribeSpacing.related) {
-                Image(
-                  systemName: notice.isFailure ? "exclamationmark.triangle.fill" : "checkmark.circle"
-                )
-                .foregroundStyle(notice.isFailure ? Color.orange : Color.secondary)
-                Text(notice.message)
-                  .frame(maxWidth: .infinity, alignment: .leading)
-                  .fixedSize(horizontal: false, vertical: true)
-              }
-              .font(Interview.meta)
-              .foregroundStyle(notice.isFailure ? Color.primary : Color.secondary)
-              .accessibilityElement(children: .combine)
-              .accessibilityLabel(
-                "\(notice.isFailure ? "Problem" : "Status"): \(notice.message)"
-              )
-            }
-          }
-        }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 8)
-        .background(.bar)
-        .overlay(alignment: .bottom) { Divider() }
+  private var detail: some View {
+    document
+      .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+      .background(Interview.paper)
+      .overlay(alignment: .top) {
+        DropConfirmationMount(authority: importedMediaAuthority)
+          .frame(maxWidth: .infinity)
       }
-    }
+      .overlay(alignment: .bottom) {
+        // Pending rename and deletion are published after the first layout.
+        // These strips are created with it and reveal their own controls.
+        VStack(spacing: 0) {
+          RenameConfirmationMount(store: store)
+            .frame(maxWidth: .infinity)
+          DeletionConfirmationMount(transcripts: transcripts) {
+            store.refresh()
+          }
+          .frame(maxWidth: .infinity)
+        }
+      }
   }
 
   // MARK: Toolbar
 
-  private var captureButton: some View {
-    Group {
-      if liveRecording.canStop {
-        ToolbarStopMount(
-          onStop: {
-            Task {
-              await liveRecording.stop()
-              store.refresh()
-            }
-          }
-        )
-        .frame(width: 132, height: 32)
-      } else {
-        ToolbarRecordMount(
-          enabled: canRecord,
-          help: "Record \(liveRecording.captureSelection.recordedAudio)",
-          onRecord: startRecording
-        )
-        .frame(width: 104, height: 32)
+  /// Record, or Stop and Save in its place while recording.
+  @ViewBuilder private var captureButton: some View {
+    if liveRecording.canStop {
+      HostedButton(
+        title: ConversationControlLabels.stopAndSave, symbol: "stop.fill",
+        identifier: "Toolbar stop", shortcut: ConversationControlLabels.stopShortcut
+      ) {
+        Task {
+          await liveRecording.stop()
+          store.refresh()
+        }
       }
+    } else {
+      HostedButton(
+        title: ConversationControlLabels.record, identifier: "Toolbar record",
+        shortcut: ConversationControlLabels.recordShortcut,
+        help: "Record \(liveRecording.captureSelection.recordedAudio)", style: .record,
+        isEnabled: canRecord, action: startRecording)
     }
   }
 
@@ -282,7 +244,7 @@ struct ContentView: View {
     }
   }
 
-  private var openPackageAction: (() -> Void)? {
+  private var openPackageAction: (@MainActor () -> Void)? {
     guard importedMediaAuthority.canOpenPackages else { return nil }
     let authority = importedMediaAuthority
     return { authority.chooseAndOpenPackage() }
@@ -308,39 +270,41 @@ struct ContentView: View {
 
   // MARK: Notices
 
-  private var workspaceNotices: [WorkspaceNotice] {
-    var notices = [WorkspaceNotice]()
+  private var windowNotices: WindowNotices {
+    var others = [WorkspaceNotice]()
     if let message = store.errorMessage {
-      notices.append(.init(id: "library", message: message, isFailure: true))
+      others.append(.init(id: "library", message: message, isFailure: true))
     }
     if let message = recoveredSessions.errorMessage,
       recoveredSessions.errorSessionId == nil
     {
-      notices.append(.init(id: "playback", message: message, isFailure: true))
+      others.append(.init(id: "playback", message: message, isFailure: true))
     }
     if importedMediaAuthority.phase == .failed,
       let message = importedMediaAuthority.statusMessage
     {
-      notices.append(.init(id: "import", message: message, isFailure: true))
-    } else if notices.isEmpty, importedMediaAuthority.pendingAudioImport == nil,
+      others.append(.init(id: "import", message: message, isFailure: true))
+    } else if others.isEmpty, importedMediaAuthority.pendingAudioImport == nil,
       let message = importedMediaAuthority.statusMessage
     {
-      notices.append(.init(id: "import", message: message, isFailure: false))
+      others.append(.init(id: "import", message: message, isFailure: false))
     }
     if let message = transcripts.message {
-      notices.append(
+      others.append(
         .init(id: "transcripts", message: message, isFailure: transcripts.messageIsFailure))
     }
+    var edit: WorkspaceNotice?
     if let message = store.editMessage, store.pendingRename == nil {
-      notices.append(.init(id: "edit", message: message, isFailure: store.editMessageIsFailure))
+      edit = .init(id: "edit", message: message, isFailure: store.editMessageIsFailure)
     }
-    if notices.isEmpty, liveRecording.phase == .saved,
+    if others.isEmpty, edit == nil, liveRecording.phase == .saved,
       selectedSessionId == liveRecording.lastSavedSessionId,
       let message = liveRecording.mixdownStatus
     {
-      notices.append(.init(id: "mixdown", message: message, isFailure: false))
+      others.append(.init(id: "mixdown", message: message, isFailure: false))
     }
-    return notices
+    return WindowNotices(
+      recordingProblem: liveRecording.errorMessage, edit: edit, others: others)
   }
 
   // MARK: Actions
@@ -362,33 +326,13 @@ struct ContentView: View {
     }
   }
 
-  private func requestDeletion(_ session: RuntimeSessionPresentation) {
-    guard session.deletionUnavailableReason == nil else { return }
-    if recoveredSessions.activePlaybackSessionId == session.sessionId {
-      recoveredSessions.stopPlayback()
-    }
-    Task { await transcripts.requestDeletion(sessionId: session.sessionId) }
-  }
-
-  private func copyConversation(_ session: RuntimeSessionPresentation) {
-    let title = ConversationIdentityPresentation.title(for: session)
-    Task {
-      guard
-        let copied = try? await transcripts.clipboardText(
-          sessionId: session.sessionId, title: title)
-      else {
-        AccessibilityAnnouncer.post("The conversation could not be copied.")
-        return
-      }
-      ConversationClipboard.copy(copied.text)
-      AccessibilityAnnouncer.post("Copied \(title)")
-    }
-  }
-
+  /// Selection lands only on sessions the sidebar lists. An attempt that
+  /// never recorded has no row of its own; a failed start stays in the
+  /// window's problem banner instead.
   private func synchronizeSelection(preferCurrentSession: Bool) {
     navigation.synchronize(
-      currentSessionId: store.currentSession?.sessionId,
-      savedSessionIds: store.savedSessions.map(\.sessionId),
+      currentSessionId: store.currentSession.flatMap { $0.didNotRecord ? nil : $0.sessionId },
+      savedSessionIds: store.savedSessions.filter { !$0.didNotRecord }.map(\.sessionId),
       preferCurrentSession: preferCurrentSession
     )
   }
@@ -401,8 +345,9 @@ private struct EmptyConversationWorkspace: View {
   let canImport: Bool
   let hasConversations: Bool
   let recordedAudio: String
-  let onRecord: () -> Void
-  let onOpenPackage: (() -> Void)?
+  let notices: WindowNotices
+  let onRecord: @MainActor () -> Void
+  let onOpenPackage: (@MainActor () -> Void)?
 
   var body: some View {
     VStack(alignment: .leading, spacing: 18) {
@@ -418,20 +363,20 @@ private struct EmptyConversationWorkspace: View {
       .lineSpacing(Interview.speechLineSpacing)
       .fixedSize(horizontal: false, vertical: true)
       HStack(spacing: 12) {
-        RecordStartMount(enabled: canRecord, onRecord: onRecord)
-          .frame(width: 120, height: 32)
+        HostedButton(
+          title: ConversationControlLabels.record, identifier: "Record conversation",
+          style: .record, isEnabled: canRecord, action: onRecord)
         if let onOpenPackage {
-          PortablePackageOpenMount(
-            enabled: canImport,
+          HostedButton(
+            title: ConversationControlLabels.portablePackage, identifier: "Open portable package",
             help: canImport
               ? ImportedMediaAuthorityAdapter.portablePackageHelp
               : ImportedMediaAuthorityAdapter.portablePackageWaitHelp,
-            onOpen: onOpenPackage
-          )
-          .frame(width: 200, height: 32)
+            style: .large, isEnabled: canImport, action: onOpenPackage)
         }
       }
       .padding(.top, 6)
+      WindowNoticeList(notices: notices)
       Text("You can also drop an audio file (M4A or CAF) anywhere in this window.")
         .font(Interview.meta)
         .foregroundStyle(Interview.quiet)

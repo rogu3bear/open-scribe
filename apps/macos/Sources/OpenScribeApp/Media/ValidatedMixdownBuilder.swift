@@ -78,7 +78,7 @@ enum ValidatedMixdownBuilder {
     while let buffer = try reader.read(maximumFrames: 16_384) {
       try writer?.write(from: buffer)
       writtenFrames += UInt64(buffer.frameLength)
-      if writtenFrames - lastStorageCheckFrame >= 5 * 48_000 {
+      if writtenFrames - lastStorageCheckFrame >= 5 * UInt64(TimelinePCMReader.sampleRate) {
         guard try RecorderStorage.availableBytes(at: storagePath) >= authorization.writeFloorBytes
         else { throw ManagedCAFWriterError.storagePressure }
         lastStorageCheckFrame = writtenFrames
@@ -123,7 +123,7 @@ enum ValidatedMixdownBuilder {
         relativePath: authorization.relativePath,
         byteLength: size.uint64Value,
         decodedFrameCount: decodedFrames,
-        sampleRateHz: 48_000,
+        sampleRateHz: UInt32(TimelinePCMReader.sampleRate),
         channels: 2,
         codec: "aac",
         boundaryFramesReadable: true

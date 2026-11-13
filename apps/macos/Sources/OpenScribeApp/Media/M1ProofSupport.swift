@@ -1,12 +1,24 @@
+// Proof launches exist only in Debug builds; candidates build Debug.
+#if DEBUG
 @preconcurrency import AVFoundation
 import AppKit
 import Darwin
 import Foundation
 
-/// Inert in ordinary capture. The explicit process harness can suspend at a
-/// real boundary; only its parent process delivers SIGKILL.
-enum RecorderProofPhase: String, Sendable {
-  case preparation, recording, stop, seal, processing
+/// Suspends a forced-termination case at its recording boundary; only the
+/// parent process delivers SIGKILL.
+final class M1KillCheckpoint: RecordingObserver {
+  let boundary: RecordingBoundary
+  let root: URL
+
+  init(boundary: RecordingBoundary, root: URL) {
+    self.boundary = boundary
+    self.root = root
+  }
+
+  func recording(reached: RecordingBoundary, sessionId: String) {
+    if reached == boundary { ProofFiles.suspend(phase: reached, sessionId: sessionId, root: root) }
+  }
 }
 
 enum M1ProofError: Error {
@@ -17,13 +29,16 @@ func requireM1(_ condition: @autoclosure () -> Bool, _ message: String) throws {
   guard condition() else { throw M1ProofError.failed(message) }
 }
 
-enum M1ProofFiles {
+/// The files every Debug proof leaves in its root for the harness: JSON
+/// receipts, the kill checkpoint, and `proof-error`. Scripts read their names
+/// and bytes, so each is written here and nowhere else.
+enum ProofFiles {
   static func write(_ value: [String: Any], name: String, root: URL) throws {
     let data = try JSONSerialization.data(withJSONObject: value, options: [.sortedKeys])
     try data.write(to: root.appendingPathComponent(name), options: .atomic)
   }
 
-  static func suspend(phase: RecorderProofPhase, sessionId: String, root: URL) {
+  static func suspend(phase: RecordingBoundary, sessionId: String, root: URL) {
     do {
       try write(
         ["phase": phase.rawValue, "session_id": sessionId, "pid": getpid()],
@@ -40,9 +55,12 @@ enum M1ProofFiles {
   }
 
   static func fail(_ error: Error, root: URL) {
-    try? String(describing: error).write(
-      to: root.appendingPathComponent("proof-error"),
-      atomically: true, encoding: .utf8)
+    fail(String(describing: error), root: root)
+  }
+
+  static func fail(_ reason: String, root: URL) {
+    try? reason.write(
+      to: root.appendingPathComponent("proof-error"), atomically: true, encoding: .utf8)
   }
 
   @MainActor
@@ -52,6 +70,17 @@ enum M1ProofFiles {
       try await Task.sleep(for: .milliseconds(100))
     }
     throw M1ProofError.failed("timed out waiting for \(name)")
+  }
+}
+
+extension LiveMicrophoneRecordingController {
+  /// Returns once the recorder leaves `phase` or `timeout` passes. `start()`
+  /// returns while Rust still waits for every source's first sample.
+  func waitWhile(_ phase: LiveMicrophoneRecordingPhase, timeout: Duration = .seconds(60)) async {
+    let deadline = ContinuousClock.now + timeout
+    while self.phase == phase, ContinuousClock.now < deadline {
+      try? await Task.sleep(for: .milliseconds(100))
+    }
   }
 }
 
@@ -66,13 +95,17 @@ final class M1ProofPermission: MicrophonePermissionProviding {
 /// never the media writer, journal, lifecycle, playback plan, or storage policy.
 final class M1ProofSource: MicrophoneCapturing, SystemAudioCapturing, @unchecked Sendable {
   let writer: ManagedSegmentWriting
-  private var firstSample: MicrophoneFirstSampleHandler?
+  private let core: CaptureSourceCore
+  private var firstSample: CaptureFirstSampleHandler?
   private var failure: (@Sendable () -> Void)?
-  private var firstSent = false
   private var finalTime: UInt64?
   private(set) var stopped = false
+  var liveAudio: LiveAudioListenerSlot { core.liveAudio }
 
-  init(_ writer: ManagedSegmentWriting) { self.writer = writer }
+  init(_ writer: ManagedSegmentWriting) {
+    self.writer = writer
+    core = CaptureSourceCore(writer: writer)
+  }
 
   func start(
     onFirstSample: @escaping MicrophoneFirstSampleHandler,
@@ -95,15 +128,13 @@ final class M1ProofSource: MicrophoneCapturing, SystemAudioCapturing, @unchecked
     try requireM1(!stopped, "emitted on stopped source")
     let mono = writer.authorization.channels == 1
     do {
-      _ = try writer.writeCapturedBuffer(
+      let (_, receipt) = try core.write(
         TimelineRuntimeProof.buffer(
           frames: frames, value: mono ? 8192 : 16384,
           channels: writer.authorization.channels, rightValue: -8192), hostTime: host)
-      finalTime = host + AVAudioTime.hostTime(forSeconds: Double(frames) / 48_000)
-      if !firstSent {
-        firstSent = true
-        firstSample?(try writer.firstSampleReceipt(hostTime: host, frameCount: UInt64(frames)))
-      }
+      let seconds = Double(frames) / NativeCapturePolicy.current.sampleRate
+      finalTime = host + AVAudioTime.hostTime(forSeconds: seconds)
+      if let receipt { firstSample?(receipt) }
     } catch {
       failure?()
       throw error
@@ -141,12 +172,12 @@ final class M1ProofInputs: @unchecked Sendable {
   func available(at path: String) throws -> UInt64 {
     do {
       let value = try lock.withLock({ storageOverride }) ?? RecorderStorage.availableBytes(at: path)
-      try M1ProofFiles.write(
+      try ProofFiles.write(
         ["available_bytes": value], name: "storage-probe.json", root: proofRoot)
       return value
     } catch {
       let observed = error as NSError
-      try? M1ProofFiles.write(
+      try? ProofFiles.write(
         ["error_domain": observed.domain, "error_code": observed.code],
         name: "storage-probe.json", root: proofRoot)
       throw error
@@ -163,3 +194,4 @@ final class M1ProofInputs: @unchecked Sendable {
     return source
   }
 }
+#endif

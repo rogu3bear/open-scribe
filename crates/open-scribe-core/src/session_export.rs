@@ -6,13 +6,13 @@
 
 use crate::export::{
     EXPORTER_NAME, EXPORTER_VERSION, TranscriptAvailability, TranscriptExport,
-    TranscriptExportError, TranscriptExportFormat, now_milliseconds, rfc3339_utc,
+    TranscriptExportError, TranscriptExportFormat, now_milliseconds, rfc3339_utc, sync_directory,
     write_atomically_with,
 };
 use open_scribe_store::{
     SessionInventory, SessionStore, SpeakerLabelOrigin, StoreError, VerifiedMedia,
 };
-use open_scribe_types::SessionId;
+use open_scribe_types::{MEDIA_SAMPLE_RATE_HZ, SessionId, lowercase_hex};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
@@ -26,7 +26,6 @@ pub const SESSION_MANIFEST_V1_SCHEMA_JSON: &str =
     include_str!("../../../docs/data-format/session-manifest.v1.schema.json");
 pub const PORTABLE_V1_SCHEMA_JSON: &str =
     include_str!("../../../docs/data-format/portable.v1.schema.json");
-const MEDIA_SAMPLE_RATE_HZ: u32 = 48_000;
 /// A manifest larger than this is not read.
 const MAX_MANIFEST_BYTES: u64 = 16 << 20;
 /// No single package entry may exceed this.
@@ -191,7 +190,7 @@ fn manifest_document(
             "title": inventory.title,
             "origin": inventory.origin,
             "created_at_ms": inventory.created_at_ms,
-            "lifecycle": inventory.lifecycle,
+            "lifecycle": inventory.lifecycle.as_str(),
         },
         "exported_at": rfc3339_utc(exported_at_ms),
         "timeline_unit": "nanoseconds",
@@ -219,7 +218,7 @@ pub fn write_session_manifest(
     write_atomically_with(destination, |file| file.write_all(&bytes))?;
     Ok(FileExportReceipt {
         byte_length: bytes.len() as u64,
-        sha256: hex(&Sha256::digest(&bytes)),
+        sha256: lowercase_hex(&Sha256::digest(&bytes)),
     })
 }
 
@@ -323,7 +322,7 @@ pub fn export_track_wav(
             pad(&mut out, start - written)?;
             let mut frame = 0_u64;
             while frame < span.frames {
-                let end = (frame + 48_000).min(span.frames);
+                let end = (frame + u64::from(MEDIA_SAMPLE_RATE_HZ)).min(span.frames);
                 let samples = reader
                     .read_frames(index, frame, end)
                     .map_err(|error| io::Error::other(error.to_string()))?;
@@ -340,7 +339,7 @@ pub fn export_track_wav(
     })?;
     Ok(FileExportReceipt {
         byte_length: 44 + data_bytes,
-        sha256: hex(&hasher.finalize()),
+        sha256: lowercase_hex(&hasher.finalize()),
     })
 }
 
@@ -387,7 +386,7 @@ fn copy_verified(
 ) -> Result<FileExportReceipt, SessionExportError> {
     let mut hasher = Sha256::new();
     write_atomically_with(destination, |file| copy_hashing(media, file, &mut hasher))?;
-    let digest = hex(&hasher.finalize());
+    let digest = lowercase_hex(&hasher.finalize());
     if digest != media.digest_sha256 {
         let _ = fs::remove_file(destination);
         return Err(SessionExportError::Store(StoreError::IntegrityMismatch(
@@ -567,7 +566,7 @@ fn write_package_file(
         "role": role,
         "media_type": media_type,
         "byte_length": bytes.len(),
-        "sha256": hex(&Sha256::digest(bytes)),
+        "sha256": lowercase_hex(&Sha256::digest(bytes)),
     }))
 }
 
@@ -585,7 +584,7 @@ fn copy_package_media(
     let mut hasher = Sha256::new();
     copy_hashing(media, &mut file, &mut hasher)?;
     file.sync_all()?;
-    let digest = hex(&hasher.finalize());
+    let digest = lowercase_hex(&hasher.finalize());
     if digest != media.digest_sha256 {
         return Err(SessionExportError::Store(StoreError::IntegrityMismatch(
             "media changed while it was packaged",
@@ -607,7 +606,7 @@ fn sync_tree(directory: &Path) -> io::Result<()> {
             sync_tree(&entry.path())?;
         }
     }
-    File::open(directory)?.sync_all()
+    sync_directory(directory)
 }
 
 fn replace_directory(staging: &Path, destination: &Path, parent: &Path) -> io::Result<()> {
@@ -622,11 +621,11 @@ fn replace_directory(staging: &Path, destination: &Path, parent: &Path) -> io::R
         ));
         fs::rename(destination, &retired)?;
         fs::rename(staging, destination)?;
-        File::open(parent)?.sync_all()?;
+        sync_directory(parent)?;
         return fs::remove_dir_all(retired);
     }
     fs::rename(staging, destination)?;
-    File::open(parent)?.sync_all()
+    sync_directory(parent)
 }
 
 /// Checks an untrusted package: schema, normalized unique relative paths
@@ -701,7 +700,7 @@ pub(crate) fn verify_package(package: &Path) -> Result<VerifiedPackage, SessionE
         }
         let mut hasher = Sha256::new();
         io::copy(&mut file.take(length), &mut hasher)?;
-        if hex(&hasher.finalize()) != expected {
+        if lowercase_hex(&hasher.finalize()) != expected {
             return Err(invalid("a file digest differs from the manifest"));
         }
         total += length;
@@ -722,7 +721,7 @@ pub(crate) fn verify_package(package: &Path) -> Result<VerifiedPackage, SessionE
         byte_length: total,
     };
     Ok(VerifiedPackage {
-        manifest_sha256: hex(&Sha256::digest(&bytes)),
+        manifest_sha256: lowercase_hex(&Sha256::digest(&bytes)),
         manifest,
         summary,
     })
@@ -790,8 +789,4 @@ fn collect_files(
         }
     }
     Ok(())
-}
-
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }

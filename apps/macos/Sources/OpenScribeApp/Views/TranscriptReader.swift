@@ -3,156 +3,39 @@ import Combine
 import SwiftUI
 import UniformTypeIdentifiers
 
-/// The transcript Find control. Command-F is the button's key equivalent, so
-/// the search field is the only other control and does not own the shortcut.
-private struct FindShortcutMount: NSViewRepresentable {
-  let onFind: () -> Void
-
-  func makeNSView(context: Context) -> FindShortcutControl {
-    let view = FindShortcutControl()
-    view.bind(onFind: onFind)
-    return view
-  }
-
-  func updateNSView(_ view: FindShortcutControl, context: Context) {
-    view.bind(onFind: onFind)
-  }
-}
-
-private final class FindShortcutControl: NSView {
-  private let button: NSButton
-  private var onFind: (() -> Void)?
-
-  init() {
-    let button = NSButton(title: "", target: nil, action: nil)
-    self.button = button
-    super.init(frame: NSRect(x: 0, y: 0, width: 28, height: 28))
-    let label = ConversationControlLabels.findInTranscript
-    let shortcut = ConversationControlLabels.findShortcut
-    button.isBordered = false
-    button.bezelStyle = .smallSquare
-    button.image = NSImage(systemSymbolName: "magnifyingglass", accessibilityDescription: label)
-    button.imagePosition = .imageOnly
-    button.setAccessibilityLabel(label)
-    button.setAccessibilityIdentifier("Find in transcript")
-    button.keyEquivalent = String(shortcut.key.character)
-    button.keyEquivalentModifierMask = Self.modifierMask(shortcut.modifiers)
-    button.target = self
-    button.action = #selector(activate)
-    button.translatesAutoresizingMaskIntoConstraints = false
-    addSubview(button)
-    NSLayoutConstraint.activate([
-      button.leadingAnchor.constraint(equalTo: leadingAnchor),
-      button.trailingAnchor.constraint(equalTo: trailingAnchor),
-      button.topAnchor.constraint(equalTo: topAnchor),
-      button.bottomAnchor.constraint(equalTo: bottomAnchor),
-    ])
-  }
-
-  required init?(coder: NSCoder) {
-    nil
-  }
-
-  func bind(onFind: @escaping () -> Void) {
-    self.onFind = onFind
-    button.isEnabled = true
-  }
-
-  @objc private func activate() {
-    guard button.isEnabled else { return }
-    onFind?()
-  }
-
-  private static func modifierMask(_ modifiers: EventModifiers) -> NSEvent.ModifierFlags {
-    var mask: NSEvent.ModifierFlags = []
-    if modifiers.contains(.command) { mask.insert(.command) }
-    if modifiers.contains(.shift) { mask.insert(.shift) }
-    if modifiers.contains(.option) { mask.insert(.option) }
-    if modifiers.contains(.control) { mask.insert(.control) }
-    return mask
-  }
-}
-
-/// The clear control stays in the tree. A hosted window can reveal it when a
-/// query exists without inserting a new SwiftUI view.
-private struct TranscriptFindClearMount: NSViewRepresentable {
-  let visible: Bool
-  let onClear: () -> Void
-
-  func makeNSView(context: Context) -> TranscriptFindClearControl {
-    let view = TranscriptFindClearControl()
-    view.bind(visible: visible, onClear: onClear)
-    return view
-  }
-
-  func updateNSView(_ view: TranscriptFindClearControl, context: Context) {
-    view.bind(visible: visible, onClear: onClear)
-  }
-}
-
-private final class TranscriptFindClearControl: NSView {
-  private let button: NSButton
-  private var onClear: (() -> Void)?
-
-  override init(frame frameRect: NSRect) {
-    let button = NSButton(title: "", target: nil, action: nil)
-    self.button = button
-    super.init(frame: frameRect)
-    let label = ConversationControlLabels.clearTranscriptSearch
-    button.isBordered = false
-    button.bezelStyle = .smallSquare
-    button.image = NSImage(systemSymbolName: "xmark.circle.fill", accessibilityDescription: label)
-    button.imagePosition = .imageOnly
-    button.contentTintColor = .secondaryLabelColor
-    button.setAccessibilityLabel(label)
-    button.setAccessibilityIdentifier(label)
-    button.target = self
-    button.action = #selector(clear)
-    button.translatesAutoresizingMaskIntoConstraints = false
-    addSubview(button)
-    NSLayoutConstraint.activate([
-      button.leadingAnchor.constraint(equalTo: leadingAnchor),
-      button.trailingAnchor.constraint(equalTo: trailingAnchor),
-      button.topAnchor.constraint(equalTo: topAnchor),
-      button.bottomAnchor.constraint(equalTo: bottomAnchor),
-    ])
-  }
-
-  required init?(coder: NSCoder) { nil }
-
-  func bind(visible: Bool, onClear: @escaping () -> Void) {
-    self.onClear = onClear
-    button.isHidden = !visible
-    button.isEnabled = visible
-  }
-
-  @objc private func clear() {
-    guard !button.isHidden, button.isEnabled else { return }
-    onClear?()
-  }
-}
-
-/// The prior machine reading stays in the passage. Opening it reveals the
-/// stored words without inserting a new SwiftUI view.
+/// The prior machine reading stays in the passage. Whether it is open is
+/// SwiftUI state, so the passage measures the control again when it opens.
 private struct MachineReadingMount: NSViewRepresentable {
-  let available: Bool
   let verbatim: String
+  @Binding var expanded: Bool
 
   func makeNSView(context: Context) -> MachineReadingControl {
     let view = MachineReadingControl()
-    view.bind(available: available, verbatim: verbatim)
+    update(view)
     return view
   }
 
   func updateNSView(_ view: MachineReadingControl, context: Context) {
-    view.bind(available: available, verbatim: verbatim)
+    update(view)
+  }
+
+  func sizeThatFits(
+    _ proposal: ProposedViewSize, nsView: MachineReadingControl, context: Context
+  ) -> CGSize? {
+    nsView.hostedSize(width: proposal.width)
+  }
+
+  private func update(_ view: MachineReadingControl) {
+    let binding = $expanded
+    view.bind(verbatim: verbatim, expanded: expanded) { binding.wrappedValue = $0 }
   }
 }
 
-private final class MachineReadingControl: NSView {
+private final class MachineReadingControl: HostedPanel {
   private let button = NSButton(title: "Corrected · Show machine reading", target: nil, action: nil)
   private let reading = NSTextField(wrappingLabelWithString: "")
   private var expanded = false
+  private var onExpanded: ((Bool) -> Void)?
 
   override init(frame frameRect: NSRect) {
     super.init(frame: frameRect)
@@ -168,53 +51,35 @@ private final class MachineReadingControl: NSView {
     reading.font = .preferredFont(forTextStyle: .caption1)
     reading.textColor = .secondaryLabelColor
     reading.maximumNumberOfLines = 4
-    reading.preferredMaxLayoutWidth = 420
     reading.setAccessibilityLabel("Machine reading")
     reading.setAccessibilityIdentifier("Machine reading")
-    reading.setContentCompressionResistancePriority(.required, for: .vertical)
-    let column = NSStackView(views: [button, reading])
-    column.orientation = .vertical
-    column.alignment = .leading
-    column.spacing = ScribeSpacing.tight
-    column.detachesHiddenViews = false
-    column.translatesAutoresizingMaskIntoConstraints = false
-    addSubview(column)
-    let readingHeight = reading.heightAnchor.constraint(greaterThanOrEqualToConstant: 16)
-    readingHeight.priority = .defaultHigh
-    NSLayoutConstraint.activate([
-      column.leadingAnchor.constraint(equalTo: leadingAnchor),
-      column.trailingAnchor.constraint(equalTo: trailingAnchor),
-      column.topAnchor.constraint(equalTo: topAnchor),
-      column.bottomAnchor.constraint(lessThanOrEqualTo: bottomAnchor),
-      button.heightAnchor.constraint(greaterThanOrEqualToConstant: 16),
-      readingHeight,
-    ])
+    content.addArrangedSubview(button)
+    content.addArrangedSubview(reading)
+    content.spacing = ScribeSpacing.tight
   }
 
   required init?(coder: NSCoder) { nil }
 
-  override func layout() {
-    super.layout()
-    if bounds.width > 1 {
-      reading.preferredMaxLayoutWidth = bounds.width
-    }
+  override func prepareLayout(width: CGFloat) {
+    reading.preferredMaxLayoutWidth = width
   }
 
-  func bind(available: Bool, verbatim: String) {
-    if !available { expanded = false }
+  func bind(verbatim: String, expanded: Bool, onExpanded: @escaping (Bool) -> Void) {
+    self.onExpanded = onExpanded
+    self.expanded = expanded
     reading.stringValue = verbatim
-    button.isHidden = !available
-    button.isEnabled = available
-    reading.isHidden = !available || !expanded
-    isHidden = !available
+    reading.isHidden = !expanded
     button.setAccessibilityValue(expanded ? "expanded" : "collapsed")
+    invalidateIntrinsicContentSize()
   }
 
   @objc private func toggle() {
-    guard !button.isHidden, button.isEnabled else { return }
+    guard button.isEnabled else { return }
     expanded.toggle()
     reading.isHidden = !expanded
     button.setAccessibilityValue(expanded ? "expanded" : "collapsed")
+    invalidateIntrinsicContentSize()
+    onExpanded?(expanded)
   }
 }
 
@@ -247,6 +112,12 @@ private struct TranscriptFindFieldMount: NSViewRepresentable {
     if window.firstResponder !== field && window.firstResponder !== field.currentEditor() {
       window.makeFirstResponder(field)
     }
+  }
+
+  func sizeThatFits(_ proposal: ProposedViewSize, nsView: TranscriptFindField, context: Context)
+    -> CGSize?
+  {
+    CGSize(width: proposal.width ?? 180, height: ceil(nsView.intrinsicContentSize.height))
   }
 }
 
@@ -320,49 +191,6 @@ private final class TranscriptFindField: NSTextField, NSTextFieldDelegate {
   }
 }
 
-private struct TranscriptSearchCountMount: NSViewRepresentable {
-  var text: String
-
-  func makeNSView(context: Context) -> NSTextField {
-    let field = NSTextField(labelWithString: text)
-    field.font = .preferredFont(forTextStyle: .caption1)
-    field.textColor = .secondaryLabelColor
-    field.lineBreakMode = .byWordWrapping
-    field.maximumNumberOfLines = 2
-    field.setAccessibilityLabel("Transcript search count")
-    field.setAccessibilityIdentifier("Transcript search count")
-    return field
-  }
-
-  func updateNSView(_ field: NSTextField, context: Context) {
-    field.stringValue = text
-    field.isHidden = text.isEmpty
-  }
-}
-
-/// The sentence shown when the current person or query has no passages.
-/// It stays in the tree so a hosted window can reveal it without inserting a view.
-private struct TranscriptReadingEmptyMount: NSViewRepresentable {
-  let text: String
-
-  func makeNSView(context: Context) -> NSTextField {
-    let field = NSTextField(labelWithString: text)
-    field.font = .preferredFont(forTextStyle: .callout)
-    field.textColor = .secondaryLabelColor
-    field.lineBreakMode = .byWordWrapping
-    field.maximumNumberOfLines = 3
-    field.setAccessibilityLabel("Transcript reading")
-    field.setAccessibilityIdentifier("Transcript reading")
-    field.isHidden = text.isEmpty
-    return field
-  }
-
-  func updateNSView(_ field: NSTextField, context: Context) {
-    field.stringValue = text
-    field.isHidden = text.isEmpty
-  }
-}
-
 private typealias TranscriptPersonFilter = TranscriptReadingPerson
 
 /// The person menu. It is created with the reader so a hosted window can
@@ -380,6 +208,12 @@ private struct TranscriptPersonFilterMount: NSViewRepresentable {
 
   func updateNSView(_ view: TranscriptPersonFilterControl, context: Context) {
     view.bind(selection: selection, people: people, onSelect: onSelect)
+  }
+
+  func sizeThatFits(
+    _ proposal: ProposedViewSize, nsView: TranscriptPersonFilterControl, context: Context
+  ) -> CGSize? {
+    nsView.intrinsicContentSize
   }
 }
 
@@ -409,7 +243,8 @@ private final class TranscriptPersonFilterControl: NSView {
   required init?(coder: NSCoder) { nil }
 
   override var intrinsicContentSize: NSSize {
-    NSSize(width: NSView.noIntrinsicMetric, height: 24)
+    let popup = popup.intrinsicContentSize
+    return NSSize(width: ceil(max(popup.width, 220)), height: ceil(popup.height))
   }
 
   func bind(
@@ -484,7 +319,7 @@ struct TranscriptParagraph: Identifiable, Equatable {
 
   var id: String { segments[0].id }
   var lead: NativeTranscriptSegment { segments[0] }
-  var isDraft: Bool { lead.finality == "draft" }
+  var isDraft: Bool { lead.finality == .draft }
   var speaker: String { lead.speakerLabel }
   var text: String {
     segments.map { $0.effectiveText.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -505,7 +340,7 @@ struct TranscriptParagraph: Identifiable, Equatable {
         previous.map {
           $0.speakerLabel == segment.speakerLabel && $0.namedSpeakerId == segment.namedSpeakerId
         } ?? false
-      if sameVoice, let last = result.last, last.isDraft, segment.finality == "draft",
+      if sameVoice, let last = result.last, last.isDraft, segment.finality == .draft,
         last.segments.count < 8
       {
         result[result.count - 1] = TranscriptParagraph(
@@ -528,7 +363,7 @@ struct TranscriptReader: View {
   let canSeek: Bool
   let isPlaybackActive: Bool
   let playbackPosition: () -> TranscriptPlaybackPosition?
-  let onSeek: (Int64) -> Void
+  let onSeek: @MainActor (Int64) -> Void
   let onFollowPlayback: (String) -> Void
   var speakerActions: SpeakerActionController?
   var correctionActions: CorrectionActionController?
@@ -605,22 +440,30 @@ struct TranscriptReader: View {
     VStack(alignment: .leading, spacing: 6) {
       HStack(spacing: 12) {
         HStack(spacing: 4) {
-          FindShortcutMount { findFocused = true }
-            .frame(width: 22, height: 22)
+          // Command-F is this button's key equivalent, so the field beside it
+          // does not own the shortcut.
+          HostedButton(
+            title: ConversationControlLabels.findInTranscript, symbol: "magnifyingglass",
+            identifier: "Find in transcript", shortcut: ConversationControlLabels.findShortcut,
+            style: .symbol(pointSize: 13), minimumSize: CGSize(width: 22, height: 22)
+          ) { findFocused = true }
           TranscriptFindFieldMount(
             query: query, focused: findFocused, clearGeneration: findClearGeneration
           ) { next in
             query = next
             transcripts.setReadingQuery(next)
           }
-          .frame(maxWidth: .infinity, minHeight: 20)
-          TranscriptFindClearMount(visible: !query.isEmpty) {
+          HostedButton(
+            title: ConversationControlLabels.clearTranscriptSearch, symbol: "xmark.circle.fill",
+            identifier: ConversationControlLabels.clearTranscriptSearch,
+            style: .symbol(pointSize: 12), minimumSize: CGSize(width: 18, height: 18),
+            isHidden: query.isEmpty
+          ) {
             query = ""
             transcripts.setReadingQuery("")
             findClearGeneration += 1
             findFocused = true
           }
-          .frame(width: query.isEmpty ? 0 : 18, height: 18)
         }
         .padding(.horizontal, 6)
         .padding(.vertical, 3)
@@ -641,7 +484,6 @@ struct TranscriptReader: View {
             filter = next
             transcripts.setReadingPerson(next)
           }
-          .frame(width: 230, height: 24)
         }
         if isPlaybackActive {
           Toggle("Follow playback", isOn: $followsPlayback)
@@ -651,11 +493,11 @@ struct TranscriptReader: View {
             .help("Keep the passage that is playing in view. Turn off to read freely.")
         }
       }
-      TranscriptSearchCountMount(text: Self.searchCount(resultCount, query: query))
-        .frame(maxWidth: .infinity, minHeight: query.isEmpty ? 0 : 16, alignment: .leading)
+      HostedText(
+        text: Self.searchCount(resultCount, query: query), identifier: "Transcript search count",
+        label: "Transcript search count", font: .preferredFont(forTextStyle: .caption1),
+        color: .secondaryLabelColor, maximumLines: 2)
     }
-    .padding(.leading, Interview.shoulder)
-    .frame(maxWidth: Interview.documentWidth, alignment: .leading)
   }
 
   private static func searchCount(_ resultCount: Int, query: String) -> String {
@@ -692,15 +534,18 @@ struct TranscriptReader: View {
         .map { index.activeTurnIds(at: $0) } ?? [])
     let paragraphs = TranscriptParagraph.build(segments)
     let marksDrafts =
-      transcripts.segments.contains { $0.finality == "draft" }
-      && transcripts.segments.contains { $0.finality != "draft" }
+      transcripts.segments.contains { $0.finality == .draft }
+      && transcripts.segments.contains { $0.finality != .draft }
     let firstActive = paragraphs.first { paragraph in
       paragraph.segments.contains { activeIds.contains($0.id) }
     }?.id
     return VStack(alignment: .leading, spacing: 0) {
-      TranscriptReadingEmptyMount(text: Self.emptyReading(segmentCount: segments.count, query: query))
-        .frame(maxWidth: .infinity, minHeight: segments.isEmpty ? 16 : 0, alignment: .leading)
-        .padding(.leading, Interview.shoulder)
+      HostedText(
+        text: Self.emptyReading(segmentCount: segments.count, query: query),
+        identifier: "Transcript reading", label: "Transcript reading",
+        font: .preferredFont(forTextStyle: .callout), color: .secondaryLabelColor,
+        maximumLines: 3
+      )
       ForEach(paragraphs) { paragraph in
         TranscriptParagraphRow(
           paragraph: paragraph, transcripts: transcripts, query: query, scale: scale,
@@ -724,11 +569,12 @@ struct TranscriptReader: View {
     }
   }
 
-  static func passageStateWord(finality: String, corrected: Bool) -> String {
-    if finality == "draft" { return ConversationControlLabels.draftState }
-    if corrected { return "Corrected" }
-    if finality == "final" { return "Final" }
-    return finality
+  static func passageStateWord(finality: NativeTranscriptFinality, corrected: Bool) -> String {
+    switch finality {
+    case .draft: ConversationControlLabels.draftState
+    case .final: corrected ? "Corrected" : "Final"
+    case .superseded: corrected ? "Corrected" : "Superseded"
+    }
   }
 }
 
@@ -745,8 +591,9 @@ private struct TranscriptParagraphRow: View {
   let isPlaying: Bool
   let speakerActions: SpeakerActionController?
   let correctionActions: CorrectionActionController?
-  let onSeek: (Int64) -> Void
+  let onSeek: @MainActor (Int64) -> Void
   @State private var hovering = false
+  @State private var showsMachineReading = false
 
   private var lead: NativeTranscriptSegment { paragraph.lead }
   private var stamp: String { TranscriptSection.timestamp(lead.startNanoseconds) }
@@ -761,16 +608,12 @@ private struct TranscriptParagraphRow: View {
 
   var body: some View {
     HStack(alignment: .top, spacing: 0) {
-      PassageSeekMount(
-        stamp: stamp,
-        canSeek: canSeek,
-        startNanoseconds: lead.startNanoseconds,
-        stateWord: TranscriptReader.passageStateWord(
-          finality: lead.finality, corrected: corrected),
-        isPlaying: isPlaying,
-        onSeek: onSeek
-      )
-      .frame(width: Interview.shoulder - 12, height: 18, alignment: .trailing)
+      // The state word (Draft, Final, Corrected) is spoken, not printed.
+      HostedButton(
+        title: stamp, label: seekLabel, help: canSeek ? "Play from \(stamp)" : nil,
+        style: .stamp(isPlaying: isPlaying), isEnabled: canSeek
+      ) { [start = lead.startNanoseconds, onSeek] in onSeek(start) }
+      .frame(width: Interview.shoulder - 12, alignment: .trailing)
       .padding(.trailing, 12)
       .padding(.top, 3 * scale.multiplier)
       VStack(alignment: .leading, spacing: 4) {
@@ -783,8 +626,7 @@ private struct TranscriptParagraphRow: View {
           .accessibilityAddTraits(.isStaticText)
           .accessibilityLabel(spoken)
         if corrected, paragraph.segments.count == 1 {
-          MachineReadingMount(available: true, verbatim: lead.verbatimText)
-            .frame(maxWidth: .infinity, minHeight: 18, alignment: .leading)
+          MachineReadingMount(verbatim: lead.verbatimText, expanded: $showsMachineReading)
         }
       }
       .frame(maxWidth: Interview.measure, alignment: .leading)
@@ -796,24 +638,48 @@ private struct TranscriptParagraphRow: View {
       )
       .padding(.horizontal, isPlaying || isCited ? -8 : 0)
       if !paragraph.isDraft, let speakerActions, let correctionActions {
-        PassageActionsMount(
-          segmentId: lead.id, stamp: stamp, speaker: lead.speakerLabel,
-          revealed: hovering || isEditing,
-          onName: { speakerActions.beginPassage(lead.id) },
-          onCorrect: {
+        // Name and Correct fade in on hover but never leave the view tree, so
+        // keyboard, VoiceOver, and hosted proofs reach what a pointer does.
+        HStack(spacing: 4) {
+          HostedButton(
+            title: "Name", symbol: "person.crop.circle.badge.plus",
+            label: ConversationControlLabels.nameSpeakerAccessibility(
+              stamp: stamp, label: lead.speakerLabel),
+            help: "Name who is speaking", style: .symbol(pointSize: 13),
+            minimumSize: CGSize(width: 22, height: 20)
+          ) { speakerActions.beginPassage(lead.id) }
+          HostedButton(
+            title: "Correct", symbol: "pencil",
+            label: ConversationControlLabels.correctAccessibility(stamp: stamp),
+            help: "Correct this passage", style: .symbol(pointSize: 13),
+            minimumSize: CGSize(width: 22, height: 20)
+          ) {
             speakerActions.close()
             correctionActions.begin(lead.id)
           }
-        )
-        .frame(width: 52, height: 20)
+        }
+        .opacity(hovering || isEditing ? 1 : 0)
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: hovering || isEditing)
         .padding(.leading, 8)
         .padding(.top, 2)
       }
       Spacer(minLength: 0)
     }
+    .interviewMargins()
     .contentShape(Rectangle())
     .onHover { hovering = $0 }
     .accessibilityElement(children: .contain)
+  }
+
+  private var reduceMotion: Bool {
+    NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+  }
+
+  private var seekLabel: String {
+    let seek = ConversationControlLabels.seekAccessibility(stamp: stamp, canSeek: canSeek)
+    guard canSeek else { return seek }
+    let state = TranscriptReader.passageStateWord(finality: lead.finality, corrected: corrected)
+    return "\(seek), \(state)"
   }
 
   private var spoken: String {
@@ -887,185 +753,6 @@ final class CorrectionActionController: ObservableObject {
 
   func close() {
     segmentId = nil
-  }
-}
-
-/// The timestamp beside one passage. It is created with that passage so a
-/// click seeks this hosting view without waiting for a later SwiftUI pass.
-/// The state word (Draft, Final, Corrected) is spoken, not printed.
-private struct PassageSeekMount: NSViewRepresentable {
-  let stamp: String
-  let canSeek: Bool
-  let startNanoseconds: Int64
-  let stateWord: String
-  var isPlaying = false
-  let onSeek: (Int64) -> Void
-
-  func makeNSView(context: Context) -> PassageSeekControl {
-    let view = PassageSeekControl()
-    view.bind(
-      stamp: stamp, canSeek: canSeek, startNanoseconds: startNanoseconds,
-      stateWord: stateWord, isPlaying: isPlaying, onSeek: onSeek)
-    return view
-  }
-
-  func updateNSView(_ view: PassageSeekControl, context: Context) {
-    view.bind(
-      stamp: stamp, canSeek: canSeek, startNanoseconds: startNanoseconds,
-      stateWord: stateWord, isPlaying: isPlaying, onSeek: onSeek)
-  }
-}
-
-private final class PassageSeekControl: NSView {
-  private let button = NSButton(title: "", target: nil, action: nil)
-  private var startNanoseconds: Int64 = 0
-  private var onSeek: (@MainActor (Int64) -> Void)?
-
-  override init(frame frameRect: NSRect) {
-    super.init(frame: frameRect)
-    button.bezelStyle = .inline
-    button.isBordered = false
-    button.alignment = .right
-    button.target = self
-    button.action = #selector(seek)
-    button.translatesAutoresizingMaskIntoConstraints = false
-    addSubview(button)
-    NSLayoutConstraint.activate([
-      button.leadingAnchor.constraint(greaterThanOrEqualTo: leadingAnchor),
-      button.trailingAnchor.constraint(equalTo: trailingAnchor),
-      button.centerYAnchor.constraint(equalTo: centerYAnchor),
-      button.heightAnchor.constraint(greaterThanOrEqualToConstant: 16),
-    ])
-  }
-
-  required init?(coder: NSCoder) {
-    nil
-  }
-
-  override var intrinsicContentSize: NSSize {
-    NSSize(width: NSView.noIntrinsicMetric, height: 18)
-  }
-
-  func bind(
-    stamp: String,
-    canSeek: Bool,
-    startNanoseconds: Int64,
-    stateWord: String,
-    isPlaying: Bool,
-    onSeek: @escaping @MainActor (Int64) -> Void
-  ) {
-    self.startNanoseconds = startNanoseconds
-    self.onSeek = onSeek
-    let color: NSColor =
-      isPlaying ? NSColor(Interview.accent) : canSeek ? .secondaryLabelColor : .tertiaryLabelColor
-    button.title = stamp
-    button.attributedTitle = NSAttributedString(
-      string: stamp,
-      attributes: [
-        .font: NSFont.monospacedDigitSystemFont(
-          ofSize: 11, weight: isPlaying ? .semibold : .regular),
-        .foregroundColor: color,
-      ])
-    button.isEnabled = canSeek
-    button.toolTip = canSeek ? "Play from \(stamp)" : nil
-    let seek = ConversationControlLabels.seekAccessibility(stamp: stamp, canSeek: canSeek)
-    button.setAccessibilityLabel(canSeek ? "\(seek), \(stateWord)" : seek)
-  }
-
-  @objc private func seek() {
-    let start = startNanoseconds
-    let onSeek = onSeek
-    Task { @MainActor in onSeek?(start) }
-  }
-}
-
-/// Name and Correct for one Final passage. The buttons fade in on hover but
-/// never leave the view tree, so keyboard, VoiceOver, and hosted proofs reach
-/// the same controls a pointer does.
-private struct PassageActionsMount: NSViewRepresentable {
-  let segmentId: String
-  let stamp: String
-  let speaker: String
-  let revealed: Bool
-  let onName: () -> Void
-  let onCorrect: () -> Void
-
-  func makeNSView(context: Context) -> PassageActionsControl {
-    let view = PassageActionsControl()
-    view.bind(self)
-    return view
-  }
-
-  func updateNSView(_ view: PassageActionsControl, context: Context) {
-    view.bind(self)
-  }
-}
-
-private final class PassageActionsControl: NSView {
-  private let nameButton = NSButton(title: "Name", target: nil, action: nil)
-  private let correctButton = NSButton(title: "Correct", target: nil, action: nil)
-  private var onName: (() -> Void)?
-  private var onCorrect: (() -> Void)?
-
-  override init(frame frameRect: NSRect) {
-    super.init(frame: frameRect)
-    for (button, symbol, tip) in [
-      (nameButton, "person.crop.circle.badge.plus", "Name who is speaking"),
-      (correctButton, "pencil", "Correct this passage"),
-    ] {
-      button.isBordered = false
-      button.bezelStyle = .smallSquare
-      button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: tip)
-      button.imagePosition = .imageOnly
-      button.contentTintColor = .secondaryLabelColor
-      button.toolTip = tip
-      button.target = self
-      button.translatesAutoresizingMaskIntoConstraints = false
-      addSubview(button)
-    }
-    nameButton.action = #selector(name)
-    correctButton.action = #selector(correct)
-    NSLayoutConstraint.activate([
-      nameButton.leadingAnchor.constraint(equalTo: leadingAnchor),
-      nameButton.centerYAnchor.constraint(equalTo: centerYAnchor),
-      nameButton.widthAnchor.constraint(equalToConstant: 22),
-      nameButton.heightAnchor.constraint(equalToConstant: 20),
-      correctButton.leadingAnchor.constraint(equalTo: nameButton.trailingAnchor, constant: 4),
-      correctButton.centerYAnchor.constraint(equalTo: centerYAnchor),
-      correctButton.widthAnchor.constraint(equalToConstant: 22),
-      correctButton.heightAnchor.constraint(equalToConstant: 20),
-    ])
-  }
-
-  required init?(coder: NSCoder) { nil }
-
-  func bind(_ mount: PassageActionsMount) {
-    onName = mount.onName
-    onCorrect = mount.onCorrect
-    nameButton.setAccessibilityLabel(
-      ConversationControlLabels.nameSpeakerAccessibility(stamp: mount.stamp, label: mount.speaker))
-    correctButton.setAccessibilityLabel(
-      ConversationControlLabels.correctAccessibility(stamp: mount.stamp))
-    nameButton.identifier = NSUserInterfaceItemIdentifier(mount.segmentId)
-    correctButton.identifier = NSUserInterfaceItemIdentifier(mount.segmentId)
-    let alpha: CGFloat = mount.revealed ? 1 : 0
-    if nameButton.alphaValue != alpha {
-      NSAnimationContext.runAnimationGroup { context in
-        context.duration = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? 0 : 0.12
-        nameButton.animator().alphaValue = alpha
-        correctButton.animator().alphaValue = alpha
-      }
-    }
-  }
-
-  @objc private func name() {
-    let onName = onName
-    Task { @MainActor in onName?() }
-  }
-
-  @objc private func correct() {
-    let onCorrect = onCorrect
-    Task { @MainActor in onCorrect?() }
   }
 }
 
@@ -1430,7 +1117,7 @@ private final class SpeakerActionBanner: NSView, NSTextFieldDelegate {
     let actions = actions
     let sessionId = sessionId
     Task { @MainActor in
-      guard let transcripts, let actions, transcripts.sessionId == sessionId,
+      guard let transcripts, let actions, transcripts.hasLoaded(sessionId),
         !transcripts.isEditing
       else { return }
       let saved: Bool
@@ -1454,7 +1141,7 @@ private final class SpeakerActionBanner: NSView, NSTextFieldDelegate {
     let actions = actions
     let sessionId = sessionId
     Task { @MainActor in
-      guard let transcripts, let actions, transcripts.sessionId == sessionId,
+      guard let transcripts, let actions, transcripts.hasLoaded(sessionId),
         !transcripts.isEditing, let passageId = actions.passageId,
         let segment = transcripts.segments.first(where: { $0.id == passageId }),
         segment.namedSpeakerId != nil
@@ -1473,7 +1160,7 @@ private final class SpeakerActionBanner: NSView, NSTextFieldDelegate {
     let sessionId = sessionId
     Task { @MainActor in
       guard let transcripts, let actions, let absorbId = actions.personId,
-        transcripts.sessionId == sessionId, !transcripts.isEditing
+        transcripts.hasLoaded(sessionId), !transcripts.isEditing
       else { return }
       let saved = await transcripts.mergeNamedSpeakers(
         sessionId: sessionId, keepId: keepId, absorbId: absorbId)
@@ -1488,7 +1175,7 @@ private final class SpeakerActionBanner: NSView, NSTextFieldDelegate {
     let actions = actions
     let sessionId = sessionId
     Task { @MainActor in
-      guard let transcripts, let actions, transcripts.sessionId == sessionId,
+      guard let transcripts, let actions, transcripts.hasLoaded(sessionId),
         !transcripts.isEditing, let passageId = actions.passageId,
         let segment = transcripts.segments.first(where: { $0.id == passageId }),
         let speakerId = segment.namedSpeakerId
@@ -1616,7 +1303,7 @@ private final class CorrectionActionBanner: NSView, NSTextFieldDelegate {
     guard let transcripts, let actions else { return }
     guard let segmentId = actions.segmentId,
       let segment = transcripts.segments.first(where: { $0.id == segmentId }),
-      transcripts.sessionId == sessionId
+      transcripts.hasLoaded(sessionId)
     else {
       hideEditor()
       return
@@ -1664,7 +1351,7 @@ private final class CorrectionActionBanner: NSView, NSTextFieldDelegate {
     let sessionId = sessionId
     let segmentId = actions?.segmentId
     Task { @MainActor in
-      guard let transcripts, let actions, transcripts.sessionId == sessionId,
+      guard let transcripts, let actions, transcripts.hasLoaded(sessionId),
         !transcripts.isEditing,
         let segmentId,
         let segment = transcripts.segments.first(where: { $0.id == segmentId })
@@ -1685,7 +1372,7 @@ private final class CorrectionActionBanner: NSView, NSTextFieldDelegate {
     let sessionId = sessionId
     let segmentId = actions?.segmentId
     Task { @MainActor in
-      guard let transcripts, let actions, transcripts.sessionId == sessionId,
+      guard let transcripts, let actions, transcripts.hasLoaded(sessionId),
         !transcripts.isEditing,
         let segmentId,
         let segment = transcripts.segments.first(where: { $0.id == segmentId }),
@@ -1723,6 +1410,13 @@ struct ReviewTrayMount: NSViewRepresentable {
   func updateNSView(_ view: ReviewTrayControl, context: Context) {
     view.bind(self)
   }
+
+  func sizeThatFits(_ proposal: ProposedViewSize, nsView: ReviewTrayControl, context: Context)
+    -> CGSize?
+  {
+    let fitting = nsView.fittingContentSize
+    return CGSize(width: proposal.width ?? fitting.width, height: max(1, fitting.height))
+  }
 }
 
 final class ReviewTrayControl: NSView {
@@ -1751,8 +1445,13 @@ final class ReviewTrayControl: NSView {
 
   required init?(coder: NSCoder) { nil }
 
+  var fittingContentSize: CGSize {
+    let size = stack.fittingSize
+    return CGSize(width: ceil(size.width), height: ceil(size.height))
+  }
+
   override var intrinsicContentSize: NSSize {
-    NSSize(width: NSView.noIntrinsicMetric, height: max(1, stack.fittingSize.height))
+    NSSize(width: NSView.noIntrinsicMetric, height: max(1, fittingContentSize.height))
   }
 
   func bind(_ mount: ReviewTrayMount) {

@@ -443,7 +443,7 @@ final class ContextTests: XCTestCase {
     XCTAssertEqual(model.current?.reason, "display_removed")
     XCTAssertFalse(model.isLive)
     // The recording itself was never touched.
-    XCTAssertEqual(try fixture.preparation.recorderDetail(sessionId: fixture.sessionId).lifecycle, "recording")
+    XCTAssertEqual(try fixture.preparation.recorderDetail(sessionId: fixture.sessionId).lifecycle, .recording)
     withExtendedLifetime(fixture.writer) {}
   }
 
@@ -475,7 +475,7 @@ final class ContextTests: XCTestCase {
       "Screen Recording permission was turned off. Context stopped; audio recording continues.")
     XCTAssertEqual(model.permission, .denied)
     XCTAssertEqual(
-      try fixture.preparation.recorderDetail(sessionId: fixture.sessionId).lifecycle, "recording")
+      try fixture.preparation.recorderDetail(sessionId: fixture.sessionId).lifecycle, .recording)
 
     permission.grant()
     XCTAssertTrue(model.authorize())
@@ -489,7 +489,7 @@ final class ContextTests: XCTestCase {
       model.message,
       "Screen Recording permission was turned off. Context stopped; audio recording continues.")
     XCTAssertEqual(
-      try fixture.preparation.recorderDetail(sessionId: fixture.sessionId).lifecycle, "recording")
+      try fixture.preparation.recorderDetail(sessionId: fixture.sessionId).lifecycle, .recording)
     withExtendedLifetime(fixture.writer) {}
   }
 
@@ -754,7 +754,7 @@ final class ContextTests: XCTestCase {
     XCTAssertEqual(ConversationControlLabels.pause, "Pause")
     XCTAssertEqual(ConversationControlLabels.resume, "Resume")
     XCTAssertEqual(ConversationControlLabels.addMarker, "Add Marker")
-    XCTAssertEqual(ConversationControlLabels.reviewPreservedAudio, "Review Preserved Audio")
+    XCTAssertEqual(ConversationControlLabels.reviewPreservedAudio, "Review Audio")
     XCTAssertEqual(ConversationControlLabels.findInTranscript, "Find in this transcript")
     XCTAssertEqual(ConversationControlLabels.searchTranscripts, "Search transcripts")
     XCTAssertEqual(ConversationControlLabels.exportTranscript, "Export Transcript…")
@@ -780,17 +780,17 @@ final class ContextTests: XCTestCase {
       ConversationControlLabels.correctAccessibility(stamp: "0:01"), "Correct the text at 0:01")
     XCTAssertEqual(
       ConversationControlLabels.passageAccessibility(
-        speaker: "Local user", text: "later brook", finality: "draft", corrected: false,
+        speaker: "Local user", text: "later brook", finality: .draft, corrected: false,
         isPlaying: false, isCited: false),
       "Local user. later brook Draft.")
     XCTAssertEqual(
       ConversationControlLabels.passageAccessibility(
-        speaker: "Local user", text: "later brook", finality: "final", corrected: false,
+        speaker: "Local user", text: "later brook", finality: .final, corrected: false,
         isPlaying: false, isCited: false),
       "Local user. later brook Final.")
     XCTAssertEqual(
       ConversationControlLabels.passageAccessibility(
-        speaker: "Local user", text: "later brook", finality: "final", corrected: true,
+        speaker: "Local user", text: "later brook", finality: .final, corrected: true,
         isPlaying: true, isCited: false),
       "Local user. later brook Playing. Corrected.")
     XCTAssertFalse(ConversationControlLabels.stopAndSave.contains("#"))
@@ -804,15 +804,15 @@ final class ContextTests: XCTestCase {
     XCTAssertEqual(PlaybackControlAction.stop.title, "Stop")
   }
 
-  /// The transcript reader stores this scale and calls `TranscriptPassagePresentation.make`.
-  /// This does not host the reader, drive VoiceOver, or walk focus order.
+  /// The reader stores this scale, steps it from View ▸ Bigger and Smaller,
+  /// and names a passage's search matches in its spoken label. This does not
+  /// host the reader, drive VoiceOver, or walk focus order.
   func testLargerTranscriptTextStaysNamedAndSearchMatchesStayMarked() throws {
     XCTAssertEqual(TranscriptTextScale.resolve(nil), .standard)
     XCTAssertEqual(TranscriptTextScale.resolve("purple"), .standard)
     XCTAssertEqual(TranscriptTextScale.resolve(TranscriptTextScale.larger.rawValue), .larger)
     XCTAssertEqual(
       TranscriptTextScale.resolve("purple").rawValue, TranscriptTextScale.standard.rawValue)
-    XCTAssertEqual(TranscriptTextScale.controlLabel, "Transcript text size")
     XCTAssertEqual(TranscriptTextScale.standard.spokenValue, "Standard text")
     XCTAssertEqual(TranscriptTextScale.larger.spokenValue, "Larger text")
     XCTAssertEqual(TranscriptTextScale.largest.spokenValue, "Largest text")
@@ -820,6 +820,10 @@ final class ContextTests: XCTestCase {
       XCTAssertFalse(scale.spokenValue.contains("#"))
       XCTAssertFalse(scale.title.isEmpty)
     }
+    XCTAssertEqual(TranscriptTextScale.standard.stepped(1), .larger)
+    XCTAssertEqual(TranscriptTextScale.largest.stepped(1), .largest)
+    XCTAssertEqual(TranscriptTextScale.larger.stepped(-1), .standard)
+    XCTAssertEqual(TranscriptTextScale.standard.stepped(-1), .standard)
 
     let suite = "OpenScribe.Proof.TranscriptText.\(UUID().uuidString)"
     let store = try XCTUnwrap(UserDefaults(suiteName: suite))
@@ -830,29 +834,26 @@ final class ContextTests: XCTestCase {
     let chosen = TranscriptTextScale.resolve(store.string(forKey: TranscriptTextScale.storageKey))
     XCTAssertEqual(chosen, .largest)
     XCTAssertEqual(chosen.spokenValue, "Largest text")
-    XCTAssertLessThan(TranscriptTextScale.standard.pointSize, TranscriptTextScale.larger.pointSize)
-    XCTAssertLessThan(TranscriptTextScale.larger.pointSize, TranscriptTextScale.largest.pointSize)
+    XCTAssertLessThan(TranscriptTextScale.standard.multiplier, TranscriptTextScale.larger.multiplier)
+    XCTAssertLessThan(TranscriptTextScale.larger.multiplier, TranscriptTextScale.largest.multiplier)
 
     let value = "alpha bravo"
-    let marked = TranscriptPassagePresentation.make(
-      speaker: "Local user", text: value, finality: "final", corrected: false, isPlaying: false,
-      isCited: false, query: "bravo", scale: .largest)
-    XCTAssertEqual(marked.spoken, "Local user. alpha bravo Final. Matches bravo.")
-    let match = try XCTUnwrap(value.range(of: "bravo"))
-    let matchRange = try XCTUnwrap(Range(match, in: marked.text))
-    XCTAssertEqual(marked.text[matchRange].underlineStyle, .single)
-    XCTAssertNotNil(marked.text[matchRange].font)
-    let other = try XCTUnwrap(value.range(of: "alpha"))
-    let otherRange = try XCTUnwrap(Range(other, in: marked.text))
-    XCTAssertNil(marked.text[otherRange].underlineStyle)
+    let matches = TranscriptSearch.ranges(in: value, query: "bravo")
+    XCTAssertEqual(matches.map { String(value[$0]) }, ["bravo"])
+    XCTAssertEqual(
+      ConversationControlLabels.passageAccessibility(
+        speaker: "Local user", text: value, finality: .final, corrected: false, isPlaying: false,
+        isCited: false, matches: matches.map { String(value[$0]) }),
+      "Local user. alpha bravo Final. Matches bravo.")
 
-    let cleared = TranscriptPassagePresentation.make(
-      speaker: "Local user", text: value, finality: "final", corrected: true, isPlaying: false,
-      isCited: false, query: " \n", scale: .larger)
-    XCTAssertEqual(cleared.spoken, "Local user. alpha bravo Corrected.")
-    XCTAssertFalse(cleared.spoken.contains(" Final."))
-    XCTAssertFalse(cleared.spoken.contains("Matches"))
-    XCTAssertTrue(cleared.text.runs.allSatisfy { $0.underlineStyle == nil })
+    let cleared = TranscriptSearch.ranges(in: value, query: " \n")
+    XCTAssertTrue(cleared.isEmpty)
+    let spoken = ConversationControlLabels.passageAccessibility(
+      speaker: "Local user", text: value, finality: .final, corrected: true, isPlaying: false,
+      isCited: false, matches: cleared.map { String(value[$0]) })
+    XCTAssertEqual(spoken, "Local user. alpha bravo Corrected.")
+    XCTAssertFalse(spoken.contains(" Final."))
+    XCTAssertFalse(spoken.contains("Matches"))
   }
 
   func testScopeSummariesStateScopeRetentionAndWhyContextStopped() throws {

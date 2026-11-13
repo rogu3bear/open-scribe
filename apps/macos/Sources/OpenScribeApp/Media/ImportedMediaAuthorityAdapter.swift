@@ -420,7 +420,7 @@ final class ImportedMediaAuthorityAdapter: ObservableObject {
   nonisolated static func packageFailureMessage(_ error: Error) -> String {
     switch error as? NativeStorageError {
     case .IntegrityMismatch:
-      "This package did not verify: a file is missing, changed, linked, or not listed in its manifest. Nothing was added."
+      "This package couldn't be opened: a file is missing, changed, linked, or not listed in its manifest. Nothing was added."
     case .InvalidRequest:
       "This package's transcript, timeline, or markers do not match its audio. Nothing was added."
     case .InvalidState:
@@ -434,7 +434,7 @@ final class ImportedMediaAuthorityAdapter: ObservableObject {
     let panel = NSOpenPanel()
     panel.title = "Open Portable Package"
     panel.message =
-      "Choose a .openscribe package exported by Open Scribe. It is verified before anything is copied."
+      "Choose a .openscribe package exported by Open Scribe. It is checked before anything is copied."
     panel.prompt = "Open"
     panel.canChooseFiles = false
     panel.canChooseDirectories = true
@@ -498,7 +498,7 @@ final class ImportedMediaAuthorityAdapter: ObservableObject {
       case .InvalidRequest:
         return "This file is not a supported PCM CAF or 48 kHz mono/stereo M4A. Nothing was added."
       default:
-        return "Open Scribe could not save a verified local copy. Nothing was added."
+        return "Open Scribe couldn't save a copy of this audio. Nothing was added."
       }
     }
     return
@@ -511,11 +511,11 @@ final class ImportedMediaAuthorityAdapter: ObservableObject {
     "Wait for the current recording or import to finish before opening a package"
 
   static var importLimitHelp: String {
-    "Add local CAF or M4A audio (PCM CAF up to \(pcmLimitMiB) MiB, M4A up to \(m4aLimitGiB) GiB, four hours). Choose Audio Files, or drop a file on the library and confirm the import."
+    "Add local CAF or M4A audio (PCM CAF up to \(pcmLimitMiB) MiB, M4A up to \(m4aLimitGiB) GiB, \(durationLimit)). Choose Audio Files, or drop a file on the library and confirm the import."
   }
 
   private static var importLimitPrompt: String {
-    "Choose local PCM CAF files (up to \(pcmLimitMiB) MiB each) or AAC/Apple Lossless M4A files (up to \(m4aLimitGiB) GiB each), up to four hours per recording. Files are imported one at a time; originals are kept. Transcription follows your Settings preference."
+    "Choose local PCM CAF files (up to \(pcmLimitMiB) MiB each) or AAC/Apple Lossless M4A files (up to \(m4aLimitGiB) GiB each), up to \(durationLimit) per recording. Files are imported one at a time; originals are kept. Transcription follows your Settings preference."
   }
 
   private static var pcmLimitMiB: UInt64 {
@@ -524,5 +524,15 @@ final class ImportedMediaAuthorityAdapter: ObservableObject {
 
   private static var m4aLimitGiB: UInt64 {
     nativeImportPolicy().maximumSourceBytes / 1_073_741_824
+  }
+
+  /// Rust's import duration limit in whole hours, spelled out ("four hours").
+  private static var durationLimit: String {
+    let hours = nativeImportPolicy().maximumDurationNanoseconds / 3_600_000_000_000
+    let words = NumberFormatter()
+    words.locale = Locale(identifier: "en_US_POSIX")
+    words.numberStyle = .spellOut
+    let count = words.string(from: NSNumber(value: hours)) ?? String(hours)
+    return hours == 1 ? "\(count) hour" : "\(count) hours"
   }
 }

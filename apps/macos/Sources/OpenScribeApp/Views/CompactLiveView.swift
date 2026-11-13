@@ -1,20 +1,30 @@
 import AppKit
 import SwiftUI
 
+/// The recording in progress: status, title, sources, Copy So Far, the
+/// window's notices, markers, and the live interview.
 struct CompactLiveView: View {
   @ObservedObject var store: RuntimeLibraryStore
   @ObservedObject var liveRecording: LiveMicrophoneRecordingController
   @ObservedObject var context: ContextScopeModel
+  /// Copy So Far acts through the window's one action owner; it copies the
+  /// Draft windows stored so far.
+  let actions: ConversationActions?
+  let notices: WindowNotices
 
   @MainActor
   init(
     store: RuntimeLibraryStore,
     liveRecording: LiveMicrophoneRecordingController,
-    context: ContextScopeModel? = nil
+    context: ContextScopeModel? = nil,
+    actions: ConversationActions? = nil,
+    notices: WindowNotices = .none
   ) {
     self.store = store
     self.liveRecording = liveRecording
     self.context = context ?? ContextScopeModel(binding: { nil })
+    self.actions = actions
+    self.notices = notices
   }
 
   var body: some View {
@@ -25,7 +35,7 @@ struct CompactLiveView: View {
             statusLine
               .padding(.top, 34)
             if let current = store.currentSession {
-              Text(liveTitle(current))
+              Text(ConversationIdentityPresentation.title(for: current))
                 .font(Interview.title())
                 .foregroundStyle(Interview.ink)
                 .textSelection(.enabled)
@@ -36,15 +46,12 @@ struct CompactLiveView: View {
                 .padding(.top, 8)
               actionRow
                 .padding(.top, 16)
-              notices(current)
+              noticeList(current)
                 .padding(.top, 14)
               let events = liveRecording.recorderDetail?.events ?? []
-              LiveMarkerListMount(events: events)
-                .frame(
-                  maxWidth: .infinity,
-                  minHeight: Self.markerListHeight(events),
-                  alignment: .topLeading)
-                .padding(.top, events.contains { $0.kind == "marker_added" } ? 16 : 0)
+              HostedList(
+                heading: "Markers", identifier: "Live markers", rows: markerRows(events),
+                lead: .stampText)
               InterviewRule()
                 .padding(.top, 22)
                 .padding(.bottom, 20)
@@ -53,8 +60,10 @@ struct CompactLiveView: View {
               recordingDetails(events: events)
                 .padding(.top, 40)
             } else {
+              WindowNoticeList(notices: notices)
+                .padding(.top, 14)
               Text(
-                "Start deliberately from this window or the menu bar. Open Scribe will show Recording only after both required sources are durably active."
+                "Press Record to capture your microphone and the other side of the call. The words appear here as people speak."
               )
               .font(Interview.speech())
               .foregroundStyle(Interview.quiet)
@@ -62,7 +71,6 @@ struct CompactLiveView: View {
               .padding(.top, 14)
             }
           }
-          .padding(.leading, Interview.shoulder)
           .padding(.bottom, 64)
         }
       }
@@ -77,7 +85,7 @@ struct CompactLiveView: View {
         proxy.scrollTo("live-end", anchor: .bottom)
       }
     }
-    .frame(maxWidth: .infinity, minHeight: 430, alignment: .topLeading)
+    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     .onAppear {
       AppTelemetry.runtimeSceneAppeared("live-session", session: store.currentSession)
     }
@@ -86,16 +94,23 @@ struct CompactLiveView: View {
   @State private var followsLive = true
   @State private var copyNote: String?
 
+  private var status: CaptureStatusPresentation {
+    CaptureStatusPresentation.current(
+      session: store.currentSession, snapshotStale: false, livePhase: liveRecording.phase,
+      liveText: liveRecording.statusText)
+  }
+
   /// "● Recording  12:04", the word and the timer always together.
   private var statusLine: some View {
-    HStack(alignment: .firstTextBaseline, spacing: 8) {
-      Image(systemName: statusSymbol)
-        .foregroundStyle(statusColor)
-      Text(statusText)
+    let status = status
+    return HStack(alignment: .firstTextBaseline, spacing: 8) {
+      Image(systemName: status.symbolName)
+        .foregroundStyle(status.tint.color)
+      Text(status.text)
         .font(.system(size: 13, weight: .semibold))
-        .foregroundStyle(store.currentSession?.isRecording == true ? Interview.ink : Interview.quiet)
-      if let current = store.currentSession {
-        Text(current.timerText)
+        .foregroundStyle(status.tint == .recording ? Interview.ink : Interview.quiet)
+      if let timer = status.timer {
+        Text(timer)
           .font(.system(size: 13, weight: .medium).monospacedDigit())
           .foregroundStyle(Interview.quiet)
       }
@@ -104,13 +119,9 @@ struct CompactLiveView: View {
     .accessibilityLabel(accessibilityStatus)
   }
 
-  private func liveTitle(_ current: RuntimeSessionPresentation) -> String {
-    ConversationIdentityPresentation.title(for: current)
-  }
-
   private func facts(_ current: RuntimeSessionPresentation) -> [String] {
     current.sources.map { source in
-      source.lifecycle == "capturing" ? source.name : "\(source.name): \(source.stateText)"
+      source.lifecycle == .capturing ? source.name : "\(source.name): \(source.stateText)"
     }
   }
 
@@ -122,7 +133,7 @@ struct CompactLiveView: View {
         Label("Copy So Far", systemImage: "doc.on.doc")
       }
       .controlSize(.large)
-      .disabled(liveRecording.liveCaptions.lines.isEmpty)
+      .disabled(actions == nil || liveRecording.liveCaptions.lines.isEmpty)
       .help("Copy the live transcript so far")
       Toggle("Follow", isOn: $followsLive)
         .toggleStyle(.checkbox)
@@ -139,29 +150,44 @@ struct CompactLiveView: View {
     }
   }
 
-  @ViewBuilder private func notices(_ current: RuntimeSessionPresentation) -> some View {
-    VStack(alignment: .leading, spacing: 10) {
+  /// The window's notices, then the recording's own: interruption, storage,
+  /// live transcript status and context.
+  private func noticeList(_ current: RuntimeSessionPresentation) -> some View {
+    VStack(alignment: .leading, spacing: 0) {
+      WindowNoticeList(notices: notices)
       if let interruption = current.interruptionText {
         CaptureIssueLabel(message: interruption)
           .font(Interview.meta)
-          .accessibilityLabel("Capture needs attention. \(interruption)")
+          .accessibilityLabel("Needs attention. \(interruption)")
+          .padding(.bottom, 10)
       }
-      StorageNoticeMount(notice: storagePressureNotice)
-        .frame(
-          maxWidth: .infinity,
-          minHeight: Self.storageNoticeHeight(storagePressureNotice),
-          alignment: .topLeading)
+      HostedText(
+        text: storagePressureNotice, identifier: "Storage notice",
+        font: .preferredFont(forTextStyle: .callout), maximumLines: 3)
+      .padding(.bottom, storagePressureNotice == nil ? 0 : 10)
       LiveCaptionStatusNotice(captions: liveRecording.liveCaptions)
       if liveRecording.contextBinding != nil {
         ContextInspector(model: context)
+          .padding(.top, 10)
       }
     }
   }
 
+  /// Markers written while capture is open. Each names the stored session
+  /// time and does not play while the writer holds the file.
+  private func markerRows(_ events: [NativeRecorderEvent]) -> [HostedListRow] {
+    events.filter { $0.kind == .markerAdded }.map { marker in
+      let stamp = TranscriptSection.timestamp(marker.sessionNanoseconds)
+      return HostedListRow(
+        id: marker.id, lead: stamp, detail: marker.label.isEmpty ? "Marker" : marker.label,
+        label: ConversationControlLabels.liveMarkerAccessibility(stamp: stamp, label: marker.label))
+    }
+  }
+
   @ViewBuilder private func recordingDetails(events: [NativeRecorderEvent]) -> some View {
-    let details = events.filter { $0.kind != "marker_added" }
+    let details = events.filter { $0.kind != .markerAdded }
     if !details.isEmpty {
-      DisclosureGroup("Recording journal") {
+      DisclosureGroup("Recording events") {
         ScrollView {
           RecorderEventList(events: details, heading: "Events")
         }
@@ -173,87 +199,31 @@ struct CompactLiveView: View {
   }
 
   private func copySoFar() {
-    let lines = liveRecording.liveCaptions.lines
-    guard !lines.isEmpty, let current = store.currentSession else { return }
-    let text = LiveTranscriptColumn.clipboardText(
-      title: liveTitle(current), timer: current.timerText, lines: lines)
-    ConversationClipboard.copy(text)
-    AccessibilityAnnouncer.post("Copied the live transcript so far")
-    copyNote = "Copied"
+    guard let actions, let current = store.currentSession else { return }
     Task {
+      guard let note = await actions.copy(current) else { return }
+      copyNote = note
       try? await Task.sleep(nanoseconds: 2_000_000_000)
-      copyNote = nil
+      if copyNote == note { copyNote = nil }
     }
   }
 
-  private var statusText: String {
-    if liveRecording.phase == .requestingPermission { return liveRecording.statusText }
-    if let current = store.currentSession { return current.statusText }
-    return switch liveRecording.phase {
-    case .requestingPermission, .preparing, .starting: liveRecording.statusText
-    case .capturing: "Confirming durable recording…"
-    case .stopping: "Securing recording…"
-    case .saved: liveRecording.statusText
-    case .failed: liveRecording.statusText
-    default: "Ready to record"
-    }
-  }
-
-  var statusSymbol: String {
-    if store.currentSession?.isRecording == true { return "record.circle.fill" }
-    if store.currentSession?.needsAttention == true || liveRecording.phase == .failed {
-      return "exclamationmark.circle"
-    }
-    if let paused = store.currentSession?.pausedStatusSymbolName { return paused }
-    if store.currentSession == nil,
-      liveRecording.phase == .pausing || liveRecording.phase == .paused
-    {
-      return SymbolResolver.pausedCaptureSymbolName
-    }
-    if liveRecording.phase == .starting || liveRecording.phase == .preparing {
-      return "waveform"
-    }
-    return "record.circle"
-  }
-
-  private var statusColor: Color {
-    if store.currentSession?.isRecording == true { return .red }
-    if store.currentSession?.needsAttention == true || liveRecording.phase == .failed {
-      return .orange
-    }
-    return .secondary
-  }
-
-  /// The storage notice is created with the live session. Its height grows only
-  /// while Rust reports a warning, so a normal recording does not reserve a row.
-  private static func storageNoticeHeight(_ notice: String?) -> CGFloat {
-    notice == nil ? 0 : 48
-  }
-
-  /// The marker list is created with the live session. Its height grows only
-  /// when a marker has been saved, so an empty recording does not reserve a row.
-  private static func markerListHeight(_ events: [NativeRecorderEvent]) -> CGFloat {
-    let count = events.filter { $0.kind == "marker_added" }.count
-    return count == 0 ? 0 : CGFloat(24 + count * 28)
-  }
+  var statusSymbol: String { status.symbolName }
 
   /// The same notice the live surface shows while Rust reports storage warning.
   var storagePressureNotice: String? { liveRecording.storagePressureNotice }
 
   var accessibilityStatus: String {
-    let base: String
-    if liveRecording.phase == .requestingPermission {
-      base = statusText
-    } else if let current = store.currentSession {
+    var base = status.accessibilityText
+    if liveRecording.phase != .requestingPermission, let current = store.currentSession {
       let sources = current.sources.map { "\($0.name): \($0.stateText)" }.joined(separator: ", ")
-      base = "\(current.statusText), \(current.timerText). \(sources)."
-    } else {
-      base = statusText
+      base += ". \(sources)."
     }
     guard let storagePressureNotice else { return base }
     return "\(base) \(storagePressureNotice)"
   }
 }
+
 /// The words of the recording in progress, as an interview: each settled
 /// phrase on its own line in ink, with the speaker's name where the voice
 /// changes, and the phrase still being heard in quiet ink beneath them.
@@ -294,46 +264,6 @@ struct LiveTranscriptColumn: View {
     case .idle: "Words appear here as people speak."
     }
   }
-
-  struct Paragraph: Identifiable {
-    let id: String
-    let speaker: String
-    let start: Int64
-    var text: String
-  }
-
-  /// For Copy So Far only: settled lines of one voice join into a turn until
-  /// a pause of four seconds or about ninety words, as a saved conversation's
-  /// Copy does. The screen shows each phrase on its own line.
-  static func paragraphs(_ lines: [LiveCaptionLine]) -> [Paragraph] {
-    var result: [Paragraph] = []
-    var lastEnd: Int64 = 0
-    for line in lines where line.isFinal {
-      let text = line.text.trimmingCharacters(in: .whitespacesAndNewlines)
-      guard !text.isEmpty else { continue }
-      if var last = result.last, last.speaker == line.speaker,
-        line.startNanoseconds - lastEnd < 4_000_000_000,
-        last.text.split(separator: " ").count < 90
-      {
-        last.text += " " + text
-        result[result.count - 1] = last
-      } else {
-        result.append(
-          Paragraph(id: line.id, speaker: line.speaker, start: line.startNanoseconds, text: text))
-      }
-      lastEnd = max(lastEnd, line.endNanoseconds)
-    }
-    return result
-  }
-
-  /// The live transcript as clipboard text, in the same shape as a saved
-  /// conversation's Copy.
-  static func clipboardText(title: String, timer: String, lines: [LiveCaptionLine]) -> String {
-    let body = paragraphs(lines).map { paragraph in
-      "\(paragraph.speaker) [\(InterviewTime.stamp(paragraph.start))]: \(paragraph.text)"
-    }.joined(separator: "\n\n")
-    return "\(title)\nRecording in progress · \(timer)\nLive draft: some words may be misheard.\n\n\(body)\n"
-  }
 }
 
 /// The settled live lines, one row per phrase in time order.
@@ -355,7 +285,7 @@ private struct LiveLineRow: View {
 
   var body: some View {
     HStack(alignment: .top, spacing: 0) {
-      Text(InterviewTime.stamp(line.startNanoseconds))
+      Text(transcriptClock(nanoseconds: line.startNanoseconds))
         .font(Interview.stamp)
         .foregroundStyle(Interview.quiet)
         .frame(width: Interview.shoulder - 12, alignment: .trailing)
@@ -371,7 +301,7 @@ private struct LiveLineRow: View {
           "\(line.speaker): \(line.text)\(line.isFinal ? "" : ". Still listening.")")
       Spacer(minLength: 0)
     }
-    .padding(.leading, -Interview.shoulder)
+    .interviewMargins()
     .padding(.top, startsTurn ? Interview.turnSpacing : 6)
   }
 
@@ -407,169 +337,5 @@ struct LiveCaptionStatusNotice: View {
     case .idle, .listening:
       EmptyView()
     }
-  }
-}
-
-/// Markers written while capture is open. The control is created with the live
-/// session and fills when Add Marker saves one, so the row is an update. It
-/// names the stored session time and does not play while the writer holds the file.
-private struct LiveMarkerListMount: NSViewRepresentable {
-  let events: [NativeRecorderEvent]
-
-  func makeNSView(context: Context) -> LiveMarkerListControl {
-    let view = LiveMarkerListControl()
-    view.bind(events: events)
-    return view
-  }
-
-  func updateNSView(_ view: LiveMarkerListControl, context: Context) {
-    view.bind(events: events)
-  }
-}
-
-private final class LiveMarkerListControl: NSView {
-  private let heading = NSTextField(labelWithString: "Markers")
-  private let column = NSStackView()
-  private var signature: [String] = []
-
-  override init(frame frameRect: NSRect) {
-    super.init(frame: frameRect)
-    setAccessibilityIdentifier("Live markers")
-    heading.font = .preferredFont(forTextStyle: .headline)
-    heading.setAccessibilityLabel("Markers")
-    heading.setAccessibilityIdentifier("Markers")
-    column.orientation = .vertical
-    column.alignment = .leading
-    column.spacing = ScribeSpacing.tight
-    column.detachesHiddenViews = false
-    heading.translatesAutoresizingMaskIntoConstraints = false
-    column.translatesAutoresizingMaskIntoConstraints = false
-    addSubview(heading)
-    addSubview(column)
-    NSLayoutConstraint.activate([
-      heading.leadingAnchor.constraint(equalTo: leadingAnchor),
-      heading.topAnchor.constraint(equalTo: topAnchor),
-      heading.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor),
-      column.leadingAnchor.constraint(equalTo: leadingAnchor),
-      column.topAnchor.constraint(equalTo: heading.bottomAnchor, constant: ScribeSpacing.tight),
-      column.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor),
-      column.bottomAnchor.constraint(lessThanOrEqualTo: bottomAnchor),
-    ])
-  }
-
-  required init?(coder: NSCoder) {
-    nil
-  }
-
-  override var intrinsicContentSize: NSSize {
-    let count = column.arrangedSubviews.count
-    let height: CGFloat = isHidden || count == 0 ? 0 : 24 + CGFloat(count) * 28
-    return NSSize(width: NSView.noIntrinsicMetric, height: height)
-  }
-
-  func bind(events: [NativeRecorderEvent]) {
-    let markers = events.filter { $0.kind == "marker_added" }
-    let next = markers.map { "\($0.id)\n\($0.label)\n\($0.sessionNanoseconds)" }
-    let shown = !markers.isEmpty
-    isHidden = !shown
-    heading.isHidden = !shown
-    column.isHidden = !shown
-    guard next != signature else { return }
-    signature = next
-    for view in column.arrangedSubviews {
-      column.removeArrangedSubview(view)
-      view.removeFromSuperview()
-    }
-    for marker in markers {
-      column.addArrangedSubview(row(for: marker))
-    }
-    invalidateIntrinsicContentSize()
-  }
-
-  private func row(for marker: NativeRecorderEvent) -> NSView {
-    let stamp = TranscriptSection.timestamp(marker.sessionNanoseconds)
-    let spoken = ConversationControlLabels.liveMarkerAccessibility(
-      stamp: stamp, label: marker.label)
-    let nameText = marker.label.isEmpty ? "Marker" : marker.label
-    let row = NSStackView()
-    row.orientation = .horizontal
-    row.alignment = .centerY
-    row.spacing = ScribeSpacing.related
-    row.detachesHiddenViews = false
-    let time = NSTextField(labelWithString: stamp)
-    time.font = .monospacedDigitSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular)
-    time.setAccessibilityLabel(spoken)
-    time.setAccessibilityIdentifier(marker.id)
-    time.setAccessibilityRole(.staticText)
-    let name = NSTextField(labelWithString: nameText)
-    name.font = .preferredFont(forTextStyle: .body)
-    name.textColor = .labelColor
-    name.setAccessibilityLabel(nameText)
-    name.setAccessibilityRole(.staticText)
-    for item in [time, name] {
-      item.setContentCompressionResistancePriority(.required, for: .horizontal)
-      item.setContentCompressionResistancePriority(.required, for: .vertical)
-      row.addArrangedSubview(item)
-    }
-    time.widthAnchor.constraint(greaterThanOrEqualToConstant: 48).isActive = true
-    time.heightAnchor.constraint(greaterThanOrEqualToConstant: 16).isActive = true
-    name.heightAnchor.constraint(greaterThanOrEqualToConstant: 16).isActive = true
-    return row
-  }
-}
-
-/// The low-space sentence on the live surface. The field is created with the
-/// recording and fills when the storage watch reports a warning.
-private struct StorageNoticeMount: NSViewRepresentable {
-  let notice: String?
-
-  func makeNSView(context: Context) -> StorageNoticeControl {
-    let view = StorageNoticeControl()
-    view.bind(notice: notice)
-    return view
-  }
-
-  func updateNSView(_ view: StorageNoticeControl, context: Context) {
-    view.bind(notice: notice)
-  }
-}
-
-private final class StorageNoticeControl: NSView {
-  private let field = NSTextField(wrappingLabelWithString: "")
-
-  override init(frame frameRect: NSRect) {
-    super.init(frame: frameRect)
-    setAccessibilityIdentifier("Storage notice")
-    field.font = .preferredFont(forTextStyle: .callout)
-    field.textColor = .labelColor
-    field.maximumNumberOfLines = 3
-    field.lineBreakMode = .byWordWrapping
-    field.preferredMaxLayoutWidth = 640
-    field.setAccessibilityIdentifier("Storage notice")
-    field.setAccessibilityRole(.staticText)
-    field.translatesAutoresizingMaskIntoConstraints = false
-    addSubview(field)
-    NSLayoutConstraint.activate([
-      field.leadingAnchor.constraint(equalTo: leadingAnchor),
-      field.topAnchor.constraint(equalTo: topAnchor),
-      field.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor),
-      field.bottomAnchor.constraint(lessThanOrEqualTo: bottomAnchor),
-      field.widthAnchor.constraint(greaterThanOrEqualToConstant: 280),
-      field.heightAnchor.constraint(greaterThanOrEqualToConstant: 16),
-    ])
-    bind(notice: nil)
-  }
-
-  required init?(coder: NSCoder) {
-    nil
-  }
-
-  func bind(notice: String?) {
-    let text = notice ?? ""
-    let shown = !text.isEmpty
-    isHidden = !shown
-    field.isHidden = !shown
-    field.stringValue = shown ? text : ""
-    field.setAccessibilityLabel(shown ? text : "Storage notice")
   }
 }

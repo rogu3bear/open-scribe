@@ -13,8 +13,9 @@ struct SettingsView: View {
   @ObservedObject var pressure: SystemPressureMonitor
   @ObservedObject var liveCaptions = LiveCaptionModel()
   var diagnosticsDestination: @MainActor () -> URL? = SettingsView.chooseDiagnosticsDestination
-  @State private var showingModels = false
   @State private var showingPolicies = false
+  /// The embedded Rust registry's release sentence and capability rows.
+  private let release = nativeReleaseClaims()
   @StateObject private var authorization = ProviderAuthorizationModel()
   @ObservedObject private var diagnosticLog = DiagnosticLog.shared
   @State private var signature = "checking"
@@ -22,7 +23,6 @@ struct SettingsView: View {
   var body: some View {
     Form {
       Section("Release") {
-        let release = ReleaseCapabilityClaims.load()
         Text(release.noPublicRelease)
           .font(.callout)
         ForEach(release.capabilities, id: \.id) { claim in
@@ -33,10 +33,7 @@ struct SettingsView: View {
         Toggle("Transcribe new recordings automatically", isOn: $scheduler.isAutomatic)
         Toggle("Pause automatic transcription", isOn: $scheduler.isPaused)
           .disabled(!scheduler.isAutomatic)
-        Button("Speech Models…") {
-          speech.dismissMessage()
-          showingModels = true
-        }
+        Button("Speech Models…") { speech.showModels(in: .settings) }
         LabeledContent("Queue", value: queueLabel)
         if let hold = scheduler.hold {
           Text(hold.text)
@@ -138,9 +135,7 @@ struct SettingsView: View {
     }
     .formStyle(.grouped)
     .frame(minWidth: 460, minHeight: 320)
-    .sheet(isPresented: $showingModels) {
-      SpeechModelSheet(speech: speech) { showingModels = false }
-    }
+    .speechModelSheet(speech, in: .settings)
     .sheet(isPresented: $showingPolicies) {
       PolicyDocumentsView()
     }
@@ -174,9 +169,7 @@ struct SettingsView: View {
   private var queueLabel: String {
     var parts: [String] = []
     if let running = scheduler.runningSessionId {
-      let title =
-        library.savedSessions.first { $0.sessionId == running }
-        .map { ConversationIdentityPresentation.title(for: $0) } ?? "1 conversation"
+      let title = library.library.titles[running] ?? "1 conversation"
       parts.append("Transcribing “\(title)”")
     }
     let waiting = scheduler.queue.count
@@ -196,9 +189,8 @@ struct SettingsView: View {
   }
 
   private var libraryLabel: String {
-    let saved = library.savedSessions.count
-    let live = library.currentSession == nil ? 0 : 1
-    return "\(saved + live) conversations"
+    let count = library.library.conversationCount
+    return count == 1 ? "1 conversation" : "\(count) conversations"
   }
 
   private var sessionLines: [DiagnosticsReport.SessionLine] {
@@ -206,8 +198,8 @@ struct SettingsView: View {
     return sessions.map {
       DiagnosticsReport.SessionLine(
         sessionId: $0.sessionId,
-        lifecycle: $0.lifecycle,
-        health: $0.health,
+        lifecycle: $0.lifecycle.description,
+        health: $0.health.description,
         recovered: $0.recovered,
         journalDurable: $0.journalDurable,
         mediaFilesOpen: $0.mediaFilesOpen
@@ -241,7 +233,7 @@ struct SettingsView: View {
       build: Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "0",
       operatingSystem: ProcessInfo.processInfo.operatingSystemVersionString,
       architecture: architecture,
-      bundleIdentifier: Bundle.main.bundleIdentifier ?? "app.open-scribe.dev",
+      bundleIdentifier: AppTelemetry.bundleIdentifier,
       microphone: microphoneLabel,
       screenCapture: screenCaptureLabel,
       signature: signature,

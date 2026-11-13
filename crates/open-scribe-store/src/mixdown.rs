@@ -61,7 +61,8 @@ impl SessionStore {
         // A completed recording may have stopped under critical pressure. A
         // fresh capacity observation governs this derived file without changing
         // the source session's recorded health or consuming its reserve.
-        let write_floor_bytes = recorder::RESERVE_BYTES + 16 * 1024 * 1024;
+        let write_floor_bytes =
+            storage_reserve::RESERVE_BYTES + storage_reserve::EMERGENCY_RESERVE_BYTES;
         let minimum_free_bytes =
             write_floor_bytes.saturating_add(expected_frame_count.saturating_mul(2));
         if available_bytes < minimum_free_bytes {
@@ -70,7 +71,7 @@ impl SessionStore {
             ));
         }
         let work = std::sync::Arc::new(MixdownWork::try_acquire(&self.managed_root, &session_id)?);
-        let relative_path = format!("exports/mix-{}.m4a", Uuid::now_v7());
+        let relative_path = mixdown_path(&Uuid::now_v7().to_string());
         let absolute_path = self.session_directory(&session_id.0)?.join(&relative_path);
         if fs::symlink_metadata(&absolute_path).is_ok() {
             return Err(StoreError::IntegrityMismatch("mixdown path already exists"));
@@ -295,7 +296,7 @@ impl SessionStore {
         let managed = open_managed_directory(&self.managed_root)?;
         let sessions = open_managed_directory_at(&managed, OsStr::new(SESSIONS_DIRECTORY))?;
         let session = open_managed_directory_at(&sessions, OsStr::new(session_id))?;
-        let exports = open_managed_directory_at(&session, OsStr::new("exports"))?;
+        let exports = open_managed_directory_at(&session, OsStr::new(EXPORTS_DIRECTORY))?;
         let name = OsStr::new(relative_path.strip_prefix("exports/").unwrap());
         let fd = fd_fs::openat(
             &exports,
@@ -322,15 +323,7 @@ impl SessionStore {
             ));
         }
         file.rewind()?;
-        let mut hasher = Sha256::new();
-        let mut buffer = [0_u8; 64 * 1024];
-        loop {
-            let read = file.read(&mut buffer)?;
-            if read == 0 {
-                break;
-            }
-            hasher.update(&buffer[..read]);
-        }
+        let digest_sha256 = sha256_to_end(&mut file)?;
         let post = fd_fs::fstat(&file)
             .map_err(|_| StoreError::IntegrityMismatch("mixdown identity changed"))?;
         if post.st_dev != stat.st_dev || post.st_ino != stat.st_ino || post.st_size != stat.st_size
@@ -358,7 +351,7 @@ impl SessionStore {
         Ok(MixFile {
             file,
             byte_length,
-            digest_sha256: format!("{:x}", hasher.finalize()),
+            digest_sha256,
         })
     }
 }

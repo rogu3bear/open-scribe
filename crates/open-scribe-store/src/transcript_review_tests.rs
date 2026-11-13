@@ -4,7 +4,7 @@ use super::*;
 use crate::transcripts::tests::{
     complete_all, identity, imported_fixture, plan, sample, write_caf,
 };
-use crate::{ImportMediaRequest, TranscriptionRunIdentity};
+use crate::{ImportMediaRequest, TranscriptDocumentSegment, TranscriptionRunIdentity};
 
 fn transcribed(words: [&str; 2]) -> (crate::transcripts::tests::Fixture, String) {
     let mut fixture = imported_fixture(144_000);
@@ -89,7 +89,11 @@ fn corrections_append_without_rewriting_verbatim_and_drive_search() {
         .store
         .correct_transcript_segment(&session, &revision, 0, Some("  Aleph  "))
         .unwrap();
-    let document = fixture.store.transcript_document(&session).unwrap();
+    let document = fixture
+        .store
+        .conversation_document(&session, crate::DocumentScope::FinalOnly)
+        .map(|document| document.segments)
+        .unwrap();
     assert_eq!(document.len(), 2);
     assert_eq!(document[0].verbatim_text, "alpha");
     assert_eq!(document[0].effective_text, "Aleph");
@@ -125,7 +129,11 @@ fn corrections_append_without_rewriting_verbatim_and_drive_search() {
         .store
         .correct_transcript_segment(&session, &revision, 0, None)
         .unwrap();
-    let document = fixture.store.transcript_document(&session).unwrap();
+    let document = fixture
+        .store
+        .conversation_document(&session, crate::DocumentScope::FinalOnly)
+        .map(|document| document.segments)
+        .unwrap();
     assert_eq!(document[0].effective_text, "alpha");
     assert!(!document[0].corrected);
     assert_eq!(
@@ -261,7 +269,7 @@ fn speakers_default_from_source_topology_and_renames_are_append_only() {
         speakers,
         [SessionSpeaker {
             track_id: track.clone(),
-            source_kind: "imported_audio".into(),
+            source_kind: crate::TrackSourceKind::ImportedAudio,
             label: "Speaker".into(),
             origin: SpeakerLabelOrigin::SourceDefault,
         }]
@@ -271,7 +279,11 @@ fn speakers_default_from_source_topology_and_renames_are_append_only() {
         .store
         .rename_speaker(&session, &track, Some(" Dana "))
         .unwrap();
-    let document = fixture.store.transcript_document(&session).unwrap();
+    let document = fixture
+        .store
+        .conversation_document(&session, crate::DocumentScope::FinalOnly)
+        .map(|document| document.segments)
+        .unwrap();
     assert!(
         document
             .iter()
@@ -310,10 +322,15 @@ fn speakers_default_from_source_topology_and_renames_are_append_only() {
             .is_err()
     );
 
-    assert_eq!(default_speaker_label("microphone"), "You");
-    assert_eq!(default_speaker_label("application_audio"), "Others");
-    assert_eq!(default_speaker_label("system_audio"), "Others");
-    assert_eq!(default_speaker_label("imported_audio"), "Speaker");
+    let label = |kind: &str| {
+        crate::TrackSourceKind::parse(kind)
+            .unwrap()
+            .default_speaker_label()
+    };
+    assert_eq!(label("microphone"), "You");
+    assert_eq!(label("application_audio"), "Others");
+    assert_eq!(label("system_audio"), "Others");
+    assert_eq!(label("imported_audio"), "Speaker");
 }
 
 #[test]
@@ -379,7 +396,11 @@ fn speaker_label_history_keeps_each_rename_and_the_source_default() {
         fixture.store.session_speakers(&session).unwrap()[0].origin,
         SpeakerLabelOrigin::SourceDefault
     );
-    let document = fixture.store.transcript_document(&session).unwrap();
+    let document = fixture
+        .store
+        .conversation_document(&session, crate::DocumentScope::FinalOnly)
+        .map(|document| document.segments)
+        .unwrap();
     assert_eq!(
         document
             .iter()
@@ -523,9 +544,14 @@ fn search_returns_matching_conversations_and_timestamped_ranges() {
 
     let interview_document = library
         .store
-        .transcript_document(&interview_session)
+        .conversation_document(&interview_session, crate::DocumentScope::FinalOnly)
+        .map(|document| document.segments)
         .unwrap();
-    let budget_document = library.store.transcript_document(&budget_session).unwrap();
+    let budget_document = library
+        .store
+        .conversation_document(&budget_session, crate::DocumentScope::FinalOnly)
+        .map(|document| document.segments)
+        .unwrap();
     assert_eq!(interview_document[0].verbatim_text, "meadow draft");
     assert_eq!(interview_document[0].effective_text, "approved meadow");
     assert!(interview_document[0].corrected);

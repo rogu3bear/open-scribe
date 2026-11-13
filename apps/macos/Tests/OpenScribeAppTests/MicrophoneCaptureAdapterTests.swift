@@ -277,7 +277,8 @@ final class MicrophoneCaptureAdapterTests: XCTestCase {
       .appendingPathComponent(UUID().uuidString.lowercased(), isDirectory: true)
     managedRoots.append(root)
     let controller = try NativeRecordingPreparation.open(managedRoot: root.path)
-    let prepared = try controller.prepareSession(title: "Microphone adapter proof")
+    let prepared = try controller.prepareSessionWithRequiredSources(
+      title: "Microphone adapter proof", requiredSources: [.microphone])
     let authorization = try controller.authorizeInitialMedia(
       sessionId: prepared.sessionId,
       sourceKind: .microphone,
@@ -346,7 +347,8 @@ final class MicrophoneCaptureAdapterTests: XCTestCase {
       .appendingPathComponent(UUID().uuidString.lowercased(), isDirectory: true)
     managedRoots.append(root)
     let controller = try NativeRecordingPreparation.open(managedRoot: root.path)
-    let prepared = try controller.prepareSession(title: "96 kHz microphone proof")
+    let prepared = try controller.prepareSessionWithRequiredSources(
+      title: "96 kHz microphone proof", requiredSources: [.microphone])
     let authorization = try controller.authorizeInitialMedia(
       sessionId: prepared.sessionId,
       sourceKind: .microphone,
@@ -390,7 +392,8 @@ final class MicrophoneCaptureAdapterTests: XCTestCase {
       .appendingPathComponent(UUID().uuidString.lowercased(), isDirectory: true)
     managedRoots.append(root)
     let controller = try NativeRecordingPreparation.open(managedRoot: root.path)
-    let prepared = try controller.prepareSession(title: "One-shot adapter proof")
+    let prepared = try controller.prepareSessionWithRequiredSources(
+      title: "One-shot adapter proof", requiredSources: [.microphone])
     let authorization = try controller.authorizeInitialMedia(
       sessionId: prepared.sessionId,
       sourceKind: .microphone,
@@ -1099,7 +1102,7 @@ final class MicrophoneCaptureAdapterTests: XCTestCase {
     adapter.waitForProvisionalDraftAdmission()
 
     XCTAssertEqual(
-      try fixture.controller.recorderDetail(sessionId: sessionId).lifecycle, "recording")
+      try fixture.controller.recorderDetail(sessionId: sessionId).lifecycle, .recording)
     XCTAssertEqual(
       try fixture.controller.readableDraftTexts(sessionId: sessionId), ["early meadow"])
     let library = try NativeTranscriptLibrary.open(managedRoot: fixture.root.path)
@@ -1114,7 +1117,7 @@ final class MicrophoneCaptureAdapterTests: XCTestCase {
     adapter.waitForProvisionalDraftAdmission()
 
     XCTAssertEqual(
-      try fixture.controller.recorderDetail(sessionId: sessionId).lifecycle, "recording")
+      try fixture.controller.recorderDetail(sessionId: sessionId).lifecycle, .recording)
     XCTAssertEqual(
       try fixture.controller.readableDraftTexts(sessionId: sessionId), ["later brook"])
     let changed = try labeledDraft(library, sessionId: sessionId)
@@ -1187,7 +1190,7 @@ final class MicrophoneCaptureAdapterTests: XCTestCase {
       try XCTUnwrap(model.segments.first { $0.effectiveText == "later brook" })
     }
     XCTAssertGreaterThan(passage.startNanoseconds, 0)
-    XCTAssertEqual(passage.finality, "draft")
+    XCTAssertEqual(passage.finality, .draft)
     XCTAssertFalse(passage.corrected)
     XCTAssertEqual(passage.verbatimText, "later brook")
     let spoken = ConversationControlLabels.passageAccessibility(
@@ -1368,7 +1371,7 @@ final class MicrophoneCaptureAdapterTests: XCTestCase {
     let decision = try library.prepareSpeakerDiarization(sessionId: sessionId)
     XCTAssertEqual(decision.clusteringState, "unavailable")
     XCTAssertEqual(decision.reason, "no calibrated diarization model")
-    XCTAssertEqual(decision.tracks.first?.labelOrigin, "source_default")
+    XCTAssertEqual(decision.tracks.first?.labelOrigin, .sourceDefault)
     let hits = try library.search(query: "brook", sessionId: sessionId, limit: 20)
     XCTAssertTrue(hits.isEmpty)
     do {
@@ -1433,15 +1436,15 @@ final class MicrophoneCaptureAdapterTests: XCTestCase {
       try fixture.controller.readableDraftTexts(sessionId: sessionId),
       ["spoken 8000000"])
     let detail = try fixture.controller.recorderDetail(sessionId: sessionId)
-    XCTAssertEqual(detail.lifecycle, "recording")
-    XCTAssertFalse(detail.events.contains { $0.kind == "source_failed" })
+    XCTAssertEqual(detail.lifecycle, .recording)
+    XCTAssertFalse(detail.events.contains { $0.kind == .sourceFailed })
     let current = try XCTUnwrap(fixture.controller.runtimeLibrarySnapshot().currentSession)
     XCTAssertEqual(current.sessionId, sessionId)
-    XCTAssertEqual(current.lifecycle, "recording")
+    XCTAssertEqual(current.lifecycle, .recording)
     XCTAssertNil(current.interruptionReason)
     XCTAssertTrue(current.hasCaptureTimeline)
     let microphone = try XCTUnwrap(current.sources.first { $0.kind == .microphone })
-    XCTAssertEqual(microphone.lifecycle, "capturing")
+    XCTAssertEqual(microphone.lifecycle, .capturing)
     XCTAssertTrue(failures.snapshot().isEmpty)
     try assertQuietInterval(in: fixture.authorization, speechFrames: 480, quietFrames: 768)
 
@@ -1450,8 +1453,8 @@ final class MicrophoneCaptureAdapterTests: XCTestCase {
       receipt: try fixture.writer.sealSegmentReceipt(finalSampleHostTime: max(stoppedAt, quietHost)))
     XCTAssertTrue(sealed.segmentSealed)
     let savedDetail = try fixture.controller.recorderDetail(sessionId: sessionId)
-    XCTAssertEqual(savedDetail.lifecycle, "ready_for_review")
-    XCTAssertFalse(savedDetail.events.contains { $0.kind == "source_failed" })
+    XCTAssertEqual(savedDetail.lifecycle, .readyForReview)
+    XCTAssertFalse(savedDetail.events.contains { $0.kind == .sourceFailed })
     let plan = try fixture.controller.playbackTimeline(sessionId: sessionId)
     XCTAssertEqual(plan.count, 1)
     let segment = try XCTUnwrap(plan.first)
@@ -1560,7 +1563,9 @@ final class MicrophoneCaptureAdapterTests: XCTestCase {
     XCTAssertTrue(entered, "transcription did not enter its slow work")
     XCTAssertFalse(job.isCancelled())
 
-    let prepared = try controller.prepareSession(title: "Live while transcribing")
+    let prepared = try controller.prepareSessionWithRequiredSources(
+
+      title: "Live while transcribing", requiredSources: [.microphone])
     let authorization = try controller.authorizeInitialMedia(
       sessionId: prepared.sessionId,
       sourceKind: .microphone,
@@ -1599,7 +1604,7 @@ final class MicrophoneCaptureAdapterTests: XCTestCase {
     XCTAssertTrue(failures.snapshot().isEmpty)
     XCTAssertFalse(job.isCancelled())
     XCTAssertEqual(
-      try controller.recorderDetail(sessionId: evidence.sessionId).lifecycle, "recording")
+      try controller.recorderDetail(sessionId: evidence.sessionId).lifecycle, .recording)
     XCTAssertEqual(try Data(contentsOf: source), original)
 
     await MainActor.run {
@@ -1626,7 +1631,7 @@ final class MicrophoneCaptureAdapterTests: XCTestCase {
     XCTAssertGreaterThan(try capturedLength(authorization), lengthWhileSlow)
     XCTAssertTrue(failures.snapshot().isEmpty)
     XCTAssertEqual(
-      try controller.recorderDetail(sessionId: evidence.sessionId).lifecycle, "recording")
+      try controller.recorderDetail(sessionId: evidence.sessionId).lifecycle, .recording)
     XCTAssertEqual(try Data(contentsOf: source), original)
     let managedCopy = library
       .appendingPathComponent("Sessions", isDirectory: true)
@@ -1676,7 +1681,7 @@ final class MicrophoneCaptureAdapterTests: XCTestCase {
     XCTAssertFalse(sealed.recordingStarted)
     XCTAssertEqual(
       try fixture.controller.recorderDetail(sessionId: fixture.authorization.sessionId).lifecycle,
-      "ready_for_review")
+      .readyForReview)
     let sealedMedia = try Data(contentsOf: mediaURL)
     let saved = try XCTUnwrap(
       fixture.controller.runtimeLibrarySnapshot().savedSessions.first {
@@ -1694,8 +1699,8 @@ final class MicrophoneCaptureAdapterTests: XCTestCase {
     XCTAssertEqual(item.modelId, "fixture-model")
     XCTAssertEqual(item.modelSha256, digest)
     XCTAssertEqual(item.inputDigest, "live-unsealed")
-    XCTAssertEqual(item.runState, "complete")
-    XCTAssertEqual(item.finality, "draft")
+    XCTAssertEqual(item.runState, .complete)
+    XCTAssertEqual(item.finality, .draft)
     XCTAssertEqual(
       item.ranges,
       [NativeTranscriptProvenanceRange(startNanoseconds: 0, endNanoseconds: 10_000_000)])
@@ -1880,7 +1885,7 @@ final class MicrophoneCaptureAdapterTests: XCTestCase {
     let saved = try XCTUnwrap(
       fixture.controller.runtimeLibrarySnapshot().savedSessions.first { $0.sessionId == sessionId })
     let presentation = RuntimeSessionPresentation(native: saved)
-    XCTAssertEqual(presentation.lifecycle, "ready_for_review")
+    XCTAssertEqual(presentation.lifecycle, .readyForReview)
     XCTAssertTrue(presentation.hasCaptureTimeline)
     let preparation = fixture.controller
     let playback = RecoveredSessionController(
@@ -1927,7 +1932,7 @@ final class MicrophoneCaptureAdapterTests: XCTestCase {
     let passage = try XCTUnwrap(transcripts.segments.first { $0.effectiveText == "later brook" })
     XCTAssertTrue(shown && window.contentView === host && button.isDescendant(of: host))
     XCTAssertGreaterThan(passage.startNanoseconds, 0)
-    XCTAssertEqual(passage.finality, "draft")
+    XCTAssertEqual(passage.finality, .draft)
     XCTAssertTrue(button.accessibilityLabel()?.contains("Draft") == true)
     button.performClick(nil)
     let opened = await waitUntil(timeoutNanoseconds: 5_000_000_000) {
@@ -1976,12 +1981,12 @@ final class MicrophoneCaptureAdapterTests: XCTestCase {
       hostTime: firstHost &+ AVAudioTime.hostTime(forSeconds: 0.01))
     adapter.waitForAcceptedAudio()
     XCTAssertEqual(
-      try fixture.controller.recorderDetail(sessionId: sessionId).lifecycle, "recording")
+      try fixture.controller.recorderDetail(sessionId: sessionId).lifecycle, .recording)
     let markerHost = firstHost &+ AVAudioTime.hostTime(forSeconds: 0.005)
     let marked = try fixture.controller.recorderAction(
       sessionId: sessionId,
       action: .marker(hostTime: markerHost, label: "Decision"))
-    let marker = try XCTUnwrap(marked.events.last { $0.kind == "marker_added" })
+    let marker = try XCTUnwrap(marked.events.last { $0.kind == .markerAdded })
     XCTAssertEqual(marker.label, "Decision")
     XCTAssertGreaterThan(marker.sessionNanoseconds, 0)
     XCTAssertLessThan(marker.sessionNanoseconds, 20_000_000)
@@ -1993,14 +1998,14 @@ final class MicrophoneCaptureAdapterTests: XCTestCase {
     let mediaURL = URL(fileURLWithPath: fixture.authorization.absolutePath)
     let sealedMedia = try Data(contentsOf: mediaURL)
     let persisted = try fixture.controller.recorderDetail(sessionId: sessionId).events.filter {
-      $0.kind == "marker_added"
+      $0.kind == .markerAdded
     }
     XCTAssertEqual(persisted.map(\.label), ["Decision"])
     XCTAssertEqual(persisted.map(\.sessionNanoseconds), [marker.sessionNanoseconds])
     let saved = try XCTUnwrap(
       fixture.controller.runtimeLibrarySnapshot().savedSessions.first { $0.sessionId == sessionId })
     let presentation = RuntimeSessionPresentation(native: saved)
-    XCTAssertEqual(presentation.lifecycle, "ready_for_review")
+    XCTAssertEqual(presentation.lifecycle, .readyForReview)
     XCTAssertTrue(presentation.hasCaptureTimeline)
     let preparation = fixture.controller
     let playback = RecoveredSessionController(
@@ -2067,7 +2072,7 @@ final class MicrophoneCaptureAdapterTests: XCTestCase {
     XCTAssertLessThanOrEqual(abs(started - marker.sessionNanoseconds), 1_000_000)
     XCTAssertEqual(try Data(contentsOf: mediaURL), sealedMedia)
     XCTAssertEqual(
-      try preparation.recorderDetail(sessionId: sessionId).events.filter { $0.kind == "marker_added" }
+      try preparation.recorderDetail(sessionId: sessionId).events.filter { $0.kind == .markerAdded }
         .map(\.label),
       ["Decision"])
     XCTAssertTrue(failures.snapshot().isEmpty)
@@ -2128,19 +2133,19 @@ final class MicrophoneCaptureAdapterTests: XCTestCase {
       )
     }
     XCTAssertEqual(before.0, .draft)
-    XCTAssertEqual(before.1, "Draft — a Final transcript does not cover every range yet")
+    XCTAssertEqual(before.1, "Draft — the final transcript isn't finished yet")
     XCTAssertEqual(
       before.2,
       "Speakers follow the audio source. Voice diarization is unavailable without a calibrated model."
     )
     let speaker = try XCTUnwrap(before.3.first)
-    XCTAssertEqual(speaker.sourceKind, "microphone")
+    XCTAssertEqual(speaker.sourceKind, .microphone)
     XCTAssertEqual(speaker.label, "You")
     XCTAssertFalse(speaker.namedByUser)
     let passage = try XCTUnwrap(before.4.first)
     XCTAssertEqual(before.4.map(\.effectiveText), ["provisional meadow"])
     XCTAssertEqual(before.4.map(\.verbatimText), ["provisional meadow"])
-    XCTAssertEqual(passage.finality, "draft")
+    XCTAssertEqual(passage.finality, .draft)
     XCTAssertEqual(passage.speakerLabel, "You")
     XCTAssertFalse(passage.speakerNamedByUser)
     XCTAssertFalse(passage.corrected)
@@ -2151,16 +2156,16 @@ final class MicrophoneCaptureAdapterTests: XCTestCase {
     XCTAssertEqual(decision.clusteringState, "unavailable")
     XCTAssertEqual(decision.reason, "no calibrated diarization model")
     XCTAssertEqual(decision.tracks.count, 1)
-    XCTAssertEqual(decision.tracks[0].sourceKind, "microphone")
-    XCTAssertEqual(decision.tracks[0].disposition, "topology")
+    XCTAssertEqual(decision.tracks[0].sourceKind, .microphone)
+    XCTAssertEqual(decision.tracks[0].disposition, .topology)
     XCTAssertEqual(decision.tracks[0].label, "You")
-    XCTAssertEqual(decision.tracks[0].labelOrigin, "source_default")
+    XCTAssertEqual(decision.tracks[0].labelOrigin, .sourceDefault)
     let provenance = try library.inspectProvenance(sessionId: sessionId)
     XCTAssertEqual(provenance.map(\.revisionId), [passage.revisionId])
-    XCTAssertEqual(provenance.map(\.finality), ["draft"])
+    XCTAssertEqual(provenance.map(\.finality), [.draft])
     let detail = try fixture.controller.recorderDetail(sessionId: sessionId)
-    XCTAssertEqual(detail.lifecycle, "ready_for_review")
-    XCTAssertFalse(detail.events.contains { $0.kind == "source_failed" })
+    XCTAssertEqual(detail.lifecycle, .readyForReview)
+    XCTAssertFalse(detail.events.contains { $0.kind == .sourceFailed })
     let sessions = try fixture.controller.runtimeLibrarySnapshot().savedSessions.map(\.sessionId)
 
     let renamed = await model.renameSpeaker(trackId: speaker.trackId, label: " Dana ")
@@ -2179,26 +2184,26 @@ final class MicrophoneCaptureAdapterTests: XCTestCase {
     XCTAssertEqual(after.4.map(\.revisionId), [passage.revisionId])
     XCTAssertEqual(after.4.map(\.effectiveText), ["provisional meadow"])
     XCTAssertEqual(after.4.map(\.verbatimText), ["provisional meadow"])
-    XCTAssertEqual(after.4.map(\.finality), ["draft"])
+    XCTAssertEqual(after.4.map(\.finality), [.draft])
     XCTAssertEqual(after.4.map(\.corrected), [false])
     XCTAssertEqual(after.4.first?.speakerLabel, "Dana")
     XCTAssertEqual(after.4.first?.speakerNamedByUser, true)
     XCTAssertEqual(after.3.first?.trackId, speaker.trackId)
     XCTAssertEqual(after.3.first?.label, "Dana")
     XCTAssertEqual(after.3.first?.namedByUser, true)
-    XCTAssertEqual(after.3.first?.sourceKind, "microphone")
+    XCTAssertEqual(after.3.first?.sourceKind, .microphone)
     let reviewed = try library.prepareSpeakerDiarization(sessionId: sessionId)
     XCTAssertFalse(reviewed.inserted)
     XCTAssertNotEqual(reviewed.runId, decision.runId)
     XCTAssertEqual(reviewed.clusteringState, "unavailable")
     XCTAssertEqual(reviewed.reason, "no calibrated diarization model")
-    XCTAssertEqual(reviewed.tracks[0].disposition, "topology")
+    XCTAssertEqual(reviewed.tracks[0].disposition, .topology)
     XCTAssertEqual(reviewed.tracks[0].label, "Dana")
-    XCTAssertEqual(reviewed.tracks[0].labelOrigin, "human")
+    XCTAssertEqual(reviewed.tracks[0].labelOrigin, .human)
     XCTAssertEqual(try library.inspectProvenance(sessionId: sessionId), provenance)
     let savedDetail = try fixture.controller.recorderDetail(sessionId: sessionId)
-    XCTAssertEqual(savedDetail.lifecycle, "ready_for_review")
-    XCTAssertFalse(savedDetail.events.contains { $0.kind == "source_failed" })
+    XCTAssertEqual(savedDetail.lifecycle, .readyForReview)
+    XCTAssertFalse(savedDetail.events.contains { $0.kind == .sourceFailed })
     XCTAssertEqual(
       try fixture.controller.runtimeLibrarySnapshot().savedSessions.map(\.sessionId), sessions)
     XCTAssertEqual(try Data(contentsOf: mediaURL), sealedMedia)
@@ -2254,7 +2259,7 @@ final class MicrophoneCaptureAdapterTests: XCTestCase {
     let initialHistory = try XCTUnwrap(initialHistoryRecords.first)
     XCTAssertEqual(initialHistoryRecords.count, 1)
     XCTAssertEqual(initialHistory.trackId, speaker.trackId)
-    XCTAssertEqual(initialHistory.sourceKind, "microphone")
+    XCTAssertEqual(initialHistory.sourceKind, .microphone)
     XCTAssertEqual(initialHistory.sourceDefaultLabel, "You")
     XCTAssertTrue(initialHistory.revisions.isEmpty)
     XCTAssertEqual(
@@ -2267,7 +2272,7 @@ final class MicrophoneCaptureAdapterTests: XCTestCase {
     XCTAssertEqual(named?.namedByUser, true)
     XCTAssertEqual(
       try library.prepareSpeakerDiarization(sessionId: sessionId).tracks.first?.labelOrigin,
-      "human")
+      .human)
     let restored = await model.renameSpeaker(trackId: speaker.trackId, label: nil)
     let again = await MainActor.run {
       (
@@ -2287,7 +2292,7 @@ final class MicrophoneCaptureAdapterTests: XCTestCase {
     XCTAssertEqual(decision.reason, "no calibrated diarization model")
     XCTAssertEqual(decision.algorithmId, "topology-before-clustering-v1")
     XCTAssertEqual(decision.tracks.first?.label, "You")
-    XCTAssertEqual(decision.tracks.first?.labelOrigin, "source_default")
+    XCTAssertEqual(decision.tracks.first?.labelOrigin, .sourceDefault)
     let renamedAgain = await model.renameSpeaker(trackId: speaker.trackId, label: "Mina")
     let clearedAgain = await model.renameSpeaker(trackId: speaker.trackId, label: nil)
     XCTAssertTrue(renamedAgain)
@@ -2299,7 +2304,7 @@ final class MicrophoneCaptureAdapterTests: XCTestCase {
     let history = try XCTUnwrap(reviewed.1.first)
     XCTAssertEqual(reviewed.1.count, 1)
     XCTAssertEqual(history.trackId, speaker.trackId)
-    XCTAssertEqual(history.sourceKind, "microphone")
+    XCTAssertEqual(history.sourceKind, .microphone)
     XCTAssertEqual(history.sourceDefaultLabel, "You")
     XCTAssertEqual(
       history.revisions.map(\.label), ["Dana", "You", "Mina", "You"])
@@ -2377,7 +2382,8 @@ final class MicrophoneCaptureAdapterTests: XCTestCase {
       .appendingPathComponent(UUID().uuidString.lowercased(), isDirectory: true)
     managedRoots.append(root)
     let controller = try NativeRecordingPreparation.open(managedRoot: root.path)
-    let prepared = try controller.prepareSession(title: title)
+    let prepared = try controller.prepareSessionWithRequiredSources(
+      title: title, requiredSources: [.microphone])
     let authorization = try controller.authorizeInitialMedia(
       sessionId: prepared.sessionId,
       sourceKind: .microphone,
@@ -2436,9 +2442,9 @@ final class MicrophoneCaptureAdapterTests: XCTestCase {
     XCTAssertEqual(availability, .draft)
     XCTAssertEqual(
       TranscriptLibraryModel.text(for: availability),
-      "Draft — a Final transcript does not cover every range yet")
+      "Draft — the final transcript isn't finished yet")
     let segments = try library.document(sessionId: sessionId)
-    XCTAssertEqual(segments.map(\.finality), ["draft"])
+    XCTAssertEqual(segments.map(\.finality), [.draft])
     XCTAssertEqual(segments.map(\.corrected), [false])
     return segments
   }

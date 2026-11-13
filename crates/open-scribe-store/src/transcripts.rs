@@ -14,7 +14,10 @@
 //! keys and is cleared explicitly.
 
 use super::transcript_review::reindex_session_search;
-use super::{SessionStore, StoreError, wall_time_milliseconds};
+use super::{
+    SessionLifecycle, SessionStore, StoreError, TranscriptFinality, TranscriptionFailureClass,
+    TranscriptionRunState, lowercase_hex, wall_time_milliseconds,
+};
 use open_scribe_types::SessionId;
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use sha2::{Digest, Sha256};
@@ -24,9 +27,6 @@ use uuid::Uuid;
 type RunningTranscriptionOrphanClasses = (Vec<String>, Vec<(String, String)>);
 
 pub const TRANSCRIPT_SCHEMA_VERSION: i64 = 1;
-pub(super) const TRANSCRIPT_MIGRATION_VERSION: i64 = 5;
-/// Allows `draft` and `superseded` beside `final` on databases created earlier.
-pub(super) const DRAFT_FINALITY_MIGRATION_VERSION: i64 = 19;
 /// ADR 0009's longest provisional window. A longer span is a final chunk, not a live draft.
 pub const LIVE_DRAFT_WINDOW_MAX_NS: i64 = 12_000_000_000;
 
@@ -333,6 +333,15 @@ pub enum TranscriptChunkState {
 }
 
 impl TranscriptChunkState {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Running => "running",
+            Self::Complete => "complete",
+            Self::Failed => "failed",
+        }
+    }
+
     fn parse(value: &str) -> Result<Self, StoreError> {
         match value {
             "pending" => Ok(Self::Pending),
@@ -386,18 +395,19 @@ pub enum TranscriptionFailure {
 }
 
 impl TranscriptionFailure {
-    pub const fn class(self) -> &'static str {
+    #[must_use]
+    pub const fn class(self) -> TranscriptionFailureClass {
         match self {
-            Self::Cancelled => "cancelled",
-            Self::CapturePreempted => "capture_preempted",
-            Self::ModelUnavailable => "model_unavailable",
-            Self::EngineError => "engine_error",
-            Self::ResourceExhausted => "resource_exhausted",
-            Self::InvalidResult => "invalid_result",
-            Self::InputUnavailable => "input_unavailable",
-            Self::StorageError => "storage_error",
-            Self::Orphaned => "orphaned",
-            Self::StaleReconciliation => "stale_reconciliation",
+            Self::Cancelled => TranscriptionFailureClass::Cancelled,
+            Self::CapturePreempted => TranscriptionFailureClass::CapturePreempted,
+            Self::ModelUnavailable => TranscriptionFailureClass::ModelUnavailable,
+            Self::EngineError => TranscriptionFailureClass::EngineError,
+            Self::ResourceExhausted => TranscriptionFailureClass::ResourceExhausted,
+            Self::InvalidResult => TranscriptionFailureClass::InvalidResult,
+            Self::InputUnavailable => TranscriptionFailureClass::InputUnavailable,
+            Self::StorageError => TranscriptionFailureClass::StorageError,
+            Self::Orphaned => TranscriptionFailureClass::Orphaned,
+            Self::StaleReconciliation => TranscriptionFailureClass::StaleReconciliation,
         }
     }
 }
@@ -416,13 +426,24 @@ pub struct RevisionSegmentInput {
 pub struct TranscriptionRunSummary {
     pub run_id: String,
     pub track_id: String,
-    pub state: String,
-    pub failure_class: Option<String>,
+    pub state: TranscriptionRunState,
+    pub failure_class: Option<TranscriptionFailureClass>,
     pub model_id: String,
     pub engine_version: String,
     pub completed_chunks: u32,
     pub total_chunks: u32,
     pub created_at_ms: i64,
+}
+
+impl TranscriptionRunSummary {
+    /// Whether a successor may reconcile this run's chunks for `purpose`:
+    /// every chunk complete and a state the one retained-run rule admits.
+    #[must_use]
+    pub fn retains_chunks(&self, purpose: super::RetainedRunUse) -> bool {
+        self.total_chunks > 0
+            && self.completed_chunks == self.total_chunks
+            && self.state.retains_chunks(self.failure_class, purpose)
+    }
 }
 
 /// One stored run's identity and chunk plan, read back so a later build can
@@ -432,8 +453,8 @@ pub struct StoredTranscriptionRun {
     pub run_id: String,
     pub identity: TranscriptionRunIdentity,
     pub plan: Vec<PlannedTranscriptChunk>,
-    pub state: String,
-    pub failure_class: Option<String>,
+    pub state: TranscriptionRunState,
+    pub failure_class: Option<TranscriptionFailureClass>,
     pub complete_chunks: u32,
     pub total_chunks: u32,
 }
@@ -451,8 +472,8 @@ pub struct TranscriptRevisionSummary {
     pub selected: bool,
     pub segment_count: u32,
     pub created_at_ms: i64,
-    /// `draft`, `final`, or `superseded`. Selection is only for `final`.
-    pub finality: String,
+    /// Selection is only for `Final`.
+    pub finality: TranscriptFinality,
 }
 
 /// One evidence span of a readable revision.
@@ -474,8 +495,8 @@ pub struct TranscriptProvenance {
     pub model_id: String,
     pub model_sha256: String,
     pub input_digest: String,
-    pub run_state: String,
-    pub finality: String,
+    pub run_state: TranscriptionRunState,
+    pub finality: TranscriptFinality,
     pub ranges: Vec<TranscriptProvenanceRange>,
 }
 
@@ -545,7 +566,7 @@ impl SessionStore {
         let now = wall_time_milliseconds();
         let _writer = self.write_guard()?;
         super::session_deletion::require_available(&self.connection, &identity.session_id.0)?;
-        if self.session_lifecycle(&identity.session_id.0)? != "ready_for_review" {
+        if self.session_lifecycle(&identity.session_id.0)? != SessionLifecycle::ReadyForReview {
             return Err(StoreError::InvalidState(
                 "session changed during transcript validation",
             ));
@@ -588,28 +609,13 @@ impl SessionStore {
                 params![identity.session_id.0, identity.track_id, now],
             )?;
             let run_id = Uuid::now_v7().to_string();
-            transaction.execute(
-                "INSERT INTO transcription_runs(
-                    id, schema_version, session_id, track_id, identity, input_digest, engine,
-                    engine_version, model_id, model_sha256, options_digest, reconciliation_version,
-                    state, created_at_ms, updated_at_ms, operation_key)
-                 VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 'running', ?13, ?13, ?14)",
-                params![
-                    run_id,
-                    TRANSCRIPT_SCHEMA_VERSION,
-                    identity.session_id.0,
-                    identity.track_id,
-                    run_identity,
-                    identity.input_digest,
-                    identity.engine,
-                    identity.engine_version,
-                    identity.model_id,
-                    identity.model_sha256,
-                    identity.options_digest,
-                    identity.reconciliation_version,
-                    now,
-                    policy.operation_key
-                ],
+            insert_run(
+                &transaction,
+                &run_id,
+                identity,
+                TranscriptionRunState::Running,
+                policy.operation_key.as_deref(),
+                now,
             )?;
             for (sequence, (chunk, chunk_identity)) in plan.iter().zip(&identities).enumerate() {
                 let reusable: Option<(String, String, String)> = transaction
@@ -625,30 +631,30 @@ impl SessionStore {
                         |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
                     )
                     .optional()?;
-                let (state, language, hypothesis, reused_from) = match reusable {
-                    Some((source, language, hypothesis)) => {
-                        ("complete", Some(language), Some(hypothesis), Some(source))
-                    }
-                    None => ("pending", None, None, None),
+                let (state, language, hypothesis, reused_from) = match &reusable {
+                    Some((source, language, hypothesis)) => (
+                        TranscriptChunkState::Complete,
+                        Some(language.as_str()),
+                        Some(hypothesis.as_str()),
+                        Some(source.as_str()),
+                    ),
+                    None => (TranscriptChunkState::Pending, None, None, None),
                 };
-                transaction.execute(
-                    "INSERT INTO transcript_chunks(
-                        run_id, sequence, identity, span_index, start_ns, end_ns, state,
-                        language, hypothesis_json, reused_from_run, updated_at_ms)
-                     VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
-                    params![
-                        run_id,
-                        sequence as i64,
-                        chunk_identity,
-                        chunk.span_index,
-                        chunk.start_nanoseconds,
-                        chunk.end_nanoseconds,
+                insert_chunk(
+                    &transaction,
+                    &ChunkRow {
+                        run_id: &run_id,
+                        sequence: sequence as i64,
+                        identity: chunk_identity,
+                        span_index: chunk.span_index,
+                        start_nanoseconds: chunk.start_nanoseconds,
+                        end_nanoseconds: chunk.end_nanoseconds,
                         state,
                         language,
-                        hypothesis,
-                        reused_from,
-                        now
-                    ],
+                        hypothesis_json: hypothesis,
+                        reused_from_run: reused_from,
+                    },
+                    now,
                 )?;
             }
             (run_id, false)
@@ -758,9 +764,9 @@ impl SessionStore {
             failure,
             TranscriptionFailure::Cancelled | TranscriptionFailure::CapturePreempted
         ) {
-            "cancelled"
+            TranscriptionRunState::Cancelled
         } else {
-            "failed"
+            TranscriptionRunState::Failed
         };
         transaction.execute(
             "UPDATE transcription_runs SET state = ?2, failure_class = ?3, updated_at_ms = ?4
@@ -869,7 +875,7 @@ impl SessionStore {
 
         let _writer = self.write_guard()?;
         super::session_deletion::require_available(&self.connection, &window.session_id.0)?;
-        if self.session_lifecycle(&window.session_id.0)? != "recording" {
+        if self.session_lifecycle(&window.session_id.0)? != SessionLifecycle::Recording {
             return Err(StoreError::InvalidState(
                 "live draft requires an open recording",
             ));
@@ -912,71 +918,51 @@ impl SessionStore {
         let run_id = Uuid::now_v7().to_string();
         let revision_id = Uuid::now_v7().to_string();
         let transaction = self.connection.transaction()?;
-        transaction.execute(
-            "INSERT INTO transcription_runs(
-                id, schema_version, session_id, track_id, identity, input_digest, engine,
-                engine_version, model_id, model_sha256, options_digest, reconciliation_version,
-                state, created_at_ms, updated_at_ms)
-             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 'complete', ?13, ?13)",
-            params![
-                run_id,
-                TRANSCRIPT_SCHEMA_VERSION,
-                window.session_id.0,
-                window.track_id,
-                identity.digest(),
-                identity.input_digest,
-                identity.engine,
-                identity.engine_version,
-                identity.model_id,
-                identity.model_sha256,
-                identity.options_digest,
-                identity.reconciliation_version,
-                now
-            ],
+        insert_run(
+            &transaction,
+            &run_id,
+            &identity,
+            TranscriptionRunState::Complete,
+            None,
+            now,
         )?;
-        transaction.execute(
-            "INSERT INTO transcript_chunks(
-                run_id, sequence, identity, span_index, start_ns, end_ns, state,
-                language, hypothesis_json, updated_at_ms)
-             VALUES(?1, 0, ?2, 0, ?3, ?4, 'complete', 'und', ?5, ?6)",
-            params![
-                run_id,
-                chunk_identity,
-                window.start_nanoseconds,
-                window.end_nanoseconds,
-                hypothesis,
-                now
-            ],
+        insert_chunk(
+            &transaction,
+            &ChunkRow {
+                run_id: &run_id,
+                sequence: 0,
+                identity: &chunk_identity,
+                span_index: 0,
+                start_nanoseconds: window.start_nanoseconds,
+                end_nanoseconds: window.end_nanoseconds,
+                state: TranscriptChunkState::Complete,
+                language: Some("und"),
+                hypothesis_json: Some(&hypothesis),
+                reused_from_run: None,
+            },
+            now,
         )?;
-        transaction.execute(
-            "INSERT INTO transcript_revisions(
-                id, schema_version, session_id, track_id, run_id, kind, finality,
-                reconciliation_version, rejections_json, discontinuities_json, created_at_ms)
-             VALUES(?1, ?2, ?3, ?4, ?5, 'verbatim', 'draft', ?6, '{}', '[]', ?7)",
-            params![
-                revision_id,
-                TRANSCRIPT_SCHEMA_VERSION,
-                window.session_id.0,
-                window.track_id,
-                run_id,
-                identity.reconciliation_version,
-                now
-            ],
-        )?;
-        transaction.execute(
-            "INSERT INTO transcript_segments(
-                revision_id, sequence, start_ns, end_ns, text, mean_probability,
-                no_speech_probability, chunk_identity)
-             VALUES(?1, 0, ?2, ?3, ?4, ?5, ?6, ?7)",
-            params![
-                revision_id,
-                window.start_nanoseconds,
-                window.end_nanoseconds,
+        insert_revision(
+            &transaction,
+            &RevisionRow {
+                revision_id: &revision_id,
+                session_id: &window.session_id.0,
+                track_id: &window.track_id,
+                run_id: &run_id,
+                finality: TranscriptFinality::Draft,
+                reconciliation_version: &identity.reconciliation_version,
+                rejections_json: "{}",
+                discontinuities_json: "[]",
+            },
+            &[SegmentRow {
+                start_nanoseconds: window.start_nanoseconds,
+                end_nanoseconds: window.end_nanoseconds,
                 text,
-                window.mean_probability,
-                window.no_speech_probability,
-                chunk_identity
-            ],
+                mean_probability: window.mean_probability,
+                no_speech_probability: window.no_speech_probability,
+                chunk_identity: &chunk_identity,
+            }],
+            now,
         )?;
         supersede_overlapping_drafts(
             &transaction,
@@ -1059,43 +1045,37 @@ impl SessionStore {
         }
         let now = wall_time_milliseconds();
         let revision_id = Uuid::now_v7().to_string();
-        let finality = if draft { "draft" } else { "final" };
-        transaction.execute(
-            "INSERT INTO transcript_revisions(
-                id, schema_version, session_id, track_id, run_id, kind, finality,
-                reconciliation_version, rejections_json, discontinuities_json, created_at_ms)
-             VALUES(?1, ?2, ?3, ?4, ?5, 'verbatim', ?6, ?7, ?8, ?9, ?10)",
-            params![
-                revision_id,
-                TRANSCRIPT_SCHEMA_VERSION,
-                session_id,
-                track_id,
+        let finality = if draft {
+            TranscriptFinality::Draft
+        } else {
+            TranscriptFinality::Final
+        };
+        let rows: Vec<SegmentRow<'_>> = segments
+            .iter()
+            .map(|segment| SegmentRow {
+                start_nanoseconds: segment.start_nanoseconds,
+                end_nanoseconds: segment.end_nanoseconds,
+                text: &segment.text,
+                mean_probability: segment.mean_probability.map(f64::from),
+                no_speech_probability: segment.no_speech_probability.map(f64::from),
+                chunk_identity: &segment.chunk_identity,
+            })
+            .collect();
+        insert_revision(
+            &transaction,
+            &RevisionRow {
+                revision_id: &revision_id,
+                session_id: &session_id,
+                track_id: &track_id,
                 run_id,
                 finality,
-                reconciliation_version,
+                reconciliation_version: &reconciliation_version,
                 rejections_json,
                 discontinuities_json,
-                now
-            ],
+            },
+            &rows,
+            now,
         )?;
-        for (sequence, segment) in segments.iter().enumerate() {
-            transaction.execute(
-                "INSERT INTO transcript_segments(
-                    revision_id, sequence, start_ns, end_ns, text, mean_probability,
-                    no_speech_probability, chunk_identity)
-                 VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-                params![
-                    revision_id,
-                    sequence as i64,
-                    segment.start_nanoseconds,
-                    segment.end_nanoseconds,
-                    segment.text,
-                    segment.mean_probability,
-                    segment.no_speech_probability,
-                    segment.chunk_identity
-                ],
-            )?;
-        }
         if !draft {
             supersede_overlapping_drafts(&transaction, &session_id, &track_id, &revision_id)?;
         }
@@ -1114,7 +1094,6 @@ impl SessionStore {
             )?
         {
             select_revision(&transaction, &session_id, &track_id, &revision_id, now)?;
-            reindex_session_search(&transaction, &session_id)?;
         }
         transaction.commit()?;
         Ok(revision_id)
@@ -1129,7 +1108,7 @@ impl SessionStore {
         let _writer = self.write_guard()?;
         super::session_deletion::require_available(&self.connection, &session.0)?;
         let transaction = self.connection.transaction()?;
-        let finality: Option<String> = transaction
+        let finality: Option<TranscriptFinality> = transaction
             .query_row(
                 "SELECT finality FROM transcript_revisions
                  WHERE id = ?1 AND session_id = ?2 AND track_id = ?3",
@@ -1137,8 +1116,8 @@ impl SessionStore {
                 |row| row.get(0),
             )
             .optional()?;
-        match finality.as_deref() {
-            Some("final") => {}
+        match finality {
+            Some(TranscriptFinality::Final) => {}
             Some(_) => {
                 return Err(StoreError::InvalidRequest(
                     "only a final revision can be selected",
@@ -1157,7 +1136,6 @@ impl SessionStore {
             revision_id,
             wall_time_milliseconds(),
         )?;
-        reindex_session_search(&transaction, &session.0)?;
         transaction.commit()?;
         Ok(())
     }
@@ -1200,8 +1178,8 @@ impl SessionStore {
             String,
             String,
             String,
-            String,
-            Option<String>,
+            TranscriptionRunState,
+            Option<TranscriptionFailureClass>,
         );
         let row: RunRow = self
             .connection
@@ -1287,16 +1265,13 @@ impl SessionStore {
         current_version: &str,
     ) -> Result<Vec<String>, StoreError> {
         let mut statement = self.connection.prepare(
-            "SELECT runs.id, runs.session_id, runs.track_id
+            "SELECT runs.id, runs.session_id, runs.track_id, runs.state, runs.failure_class
              FROM transcription_runs AS runs
              JOIN sessions ON sessions.id = runs.session_id
              WHERE sessions.lifecycle = 'ready_for_review'
                AND NOT EXISTS(SELECT 1 FROM session_deletion_intents WHERE session_id = runs.session_id)
                AND runs.reconciliation_version <> ?1
                AND NOT EXISTS(SELECT 1 FROM transcription_intent WHERE session_id = runs.session_id AND declined_auto = 1)
-               AND (runs.state = 'running'
-                    OR (runs.state = 'failed'
-                        AND runs.failure_class IN ('invalid_result', 'stale_reconciliation')))
                AND EXISTS (SELECT 1 FROM transcript_chunks AS chunks
                            WHERE chunks.run_id = runs.id)
                AND NOT EXISTS (SELECT 1 FROM transcript_chunks AS chunks
@@ -1322,12 +1297,17 @@ impl SessionStore {
                     row.get::<_, String>(0)?,
                     row.get::<_, String>(1)?,
                     row.get::<_, String>(2)?,
+                    row.get::<_, TranscriptionRunState>(3)?,
+                    row.get::<_, Option<TranscriptionFailureClass>>(4)?,
                 ))
             })?
             .collect::<Result<Vec<_>, _>>()?;
         let mut candidates = Vec::new();
         let mut seen: Vec<(String, String)> = Vec::new();
-        for (run_id, session_id, track_id) in rows {
+        for (run_id, session_id, track_id, state, failure_class) in rows {
+            if !state.retains_chunks(failure_class, super::RetainedRunUse::LaunchReconcile) {
+                continue;
+            }
             let track = (session_id, track_id);
             if seen.contains(&track) {
                 continue;
@@ -1447,7 +1427,11 @@ impl SessionStore {
         &self,
         session: &SessionId,
     ) -> Result<Vec<TranscriptProvenance>, StoreError> {
-        let readable = self.readable_transcript(session)?;
+        let readable = super::conversation_document::document_rows(
+            &self.connection,
+            &session.0,
+            super::DocumentScope::Readable,
+        )?;
         let mut statement = self.connection.prepare(
             "SELECT revisions.track_id, revisions.finality, runs.engine, runs.engine_version,
                     runs.model_id, runs.model_sha256, runs.input_digest, runs.state
@@ -1479,13 +1463,13 @@ impl SessionStore {
             ) = statement.query_row(params![session.0, segment.revision_id], |row| {
                 Ok((
                     row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
+                    row.get::<_, TranscriptFinality>(1)?,
                     row.get::<_, String>(2)?,
                     row.get::<_, String>(3)?,
                     row.get::<_, String>(4)?,
                     row.get::<_, String>(5)?,
                     row.get::<_, String>(6)?,
-                    row.get::<_, String>(7)?,
+                    row.get::<_, TranscriptionRunState>(7)?,
                 ))
             })?;
             provenance.push(TranscriptProvenance {
@@ -1505,16 +1489,6 @@ impl SessionStore {
             });
         }
         Ok(provenance)
-    }
-
-    /// True when a Draft revision is still waiting for a final range.
-    pub fn has_open_transcript_draft(&self, session: &SessionId) -> Result<bool, StoreError> {
-        Ok(self.connection.query_row(
-            "SELECT EXISTS(SELECT 1 FROM transcript_revisions
-             WHERE session_id = ?1 AND finality = 'draft')",
-            [&session.0],
-            |row| row.get(0),
-        )?)
     }
 
     /// Selected Final text across tracks, ordered on the session timeline.
@@ -1610,6 +1584,8 @@ fn supersede_overlapping_drafts(
     Ok(())
 }
 
+/// Selects one track's revision and rebuilds the session's search rows in
+/// the same transaction; every selection change goes through here.
 pub(super) fn select_revision(
     transaction: &Transaction<'_>,
     session_id: &str,
@@ -1624,6 +1600,150 @@ pub(super) fn select_revision(
          DO UPDATE SET revision_id = excluded.revision_id, selected_at_ms = excluded.selected_at_ms",
         params![session_id, track_id, revision_id, now],
     )?;
+    reindex_session_search(transaction, session_id)
+}
+
+/// Inserts one `transcription_runs` row; the queue, live drafts and package
+/// restore all create runs here.
+pub(super) fn insert_run(
+    transaction: &Transaction<'_>,
+    run_id: &str,
+    identity: &TranscriptionRunIdentity,
+    state: TranscriptionRunState,
+    operation_key: Option<&str>,
+    now: i64,
+) -> Result<(), StoreError> {
+    transaction.execute(
+        "INSERT INTO transcription_runs(
+            id, schema_version, session_id, track_id, identity, input_digest, engine,
+            engine_version, model_id, model_sha256, options_digest, reconciliation_version,
+            state, created_at_ms, updated_at_ms, operation_key)
+         VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?14, ?15)",
+        params![
+            run_id,
+            TRANSCRIPT_SCHEMA_VERSION,
+            identity.session_id.0,
+            identity.track_id,
+            identity.digest(),
+            identity.input_digest,
+            identity.engine,
+            identity.engine_version,
+            identity.model_id,
+            identity.model_sha256,
+            identity.options_digest,
+            identity.reconciliation_version,
+            state,
+            now,
+            operation_key
+        ],
+    )?;
+    Ok(())
+}
+
+pub(super) struct ChunkRow<'a> {
+    pub run_id: &'a str,
+    pub sequence: i64,
+    pub identity: &'a str,
+    pub span_index: u32,
+    pub start_nanoseconds: i64,
+    pub end_nanoseconds: i64,
+    pub state: TranscriptChunkState,
+    pub language: Option<&'a str>,
+    pub hypothesis_json: Option<&'a str>,
+    pub reused_from_run: Option<&'a str>,
+}
+
+pub(super) fn insert_chunk(
+    transaction: &Transaction<'_>,
+    chunk: &ChunkRow<'_>,
+    now: i64,
+) -> Result<(), StoreError> {
+    transaction.execute(
+        "INSERT INTO transcript_chunks(
+            run_id, sequence, identity, span_index, start_ns, end_ns, state,
+            language, hypothesis_json, reused_from_run, updated_at_ms)
+         VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+        params![
+            chunk.run_id,
+            chunk.sequence,
+            chunk.identity,
+            chunk.span_index,
+            chunk.start_nanoseconds,
+            chunk.end_nanoseconds,
+            chunk.state.as_str(),
+            chunk.language,
+            chunk.hypothesis_json,
+            chunk.reused_from_run,
+            now
+        ],
+    )?;
+    Ok(())
+}
+
+pub(super) struct RevisionRow<'a> {
+    pub revision_id: &'a str,
+    pub session_id: &'a str,
+    pub track_id: &'a str,
+    pub run_id: &'a str,
+    pub finality: TranscriptFinality,
+    pub reconciliation_version: &'a str,
+    pub rejections_json: &'a str,
+    pub discontinuities_json: &'a str,
+}
+
+pub(super) struct SegmentRow<'a> {
+    pub start_nanoseconds: i64,
+    pub end_nanoseconds: i64,
+    pub text: &'a str,
+    pub mean_probability: Option<f64>,
+    pub no_speech_probability: Option<f64>,
+    pub chunk_identity: &'a str,
+}
+
+/// Inserts one immutable verbatim revision and its segments, numbered from
+/// zero in the order given.
+pub(super) fn insert_revision(
+    transaction: &Transaction<'_>,
+    revision: &RevisionRow<'_>,
+    segments: &[SegmentRow<'_>],
+    now: i64,
+) -> Result<(), StoreError> {
+    transaction.execute(
+        "INSERT INTO transcript_revisions(
+            id, schema_version, session_id, track_id, run_id, kind, finality,
+            reconciliation_version, rejections_json, discontinuities_json, created_at_ms)
+         VALUES(?1, ?2, ?3, ?4, ?5, 'verbatim', ?6, ?7, ?8, ?9, ?10)",
+        params![
+            revision.revision_id,
+            TRANSCRIPT_SCHEMA_VERSION,
+            revision.session_id,
+            revision.track_id,
+            revision.run_id,
+            revision.finality,
+            revision.reconciliation_version,
+            revision.rejections_json,
+            revision.discontinuities_json,
+            now
+        ],
+    )?;
+    for (sequence, segment) in segments.iter().enumerate() {
+        transaction.execute(
+            "INSERT INTO transcript_segments(
+                revision_id, sequence, start_ns, end_ns, text, mean_probability,
+                no_speech_probability, chunk_identity)
+             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                revision.revision_id,
+                sequence as i64,
+                segment.start_nanoseconds,
+                segment.end_nanoseconds,
+                segment.text,
+                segment.mean_probability,
+                segment.no_speech_probability,
+                segment.chunk_identity
+            ],
+        )?;
+    }
     Ok(())
 }
 
@@ -1678,11 +1798,7 @@ fn digest_fields(domain: &[u8], fields: &[&str]) -> String {
         hasher.update((field.len() as u64).to_be_bytes());
         hasher.update(field.as_bytes());
     }
-    hasher
-        .finalize()
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect()
+    lowercase_hex(&hasher.finalize())
 }
 
 #[cfg(test)]

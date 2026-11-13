@@ -62,7 +62,7 @@ final class ProviderAuthorizationModel: ObservableObject {
     -> NativeProviderOfferedRecord
   {
     let bytes = Data(text.utf8)
-    let digest = SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
+    let digest = SHA256.hash(data: bytes).lowercaseHex
     return NativeProviderOfferedRecord(
       category: category, recordId: recordId, revisionId: revisionId, contentDigest: digest,
       byteCount: UInt64(bytes.count), text: text)

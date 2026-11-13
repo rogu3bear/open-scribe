@@ -1,6 +1,20 @@
 import CoreAudio
 import Foundation
 
+/// The input selected for this recording. Identity is the Core Audio unique ID.
+/// A later device with a different ID is not the selected microphone.
+struct MicrophoneDeviceIdentity: Equatable, Sendable {
+  var uniqueID: String
+  var localizedName: String
+}
+
+enum MicrophoneDeviceProbe {
+  /// Production input. Tests inject their own closure and do not call this.
+  @MainActor static func currentInput() -> MicrophoneDeviceIdentity? {
+    try? CoreAudioInputDevice.currentInput()
+  }
+}
+
 /// Resolving a UID and selecting it are separate steps: the device can disappear
 /// or its numeric ID can be reused in between. Read back the actual selected UID.
 struct MicrophoneInputBinding: Sendable {

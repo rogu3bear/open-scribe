@@ -2,6 +2,27 @@ import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
 
+/// The windows that present the speech-model sheet.
+enum SpeechModelSheetHost: Equatable, Sendable {
+  case conversation
+  case settings
+}
+
+extension View {
+  /// Presents the speech-model sheet while `speech` has it open in `host`.
+  func speechModelSheet(_ speech: SpeechTranscriptionModel, in host: SpeechModelSheetHost)
+    -> some View
+  {
+    sheet(
+      isPresented: Binding(
+        get: { speech.modelSheet == host },
+        set: { if !$0, speech.modelSheet == host { speech.closeModels() } })
+    ) {
+      SpeechModelSheet(speech: speech) { speech.closeModels() }
+    }
+  }
+}
+
 /// Installs a local speech model. Download fetches the published catalog file
 /// into managed staging. Install from File uses a file the user already has.
 /// Either way the file is checked against the manifest, then test-run, before
@@ -27,7 +48,7 @@ struct SpeechModelSheet: View {
       ForEach(speech.models, id: \.modelId) { model in
         modelDetail(model)
       }
-      if speech.isRefreshing { ProgressView("Verifying local model files…") }
+      if speech.isRefreshing { ProgressView("Checking the model files…") }
       if let warning = speech.catalogWarning {
         Text(warning).foregroundStyle(.secondary)
         Button("Refresh") { speech.refresh() }
@@ -67,7 +88,7 @@ struct SpeechModelSheet: View {
       )
       .font(.caption)
       .foregroundStyle(.secondary)
-      DisclosureGroup("Verification details") {
+      DisclosureGroup("File details") {
         VStack(alignment: .leading, spacing: ScribeSpacing.tight) {
           Text(model.fileName)
           Text("SHA-256 \(model.sha256)")
@@ -130,10 +151,10 @@ struct SpeechModelSheet: View {
   static func readinessText(_ state: NativeModelReadiness) -> String {
     switch state {
     case .absent: "Not installed"
-    case .presentUnverified: "Present, verification unavailable"
-    case .verifying: "Verifying"
-    case .ready: "Verified and ready"
-    case .invalid: "Invalid — repair required"
+    case .presentUnverified: "Installed, not checked yet"
+    case .verifying: "Checking…"
+    case .ready: "Ready"
+    case .invalid: "Damaged — choose a replacement"
     case .incompatible: "Incompatible with this engine"
     }
   }

@@ -59,9 +59,10 @@ pub struct TrackDiarization {
 /// threshold, or generated name.
 #[must_use]
 pub fn disposition_for_source_kind(source_kind: &str) -> TrackDiarization {
-    let disposition = match source_kind {
-        "microphone" | "application_audio" | "system_audio" => SpeakerDisposition::Topology,
-        _ => SpeakerDisposition::Unresolved,
+    let disposition = if open_scribe_types::SourceKind::parse(source_kind).is_some() {
+        SpeakerDisposition::Topology
+    } else {
+        SpeakerDisposition::Unresolved
     };
     TrackDiarization {
         disposition,
