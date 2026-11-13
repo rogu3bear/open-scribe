@@ -26,8 +26,8 @@ app="${1:-}"
 }
 
 identity="$(
-	/usr/bin/security find-identity -p codesigning -v \
-		| /usr/bin/sed -n 's/.*"\(Developer ID Application:[^"]*\)".*/\1/p'
+	/usr/bin/security find-identity -p codesigning -v |
+		/usr/bin/sed -n 's/.*"\(Developer ID Application:[^"]*\)".*/\1/p'
 )"
 identity_count="$(printf '%s\n' "$identity" | /usr/bin/grep -c . || true)"
 [[ "$identity_count" -eq 1 ]] || {
