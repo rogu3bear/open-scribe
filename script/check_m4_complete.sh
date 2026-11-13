@@ -107,7 +107,7 @@ if source_has_markers \
 	'testHostedDeletionConfirmUsesSystemTrash' \
 	'Confirm move to Trash' \
 	'performClick' \
-	'does not call `requestDeletion`' &&
+	"does not call \`requestDeletion\`" &&
 	source_has_markers \
 		"$repo_root/apps/macos/Tests/OpenScribeAppTests/TranscriptLibraryModelTests.swift" \
 		'testLaunchRecoverySettlesASystemTrashMoveThatStoppedBeforeCompletion' \
