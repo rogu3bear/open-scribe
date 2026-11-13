@@ -14,8 +14,8 @@ struct SystemPressureReading: Equatable, Sendable {
     case critical
   }
 
-  /// Bytes the library volume can still give this app for important usage,
-  /// from `volumeAvailableCapacityForImportantUsage`; `nil` when unreadable.
+  /// Bytes the library volume can still give this app, from
+  /// `RecorderStorage.availableBytes`; `nil` when unreadable.
   let availableDiskBytes: Int64?
   /// The last level the kernel's memory-pressure source delivered.
   let memoryPressure: MemoryPressure
