@@ -29,7 +29,7 @@ struct ConversationRenameSheet: View {
     self.session = session
     self.store = store
     self.onClose = onClose
-    _draftTitle = State(initialValue: ConversationIdentityPresentation.title(session.title))
+    _draftTitle = State(initialValue: ConversationIdentityPresentation.title(for: session))
   }
 
   private var trimmedTitle: String {

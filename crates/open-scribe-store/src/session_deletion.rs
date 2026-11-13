@@ -237,6 +237,7 @@ impl SessionStore {
             "DELETE FROM transcription_intent WHERE session_id = ?1",
             "DELETE FROM segments WHERE session_id = ?1",
             // Diarization tracks reference media tracks without cascade.
+            "DELETE FROM conversation_titles WHERE session_id = ?1",
             "DELETE FROM speaker_diarization_tracks WHERE session_id = ?1",
             "DELETE FROM speaker_diarization_runs WHERE session_id = ?1",
             "DELETE FROM tracks WHERE session_id = ?1",

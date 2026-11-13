@@ -163,6 +163,11 @@ final class TranscriptLibraryModel: ObservableObject {
     }
   }
 
+  /// The shared connection for actions defined outside this file.
+  func connectedLibrary() async throws -> NativeTranscriptLibrary {
+    try await readyLibrary()
+  }
+
   deinit { connectionTask?.cancel() }
 
   #if DEBUG

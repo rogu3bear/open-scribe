@@ -13,6 +13,8 @@ pub use export::{
     TRANSCRIPT_V1_SCHEMA_JSON, TranscriptAvailability, TranscriptExport, TranscriptExportError,
     TranscriptExportFormat, TranscriptExportReceipt, write_transcript_export,
 };
+mod conversation_text;
+pub use conversation_text::{ConversationText, ConversationTurn, conversation_text};
 mod transcript_library;
 pub use transcript_library::{AudioExportOptions, TranscriptLibrary};
 mod transcription;

@@ -37,7 +37,7 @@ fn one_imported_track_can_name_two_people_without_rewriting_text_or_audio() {
     let partial = fixture.store.transcript_document(&fixture.session).unwrap();
     assert_eq!(partial[0].speaker_label, "Dana");
     assert_eq!(partial[0].named_speaker_id.as_deref(), Some(first.as_str()));
-    assert_eq!(partial[1].speaker_label, "Unknown speaker");
+    assert_eq!(partial[1].speaker_label, "Speaker");
     assert!(partial[1].named_speaker_id.is_none());
     let second = named(&mut fixture, &revision, 1, "Morgan");
     let doc = fixture.store.transcript_document(&fixture.session).unwrap();
@@ -52,7 +52,7 @@ fn one_imported_track_can_name_two_people_without_rewriting_text_or_audio() {
     );
     assert_eq!(
         fixture.store.session_speakers(&fixture.session).unwrap()[0].label,
-        "Unknown speaker"
+        "Speaker"
     );
     let people = fixture
         .store
@@ -195,7 +195,7 @@ fn reuse_rename_and_reset_are_append_only_and_idempotent() {
         )
         .unwrap();
     let doc = fixture.store.transcript_document(&fixture.session).unwrap();
-    assert_eq!(doc[0].speaker_label, "Unknown speaker");
+    assert_eq!(doc[0].speaker_label, "Speaker");
     assert_eq!(doc[1].speaker_label, "D. Morgan");
     for table in [
         "transcript_named_speakers",
@@ -438,9 +438,11 @@ fn merge_and_split_keep_each_named_assignment_and_the_source_default() {
         .named_speaker_turn_history(&fixture.session)
         .unwrap();
     assert_eq!(unnamed.len(), 2);
-    assert!(unnamed.iter().all(|turn| {
-        turn.revisions.is_empty() && turn.source_default_label == "Unknown speaker"
-    }));
+    assert!(
+        unnamed
+            .iter()
+            .all(|turn| { turn.revisions.is_empty() && turn.source_default_label == "Speaker" })
+    );
     let dana = named(&mut fixture, &revision, 0, "Dana");
     let morgan = named(&mut fixture, &revision, 1, "Morgan");
     assert_eq!(
@@ -485,10 +487,7 @@ fn merge_and_split_keep_each_named_assignment_and_the_source_default() {
         .unwrap();
     assert_eq!(
         turn_labels(&history, 1),
-        (
-            "Unknown speaker".into(),
-            vec!["Morgan".into(), "Dana".into()]
-        )
+        ("Speaker".into(), vec!["Morgan".into(), "Dana".into()])
     );
     assert_eq!(
         history
@@ -512,10 +511,7 @@ fn merge_and_split_keep_each_named_assignment_and_the_source_default() {
         .unwrap();
     assert_eq!(
         turn_labels(&renamed, 1),
-        (
-            "Unknown speaker".into(),
-            vec!["Morgan".into(), "Dana".into()]
-        )
+        ("Speaker".into(), vec!["Morgan".into(), "Dana".into()])
     );
     assert_eq!(
         fixture.store.transcript_document(&fixture.session).unwrap()[1].speaker_label,
@@ -574,7 +570,7 @@ fn merge_and_split_keep_each_named_assignment_and_the_source_default() {
     assert_eq!(
         turn_labels(&after, 1),
         (
-            "Unknown speaker".into(),
+            "Speaker".into(),
             vec!["Morgan".into(), "Dana".into(), "Mina".into()]
         )
     );
@@ -619,7 +615,7 @@ fn merge_and_split_keep_each_named_assignment_and_the_source_default() {
         .named_speaker_turn_history(&fixture.session)
         .unwrap();
     let first = restored.iter().find(|turn| turn.sequence == 0).unwrap();
-    assert_eq!(first.revisions.last().unwrap().label, "Unknown speaker");
+    assert_eq!(first.revisions.last().unwrap().label, "Speaker");
     assert_eq!(
         first.revisions.last().unwrap().origin,
         SpeakerLabelOrigin::SourceDefault
@@ -632,7 +628,7 @@ fn merge_and_split_keep_each_named_assignment_and_the_source_default() {
     );
     assert_eq!(
         fixture.store.session_speakers(&fixture.session).unwrap()[0].label,
-        "Unknown speaker"
+        "Speaker"
     );
     assert_eq!(
         fixture

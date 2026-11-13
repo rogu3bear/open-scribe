@@ -298,10 +298,10 @@ fn markup_and_cue_syntax_in_corrections_stay_literal() {
     assert_eq!(cue_times(&vtt, '.').len(), 2);
 
     let markdown = export.render(TranscriptExportFormat::Markdown).unwrap();
-    assert!(markdown.contains("Unknown speaker:** \\<b\\>&\"--\\> \\*x\\* _(corrected)_"));
+    assert!(markdown.contains("Speaker:** \\<b\\>&\"--\\> \\*x\\* _(corrected)_"));
     let srt = export.render(TranscriptExportFormat::SubRip).unwrap();
     assert!(srt.contains("\n<b>&\"--> *x*\n\n"), "{srt}");
-    assert!(!srt.contains("Unknown speaker"));
+    assert!(!srt.contains("Speaker:"));
 }
 
 #[test]

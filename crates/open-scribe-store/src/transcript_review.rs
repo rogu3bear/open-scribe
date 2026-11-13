@@ -600,10 +600,11 @@ pub(super) fn require_reviewable_session(
 
 pub(crate) fn default_speaker_label(source_kind: &str) -> &'static str {
     match source_kind {
-        "microphone" => "Local user",
-        "application_audio" => "Remote participants",
-        "system_audio" => "System audio",
-        _ => "Unknown speaker",
+        // Founding PRD 11.3: the microphone is the local user; computer audio
+        // carries the other participants. These are labels, not identities.
+        "microphone" => "You",
+        "application_audio" | "system_audio" => "Others",
+        _ => "Speaker",
     }
 }
 

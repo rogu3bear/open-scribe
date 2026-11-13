@@ -1362,7 +1362,7 @@ final class MicrophoneCaptureAdapterTests: XCTestCase {
       posture.2,
       "Speakers follow the audio source. Voice diarization is unavailable without a calibrated model."
     )
-    XCTAssertEqual(posture.3, "Local user")
+    XCTAssertEqual(posture.3, "You")
     XCTAssertEqual(posture.4, [])
     XCTAssertNil(posture.5)
     let decision = try library.prepareSpeakerDiarization(sessionId: sessionId)
@@ -1382,7 +1382,7 @@ final class MicrophoneCaptureAdapterTests: XCTestCase {
     XCTAssertTrue(renamed)
     XCTAssertTrue(cleared)
     let restored = await MainActor.run { model.speakers.first?.label }
-    XCTAssertEqual(restored, "Local user")
+    XCTAssertEqual(restored, "You")
     let markdown = fixture.root.appendingPathComponent("Transcript.md")
     let wroteTranscript = await model.export(format: .markdown, to: markdown)
     let exportMessage = await MainActor.run { model.message }
@@ -2135,13 +2135,13 @@ final class MicrophoneCaptureAdapterTests: XCTestCase {
     )
     let speaker = try XCTUnwrap(before.3.first)
     XCTAssertEqual(speaker.sourceKind, "microphone")
-    XCTAssertEqual(speaker.label, "Local user")
+    XCTAssertEqual(speaker.label, "You")
     XCTAssertFalse(speaker.namedByUser)
     let passage = try XCTUnwrap(before.4.first)
     XCTAssertEqual(before.4.map(\.effectiveText), ["provisional meadow"])
     XCTAssertEqual(before.4.map(\.verbatimText), ["provisional meadow"])
     XCTAssertEqual(passage.finality, "draft")
-    XCTAssertEqual(passage.speakerLabel, "Local user")
+    XCTAssertEqual(passage.speakerLabel, "You")
     XCTAssertFalse(passage.speakerNamedByUser)
     XCTAssertFalse(passage.corrected)
     XCTAssertNil(before.5)
@@ -2153,7 +2153,7 @@ final class MicrophoneCaptureAdapterTests: XCTestCase {
     XCTAssertEqual(decision.tracks.count, 1)
     XCTAssertEqual(decision.tracks[0].sourceKind, "microphone")
     XCTAssertEqual(decision.tracks[0].disposition, "topology")
-    XCTAssertEqual(decision.tracks[0].label, "Local user")
+    XCTAssertEqual(decision.tracks[0].label, "You")
     XCTAssertEqual(decision.tracks[0].labelOrigin, "source_default")
     let provenance = try library.inspectProvenance(sessionId: sessionId)
     XCTAssertEqual(provenance.map(\.revisionId), [passage.revisionId])
@@ -2248,18 +2248,18 @@ final class MicrophoneCaptureAdapterTests: XCTestCase {
     let model = await MainActor.run { TranscriptLibraryModel(library: library) }
     await model.load(session: RuntimeSessionPresentation(native: saved))
     let speaker = try await MainActor.run { try XCTUnwrap(model.speakers.first) }
-    XCTAssertEqual(speaker.label, "Local user")
+    XCTAssertEqual(speaker.label, "You")
     XCTAssertFalse(speaker.namedByUser)
     let initialHistoryRecords = await MainActor.run { model.speakerLabelHistory }
     let initialHistory = try XCTUnwrap(initialHistoryRecords.first)
     XCTAssertEqual(initialHistoryRecords.count, 1)
     XCTAssertEqual(initialHistory.trackId, speaker.trackId)
     XCTAssertEqual(initialHistory.sourceKind, "microphone")
-    XCTAssertEqual(initialHistory.sourceDefaultLabel, "Local user")
+    XCTAssertEqual(initialHistory.sourceDefaultLabel, "You")
     XCTAssertTrue(initialHistory.revisions.isEmpty)
     XCTAssertEqual(
       TranscriptLibraryModel.speakerLabelHistoryText(for: initialHistory),
-      "Source default: Local user")
+      "Source default: You")
     let renamed = await model.renameSpeaker(trackId: speaker.trackId, label: " Dana ")
     let named = await MainActor.run { model.speakers.first }
     XCTAssertTrue(renamed)
@@ -2277,7 +2277,7 @@ final class MicrophoneCaptureAdapterTests: XCTestCase {
       )
     }
     XCTAssertTrue(restored)
-    XCTAssertEqual(again.0, "Local user")
+    XCTAssertEqual(again.0, "You")
     XCTAssertEqual(again.1, false)
     XCTAssertEqual(again.2, ["provisional meadow"])
     XCTAssertEqual(again.3, ["provisional meadow"])
@@ -2286,7 +2286,7 @@ final class MicrophoneCaptureAdapterTests: XCTestCase {
     XCTAssertEqual(decision.clusteringState, "unavailable")
     XCTAssertEqual(decision.reason, "no calibrated diarization model")
     XCTAssertEqual(decision.algorithmId, "topology-before-clustering-v1")
-    XCTAssertEqual(decision.tracks.first?.label, "Local user")
+    XCTAssertEqual(decision.tracks.first?.label, "You")
     XCTAssertEqual(decision.tracks.first?.labelOrigin, "source_default")
     let renamedAgain = await model.renameSpeaker(trackId: speaker.trackId, label: "Mina")
     let clearedAgain = await model.renameSpeaker(trackId: speaker.trackId, label: nil)
@@ -2295,14 +2295,14 @@ final class MicrophoneCaptureAdapterTests: XCTestCase {
     let reviewed = await MainActor.run {
       (model.speakers.first?.label, model.speakerLabelHistory)
     }
-    XCTAssertEqual(reviewed.0, "Local user")
+    XCTAssertEqual(reviewed.0, "You")
     let history = try XCTUnwrap(reviewed.1.first)
     XCTAssertEqual(reviewed.1.count, 1)
     XCTAssertEqual(history.trackId, speaker.trackId)
     XCTAssertEqual(history.sourceKind, "microphone")
-    XCTAssertEqual(history.sourceDefaultLabel, "Local user")
+    XCTAssertEqual(history.sourceDefaultLabel, "You")
     XCTAssertEqual(
-      history.revisions.map(\.label), ["Dana", "Local user", "Mina", "Local user"])
+      history.revisions.map(\.label), ["Dana", "You", "Mina", "You"])
     XCTAssertEqual(
       history.revisions.map(\.origin),
       [.human, .sourceDefault, .human, .sourceDefault])
@@ -2314,11 +2314,11 @@ final class MicrophoneCaptureAdapterTests: XCTestCase {
     XCTAssertEqual(
       TranscriptLibraryModel.speakerLabelHistoryText(for: history),
       """
-      Source default: Local user
+      Source default: You
       Dana, named by you
-      Local user, source name
+      You, source name
       Mina, named by you
-      Local user, source name
+      You, source name
       """)
     XCTAssertEqual(try Data(contentsOf: mediaURL), sealedMedia)
     XCTAssertTrue(failures.snapshot().isEmpty)

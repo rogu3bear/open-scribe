@@ -1,6 +1,6 @@
 # Open Scribe Design Contract
 
-**Status (2026-10-15):** strategy remains applicable. The source now includes capture/import, recovery/playback, local transcription, correction/search, and export. Integration repair and exact-candidate/platform qualification are distinct from implementation; public capability and release holds remain unchanged.
+**Status (2026-11-12):** the native window moved to **The Interview Page** (section 0). The earlier status line follows. **Status (2026-10-15):** strategy remains applicable. The source now includes capture/import, recovery/playback, local transcription, correction/search, and export. Integration repair and exact-candidate/platform qualification are distinct from implementation; public capability and release holds remain unchanged.
 
 **Decision date:** 2026-08-20
 
@@ -8,7 +8,53 @@
 
 **Authority:** presentation and interaction projection of `docs/product/FOUNDING_PRD.md`; it does not supersede product purpose, architecture, milestone scope, or the state machine.
 
-**Selected direction:** Field Instrument / Evidence Ledger.
+**Selected direction:** Field Instrument / Evidence Ledger for state truth, the menu bar, the website, and the icon. **The Interview Page** for the native main window (section 0, 2026-11-12).
+
+## 0. Native main window — The Interview Page (2026-11-12)
+
+**Decision.** The operator asked for a full redesign focused on function and UX. Their problems were: date-only titles, no live text, no one-click copy, and no name detection. They chose **The Interview Page** from the impeccable direction page: option `model-pick`, code-led, seed `5c45929b`. The surface brief is `.impeccable/surfaces/ces-openscribeapp-views-contentview-swift-dc72b8b1.md`. Engines and storage are in ADR 0019 (proposed).
+
+**Thesis.** Every conversation is typeset like a published interview the moment it is spoken, so reading, checking, and copying happen on one surface. It is not chat bubbles under an AI-summary card, and not a forensic log.
+
+**Supersedes, for the native main window only:** section 5's Main window and Compact live window rows and its Conversation workspace presentation; section 7's native typography bullets ("semantic body" transcript, "no custom native font", and the serif rejection) and the native `background` color role for the document plane. Unchanged: state semantics (section 6), recording red rules, the menu bar's role, Settings, the evidence-linked interpretation contract, meters, motion, context overlays, the website, and the icon. The website keeps sans-serif transcripts.
+
+### Layout
+
+- `NavigationSplitView`. The sidebar has search, then **Now** or **Needs Attention**, then saved conversations grouped **Today**, **Yesterday**, **Previous 7 Days**, then by month. Rows show the title (placeholder titles in secondary ink) over one line: time · length · state. "Transcript ready" is omitted as the normal case. A bottom bar holds Import (+), Rename (pencil), and Move to Trash (trash) as borderless symbol buttons.
+- Document column: centered, at most 700 pt (a 60 pt shoulder plus a 640 pt measure, about 68 characters of 17 pt New York). The shoulder holds timestamps; everything else aligns to the measure.
+- Saved conversation, top to bottom: title (New York semibold 30; double-click renames) · facts line (date and time · length · people · Imported · reference) · "Title suggested from the conversation. Keep · Rename…" when suggested · action row (**Copy**, prominent, ⇧⌘C, with a chevron for "Copy Text Only"; Play/Stop; Export… on the trailing edge) · notices · markers · preserved audio (only when attention is needed) · hairline rule · reading tools (find field, person menu, Follow playback) · the interview.
+- Details (⌥⌘I, toolbar `sidebar.right`) is a 340 pt trailing panel on the window background. It holds About, People and topic, Audio, Transcript record (status, provenance, reprocess, source labels, other exports), Interpretation, Claims, Context, and the Recording journal.
+- Live recording uses the same column: "● Recording 12:04" status line, the title, sources as facts, Copy So Far and Follow, notices (storage, captions), live markers, rule, then the live interview.
+
+### The interview
+
+- One paragraph per Final passage; consecutive Draft windows of one voice join into one paragraph (at most 8 windows). The speaker's name runs in, bold 12 pt uppercase with 0.6 tracking, only where the voice changes. Turn spacing is 18 pt; within a turn, 8 pt. Line spacing is 5 pt.
+- Every paragraph has a shoulder timestamp: an AppKit inline button, 11 pt monospaced digits, secondary ink, accent and semibold while playing. It plays from that moment and speaks "Play from m:ss, Final|Draft|Corrected".
+- Name and Correct are borderless symbol buttons beside each Final paragraph. They fade in on hover and are always in the keyboard and VoiceOver order. They open the review tray, docked at the bottom of the document on material: name field, Save, Cancel, "Heard:" name chips, use the source label, split, merge, and rename people. Correction offers Save, Cancel, and Restore machine reading. Corrected passages show "Corrected · Show machine reading".
+- Draft text appears in secondary ink with a dotted underline only when Draft and Final text are mixed. A Draft-only document reads in ink, and the status line says "This is the live draft."
+- Search matches get the wash fill, semibold, and an underline, and are counted in words. The playing passage gets the wash; cited evidence gets 14% accent.
+
+### Tokens (Interview, `InterviewStyle.swift`)
+
+| Role | Light | Dark | Use |
+|---|---|---|---|
+| paper | `#FBFBF8` | `#1C1C1B` | document plane |
+| ink | `#141414` | `#ECECEA` | title, speech, names |
+| quiet | `#6E6E73` | `#A1A1A6` | facts, stamps, live and Draft text |
+| accent | `#1F3A93` | `#8FA8F0` | playing stamp, marker stamps, cited wash |
+| rule | `#E4E3DE` | `#343432` | hairlines, field strokes |
+| wash | `#E9EDF8` | `#262C3D` | playing passage, search match |
+| recording | system red | system red | always with the word "Recording" |
+
+The Copy button uses the system accent (`.borderedProminent`), so it follows the person's accent color. Type: New York (`.serif` design) for the title and speech; SF for controls, facts (13 pt), section labels (11 pt semibold), and stamps (11 pt monospaced digits). Transcript size steps (View ▸ Bigger/Smaller/Actual Size, ⌘+ ⌘− ⌘0) scale 17 pt by 1, 1.15, or 1.32. No cards, gradients, badges, or custom radii; rounded rectangles appear only on the find field (7 pt) and the playing wash (6 pt).
+
+### Copy output
+
+`Title` / `Nov 12, 2026 at 3:42 PM · 24 min · You, Dana` / optional "Draft transcript: some words may be misheard." / blank line / `Name [m:ss]: text` paragraphs separated by blank lines. "Copy Text Only" drops the stamps. Library rows and the menu bar offer the same Copy.
+
+### Proof status
+
+Source builds green (Debug, macOS 13 deployment). Rendered light/dark review, hosted-suite results, and the finish review are recorded below when they run. This section claims presentation only, not capture, accessibility, or release qualification.
 
 ## 1. Scope and proof boundary
 

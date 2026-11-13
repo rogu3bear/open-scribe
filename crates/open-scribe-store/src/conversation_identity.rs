@@ -153,6 +153,7 @@ impl SessionStore {
                 "session is not available to rename",
             ));
         }
+        super::conversation_titles::record_person_named(&transaction, &session.0)?;
         super::session_times::record_change(&transaction, &session.0, wall_time_milliseconds())?;
         transaction.commit()?;
         Ok(title.to_owned())

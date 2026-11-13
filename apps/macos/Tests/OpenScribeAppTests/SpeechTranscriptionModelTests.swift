@@ -226,7 +226,7 @@ final class SpeechTranscriptionModelTests: XCTestCase {
     XCTAssertEqual(transcripts.speakers.first?.label, "Dana")
     let restored = await transcripts.renameSpeaker(trackId: trackId, label: nil)
     XCTAssertTrue(restored)
-    XCTAssertEqual(transcripts.speakers.first?.label, "Unknown speaker")
+    XCTAssertEqual(transcripts.speakers.first?.label, "Speaker")
     XCTAssertTrue(try library.search(query: "interview", sessionId: evidence.sessionId, limit: 20).isEmpty)
     XCTAssertThrowsError(
       try library.correctSegment(

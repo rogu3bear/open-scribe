@@ -11,6 +11,7 @@ struct SettingsView: View {
   @ObservedObject var recovery: RecoveredSessionController
   @ObservedObject var scheduler: TranscriptionScheduler
   @ObservedObject var pressure: SystemPressureMonitor
+  @ObservedObject var liveCaptions = LiveCaptionModel()
   var diagnosticsDestination: @MainActor () -> URL? = SettingsView.chooseDiagnosticsDestination
   @State private var showingModels = false
   @State private var showingPolicies = false
@@ -45,6 +46,21 @@ struct SettingsView: View {
         }
         Text(
           "Runs on this Mac, one conversation at a time, after recording stops. Manual requests still work when automatic transcription is paused."
+        )
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .fixedSize(horizontal: false, vertical: true)
+      }
+      Section("While Recording") {
+        Toggle("Show a live transcript", isOn: $liveCaptions.isEnabled)
+        Text(
+          "Apple's on-device speech recognizer writes a draft while people talk. It stays on this Mac and never delays the recording. The final transcript replaces the draft after you stop."
+        )
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .fixedSize(horizontal: false, vertical: true)
+        Text(
+          "Conversation titles and name suggestions come from the transcript, using Apple Intelligence on this Mac when it is available. A title you type is never replaced."
         )
         .font(.caption)
         .foregroundStyle(.secondary)
@@ -160,7 +176,7 @@ struct SettingsView: View {
     if let running = scheduler.runningSessionId {
       let title =
         library.savedSessions.first { $0.sessionId == running }
-        .map { ConversationIdentityPresentation.title($0.title) } ?? "1 conversation"
+        .map { ConversationIdentityPresentation.title(for: $0) } ?? "1 conversation"
       parts.append("Transcribing “\(title)”")
     }
     let waiting = scheduler.queue.count

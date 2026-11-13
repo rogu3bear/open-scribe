@@ -59,6 +59,12 @@ impl SessionStore {
                 }
                 other => StoreError::Sqlite(other),
             })?;
+        // Exports carry the title the reader sees, including a suggestion
+        // that is still standing in for the capture placeholder.
+        let title = self
+            .conversation_title(session)
+            .map(|resolved| resolved.display_title)
+            .unwrap_or(title);
         let transcribable_tracks = self.transcription_tracks(session)?;
         let mut track_input_digests = Vec::with_capacity(transcribable_tracks.len());
         let mut duration_nanoseconds = 0_i64;

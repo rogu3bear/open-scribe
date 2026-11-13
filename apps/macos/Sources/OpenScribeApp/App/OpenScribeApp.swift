@@ -150,6 +150,7 @@ struct OpenScribeApp: App {
   @StateObject private var scheduler: TranscriptionScheduler
   @StateObject private var context: ContextScopeModel
   @StateObject private var navigation = MainWorkspaceNavigation()
+  @StateObject private var suggestions: ConversationSuggestionModel
 
   private let status = RustStatusSource.load()
   private let launchConfiguration: LaunchConfiguration
@@ -196,6 +197,8 @@ struct OpenScribeApp: App {
       injectedProof?.controller
       ?? managedRoot.map(LiveMicrophoneRecordingController.init(managedRoot:))
       ?? LiveMicrophoneRecordingController(managedRoot: nil)
+    controller.liveCaptions.configure(
+      defaults: configuration.preferences, suspended: configuration.suspendsAutomation)
     let recovery = RecoveredSessionController(managedRoot: managedRoot)
     let runtime = RuntimeLibraryStore(
       managedRoot: managedRoot, isLaunchRecoveryPending: { !recovery.captureSafetyComplete })
@@ -212,7 +215,14 @@ struct OpenScribeApp: App {
     _importedMediaAuthority = StateObject(wrappedValue: importAuthority)
     _liveRecording = StateObject(wrappedValue: controller)
     _recoveredSessions = StateObject(wrappedValue: recovery)
-    _transcripts = StateObject(wrappedValue: TranscriptLibraryModel(managedRoot: managedRoot))
+    let transcriptLibrary = TranscriptLibraryModel(managedRoot: managedRoot)
+    _transcripts = StateObject(wrappedValue: transcriptLibrary)
+    // Proof launches keep titles and names as stored; no language model runs.
+    // Suggestions share the transcript library's connection.
+    _suggestions = StateObject(
+      wrappedValue: configuration.suspendsAutomation
+        ? .inert
+        : ConversationSuggestionModel(library: { try await transcriptLibrary.connectedLibrary() }))
     let speech = SpeechTranscriptionModel(managedRoot: managedRoot)
     _speech = StateObject(wrappedValue: speech)
     let pressure = SystemPressureMonitor(libraryRoot: managedRoot)
@@ -248,7 +258,8 @@ struct OpenScribeApp: App {
         scheduler: scheduler,
         pressure: pressure,
         context: context,
-        navigation: navigation
+        navigation: navigation,
+        suggestions: suggestions
       )
       .modifier(MainWindowMinimumSize())
       .defaultAppStorage(launchConfiguration.preferences)
@@ -257,6 +268,7 @@ struct OpenScribeApp: App {
     .defaultSize(width: 1040, height: 720)
     .commands {
       CommandGroup(replacing: .newItem) {}
+      TranscriptTextSizeCommands(preferences: launchConfiguration.preferences)
     }
 
     MenuBarExtra {
@@ -268,7 +280,17 @@ struct OpenScribeApp: App {
         context: context,
         navigation: navigation,
         scheduler: scheduler,
-        speech: speech
+        speech: speech,
+        copyConversation: { [transcripts] session in
+          let title = ConversationIdentityPresentation.title(for: session)
+          Task { @MainActor in
+            guard
+              let copied = try? await transcripts.clipboardText(
+                sessionId: session.sessionId, title: title)
+            else { return }
+            ConversationClipboard.copy(copied.text)
+          }
+        }
       )
       .defaultAppStorage(launchConfiguration.preferences)
     } label: {
@@ -279,10 +301,46 @@ struct OpenScribeApp: App {
     Settings {
       SettingsView(
         status: status, speech: speech, library: runtimeStore, recovery: recoveredSessions,
-        scheduler: scheduler, pressure: pressure
+        scheduler: scheduler, pressure: pressure, liveCaptions: liveRecording.liveCaptions
       )
       .defaultAppStorage(launchConfiguration.preferences)
     }
   }
 
+}
+
+/// View > Bigger and Smaller for transcript text, stored where the reader
+/// reads it. The system text size still applies underneath.
+struct TranscriptTextSizeCommands: Commands {
+  @AppStorage private var stored: String
+
+  init(preferences: UserDefaults) {
+    _stored = AppStorage(
+      wrappedValue: TranscriptTextScale.standard.rawValue, TranscriptTextScale.storageKey,
+      store: preferences)
+  }
+
+  private var scale: TranscriptTextScale { TranscriptTextScale.resolve(stored) }
+
+  var body: some Commands {
+    CommandGroup(after: .toolbar) {
+      Button("Bigger Transcript Text") { step(1) }
+        .keyboardShortcut("+", modifiers: .command)
+        .disabled(scale == .largest)
+      Button("Smaller Transcript Text") { step(-1) }
+        .keyboardShortcut("-", modifiers: .command)
+        .disabled(scale == .standard)
+      Button("Actual Size") { stored = TranscriptTextScale.standard.rawValue }
+        .keyboardShortcut("0", modifiers: .command)
+        .disabled(scale == .standard)
+      Divider()
+    }
+  }
+
+  private func step(_ delta: Int) {
+    let all = TranscriptTextScale.allCases
+    guard let index = all.firstIndex(of: scale) else { return }
+    let next = min(max(index + delta, 0), all.count - 1)
+    stored = all[next].rawValue
+  }
 }

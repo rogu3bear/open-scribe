@@ -861,7 +861,7 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
     XCTAssertEqual(importedDecision.clusteringState, "unavailable")
     XCTAssertEqual(importedDecision.reason, "no calibrated diarization model")
     XCTAssertEqual(importedDecision.algorithmId, "topology-before-clustering-v1")
-    XCTAssertEqual(imported.speakers.first?.label, "Unknown speaker")
+    XCTAssertEqual(imported.speakers.first?.label, "Speaker")
     XCTAssertEqual(imported.speakers.first?.namedByUser, false)
     let hits = try importedLibrary.search(query: "brook", sessionId: evidence.sessionId, limit: 20)
     XCTAssertTrue(hits.isEmpty)
@@ -874,7 +874,7 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
     XCTAssertEqual(imported.speakers.first?.label, "Dana")
     let restoredName = await imported.renameSpeaker(trackId: importedTrack, label: nil)
     XCTAssertTrue(restoredName)
-    XCTAssertEqual(imported.speakers.first?.label, "Unknown speaker")
+    XCTAssertEqual(imported.speakers.first?.label, "Speaker")
     XCTAssertEqual(imported.speakers.first?.namedByUser, false)
     let restored = try importedLibrary.prepareSpeakerDiarization(sessionId: evidence.sessionId)
     XCTAssertEqual(restored.tracks.first?.labelOrigin, "source_default")
@@ -1304,7 +1304,7 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
     XCTAssertEqual(model.availability, .unavailable)
     XCTAssertEqual(model.availabilityText, "No transcript yet.")
     XCTAssertEqual(model.segments, [])
-    XCTAssertEqual(model.speakers.first?.label, "Unknown speaker")
+    XCTAssertEqual(model.speakers.first?.label, "Speaker")
     XCTAssertEqual(
       model.speakerDiarizationText,
       "Speakers follow the audio source. Voice diarization is unavailable without a calibrated model."
@@ -1373,7 +1373,7 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
     XCTAssertEqual(model.availability, .unavailable)
     XCTAssertEqual(model.availabilityText, "No transcript yet.")
     XCTAssertEqual(model.segments, [])
-    XCTAssertEqual(model.speakers.first?.label, "Unknown speaker")
+    XCTAssertEqual(model.speakers.first?.label, "Speaker")
     XCTAssertEqual(model.speakers.first?.namedByUser, false)
     let trackId = try XCTUnwrap(model.speakers.first?.trackId)
     let renamed = await model.renameSpeaker(trackId: trackId, label: " Dana ")
@@ -1381,7 +1381,7 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
     XCTAssertEqual(model.speakers.first?.label, "Dana")
     let restoredName = await model.renameSpeaker(trackId: trackId, label: nil)
     XCTAssertTrue(restoredName, model.message ?? "")
-    XCTAssertEqual(model.speakers.first?.label, "Unknown speaker")
+    XCTAssertEqual(model.speakers.first?.label, "Speaker")
     XCTAssertEqual(model.speakers.first?.namedByUser, false)
     let decision = try library.prepareSpeakerDiarization(sessionId: sessionId)
     XCTAssertEqual(decision.clusteringState, "unavailable")
@@ -3200,6 +3200,131 @@ final class ImportedMediaAuthorityAdapterTests: XCTestCase {
     }.map(\.label)
     XCTAssertTrue(savedLabels.contains("warning"))
     XCTAssertEqual(savedLabels.last, "normal")
+    XCTAssertEqual(
+      try harness.preparation.recorderDetail(sessionId: sessionId).lifecycle, "ready_for_review")
+    XCTAssertTrue(window.contentView === host)
+    withExtendedLifetime(store) {}
+    withExtendedLifetime(harness) {}
+    withExtendedLifetime(window) {}
+  }
+
+  /// Critical free space stops capture through the storage watch. The hosted
+  /// window shows the reserve sentence, and both source tracks stay playable.
+  /// The test clicks Record. It does not call `start`, `stop`, or `checkStorage`.
+  func testHostedStorageReserveStopShowsTheSentenceAndKeepsTheAudio() async throws {
+    let harness = try PauseHarness()
+    defer { harness.removeFiles() }
+    harness.storage.set(4 * 1024 * 1024 * 1024)
+    let store = RuntimeLibraryStore(managedRoot: harness.root, refreshesImmediately: false)
+    let adapter = ImportedMediaAuthorityAdapter(
+      canBeginImport: { harness.controller.canStart },
+      importer: { title, url in
+        try store.importManagedAudio(title: title, sourceURL: url)
+      }
+    )
+    let view = ContentView(
+      store: store,
+      importedMediaAuthority: adapter,
+      liveRecording: harness.controller,
+      recoveredSessions: RecoveredSessionController(
+        recoveryFactory: {
+          try NativeRecordingPreparation.open(managedRoot: harness.root.path)
+        },
+        importedPlaybackLeaseProvider: { sessionId in
+          try NativeRecordingPreparation.open(managedRoot: harness.root.path)
+            .leaseImportedPlayback(sessionId: sessionId)
+        },
+        player: RecoveredAudioPlayerFake()
+      ),
+      transcripts: TranscriptLibraryModel(managedRoot: harness.root),
+      speech: SpeechTranscriptionModel(managedRoot: harness.root),
+      scheduler: TranscriptionScheduler.inert(),
+      pressure: SystemPressureMonitor(libraryRoot: harness.root, samplesAutomatically: false),
+      context: ContextScopeModel(
+        binding: { nil },
+        frames: IdleContextFrames(),
+        permissionCheck: { .denied },
+        permissionRequest: { .denied },
+        topology: { [] }
+      ),
+      navigation: MainWorkspaceNavigation()
+    )
+    let host = NSHostingView(rootView: view)
+    host.sizingOptions = []
+    let window = NSWindow(
+      contentRect: NSRect(x: 0, y: 0, width: 1100, height: 1400),
+      styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    window.contentView = host
+    window.setContentSize(NSSize(width: 1100, height: 1400))
+    host.frame = window.contentLayoutRect
+    window.makeKeyAndOrderFront(nil)
+    window.orderFrontRegardless()
+    defer { window.close() }
+    let ready = await waitUntil(timeoutNanoseconds: 5_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      window.displayIfNeeded()
+      return self.toolbarRecordButton(in: window) != nil
+    }
+    let record = try XCTUnwrap(self.toolbarRecordButton(in: window))
+    XCTAssertTrue(ready && window.contentView === host)
+    record.performClick(nil)
+    let started = await waitUntil(timeoutNanoseconds: 8_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      return harness.controller.phase == .starting
+        && harness.captures.microphones.last?.didStart == true
+        && harness.captures.systems.last?.didStart == true
+    }
+    XCTAssertTrue(started, harness.controller.errorMessage ?? harness.controller.phase.rawValue)
+    let microphone = try XCTUnwrap(harness.captures.microphones.last)
+    let system = try XCTUnwrap(harness.captures.systems.last)
+    let sessionId = microphone.writer.authorization.sessionId
+    try microphone.emit(frames: 48_000, hostTime: harness.clock.now, value: 8192)
+    try system.emit(frames: 48_000, hostTime: harness.clock.now, value: 16384)
+    let capturing = await waitUntil(timeoutNanoseconds: 8_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      return harness.controller.phase == .capturing
+        && store.currentSession?.sessionId == sessionId
+    }
+    guard capturing else {
+      XCTFail(
+        "phase=\(harness.controller.phase.rawValue) code=\(harness.controller.failureCode ?? "none") message=\(harness.controller.errorMessage ?? "none")"
+      )
+      return
+    }
+    let reserveSentence = "Recording stopped at the storage reserve. Existing audio is preserved."
+    let spoken = "Problem: \(reserveSentence)"
+    XCTAssertNil(harness.controller.errorMessage)
+    XCTAssertNil(self.hostedLabeledField(labeled: spoken, in: host))
+    XCTAssertEqual(microphone.stopCount, 0)
+    XCTAssertEqual(system.stopCount, 0)
+    harness.storage.set(64 * 1024 * 1024)
+    let stopped = await waitUntil(timeoutNanoseconds: 8_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      window.displayIfNeeded()
+      guard harness.controller.phase == .saved,
+        harness.controller.errorMessage == reserveSentence,
+        let field = self.hostedLabeledField(labeled: spoken, in: host)
+      else { return false }
+      return field.stringValue == reserveSentence
+    }
+    let field = try XCTUnwrap(self.hostedLabeledField(labeled: spoken, in: host))
+    XCTAssertTrue(stopped && field.isDescendant(of: host))
+    XCTAssertEqual(field.stringValue, reserveSentence)
+    XCTAssertEqual(field.accessibilityLabel(), spoken)
+    XCTAssertEqual(harness.controller.phase, .saved)
+    XCTAssertNil(harness.controller.storagePressureNotice)
+    XCTAssertEqual(harness.controller.recorderDetail?.storageLevel, "critical")
+    XCTAssertEqual(microphone.stopCount, 1)
+    XCTAssertEqual(system.stopCount, 1)
+    let labels = try harness.preparation.recorderDetail(sessionId: sessionId).events.filter {
+      $0.kind == "storage_observed"
+    }.map(\.label)
+    XCTAssertEqual(labels.last, "critical")
+    _ = try harness.preparation.recoverPlayableSessions()
+    let plan = try harness.preparation.playbackTimeline(sessionId: sessionId)
+    XCTAssertEqual(Set(plan.map(\.trackId)).count, 2)
+    XCTAssertTrue(plan.allSatisfy { $0.sampleCount >= 48_000 })
     XCTAssertEqual(
       try harness.preparation.recorderDetail(sessionId: sessionId).lifecycle, "ready_for_review")
     XCTAssertTrue(window.contentView === host)

@@ -3,9 +3,9 @@ import Combine
 import SwiftUI
 import UniformTypeIdentifiers
 
-/// The saved conversation's transcript: selected Final text on the session
-/// timeline, with human corrections beside the machine reading, source-aware
-/// speaker names, click-to-play, export, and local transcription.
+/// The transcript's record in Details: availability, model provenance,
+/// speaker assignment, local transcription and reprocessing, audio-source
+/// labels, and the less common exports. The text itself is the document.
 struct TranscriptSection: View {
   let session: RuntimeSessionPresentation
   @ObservedObject var transcripts: TranscriptLibraryModel
@@ -104,14 +104,6 @@ struct TranscriptSection: View {
       {
         ReprocessMount(sessionId: session.sessionId, scheduler: scheduler)
           .frame(maxWidth: .infinity, minHeight: 96, alignment: .topLeading)
-      }
-      if Self.showsReader(session: session, transcripts: transcripts) {
-        TranscriptReader(
-          sessionId: session.sessionId, transcripts: transcripts, canSeek: canSeek,
-          isPlaybackActive: isPlaybackActive, playbackPosition: playbackPosition,
-          onSeek: onSeek, onFollowPlayback: onFollowPlayback
-        )
-        .id(session.sessionId)
       }
       AudioSourceLabelMount(transcripts: transcripts, sessionId: session.sessionId)
         .frame(
@@ -398,7 +390,7 @@ struct TranscriptSection: View {
     let panel = NSSavePanel()
     panel.allowedContentTypes = [type]
     panel.canCreateDirectories = true
-    panel.nameFieldStringValue = Self.fileName(session.title, type: type)
+    panel.nameFieldStringValue = Self.fileName(ConversationIdentityPresentation.title(for: session), type: type)
     guard panel.runModal() == .OK, let url = panel.url else { return }
     Task { await transcripts.export(format: format, to: url, from: session.sessionId) }
   }
@@ -409,7 +401,7 @@ struct TranscriptSection: View {
     let panel = NSSavePanel()
     panel.allowedContentTypes = [type]
     panel.canCreateDirectories = true
-    panel.nameFieldStringValue = Self.fileName(session.title + suffix, type: type)
+    panel.nameFieldStringValue = Self.fileName(ConversationIdentityPresentation.title(for: session) + suffix, type: type)
     guard panel.runModal() == .OK, let url = panel.url else { return }
     Task { await transcripts.export(kind, to: url, from: session.sessionId) }
   }
@@ -442,7 +434,7 @@ struct TranscriptSection: View {
     let panel = NSSavePanel()
     panel.allowedContentTypes = [packageType]
     panel.canCreateDirectories = true
-    panel.nameFieldStringValue = Self.fileName(session.title, type: packageType)
+    panel.nameFieldStringValue = Self.fileName(ConversationIdentityPresentation.title(for: session), type: packageType)
     panel.message =
       "This format carries supported PCM audio, a compressed M4A import, selected transcripts, speaker labels, and markers. Context evidence is omitted; failed transcript status restores as pending. Passage-level names are not included."
     guard panel.runModal() == .OK, var url = panel.url else { return }
@@ -459,7 +451,7 @@ struct TranscriptSection: View {
     return type.preferredFilenameExtension.map { "\(stem).\($0)" } ?? stem
   }
 
-  static func timestamp(_ nanoseconds: Int64) -> String {
+  nonisolated static func timestamp(_ nanoseconds: Int64) -> String {
     let seconds = max(0, nanoseconds) / 1_000_000_000
     let (hours, minutes, remainder) = (seconds / 3600, seconds / 60 % 60, seconds % 60)
     let pad = { (value: Int64) in value < 10 ? "0\(value)" : "\(value)" }

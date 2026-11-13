@@ -38,6 +38,8 @@ final class SystemAudioCaptureAdapter: NSObject, SCStreamOutput, SCStreamDelegat
 
   private let writer: CapturedAudioWriting
   private var stream: SystemAudioStreamControlling!
+  /// Live captions listen to audio after it is written; see `LiveAudioListening`.
+  let liveAudio = LiveAudioListenerSlot()
   private let writerQueue = DispatchQueue(
     label: "app.open-scribe.system-audio-writer",
     qos: .userInitiated
@@ -294,7 +296,11 @@ final class SystemAudioCaptureAdapter: NSObject, SCStreamOutput, SCStreamDelegat
     }
     do {
       let written = try withExtendedLifetime(retainedBlockBuffer) {
-        try writer.writeCapturedBuffer(pcm, hostTime: hostTime)
+        let written = try writer.writeCapturedBuffer(pcm, hostTime: hostTime)
+        if written > 0 {
+          liveAudio.deliver(pcm, writtenFrames: AVAudioFrameCount(written), hostTime: hostTime)
+        }
+        return written
       }
       guard written > 0 else { return }
       stateLock.lock()

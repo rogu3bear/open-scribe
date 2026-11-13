@@ -131,8 +131,13 @@ struct RuntimeTranscriptPresentation: Equatable, Sendable {
   let completedChunks: UInt32
   let totalChunks: UInt32
   let failureClass: String?
+  /// Live Draft windows saved while recording; readable before any Final.
+  let draftWindows: UInt32
+
+  var hasDraftText: Bool { draftWindows > 0 }
 
   init(native: NativeRuntimeTranscriptSnapshot?) {
+    draftWindows = native?.draftWindows ?? 0
     switch native?.state {
     case .none?: state = .none
     case .running?: state = .running
@@ -173,6 +178,7 @@ struct RuntimeTranscriptPresentation: Equatable, Sendable {
     self.completedChunks = completedChunks
     self.totalChunks = totalChunks
     self.failureClass = failureClass
+    draftWindows = 0
   }
 
   /// Whether the conversation has sealed audio a transcript can cover.
@@ -282,6 +288,12 @@ struct RuntimeTranscriptPresentation: Equatable, Sendable {
 struct RuntimeSessionPresentation: Equatable, Sendable, Identifiable {
   let sessionId: String
   let title: String
+  /// The title a reader sees: a person's, else a suggestion, else the placeholder.
+  let displayTitle: String
+  /// `placeholder`, `suggested`, or `person`.
+  let titleSource: String
+  /// When the conversation was added to the library; nil from older producers.
+  let createdAt: Date?
   let lifecycle: String
   let health: String
   let elapsedSeconds: UInt64
@@ -298,6 +310,11 @@ struct RuntimeSessionPresentation: Equatable, Sendable, Identifiable {
   init(native: NativeRuntimeSessionSnapshot) {
     sessionId = native.sessionId
     title = native.title
+    displayTitle = native.displayTitle.isEmpty ? native.title : native.displayTitle
+    titleSource = native.titleSource
+    createdAt =
+      native.createdAtMs > 0
+      ? Date(timeIntervalSince1970: Double(native.createdAtMs) / 1_000) : nil
     lifecycle = native.lifecycle
     health = native.health
     elapsedSeconds = native.elapsedSeconds

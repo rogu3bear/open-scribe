@@ -256,6 +256,15 @@ pub struct NativeRuntimePlayableMediaSnapshot {
 pub struct NativeRuntimeSessionSnapshot {
     pub session_id: String,
     pub title: String,
+    /// What a reader sees: a person's title, else a suggestion, else the
+    /// stored placeholder. Empty from older producers; fall back to `title`.
+    #[uniffi(default = "")]
+    pub display_title: String,
+    /// `placeholder`, `suggested`, or `person`.
+    #[uniffi(default = "person")]
+    pub title_source: String,
+    #[uniffi(default = 0)]
+    pub created_at_ms: i64,
     pub lifecycle: String,
     pub health: String,
     pub elapsed_seconds: u64,
@@ -290,6 +299,9 @@ pub struct NativeRuntimeTranscriptSnapshot {
     pub completed_chunks: u32,
     pub total_chunks: u32,
     pub failure_class: Option<String>,
+    /// Readable live Draft windows (not superseded by later text).
+    #[uniffi(default = 0)]
+    pub draft_windows: u32,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
@@ -1177,10 +1189,14 @@ fn map_runtime_session_snapshot(
             completed_chunks: snapshot.transcript.completed_chunks,
             total_chunks: snapshot.transcript.total_chunks,
             failure_class: snapshot.transcript.failure_class.clone(),
+            draft_windows: snapshot.transcript.draft_windows,
         });
     NativeRuntimeSessionSnapshot {
         session_id: snapshot.session_id.0,
         title: snapshot.title,
+        display_title: snapshot.display_title,
+        title_source: snapshot.title_source.as_str().to_owned(),
+        created_at_ms: snapshot.created_at_ms,
         lifecycle: snapshot.lifecycle,
         health: snapshot.health,
         elapsed_seconds: snapshot.elapsed_seconds,

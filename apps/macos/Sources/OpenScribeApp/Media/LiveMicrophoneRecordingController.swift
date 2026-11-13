@@ -40,6 +40,8 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
   @Published private(set) var recorderDetail: NativeRecorderDetail?
   @Published private(set) var mixdownStatus: String?
   @Published private(set) var lastSavedSessionId: String?
+  /// The live transcript for the current recording; see `LiveCaptionModel`.
+  let liveCaptions = LiveCaptionModel()
   /// The app sets this while launch recovery scans the library off the main
   /// actor; no recording or import may begin until that scan publishes.
   var isLaunchRecoveryPending: @MainActor () -> Bool = { false }
@@ -623,6 +625,7 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
       phase = .starting
       guard await checkMicrophonePermission() else { return }
       beginPermissionWatch()
+      beginLiveCaptions(preparation: preparation, sessionId: sessionId, audioSource: audioSource)
       if let systemCapture, let audioSource {
         try await systemCapture.start(
           onFirstSample: { [weak self] receipt in
@@ -783,6 +786,10 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
     cancelOpenMicrophoneRestore()
     guard activeSessionId == sessionToStop else { return }
     guard canStop, let preparation else { return }
+    // Settle the live transcript while its tracks still accept Draft text.
+    await liveCaptions.endSpan()
+    // Settling suspends; another stop or a failure may have ended the span.
+    guard activeSessionId == sessionToStop, canStop else { return }
     storageWatchTask?.cancel()
     if phase == .paused, let activeSessionId {
       do {
@@ -922,6 +929,9 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
       )
       return
     }
+    liveCaptions.anchor(
+      trackId: receipt.trackId, hostTime: receipt.firstSampleHostTime,
+      sessionNanoseconds: evidence.firstSampleSessionNanoseconds)
     sourcesWithFirstSample.insert(source)
     if source == .microphone {
       microphoneRestoreSegmentOpen = false
@@ -1315,6 +1325,7 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
 
   private func resetActiveSession() {
     restoreMonitor.cancel()
+    liveCaptions.cancel()
     permissionWatchTask?.cancel()
     permissionWatchTask = nil
     storageWatchTask?.cancel()
@@ -1678,6 +1689,25 @@ final class LiveMicrophoneRecordingController: NSObject, ObservableObject {
     }
     await performLiveMicrophoneRestore(
       generation: generation, preparation: preparation, sessionId: sessionId)
+  }
+
+  /// Starts live captions on the sources this span records. Captions never
+  /// gate capture: they attach to written audio and may start late or not at all.
+  private func beginLiveCaptions(
+    preparation: NativeRecordingPreparationProtocol, sessionId: String,
+    audioSource: NativeMediaSourceKind?
+  ) {
+    let microphone = (microphoneCapture as? MicrophoneCaptureAdapter).flatMap { adapter in
+      writers[.microphone].map { ($0.authorization, adapter.liveAudio) }
+    }
+    let computer = audioSource.flatMap { source in
+      (systemCapture as? SystemAudioCaptureAdapter).flatMap { adapter in
+        writers[source].map { ($0.authorization, adapter.liveAudio) }
+      }
+    }
+    liveCaptions.beginSpan(
+      preparation: preparation,
+      tracks: LiveCaptionTrack.span(sessionId: sessionId, microphone: microphone, computer: computer))
   }
 
   /// The shipped capture path offers sealed windows only. No recognizer is

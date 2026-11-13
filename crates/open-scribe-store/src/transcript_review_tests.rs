@@ -262,7 +262,7 @@ fn speakers_default_from_source_topology_and_renames_are_append_only() {
         [SessionSpeaker {
             track_id: track.clone(),
             source_kind: "imported_audio".into(),
-            label: "Unknown speaker".into(),
+            label: "Speaker".into(),
             origin: SpeakerLabelOrigin::SourceDefault,
         }]
     );
@@ -310,13 +310,10 @@ fn speakers_default_from_source_topology_and_renames_are_append_only() {
             .is_err()
     );
 
-    assert_eq!(default_speaker_label("microphone"), "Local user");
-    assert_eq!(
-        default_speaker_label("application_audio"),
-        "Remote participants"
-    );
-    assert_eq!(default_speaker_label("system_audio"), "System audio");
-    assert_eq!(default_speaker_label("imported_audio"), "Unknown speaker");
+    assert_eq!(default_speaker_label("microphone"), "You");
+    assert_eq!(default_speaker_label("application_audio"), "Others");
+    assert_eq!(default_speaker_label("system_audio"), "Others");
+    assert_eq!(default_speaker_label("imported_audio"), "Speaker");
 }
 
 #[test]
@@ -327,7 +324,7 @@ fn speaker_label_history_keeps_each_rename_and_the_source_default() {
     assert_eq!(before.len(), 1);
     assert_eq!(before[0].track_id, track);
     assert_eq!(before[0].source_kind, "imported_audio");
-    assert_eq!(before[0].source_default_label, "Unknown speaker");
+    assert_eq!(before[0].source_default_label, "Speaker");
     assert!(before[0].revisions.is_empty());
 
     fixture
@@ -335,7 +332,7 @@ fn speaker_label_history_keeps_each_rename_and_the_source_default() {
         .rename_speaker(&session, &track, Some(" Dana "))
         .unwrap();
     let named = fixture.store.speaker_label_history(&session).unwrap();
-    assert_eq!(named[0].source_default_label, "Unknown speaker");
+    assert_eq!(named[0].source_default_label, "Speaker");
     assert_eq!(named[0].revisions.len(), 1);
     assert_eq!(named[0].revisions[0].label, "Dana");
     assert_eq!(named[0].revisions[0].origin, SpeakerLabelOrigin::Human);
@@ -363,9 +360,9 @@ fn speaker_label_history_keeps_each_rename_and_the_source_default() {
             .collect::<Vec<_>>(),
         [
             ("Dana", SpeakerLabelOrigin::Human),
-            ("Unknown speaker", SpeakerLabelOrigin::SourceDefault),
+            ("Speaker", SpeakerLabelOrigin::SourceDefault),
             ("Mina", SpeakerLabelOrigin::Human),
-            ("Unknown speaker", SpeakerLabelOrigin::SourceDefault),
+            ("Speaker", SpeakerLabelOrigin::SourceDefault),
         ]
     );
     assert!(
@@ -376,7 +373,7 @@ fn speaker_label_history_keeps_each_rename_and_the_source_default() {
     );
     assert_eq!(
         fixture.store.session_speakers(&session).unwrap()[0].label,
-        "Unknown speaker"
+        "Speaker"
     );
     assert_eq!(
         fixture.store.session_speakers(&session).unwrap()[0].origin,

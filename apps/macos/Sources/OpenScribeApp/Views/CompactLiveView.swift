@@ -18,87 +18,171 @@ struct CompactLiveView: View {
   }
 
   var body: some View {
-    VStack(alignment: .leading, spacing: ScribeSpacing.standard) {
-      HStack(alignment: .firstTextBaseline, spacing: ScribeSpacing.standard) {
-        Image(systemName: statusSymbol)
-          .foregroundStyle(statusColor)
-        Text(statusText)
-          .font(.title.weight(.semibold))
-        if let current = store.currentSession {
-          Text(current.timerText)
-            .font(.title.monospacedDigit().weight(.semibold))
+    ScrollViewReader { proxy in
+      ScrollView {
+        InterviewColumn {
+          VStack(alignment: .leading, spacing: 0) {
+            statusLine
+              .padding(.top, 34)
+            if let current = store.currentSession {
+              Text(liveTitle(current))
+                .font(Interview.title())
+                .foregroundStyle(Interview.ink)
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.top, 10)
+                .accessibilityAddTraits(.isHeader)
+              InterviewFacts(items: facts(current))
+                .padding(.top, 8)
+              actionRow
+                .padding(.top, 16)
+              notices(current)
+                .padding(.top, 14)
+              let events = liveRecording.recorderDetail?.events ?? []
+              LiveMarkerListMount(events: events)
+                .frame(
+                  maxWidth: .infinity,
+                  minHeight: Self.markerListHeight(events),
+                  alignment: .topLeading)
+                .padding(.top, events.contains { $0.kind == "marker_added" } ? 16 : 0)
+              InterviewRule()
+                .padding(.top, 22)
+                .padding(.bottom, 20)
+              LiveTranscriptColumn(captions: liveRecording.liveCaptions)
+              Color.clear.frame(height: 1).id("live-end")
+              recordingDetails(events: events)
+                .padding(.top, 40)
+            } else {
+              Text(
+                "Start deliberately from this window or the menu bar. Open Scribe will show Recording only after both required sources are durably active."
+              )
+              .font(Interview.speech())
+              .foregroundStyle(Interview.quiet)
+              .fixedSize(horizontal: false, vertical: true)
+              .padding(.top, 14)
+            }
+          }
+          .padding(.leading, Interview.shoulder)
+          .padding(.bottom, 64)
         }
       }
-      .accessibilityElement(children: .ignore)
-      .accessibilityLabel(accessibilityStatus)
-
-      if let current = store.currentSession {
-        Text(ConversationIdentityPresentation.title(current.title))
-          .font(.headline)
-          .textSelection(.enabled)
-
-        VStack(alignment: .leading, spacing: ScribeSpacing.related) {
-          Text("Sources")
-            .scribeSectionHeading()
-          ForEach(current.sources, id: \.kind) { source in
-            HStack(spacing: ScribeSpacing.related) {
-              Image(systemName: source.symbolName)
-                .frame(width: 18)
-              Text(source.name)
-              Spacer()
-              Text(source.stateText)
-                .foregroundStyle(source.lifecycle == "failed" ? .primary : .secondary)
-                .fontWeight(source.lifecycle == "failed" ? .semibold : nil)
-            }
-            .accessibilityElement(children: .combine)
-          }
-        }
-
-        if let interruption = current.interruptionText {
-          CaptureIssueLabel(message: interruption)
-            .font(.callout)
-            .accessibilityLabel("Capture needs attention. \(interruption)")
-        }
-
-        StorageNoticeMount(notice: storagePressureNotice)
-          .frame(
-            maxWidth: .infinity,
-            minHeight: Self.storageNoticeHeight(storagePressureNotice),
-            alignment: .topLeading)
-
-        if liveRecording.contextBinding != nil {
-          ContextInspector(model: context)
-        }
-
-        let events = liveRecording.recorderDetail?.events ?? []
-        LiveMarkerListMount(events: events)
-          .frame(
-            maxWidth: .infinity,
-            minHeight: Self.markerListHeight(events),
-            alignment: .topLeading)
-        let details = events.filter { $0.kind != "marker_added" }
-        if !details.isEmpty {
-          DisclosureGroup("Recording events") {
-            ScrollView {
-              RecorderEventList(events: details, heading: "Events")
-            }
-            .frame(maxHeight: 180)
-          }
-        }
-      } else {
-        Text(
-          "Start deliberately from this window or the menu bar. Open Scribe will show Recording only after both required sources are durably active."
-        )
-        .foregroundStyle(.secondary)
-        .fixedSize(horizontal: false, vertical: true)
+      .background(Interview.paper)
+      .onReceive(liveRecording.liveCaptions.$lines) { _ in
+        guard followsLive else { return }
+        withAnimation(.easeOut(duration: 0.25)) { proxy.scrollTo("live-end", anchor: .bottom) }
       }
-
+      // The words still being heard stay in view too, not only settled ones.
+      .onReceive(liveRecording.liveCaptions.$current) { _ in
+        guard followsLive else { return }
+        proxy.scrollTo("live-end", anchor: .bottom)
+      }
     }
-    .frame(maxWidth: 760, alignment: .leading)
-    .padding(ScribeSpacing.section)
     .frame(maxWidth: .infinity, minHeight: 430, alignment: .topLeading)
     .onAppear {
       AppTelemetry.runtimeSceneAppeared("live-session", session: store.currentSession)
+    }
+  }
+
+  @State private var followsLive = true
+  @State private var copyNote: String?
+
+  /// "● Recording  12:04", the word and the timer always together.
+  private var statusLine: some View {
+    HStack(alignment: .firstTextBaseline, spacing: 8) {
+      Image(systemName: statusSymbol)
+        .foregroundStyle(statusColor)
+      Text(statusText)
+        .font(.system(size: 13, weight: .semibold))
+        .foregroundStyle(store.currentSession?.isRecording == true ? Interview.ink : Interview.quiet)
+      if let current = store.currentSession {
+        Text(current.timerText)
+          .font(.system(size: 13, weight: .medium).monospacedDigit())
+          .foregroundStyle(Interview.quiet)
+      }
+    }
+    .accessibilityElement(children: .ignore)
+    .accessibilityLabel(accessibilityStatus)
+  }
+
+  private func liveTitle(_ current: RuntimeSessionPresentation) -> String {
+    ConversationIdentityPresentation.title(for: current)
+  }
+
+  private func facts(_ current: RuntimeSessionPresentation) -> [String] {
+    current.sources.map { source in
+      source.lifecycle == "capturing" ? source.name : "\(source.name): \(source.stateText)"
+    }
+  }
+
+  private var actionRow: some View {
+    HStack(spacing: 12) {
+      Button {
+        copySoFar()
+      } label: {
+        Label("Copy So Far", systemImage: "doc.on.doc")
+      }
+      .controlSize(.large)
+      .disabled(liveRecording.liveCaptions.lines.isEmpty)
+      .help("Copy the live transcript so far")
+      Toggle("Follow", isOn: $followsLive)
+        .toggleStyle(.checkbox)
+        .font(Interview.meta)
+        .foregroundStyle(Interview.quiet)
+        .help("Keep the newest words in view")
+      if let copyNote {
+        Label(copyNote, systemImage: "checkmark")
+          .font(Interview.meta)
+          .foregroundStyle(Interview.quiet)
+          .accessibilityHidden(true)
+      }
+      Spacer()
+    }
+  }
+
+  @ViewBuilder private func notices(_ current: RuntimeSessionPresentation) -> some View {
+    VStack(alignment: .leading, spacing: 10) {
+      if let interruption = current.interruptionText {
+        CaptureIssueLabel(message: interruption)
+          .font(Interview.meta)
+          .accessibilityLabel("Capture needs attention. \(interruption)")
+      }
+      StorageNoticeMount(notice: storagePressureNotice)
+        .frame(
+          maxWidth: .infinity,
+          minHeight: Self.storageNoticeHeight(storagePressureNotice),
+          alignment: .topLeading)
+      LiveCaptionStatusNotice(captions: liveRecording.liveCaptions)
+      if liveRecording.contextBinding != nil {
+        ContextInspector(model: context)
+      }
+    }
+  }
+
+  @ViewBuilder private func recordingDetails(events: [NativeRecorderEvent]) -> some View {
+    let details = events.filter { $0.kind != "marker_added" }
+    if !details.isEmpty {
+      DisclosureGroup("Recording journal") {
+        ScrollView {
+          RecorderEventList(events: details, heading: "Events")
+        }
+        .frame(maxHeight: 180)
+      }
+      .font(Interview.meta)
+      .foregroundStyle(Interview.quiet)
+    }
+  }
+
+  private func copySoFar() {
+    let lines = liveRecording.liveCaptions.lines
+    guard !lines.isEmpty, let current = store.currentSession else { return }
+    let text = LiveTranscriptColumn.clipboardText(
+      title: liveTitle(current), timer: current.timerText, lines: lines)
+    ConversationClipboard.copy(text)
+    AccessibilityAnnouncer.post("Copied the live transcript so far")
+    copyNote = "Copied"
+    Task {
+      try? await Task.sleep(nanoseconds: 2_000_000_000)
+      copyNote = nil
     }
   }
 
@@ -168,6 +252,161 @@ struct CompactLiveView: View {
     }
     guard let storagePressureNotice else { return base }
     return "\(base) \(storagePressureNotice)"
+  }
+}
+/// The words of the recording in progress, as an interview: each settled
+/// phrase on its own line in ink, with the speaker's name where the voice
+/// changes, and the phrase still being heard in quiet ink beneath them.
+/// Phrases are shown as they settle and never merged on screen. Nothing here
+/// waits for the recognizer; capture never depends on it.
+struct LiveTranscriptColumn: View {
+  @ObservedObject var captions: LiveCaptionModel
+
+  var body: some View {
+    let settled = captions.lines.filter(\.isFinal)
+    let current = [captions.current[.microphone], captions.current[.computer]].compactMap { $0 }
+      .sorted { $0.startNanoseconds < $1.startNanoseconds }
+    VStack(alignment: .leading, spacing: 0) {
+      if settled.isEmpty, current.isEmpty {
+        Text(emptyText)
+          .font(Interview.speech())
+          .foregroundStyle(Interview.quiet)
+          .fixedSize(horizontal: false, vertical: true)
+      }
+      // Settled lines redraw only when one is added, not with every word.
+      SettledLiveLines(lines: settled).equatable()
+      ForEach(Array(current.enumerated()), id: \.element.id) { index, line in
+        LiveLineRow(
+          line: line,
+          startsTurn: (index == 0 ? settled.last?.speaker : current[index - 1].speaker)
+            != line.speaker)
+      }
+    }
+    .accessibilityElement(children: .contain)
+    .accessibilityLabel("Live transcript")
+  }
+
+  private var emptyText: String {
+    switch captions.status {
+    case .listening: "Listening. Words appear here as people speak."
+    case .off: "The live transcript is off. The recording is saved and transcribed when you stop."
+    case .unavailable: "The recording is saved and transcribed when you stop."
+    case .idle: "Words appear here as people speak."
+    }
+  }
+
+  struct Paragraph: Identifiable {
+    let id: String
+    let speaker: String
+    let start: Int64
+    var text: String
+  }
+
+  /// For Copy So Far only: settled lines of one voice join into a turn until
+  /// a pause of four seconds or about ninety words, as a saved conversation's
+  /// Copy does. The screen shows each phrase on its own line.
+  static func paragraphs(_ lines: [LiveCaptionLine]) -> [Paragraph] {
+    var result: [Paragraph] = []
+    var lastEnd: Int64 = 0
+    for line in lines where line.isFinal {
+      let text = line.text.trimmingCharacters(in: .whitespacesAndNewlines)
+      guard !text.isEmpty else { continue }
+      if var last = result.last, last.speaker == line.speaker,
+        line.startNanoseconds - lastEnd < 4_000_000_000,
+        last.text.split(separator: " ").count < 90
+      {
+        last.text += " " + text
+        result[result.count - 1] = last
+      } else {
+        result.append(
+          Paragraph(id: line.id, speaker: line.speaker, start: line.startNanoseconds, text: text))
+      }
+      lastEnd = max(lastEnd, line.endNanoseconds)
+    }
+    return result
+  }
+
+  /// The live transcript as clipboard text, in the same shape as a saved
+  /// conversation's Copy.
+  static func clipboardText(title: String, timer: String, lines: [LiveCaptionLine]) -> String {
+    let body = paragraphs(lines).map { paragraph in
+      "\(paragraph.speaker) [\(InterviewTime.stamp(paragraph.start))]: \(paragraph.text)"
+    }.joined(separator: "\n\n")
+    return "\(title)\nRecording in progress · \(timer)\nLive draft: some words may be misheard.\n\n\(body)\n"
+  }
+}
+
+/// The settled live lines, one row per phrase in time order.
+private struct SettledLiveLines: View, Equatable {
+  let lines: [LiveCaptionLine]
+
+  var body: some View {
+    ForEach(Array(lines.enumerated()), id: \.element.id) { index, line in
+      LiveLineRow(line: line, startsTurn: index == 0 || lines[index - 1].speaker != line.speaker)
+    }
+  }
+}
+
+/// One live phrase: its time, the speaker's name where the voice changes,
+/// and the words, in ink once settled and quiet ink while still heard.
+private struct LiveLineRow: View {
+  let line: LiveCaptionLine
+  let startsTurn: Bool
+
+  var body: some View {
+    HStack(alignment: .top, spacing: 0) {
+      Text(InterviewTime.stamp(line.startNanoseconds))
+        .font(Interview.stamp)
+        .foregroundStyle(Interview.quiet)
+        .frame(width: Interview.shoulder - 12, alignment: .trailing)
+        .padding(.trailing, 12)
+        .padding(.top, 4)
+        .accessibilityHidden(true)
+      Text(attributed)
+        .lineSpacing(Interview.speechLineSpacing)
+        .textSelection(.enabled)
+        .fixedSize(horizontal: false, vertical: true)
+        .frame(maxWidth: Interview.measure, alignment: .leading)
+        .accessibilityLabel(
+          "\(line.speaker): \(line.text)\(line.isFinal ? "" : ". Still listening.")")
+      Spacer(minLength: 0)
+    }
+    .padding(.leading, -Interview.shoulder)
+    .padding(.top, startsTurn ? Interview.turnSpacing : 6)
+  }
+
+  private var attributed: AttributedString {
+    var result = AttributedString()
+    if startsTurn {
+      var name = AttributedString(line.speaker.uppercased() + "  ")
+      name.font = .system(size: 12, weight: .bold)
+      name.foregroundColor = Interview.ink
+      name.kern = 0.6
+      result += name
+    }
+    var body = AttributedString(line.text)
+    body.font = Interview.speech()
+    body.foregroundColor = line.isFinal ? Interview.ink : Interview.quiet
+    result += body
+    return result
+  }
+}
+
+/// Why the live transcript is not running, with the one action that helps.
+struct LiveCaptionStatusNotice: View {
+  @ObservedObject var captions: LiveCaptionModel
+
+  var body: some View {
+    switch captions.status {
+    case .unavailable(let reason):
+      InterviewNotice(message: reason)
+    case .off:
+      InterviewNotice(
+        message: "The live transcript is off.",
+        actions: [("Turn On for Next Recording", { captions.isEnabled = true })])
+    case .idle, .listening:
+      EmptyView()
+    }
   }
 }
 

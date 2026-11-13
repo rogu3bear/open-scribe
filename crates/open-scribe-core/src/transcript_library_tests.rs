@@ -285,7 +285,7 @@ fn imported_review_keeps_unknown_speakers_when_diarization_is_uncalibrated() {
     let track = &first.tracks[0];
     assert_eq!(track.source_kind, "imported_audio");
     assert_eq!(track.disposition, "unresolved");
-    assert_eq!(track.label, "Unknown speaker");
+    assert_eq!(track.label, "Speaker");
     assert_eq!(track.label_origin, "source_default");
     assert!(!track.label.contains("Speaker "));
 
@@ -319,7 +319,7 @@ fn imported_review_keeps_unknown_speakers_when_diarization_is_uncalibrated() {
     assert_eq!(alpha.speaker_origin, SpeakerLabelOrigin::Human);
     assert_eq!(bravo.verbatim_text, "bravo");
     assert_eq!(bravo.effective_text, "bravo");
-    assert_eq!(bravo.speaker_label, "Unknown speaker");
+    assert_eq!(bravo.speaker_label, "Speaker");
     assert_eq!(bravo.speaker_origin, SpeakerLabelOrigin::SourceDefault);
     assert_eq!(file_sha256(&prepared.media), prepared.digest_sha256);
 
@@ -408,7 +408,7 @@ fn library_merge_and_split_keep_passage_history_without_clustering() {
     );
     let history = library.named_speaker_turn_history(session).unwrap();
     let second = history.iter().find(|turn| turn.sequence == 1).unwrap();
-    assert_eq!(second.source_default_label, "Unknown speaker");
+    assert_eq!(second.source_default_label, "Speaker");
     assert_eq!(
         second
             .revisions
@@ -473,10 +473,7 @@ fn library_merge_and_split_keep_passage_history_without_clustering() {
     assert_eq!(after.clustering_state, "unavailable");
     assert_eq!(after.reason, "no calibrated diarization model");
     assert_eq!(after.tracks, before.tracks);
-    assert_eq!(
-        library.speakers(session).unwrap()[0].label,
-        "Unknown speaker"
-    );
+    assert_eq!(library.speakers(session).unwrap()[0].label, "Speaker");
     assert_eq!(
         library.speakers(session).unwrap()[0].origin,
         SpeakerLabelOrigin::SourceDefault
@@ -668,13 +665,13 @@ fn stored_final_exports_a_package_the_player_can_import() {
     assert_eq!(alpha.verbatim_text, "alpha");
     assert_eq!(alpha.effective_text, "alpha");
     assert_eq!(alpha.start_nanoseconds, alpha_start);
-    assert_eq!(alpha.speaker_label, "Unknown speaker");
+    assert_eq!(alpha.speaker_label, "Speaker");
     assert_eq!(bravo.finality, "final");
     assert!(bravo.corrected);
     assert_eq!(bravo.verbatim_text, "bravo");
     assert_eq!(bravo.effective_text, "bravo corrected");
     assert_eq!(bravo.start_nanoseconds, bravo_start);
-    assert_eq!(bravo.speaker_label, "Unknown speaker");
+    assert_eq!(bravo.speaker_label, "Speaker");
     let found = restored
         .search("bravo corrected", Some(&receipt.session_id), 10)
         .unwrap();

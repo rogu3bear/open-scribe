@@ -6,10 +6,10 @@
 
 Rust owns durable lifecycle, journal, timing, evidence, recovery, policy, and exports. Swift owns Apple UI, permissions, capture/playback adapters, measurements, and bounded native buffers. UniFFI carries coarse controls, receipts, and projections.
 
-Current source implements capture/import, local transcription, correction/search, and playback/export. Media-safety recovery completes before optional retained-transcript maintenance. Rust persists minimal per-session work intent and admits one runner; Swift supplies preferences and pressure observations and executes admitted work. Retry resumes incomplete tracks. Explicit reprocess creates replacement history under transactional selection/edit guards. Selected document availability and latest processing attempt are independent typed dimensions.
+Current source implements capture/import, local transcription, correction/search, playback/export, plus proposed ADR 0019 live captions/titles. Media-safety recovery completes before optional retained-transcript maintenance. Rust persists minimal per-session work intent and admits one runner; Swift supplies preferences and pressure observations and executes admitted work. Retry resumes incomplete tracks. Explicit reprocess creates replacement history under transactional selection/edit guards. Selected document availability and latest processing attempt are independent typed dimensions.
 
-Retained rebuilds record `Incomplete` when tracks still need recognition, ending
-the request while preserving later eligibility. Older readers fail closed.
+Retained rebuilds record `Incomplete` when tracks still need recognition,
+preserving later eligibility. Older readers fail closed.
 
 Local model installs use per-attempt inode tokens. Retry preserves abandoned and
 foreign bytes; verification remains mandatory.
@@ -40,7 +40,7 @@ failed barrier.
 
 Deliberate capture → all required sources and durable media/journal evidence → Rust-accepted Recording → preserved independent audio → capture-safety recovery → local derived transcription → corrected selected document/search → evidence-backed playback/export. Preparation or a single-source sample cannot establish all-source Recording. Derived maintenance never gates healthy capture after recovery.
 
-Optional Meeting/context/intelligence remain intended lanes with existing bounded implementations preserved. Providers may propose structured deltas; Rust validates scope, status, provenance, and evidence. Interpretation remains adjudicable and distinct from source evidence. Provider selection alone authorizes no content scope.
+Optional Meeting/context/intelligence remain intended lanes with bounded implementations preserved. Providers may propose structured deltas; Rust validates scope, status, provenance, and evidence. Interpretation remains adjudicable and distinct from source evidence. Provider selection alone authorizes no content scope.
 
 ## Compatibility and truth
 
@@ -55,6 +55,6 @@ Optional Meeting/context/intelligence remain intended lanes with existing bounde
 
 Timed duration uses accepted frames and calibrated capture intervals; untimed legacy fallback remains limited. Metadata time and creation-based library ordering are independent. Cooperating handles serialize durable writes through an owned advisory lock; ASR and native decoding run outside durable transactions. Journal v1 append still validates and replaces history; counters characterize its growing cost without enabling a new format.
 
-Portable packages omit context; failed transcript status restores as pending. A compressed M4A import is included in the package and restores as that M4A. Passage-level names are refused. Export warnings and existing capability rejection expose the remaining limits.
+Portable packages omit context; failed transcript status restores as pending. A compressed M4A import is included in the package and restores as that M4A. Passage-level names are refused. Export warnings and capability rejection expose remaining limits.
 
 Shared crates cannot depend on native I/O, SQLite, Apple APIs, network clients, or model runtimes. ADR 0018 owns disabled Actions and exact local candidate admission. Scaffold, component, native, installed, supported-platform, and release proof remain separate.

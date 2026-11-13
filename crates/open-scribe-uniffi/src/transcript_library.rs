@@ -186,6 +186,31 @@ pub struct NativeTranscriptExportReceipt {
     pub segment_count: u32,
 }
 
+/// A conversation's title: what a reader sees and where it came from
+/// (`placeholder`, `suggested`, or `person`).
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct NativeConversationTitle {
+    pub stored_title: String,
+    pub display_title: String,
+    pub source: String,
+    pub suggested_title: Option<String>,
+    pub suggestion_engine: Option<String>,
+    pub suggestion_basis: Option<String>,
+}
+
+/// The clipboard reading copy: one paragraph per speaker turn. The app heads
+/// it with the title, a localized date, and the participants.
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct NativeConversationText {
+    pub title: String,
+    pub created_at_ms: i64,
+    pub duration_nanoseconds: i64,
+    pub participants: Vec<String>,
+    pub has_draft: bool,
+    pub turn_count: u32,
+    pub body: String,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
 pub struct NativeSessionDeletionInventory {
     pub session_id: String,
@@ -422,6 +447,38 @@ impl NativeTranscriptLibrary {
             .map_err(map_storage_error)
     }
 
+    pub fn conversation_title(
+        &self,
+        session_id: String,
+    ) -> Result<NativeConversationTitle, NativeStorageError> {
+        let title = self
+            .library()?
+            .conversation_title(&SessionId(session_id))
+            .map_err(map_storage_error)?;
+        Ok(NativeConversationTitle {
+            stored_title: title.stored_title,
+            display_title: title.display_title,
+            source: title.source.as_str().to_owned(),
+            suggested_title: title.suggested_title,
+            suggestion_engine: title.suggestion_engine,
+            suggestion_basis: title.suggestion_basis,
+        })
+    }
+
+    /// Stores a title derived from the transcript (`basis` is `draft` or
+    /// `final`). Returns false when a person has named the conversation.
+    pub fn suggest_title(
+        &self,
+        session_id: String,
+        title: String,
+        engine: String,
+        basis: String,
+    ) -> Result<bool, NativeStorageError> {
+        self.library()?
+            .suggest_conversation_title(&SessionId(session_id), &title, &engine, &basis)
+            .map_err(map_storage_error)
+    }
+
     pub fn review_metadata(
         &self,
         session_id: String,
@@ -632,6 +689,27 @@ impl NativeTranscriptLibrary {
             availability: map_availability(receipt.availability),
             byte_length: receipt.byte_length,
             segment_count: receipt.segment_count,
+        })
+    }
+
+    /// Reads the selected document once; nothing is written.
+    pub fn conversation_text(
+        &self,
+        session_id: String,
+        include_timestamps: bool,
+    ) -> Result<NativeConversationText, NativeStorageError> {
+        let text = self
+            .library()?
+            .conversation_text(&SessionId(session_id), include_timestamps)
+            .map_err(map_export_error)?;
+        Ok(NativeConversationText {
+            title: text.title,
+            created_at_ms: text.created_at_ms,
+            duration_nanoseconds: text.duration_nanoseconds,
+            participants: text.participants,
+            has_draft: text.has_draft,
+            turn_count: text.turn_count,
+            body: text.body,
         })
     }
 

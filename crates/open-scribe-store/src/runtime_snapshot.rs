@@ -95,6 +95,8 @@ pub struct RuntimeTranscriptSnapshot {
     pub total_chunks: u32,
     /// The failure class of the latest failed run, when `state` is `Failed`.
     pub failure_class: Option<String>,
+    /// Live Draft windows still readable (not superseded by later text).
+    pub draft_windows: u32,
 }
 
 /// Rust-owned durable session projection for the native live and library surfaces.
@@ -102,6 +104,10 @@ pub struct RuntimeTranscriptSnapshot {
 pub struct RuntimeSessionSnapshot {
     pub session_id: SessionId,
     pub title: String,
+    /// What a reader sees: a person's title, else a suggestion, else the placeholder.
+    pub display_title: String,
+    pub title_source: super::TitleSource,
+    pub created_at_ms: i64,
     pub lifecycle: String,
     pub health: String,
     pub elapsed_seconds: u64,
@@ -214,7 +220,12 @@ impl SessionStore {
                           SELECT 1 FROM recovery_runs
                           WHERE recovery_runs.session_id = sessions.id
                             AND recovery_runs.disposition IN ('playable_media_recovered', 'timeline_recovered')
-                        )
+                        ),
+                        sessions.created_at_ms,
+                        COALESCE((SELECT conversation_titles.named_by_person FROM conversation_titles
+                                  WHERE conversation_titles.session_id = sessions.id), 0),
+                        (SELECT conversation_titles.suggested_title FROM conversation_titles
+                         WHERE conversation_titles.session_id = sessions.id)
                  FROM sessions
                  WHERE sessions.lifecycle != 'deleted'
                  ORDER BY sessions.created_at_ms DESC, sessions.id DESC",
@@ -234,6 +245,9 @@ impl SessionStore {
                     row.get::<_, Option<i64>>(10)?,
                     row.get::<_, Option<i64>>(11)?,
                     row.get::<_, bool>(12)?,
+                    row.get::<_, i64>(13)?,
+                    row.get::<_, bool>(14)?,
+                    row.get::<_, Option<String>>(15)?,
                 ))
             })?;
             rows.collect::<Result<Vec<_>, _>>()?
@@ -256,6 +270,9 @@ impl SessionStore {
             interruption_at_ms,
             recovered_sample_count,
             recovered,
+            created_at_ms,
+            named_by_person,
+            suggested_title,
         ) in sessions
         {
             let capture_recovery_isolated = origin == "capture"
@@ -370,9 +387,18 @@ impl SessionStore {
             } else {
                 RuntimeTranscriptSnapshot::default()
             };
+            let (display_title, title_source) = super::conversation_titles::resolve_title(
+                &title,
+                &origin,
+                named_by_person,
+                suggested_title.as_deref(),
+            );
             let snapshot = RuntimeSessionSnapshot {
                 session_id: SessionId(session_id),
                 title,
+                display_title,
+                title_source,
+                created_at_ms,
                 lifecycle: lifecycle.clone(),
                 health,
                 elapsed_seconds,
@@ -438,6 +464,12 @@ impl SessionStore {
             .map(|(_, revision, _)| revision.clone())
             .collect();
         snapshot.document_version = super::digest_json(&versions)?;
+        snapshot.draft_windows = connection.query_row(
+            "SELECT COUNT(*) FROM transcript_revisions
+             WHERE session_id = ?1 AND finality = 'draft'",
+            [session_id],
+            |row| row.get::<_, u32>(0),
+        )?;
         let mut selected = connection.prepare_cached(
             "SELECT EXISTS(SELECT 1 FROM transcript_selections
                            WHERE session_id = ?1 AND track_id = ?2)",

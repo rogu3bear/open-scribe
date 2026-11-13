@@ -3719,8 +3719,8 @@ final class RecoveredSessionControllerTests: RecoveredSessionTestCase {
     XCTAssertTrue(bravo.corrected)
     XCTAssertNotEqual(bravo.effectiveText, bravo.verbatimText)
     XCTAssertGreaterThan(bravo.startNanoseconds, alpha.endNanoseconds)
-    XCTAssertEqual(alpha.speakerLabel, "Unknown speaker")
-    XCTAssertEqual(bravo.speakerLabel, "Unknown speaker")
+    XCTAssertEqual(alpha.speakerLabel, "Speaker")
+    XCTAssertEqual(bravo.speakerLabel, "Speaker")
     XCTAssertNil(alpha.namedSpeakerId)
     XCTAssertNil(bravo.namedSpeakerId)
     let libraryMedia = try regularFiles(under: managed.appendingPathComponent("Sessions"))
@@ -3774,13 +3774,13 @@ final class RecoveredSessionControllerTests: RecoveredSessionTestCase {
     XCTAssertEqual(model.namedSpeakers.first { $0.id == morgan.id }?.selectedTurns, 0)
     let mergedHistory = try XCTUnwrap(
       model.namedSpeakerTurnHistory.first { $0.sequence == bravo.sequence })
-    XCTAssertEqual(mergedHistory.sourceDefaultLabel, "Unknown speaker")
+    XCTAssertEqual(mergedHistory.sourceDefaultLabel, "Speaker")
     XCTAssertEqual(mergedHistory.revisions.map(\.label), ["Morgan", "Dana"])
     XCTAssertEqual(mergedHistory.revisions.map(\.origin), [.human, .human])
     XCTAssertEqual(
       TranscriptLibraryModel.namedSpeakerTurnHistoryText(for: mergedHistory),
       """
-      Source default: Unknown speaker
+      Source default: Speaker
       Morgan, named by you
       Dana, named by you
       """)
@@ -3830,7 +3830,7 @@ final class RecoveredSessionControllerTests: RecoveredSessionTestCase {
     XCTAssertEqual(
       TranscriptLibraryModel.namedSpeakerTurnHistoryText(for: grown),
       """
-      Source default: Unknown speaker
+      Source default: Speaker
       Morgan, named by you
       Dana, named by you
       Mina, named by you
@@ -3844,20 +3844,20 @@ final class RecoveredSessionControllerTests: RecoveredSessionTestCase {
     XCTAssertTrue(restored, model.message ?? "")
     let restoredAlpha = try XCTUnwrap(model.segments.first { $0.sequence == alpha.sequence })
     let restoredBravo = try XCTUnwrap(model.segments.first { $0.sequence == bravo.sequence })
-    XCTAssertEqual(restoredAlpha.speakerLabel, "Unknown speaker")
+    XCTAssertEqual(restoredAlpha.speakerLabel, "Speaker")
     XCTAssertNil(restoredAlpha.namedSpeakerId)
     XCTAssertEqual(restoredBravo.speakerLabel, "Mina")
     XCTAssertEqual(restoredBravo.effectiveText, bravo.effectiveText)
     let restoredHistory = try XCTUnwrap(
       model.namedSpeakerTurnHistory.first { $0.sequence == alpha.sequence })
-    XCTAssertEqual(restoredHistory.revisions.map(\.label), ["Dana", "Unknown speaker"])
+    XCTAssertEqual(restoredHistory.revisions.map(\.label), ["Dana", "Speaker"])
     XCTAssertEqual(restoredHistory.revisions.map(\.origin), [.human, .sourceDefault])
     XCTAssertEqual(
       TranscriptLibraryModel.namedSpeakerTurnHistoryText(for: restoredHistory),
       """
-      Source default: Unknown speaker
+      Source default: Speaker
       Dana, named by you
-      Unknown speaker, source name
+      Speaker, source name
       """)
     let bravoHistory = try XCTUnwrap(
       model.namedSpeakerTurnHistory.first { $0.sequence == bravo.sequence })
@@ -3866,14 +3866,14 @@ final class RecoveredSessionControllerTests: RecoveredSessionTestCase {
     let reread = try library.document(sessionId: receipt.sessionId)
     let rereadAlpha = try XCTUnwrap(reread.first { $0.sequence == alpha.sequence })
     let rereadBravo = try XCTUnwrap(reread.first { $0.sequence == bravo.sequence })
-    XCTAssertEqual(rereadAlpha.speakerLabel, "Unknown speaker")
+    XCTAssertEqual(rereadAlpha.speakerLabel, "Speaker")
     XCTAssertEqual(rereadAlpha.verbatimText, alpha.verbatimText)
     XCTAssertEqual(rereadBravo.speakerLabel, "Mina")
     XCTAssertEqual(rereadBravo.verbatimText, bravo.verbatimText)
     XCTAssertEqual(rereadBravo.effectiveText, bravo.effectiveText)
     XCTAssertTrue(rereadBravo.corrected)
     let tracks = try library.speakers(sessionId: receipt.sessionId)
-    XCTAssertEqual(tracks.map(\.label), ["Unknown speaker"])
+    XCTAssertEqual(tracks.map(\.label), ["Speaker"])
     XCTAssertEqual(tracks.map(\.namedByUser), [false])
     let after = try library.prepareSpeakerDiarization(sessionId: receipt.sessionId)
     XCTAssertFalse(after.inserted)
@@ -3913,8 +3913,8 @@ final class RecoveredSessionControllerTests: RecoveredSessionTestCase {
     XCTAssertEqual(bravo.finality, "final")
     XCTAssertTrue(bravo.corrected)
     XCTAssertGreaterThan(bravo.startNanoseconds, alpha.endNanoseconds)
-    XCTAssertEqual(alpha.speakerLabel, "Unknown speaker")
-    XCTAssertEqual(bravo.speakerLabel, "Unknown speaker")
+    XCTAssertEqual(alpha.speakerLabel, "Speaker")
+    XCTAssertEqual(bravo.speakerLabel, "Speaker")
     XCTAssertNil(alpha.namedSpeakerId)
     XCTAssertNil(bravo.namedSpeakerId)
     let alphaText = alpha.effectiveText
@@ -3939,8 +3939,8 @@ final class RecoveredSessionControllerTests: RecoveredSessionTestCase {
     func speakerControl(_ stamp: String, _ label: String) -> String {
       ConversationControlLabels.nameSpeakerAccessibility(stamp: stamp, label: label)
     }
-    let alphaUnknown = speakerControl(alphaStamp, "Unknown speaker")
-    let bravoUnknown = speakerControl(bravoStamp, "Unknown speaker")
+    let alphaUnknown = speakerControl(alphaStamp, "Speaker")
+    let bravoUnknown = speakerControl(bravoStamp, "Speaker")
     XCTAssertNotEqual(alphaUnknown, bravoUnknown)
 
     let store = RuntimeLibraryStore(managedRoot: managed, refreshesImmediately: false)
@@ -4068,7 +4068,7 @@ final class RecoveredSessionControllerTests: RecoveredSessionTestCase {
     XCTAssertEqual(
       TranscriptLibraryModel.namedSpeakerTurnHistoryText(for: mergedHistory),
       """
-      Source default: Unknown speaker
+      Source default: Speaker
       Morgan, named by you
       Dana, named by you
       """)
@@ -4124,7 +4124,7 @@ final class RecoveredSessionControllerTests: RecoveredSessionTestCase {
     XCTAssertEqual(
       TranscriptLibraryModel.namedSpeakerTurnHistoryText(for: grown),
       """
-      Source default: Unknown speaker
+      Source default: Speaker
       Morgan, named by you
       Dana, named by you
       Mina, named by you
@@ -4145,20 +4145,20 @@ final class RecoveredSessionControllerTests: RecoveredSessionTestCase {
     XCTAssertTrue(source.isEnabled && source.isDescendant(of: host))
     source.performClick(nil)
     await assertEventually {
-      model.segments.first { $0.sequence == alpha.sequence }?.speakerLabel == "Unknown speaker"
+      model.segments.first { $0.sequence == alpha.sequence }?.speakerLabel == "Speaker"
         && model.segments.first { $0.sequence == alpha.sequence }?.namedSpeakerId == nil
         && model.segments.first { $0.sequence == bravo.sequence }?.speakerLabel == "Mina"
     }
     let restoredHistory = try XCTUnwrap(
       model.namedSpeakerTurnHistory.first { $0.sequence == alpha.sequence })
-    XCTAssertEqual(restoredHistory.revisions.map(\.label), ["Dana", "Unknown speaker"])
+    XCTAssertEqual(restoredHistory.revisions.map(\.label), ["Dana", "Speaker"])
     XCTAssertEqual(restoredHistory.revisions.map(\.origin), [.human, .sourceDefault])
     XCTAssertEqual(
       TranscriptLibraryModel.namedSpeakerTurnHistoryText(for: restoredHistory),
       """
-      Source default: Unknown speaker
+      Source default: Speaker
       Dana, named by you
-      Unknown speaker, source name
+      Speaker, source name
       """)
     let bravoHistory = try XCTUnwrap(
       model.namedSpeakerTurnHistory.first { $0.sequence == bravo.sequence })
@@ -4167,7 +4167,7 @@ final class RecoveredSessionControllerTests: RecoveredSessionTestCase {
     let reread = try library.document(sessionId: receipt.sessionId)
     let rereadAlpha = try XCTUnwrap(reread.first { $0.sequence == alpha.sequence })
     let rereadBravo = try XCTUnwrap(reread.first { $0.sequence == bravo.sequence })
-    XCTAssertEqual(rereadAlpha.speakerLabel, "Unknown speaker")
+    XCTAssertEqual(rereadAlpha.speakerLabel, "Speaker")
     XCTAssertEqual(rereadAlpha.effectiveText, alphaText)
     XCTAssertEqual(rereadAlpha.verbatimText, alpha.verbatimText)
     XCTAssertEqual(rereadBravo.speakerLabel, "Mina")
@@ -4177,7 +4177,7 @@ final class RecoveredSessionControllerTests: RecoveredSessionTestCase {
     XCTAssertEqual(rereadBravo.startNanoseconds, bravo.startNanoseconds)
     XCTAssertEqual(rereadAlpha.startNanoseconds, alpha.startNanoseconds)
     let tracks = try library.speakers(sessionId: receipt.sessionId)
-    XCTAssertEqual(tracks.map(\.label), ["Unknown speaker"])
+    XCTAssertEqual(tracks.map(\.label), ["Speaker"])
     XCTAssertEqual(tracks.map(\.namedByUser), [false])
     XCTAssertEqual(
       model.speakerDiarizationText,
@@ -4211,8 +4211,8 @@ final class RecoveredSessionControllerTests: RecoveredSessionTestCase {
     let stored = try library.document(sessionId: receipt.sessionId)
     let alpha = try XCTUnwrap(stored.first { $0.sequence == 0 })
     let bravo = try XCTUnwrap(stored.first { $0.sequence == 1 })
-    XCTAssertEqual(alpha.speakerLabel, "Unknown speaker")
-    XCTAssertEqual(bravo.speakerLabel, "Unknown speaker")
+    XCTAssertEqual(alpha.speakerLabel, "Speaker")
+    XCTAssertEqual(bravo.speakerLabel, "Speaker")
     XCTAssertNil(alpha.namedSpeakerId)
     XCTAssertNil(bravo.namedSpeakerId)
     XCTAssertFalse(alpha.corrected)
@@ -4229,7 +4229,7 @@ final class RecoveredSessionControllerTests: RecoveredSessionTestCase {
     let model = TranscriptLibraryModel(managedRoot: managed)
     await model.load(sessionId: receipt.sessionId)
     XCTAssertNil(model.message)
-    XCTAssertEqual(model.speakers.map(\.label), ["Unknown speaker"])
+    XCTAssertEqual(model.speakers.map(\.label), ["Speaker"])
     XCTAssertEqual(model.speakers.map(\.namedByUser), [false])
     let loadedBravo = try XCTUnwrap(model.segments.first { $0.sequence == bravo.sequence })
     let namedMina = await model.assignSpeaker(
@@ -4237,14 +4237,14 @@ final class RecoveredSessionControllerTests: RecoveredSessionTestCase {
     XCTAssertTrue(namedMina, model.message ?? "")
     let minaId = try XCTUnwrap(
       model.segments.first { $0.sequence == bravo.sequence }?.namedSpeakerId)
-    XCTAssertEqual(model.segments.first { $0.sequence == alpha.sequence }?.speakerLabel, "Unknown speaker")
+    XCTAssertEqual(model.segments.first { $0.sequence == alpha.sequence }?.speakerLabel, "Speaker")
     XCTAssertNil(model.segments.first { $0.sequence == alpha.sequence }?.namedSpeakerId)
     XCTAssertEqual(model.segments.first { $0.sequence == bravo.sequence }?.speakerLabel, "Mina")
-    XCTAssertEqual(model.speakers.map(\.label), ["Unknown speaker"])
+    XCTAssertEqual(model.speakers.map(\.label), ["Speaker"])
     let alphaStamp = TranscriptSection.timestamp(alpha.startNanoseconds)
     let bravoStamp = TranscriptSection.timestamp(bravo.startNanoseconds)
     let alphaUnknown = ConversationControlLabels.nameSpeakerAccessibility(
-      stamp: alphaStamp, label: "Unknown speaker")
+      stamp: alphaStamp, label: "Speaker")
     let bravoMina = ConversationControlLabels.nameSpeakerAccessibility(
       stamp: bravoStamp, label: "Mina")
 
@@ -4304,21 +4304,21 @@ final class RecoveredSessionControllerTests: RecoveredSessionTestCase {
       host.layoutSubtreeIfNeeded()
       window.displayIfNeeded()
       return self.hostedField(labeled: "Audio source labels", in: host) != nil
-        && self.hostedField(labeled: "Name for Unknown speaker", in: host) != nil
-        && self.claimButton(labeled: "Rename speaker Unknown speaker", in: host) != nil
+        && self.hostedField(labeled: "Name for Speaker", in: host) != nil
+        && self.claimButton(labeled: "Rename speaker Speaker", in: host) != nil
         && self.claimButton(labeled: alphaUnknown, in: host) != nil
         && self.claimButton(labeled: bravoMina, in: host) != nil
     }
     XCTAssertTrue(shown && window.contentView === host, self.hostedControlProbe(in: host))
-    let nameField = try XCTUnwrap(self.hostedField(labeled: "Name for Unknown speaker", in: host))
+    let nameField = try XCTUnwrap(self.hostedField(labeled: "Name for Speaker", in: host))
     nameField.stringValue = " Dana "
     let armed = await waitUntil {
       host.layoutSubtreeIfNeeded()
-      let button = self.claimButton(labeled: "Rename speaker Unknown speaker", in: host)
+      let button = self.claimButton(labeled: "Rename speaker Speaker", in: host)
       return button?.isEnabled == true && button?.isDescendant(of: host) == true
     }
     XCTAssertTrue(armed && window.contentView === host, self.hostedControlProbe(in: host))
-    let rename = try XCTUnwrap(self.claimButton(labeled: "Rename speaker Unknown speaker", in: host))
+    let rename = try XCTUnwrap(self.claimButton(labeled: "Rename speaker Speaker", in: host))
     XCTAssertTrue(rename.isEnabled && rename.isDescendant(of: host))
     rename.performClick(nil)
     let alphaDana = ConversationControlLabels.nameSpeakerAccessibility(
@@ -4340,7 +4340,7 @@ final class RecoveredSessionControllerTests: RecoveredSessionTestCase {
     XCTAssertEqual(
       TranscriptLibraryModel.speakerLabelHistoryText(for: namedHistory),
       """
-      Source default: Unknown speaker
+      Source default: Speaker
       Dana, named by you
       """)
     XCTAssertEqual(model.segments.first { $0.sequence == alpha.sequence }?.effectiveText, alphaText)
@@ -4359,11 +4359,11 @@ final class RecoveredSessionControllerTests: RecoveredSessionTestCase {
     restore.performClick(nil)
     let restored = await waitUntil(timeoutNanoseconds: 5_000_000_000) {
       host.layoutSubtreeIfNeeded()
-      return model.segments.first { $0.sequence == alpha.sequence }?.speakerLabel == "Unknown speaker"
+      return model.segments.first { $0.sequence == alpha.sequence }?.speakerLabel == "Speaker"
         && model.segments.first { $0.sequence == alpha.sequence }?.namedSpeakerId == nil
         && model.segments.first { $0.sequence == bravo.sequence }?.speakerLabel == "Mina"
         && model.segments.first { $0.sequence == bravo.sequence }?.namedSpeakerId == minaId
-        && model.speakers.map(\.label) == ["Unknown speaker"]
+        && model.speakers.map(\.label) == ["Speaker"]
         && model.speakers.map(\.namedByUser) == [false]
         && self.claimButton(labeled: alphaUnknown, in: host) != nil
         && self.claimButton(labeled: bravoMina, in: host) != nil
@@ -4373,14 +4373,14 @@ final class RecoveredSessionControllerTests: RecoveredSessionTestCase {
     XCTAssertEqual(
       TranscriptLibraryModel.speakerLabelHistoryText(for: restoredHistory),
       """
-      Source default: Unknown speaker
+      Source default: Speaker
       Dana, named by you
-      Unknown speaker, source name
+      Speaker, source name
       """)
     let reread = try library.document(sessionId: receipt.sessionId)
     let rereadAlpha = try XCTUnwrap(reread.first { $0.sequence == alpha.sequence })
     let rereadBravo = try XCTUnwrap(reread.first { $0.sequence == bravo.sequence })
-    XCTAssertEqual(rereadAlpha.speakerLabel, "Unknown speaker")
+    XCTAssertEqual(rereadAlpha.speakerLabel, "Speaker")
     XCTAssertNil(rereadAlpha.namedSpeakerId)
     XCTAssertEqual(rereadAlpha.effectiveText, alphaText)
     XCTAssertEqual(rereadAlpha.verbatimText, alphaVerbatim)
@@ -4390,7 +4390,7 @@ final class RecoveredSessionControllerTests: RecoveredSessionTestCase {
     XCTAssertEqual(rereadBravo.verbatimText, bravoVerbatim)
     XCTAssertTrue(rereadBravo.corrected)
     let tracks = try library.speakers(sessionId: receipt.sessionId)
-    XCTAssertEqual(tracks.map(\.label), ["Unknown speaker"])
+    XCTAssertEqual(tracks.map(\.label), ["Speaker"])
     XCTAssertEqual(tracks.map(\.namedByUser), [false])
     XCTAssertNil(model.message)
     XCTAssertEqual(try digest(of: libraryMedia[0]), packageDigest)

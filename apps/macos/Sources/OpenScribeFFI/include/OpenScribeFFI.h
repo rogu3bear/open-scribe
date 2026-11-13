@@ -779,6 +779,19 @@ uniffi_open_scribe_uniffi_fn_method_nativetranscriptlibrary_complete_deletion(
     uint64_t ptr, RustBuffer session_id, RustBuffer trash_reference,
     RustCallStatus *_Nonnull out_status);
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_FN_METHOD_NATIVETRANSCRIPTLIBRARY_CONVERSATION_TEXT
+#define UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_FN_METHOD_NATIVETRANSCRIPTLIBRARY_CONVERSATION_TEXT
+RustBuffer
+uniffi_open_scribe_uniffi_fn_method_nativetranscriptlibrary_conversation_text(
+    uint64_t ptr, RustBuffer session_id, int8_t include_timestamps,
+    RustCallStatus *_Nonnull out_status);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_FN_METHOD_NATIVETRANSCRIPTLIBRARY_CONVERSATION_TITLE
+#define UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_FN_METHOD_NATIVETRANSCRIPTLIBRARY_CONVERSATION_TITLE
+RustBuffer
+uniffi_open_scribe_uniffi_fn_method_nativetranscriptlibrary_conversation_title(
+    uint64_t ptr, RustBuffer session_id, RustCallStatus *_Nonnull out_status);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_FN_METHOD_NATIVETRANSCRIPTLIBRARY_CORRECT_SEGMENT
 #define UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_FN_METHOD_NATIVETRANSCRIPTLIBRARY_CORRECT_SEGMENT
 void uniffi_open_scribe_uniffi_fn_method_nativetranscriptlibrary_correct_segment(
@@ -915,6 +928,13 @@ RustBuffer
 uniffi_open_scribe_uniffi_fn_method_nativetranscriptlibrary_split_named_speaker(
     uint64_t ptr, RustBuffer session_id, RustBuffer speaker_id,
     RustBuffer turns, RustBuffer label, RustCallStatus *_Nonnull out_status);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_FN_METHOD_NATIVETRANSCRIPTLIBRARY_SUGGEST_TITLE
+#define UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_FN_METHOD_NATIVETRANSCRIPTLIBRARY_SUGGEST_TITLE
+int8_t
+uniffi_open_scribe_uniffi_fn_method_nativetranscriptlibrary_suggest_title(
+    uint64_t ptr, RustBuffer session_id, RustBuffer title, RustBuffer engine,
+    RustBuffer basis, RustCallStatus *_Nonnull out_status);
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_FN_CLONE_NATIVEWORKCOORDINATOR
 #define UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_FN_CLONE_NATIVEWORKCOORDINATOR
@@ -2007,6 +2027,22 @@ uniffi_open_scribe_uniffi_checksum_method_nativetranscriptlibrary_complete_delet
 
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_CHECKSUM_METHOD_NATIVETRANSCRIPTLIBRARY_CONVERSATION_TEXT
+#define UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_CHECKSUM_METHOD_NATIVETRANSCRIPTLIBRARY_CONVERSATION_TEXT
+uint16_t
+uniffi_open_scribe_uniffi_checksum_method_nativetranscriptlibrary_conversation_text(
+    void
+
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_CHECKSUM_METHOD_NATIVETRANSCRIPTLIBRARY_CONVERSATION_TITLE
+#define UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_CHECKSUM_METHOD_NATIVETRANSCRIPTLIBRARY_CONVERSATION_TITLE
+uint16_t
+uniffi_open_scribe_uniffi_checksum_method_nativetranscriptlibrary_conversation_title(
+    void
+
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_CHECKSUM_METHOD_NATIVETRANSCRIPTLIBRARY_CORRECT_SEGMENT
 #define UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_CHECKSUM_METHOD_NATIVETRANSCRIPTLIBRARY_CORRECT_SEGMENT
 uint16_t
@@ -2175,6 +2211,14 @@ uniffi_open_scribe_uniffi_checksum_method_nativetranscriptlibrary_speakers(void
 #define UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_CHECKSUM_METHOD_NATIVETRANSCRIPTLIBRARY_SPLIT_NAMED_SPEAKER
 uint16_t
 uniffi_open_scribe_uniffi_checksum_method_nativetranscriptlibrary_split_named_speaker(
+    void
+
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_CHECKSUM_METHOD_NATIVETRANSCRIPTLIBRARY_SUGGEST_TITLE
+#define UNIFFI_FFIDEF_UNIFFI_OPEN_SCRIBE_UNIFFI_CHECKSUM_METHOD_NATIVETRANSCRIPTLIBRARY_SUGGEST_TITLE
+uint16_t
+uniffi_open_scribe_uniffi_checksum_method_nativetranscriptlibrary_suggest_title(
     void
 
 );

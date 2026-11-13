@@ -300,7 +300,7 @@ final class TranscriptLibraryModelTests: XCTestCase {
     XCTAssertEqual(first.tracks.count, 1)
     XCTAssertEqual(first.tracks[0].sourceKind, "imported_audio")
     XCTAssertEqual(first.tracks[0].disposition, "unresolved")
-    XCTAssertEqual(first.tracks[0].label, "Unknown speaker")
+    XCTAssertEqual(first.tracks[0].label, "Speaker")
     XCTAssertEqual(first.tracks[0].labelOrigin, "source_default")
     let model = TranscriptLibraryModel(library: library)
     await model.load(session: session(imported.sessionId, calibrated: false, sources: []))
@@ -308,7 +308,7 @@ final class TranscriptLibraryModelTests: XCTestCase {
       model.speakerDiarizationText,
       "Speakers follow the audio source. Voice diarization is unavailable without a calibrated model."
     )
-    XCTAssertEqual(model.speakers.first?.label, "Unknown speaker")
+    XCTAssertEqual(model.speakers.first?.label, "Speaker")
     XCTAssertEqual(model.speakers.first?.namedByUser, false)
     XCTAssertNil(model.message)
     let second = try library.prepareSpeakerDiarization(sessionId: imported.sessionId)

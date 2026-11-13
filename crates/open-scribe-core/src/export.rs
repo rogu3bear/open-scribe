@@ -249,7 +249,7 @@ impl TranscriptExport {
         for revision in &context.selected {
             let speaker = self
                 .speaker(&revision.track_id)
-                .map_or("Unknown speaker", |speaker| speaker.label.as_str());
+                .map_or("Speaker", |speaker| speaker.label.as_str());
             let _ = writeln!(
                 output,
                 "{bullet}Model ({}): {} · {} {}",
@@ -411,7 +411,7 @@ impl TranscriptExport {
                     "input_digest": input_digest,
                     "finality": finality,
                     "speaker": speaker.map_or_else(
-                        || speaker_json("Unknown speaker", SpeakerLabelOrigin::SourceDefault),
+                        || speaker_json("Speaker", SpeakerLabelOrigin::SourceDefault),
                         |speaker| speaker_json(&speaker.label, speaker.origin),
                     ),
                     "revision": revision.map(|revision| json!({

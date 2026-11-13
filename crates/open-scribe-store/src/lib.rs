@@ -27,12 +27,16 @@ use uuid::Uuid;
 
 mod context;
 mod conversation_identity;
+mod conversation_titles;
 mod sealed_media_identity;
 pub use context::{
     CONTEXT_EXCLUSIONS, CONTEXT_SCOPE_SCHEMA, ContextAction, ContextBounds, ContextCondition,
     ContextDetail, ContextFailureReason, ContextMode, ContextPauseReason, ContextRetention,
     ContextScope, ContextScopeRequest, ContextTarget, ContextTargetKind, DisplayTopology,
     ScreenPermission, SessionDeclaration,
+};
+pub use conversation_titles::{
+    ConversationTitle, MAX_SUGGESTED_TITLE_CHARS, TitleSource, is_placeholder_title, resolve_title,
 };
 mod context_events;
 pub use context_events::{
@@ -3260,6 +3264,7 @@ fn apply_schema(connection: &mut Connection) -> Result<(), StoreError> {
     derived_claims::apply_schema(&transaction)?;
     meeting_memory::apply_schema(&transaction)?;
     speaker_diarization::apply_schema(&transaction)?;
+    conversation_titles::apply_schema(&transaction)?;
     transaction.commit()?;
     Ok(())
 }
@@ -4102,6 +4107,80 @@ mod tests {
     }
 
     #[test]
+    fn a_suggested_title_stands_in_for_the_placeholder_until_a_person_names_it() {
+        let temp = TempDir::new().unwrap();
+        let mut store = open_store(&temp);
+        let placeholder = "Conversation 2026-11-12T19:30:05Z";
+        let receipt = store
+            .prepare_session(PrepareSessionRequest {
+                title: placeholder.to_owned(),
+                origin: SessionOrigin::Capture,
+            })
+            .unwrap();
+        let session = &receipt.session_id;
+        let snapshot = |store: &SessionStore| {
+            store
+                .runtime_library_snapshot()
+                .unwrap()
+                .current_session
+                .unwrap()
+        };
+        let before = snapshot(&store);
+        assert_eq!(before.display_title, placeholder);
+        assert_eq!(before.title_source, TitleSource::Placeholder);
+        assert!(before.created_at_ms > 0);
+
+        assert!(
+            store
+                .suggest_conversation_title(session, "Mobile beta launch", "test-engine", "draft")
+                .unwrap()
+        );
+        let suggested = snapshot(&store);
+        assert_eq!(
+            suggested.title, placeholder,
+            "the stored title is unchanged"
+        );
+        assert_eq!(suggested.display_title, "Mobile beta launch");
+        assert_eq!(suggested.title_source, TitleSource::Suggested);
+
+        assert!(
+            store
+                .suggest_conversation_title(
+                    session,
+                    "Beta moves to the 23rd",
+                    "test-engine",
+                    "final"
+                )
+                .unwrap()
+        );
+        assert!(
+            !store
+                .suggest_conversation_title(session, "Draft guess", "test-engine", "draft")
+                .unwrap(),
+            "a draft-based suggestion never replaces a final-based one"
+        );
+        let resolved = store.conversation_title(session).unwrap();
+        assert_eq!(resolved.display_title, "Beta moves to the 23rd");
+        assert_eq!(resolved.suggestion_basis.as_deref(), Some("final"));
+
+        store.rename_session(session, "Beta check-in").unwrap();
+        assert!(
+            !store
+                .suggest_conversation_title(session, "Another guess", "test-engine", "final")
+                .unwrap(),
+            "a person's title refuses later suggestions"
+        );
+        let named = snapshot(&store);
+        assert_eq!(named.display_title, "Beta check-in");
+        assert_eq!(named.title_source, TitleSource::Person);
+        assert!(
+            store
+                .suggest_conversation_title(session, "", "test-engine", "final")
+                .is_err()
+        );
+    }
+
+    #[test]
     fn rename_session_replaces_only_the_title() {
         let temp = TempDir::new().unwrap();
         let mut store = open_store(&temp);
@@ -4253,7 +4332,7 @@ mod tests {
         }
         assert_eq!(
             database_value(&store, "SELECT MAX(version) FROM schema_migrations"),
-            20
+            21
         );
         let segment_columns: BTreeSet<String> = store
             .connection
@@ -4311,7 +4390,7 @@ mod tests {
         assert_eq!(channels, 1);
         assert_eq!(
             database_value(&store, "SELECT MAX(version) FROM schema_migrations"),
-            20
+            21
         );
     }
 

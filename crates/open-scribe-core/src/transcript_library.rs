@@ -294,6 +294,26 @@ impl TranscriptLibrary {
         self.store.rename_speaker(session, track_id, label)
     }
 
+    /// The resolved conversation title and any stored suggestion.
+    pub fn conversation_title(
+        &self,
+        session: &SessionId,
+    ) -> Result<open_scribe_store::ConversationTitle, StoreError> {
+        self.store.conversation_title(session)
+    }
+
+    /// Stores a transcript-derived title; false when a person named it.
+    pub fn suggest_conversation_title(
+        &mut self,
+        session: &SessionId,
+        title: &str,
+        engine: &str,
+        basis: &str,
+    ) -> Result<bool, StoreError> {
+        self.store
+            .suggest_conversation_title(session, title, engine, basis)
+    }
+
     /// Rebuilds Final transcripts from chunks an earlier run retained but
     /// could not commit, for one session or the whole library. No model is
     /// loaded; media, failed runs, and selected revisions are untouched.
@@ -325,6 +345,15 @@ impl TranscriptLibrary {
         destination: &Path,
     ) -> Result<TranscriptExportReceipt, TranscriptExportError> {
         write_transcript_export(&self.store, session, format, destination)
+    }
+
+    /// The reading copy for the clipboard; see [`crate::ConversationText`].
+    pub fn conversation_text(
+        &self,
+        session: &SessionId,
+        timestamps: bool,
+    ) -> Result<crate::ConversationText, TranscriptExportError> {
+        crate::conversation_text(&self.store, session, timestamps)
     }
 
     pub fn begin_deletion(

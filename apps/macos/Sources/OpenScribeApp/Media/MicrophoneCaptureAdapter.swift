@@ -75,6 +75,9 @@ typealias MicrophoneObservationHandler = @Sendable (MicrophoneSourceHealthObserv
 
 protocol MicrophoneCaptureBackend: AnyObject, Sendable {
   var inputFormat: AVAudioFormat { get }
+  /// False when a tap in `inputFormat` would not match the microphone's
+  /// current hardware rate, which AVAudioEngine treats as a fatal error.
+  var inputFormatMatchesHardware: Bool { get }
   func bindInput(to device: MicrophoneDeviceIdentity?) throws
   func installTap(
     bufferSize: AVAudioFrameCount,
@@ -86,6 +89,8 @@ protocol MicrophoneCaptureBackend: AnyObject, Sendable {
 }
 
 extension MicrophoneCaptureBackend {
+  var inputFormatMatchesHardware: Bool { true }
+
   func bindInput(to device: MicrophoneDeviceIdentity?) throws {
     if device != nil { throw MicrophoneCaptureAdapterError.inputDeviceUnavailable }
   }
@@ -104,6 +109,15 @@ final class AVAudioEngineMicrophoneBackend: MicrophoneCaptureBackend, @unchecked
 
   var inputFormat: AVAudioFormat {
     engine.inputNode.outputFormat(forBus: 0)
+  }
+
+  /// A call app or headset can change the microphone's rate after the engine
+  /// read it. Installing a tap then raises an exception that ends the app, so
+  /// the adapter checks first and reports the microphone as unavailable.
+  var inputFormatMatchesHardware: Bool {
+    let hardware = engine.inputNode.inputFormat(forBus: 0)
+    return hardware.sampleRate > 0 && hardware.channelCount > 0
+      && hardware.sampleRate == inputFormat.sampleRate
   }
 
   private var inputBinding: MicrophoneInputBinding {
@@ -303,6 +317,8 @@ final class MicrophoneCaptureAdapter: @unchecked Sendable {
   private var lastProgressMonotonicNanoseconds: UInt64 = 0
   private let provisionalLock = NSLock()
   private var provisionalQueue: ProvisionalDraftQueue?
+  /// Live captions listen to audio after it is written; see `LiveAudioListening`.
+  let liveAudio = LiveAudioListenerSlot()
 
   init(
     backend: MicrophoneCaptureBackend,
@@ -403,7 +419,8 @@ final class MicrophoneCaptureAdapter: @unchecked Sendable {
       throw MicrophoneCaptureAdapterError.alreadyStarted
     }
     let format = backend.inputFormat
-    guard format.sampleRate > 0, format.channelCount > 0 else {
+    guard format.sampleRate > 0, format.channelCount > 0, backend.inputFormatMatchesHardware
+    else {
       stateLock.unlock()
       throw MicrophoneCaptureAdapterError.invalidInputFormat
     }
@@ -486,6 +503,7 @@ final class MicrophoneCaptureAdapter: @unchecked Sendable {
           self.recordWrittenProgress(UInt64(writtenFrames))
           let silent = writtenFrames == copy.frameLength && bufferIsSilent(copy)
           self.noteProvisionalAudio(writtenFrames, silent: silent)
+          self.liveAudio.deliver(copy, writtenFrames: writtenFrames, hostTime: hostTime)
           self.stateLock.lock()
           self.lastWrittenSampleHostTime = hostTime
           let shouldReport = self.started && self.acceptingCallbacks && !self.firstSampleReported

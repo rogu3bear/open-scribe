@@ -11,6 +11,8 @@ struct MenuBarContent: View {
   @ObservedObject var navigation: MainWorkspaceNavigation
   @ObservedObject var scheduler: TranscriptionScheduler
   @ObservedObject var speech: SpeechTranscriptionModel
+  /// Copies a saved conversation's transcript, as the window's Copy does.
+  var copyConversation: (@MainActor (RuntimeSessionPresentation) -> Void)?
 
   @MainActor
   init(
@@ -21,8 +23,10 @@ struct MenuBarContent: View {
     context: ContextScopeModel? = nil,
     navigation: MainWorkspaceNavigation? = nil,
     scheduler: TranscriptionScheduler? = nil,
-    speech: SpeechTranscriptionModel? = nil
+    speech: SpeechTranscriptionModel? = nil,
+    copyConversation: (@MainActor (RuntimeSessionPresentation) -> Void)? = nil
   ) {
+    self.copyConversation = copyConversation
     self.store = store
     self.importedMediaAuthority = importedMediaAuthority
     self.liveRecording = liveRecording ?? LiveMicrophoneRecordingController()
@@ -70,10 +74,16 @@ struct MenuBarContent: View {
       )
       .foregroundStyle(.secondary)
     }
+    if let copyConversation, let latest = Self.latestCopyable(store.savedSessions) {
+      Button("Copy “\(ConversationIdentityPresentation.title(for: latest))”") {
+        copyConversation(latest)
+      }
+      .help("Copy the most recent conversation's transcript, ready to paste")
+    }
     if let activity = scheduler.summaryText(
       titles: Dictionary(
         uniqueKeysWithValues: store.savedSessions.map {
-          ($0.sessionId, ConversationIdentityPresentation.title($0.title))
+          ($0.sessionId, ConversationIdentityPresentation.title(for: $0))
         }),
       progress: speech.progressFraction)
     {
@@ -114,7 +124,7 @@ struct MenuBarContent: View {
       in: conversations, media: recoveredSessions.sessions
     ) {
       Divider()
-      let title = ConversationIdentityPresentation.title(recovered.title)
+      let title = ConversationIdentityPresentation.title(for: recovered)
       let reference = ConversationIdentityPresentation.references(for: conversations)[
         recovered.sessionId]
       Text("\(title)\(reference.map { " · \($0)" } ?? "")")
@@ -175,6 +185,16 @@ struct MenuBarContent: View {
   /// new recording; every other idle menu names the selected sources.
   static func recordTitle(lifecycle: String?, summary: String) -> String {
     lifecycle == "interrupted" ? "Start New Recording" : "Record — \(summary)"
+  }
+
+  /// The newest saved conversation that has any transcript text.
+  static func latestCopyable(_ sessions: [RuntimeSessionPresentation]) -> RuntimeSessionPresentation?
+  {
+    LibraryConversationLists.saved(sessions)
+      .filter {
+        $0.transcript.documentAvailability != .unavailable || $0.transcript.hasDraftText
+      }
+      .max { ($0.createdAt ?? .distantPast) < ($1.createdAt ?? .distantPast) }
   }
 
   static func statusSymbol(for session: RuntimeSessionPresentation) -> String {
