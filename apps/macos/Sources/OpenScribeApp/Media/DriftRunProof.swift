@@ -1,3 +1,5 @@
+// Proof launches exist only in Debug builds; candidates build Debug.
+#if DEBUG
 import Foundation
 
 /// The recorder half of the two-hour synchronization run (ADR 0005; the M1
@@ -8,7 +10,7 @@ import Foundation
 /// its deadline or past three hours. Rust measures the drift afterwards.
 @MainActor
 enum DriftRunProof {
-  static let maximumSeconds: UInt64 = 3 * 60 * 60
+  nonisolated static let maximumSeconds = LaunchConfiguration.maximumDriftSeconds
   static let startedName = "capture-started.json"
   static let outcomeName = "run.json"
 
@@ -77,3 +79,4 @@ enum DriftRunProof {
     try? data.write(to: root.appendingPathComponent(name), options: .atomic)
   }
 }
+#endif

@@ -4,7 +4,8 @@
 
 mod production;
 pub use production::{
-    merge_transcription_attempt, recording_evidence_sufficient, transcription_hold,
+    TRANSCRIPTION_DISK_FLOOR_BYTES, merge_transcription_attempt, recording_evidence_sufficient,
+    transcription_hold,
 };
 
 use open_scribe_types::{

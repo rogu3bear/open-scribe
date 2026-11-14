@@ -113,7 +113,7 @@ final class ContextOverlayController {
   }
 }
 
-private final class PerimeterView: NSView {
+final class PerimeterView: NSView {
   private let line = CAShapeLayer()
   private let keyline = CAShapeLayer()
   /// Keeps the bloom outside the perimeter.
@@ -155,9 +155,19 @@ private final class PerimeterView: NSView {
 
   func apply(_ state: ContextOverlayState) {
     let workspace = NSWorkspace.shared
-    let style = PerimeterStyle.style(
-      for: state, increaseContrast: workspace.accessibilityDisplayShouldIncreaseContrast)
-    let timing = PerimeterStyle.transition(reduceMotion: workspace.accessibilityDisplayShouldReduceMotion)
+    apply(
+      state,
+      increaseContrast: workspace.accessibilityDisplayShouldIncreaseContrast,
+      reduceMotion: workspace.accessibilityDisplayShouldReduceMotion)
+  }
+
+  /// Draws the same perimeter `show` installs. The booleans are the
+  /// accessibility settings; the shipped call reads them from the workspace.
+  func apply(
+    _ state: ContextOverlayState, increaseContrast: Bool, reduceMotion: Bool
+  ) {
+    let style = PerimeterStyle.style(for: state, increaseContrast: increaseContrast)
+    let timing = PerimeterStyle.transition(reduceMotion: reduceMotion)
     CATransaction.begin()
     CATransaction.setAnimationDuration(timing.luminance)
     CATransaction.setAnimationTimingFunction(CAMediaTimingFunction(name: .easeOut))

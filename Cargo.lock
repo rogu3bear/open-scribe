@@ -1565,8 +1565,6 @@ dependencies = [
 name = "open-scribe-evidence"
 version = "0.0.0"
 dependencies = [
- "open-scribe-domain",
- "open-scribe-types",
  "serde",
  "serde_json",
 ]
@@ -1574,11 +1572,6 @@ dependencies = [
 [[package]]
 name = "open-scribe-memory"
 version = "0.0.0"
-dependencies = [
- "open-scribe-domain",
- "open-scribe-evidence",
- "open-scribe-types",
-]
 
 [[package]]
 name = "open-scribe-models"
@@ -1596,6 +1589,7 @@ dependencies = [
 name = "open-scribe-store"
 version = "0.0.0"
 dependencies = [
+ "open-scribe-diarize",
  "open-scribe-domain",
  "open-scribe-evidence",
  "open-scribe-types",
@@ -1617,7 +1611,12 @@ name = "open-scribe-uniffi"
 version = "0.0.0"
 dependencies = [
  "open-scribe-core",
+ "open-scribe-evidence",
+ "open-scribe-store",
  "open-scribe-types",
+ "serde_json",
+ "sha2",
+ "tempfile",
  "thiserror 2.0.20",
  "uniffi",
 ]
@@ -1626,14 +1625,17 @@ dependencies = [
 name = "open-scribe-web"
 version = "0.0.0"
 dependencies = [
+ "any_spawner",
  "axum",
  "console_error_panic_hook",
+ "futures",
  "getrandom 0.3.4",
  "getrandom 0.4.3",
  "leptos",
  "leptos_axum",
  "leptos_meta",
  "leptos_router",
+ "open-scribe-types",
  "serde_json",
  "tower-service",
  "wasm-bindgen",

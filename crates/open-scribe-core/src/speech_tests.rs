@@ -1,16 +1,16 @@
 use crate::speech::{
-    SpeechError, SpeechModelError, SpeechModels, decode_language, transcribe_session,
+    RemovalChoice, SpeechError, SpeechModelError, SpeechModels, decode_language, transcribe_session,
 };
 use crate::transcription::tests::{BurstRecognizer, imported};
 use crate::{TranscriptLibrary, TranscriptionError};
 use open_scribe_asr::{
     DecodeOptions, Language, WHISPER_ENGINE, WHISPER_ENGINE_COMPATIBILITY, WHISPER_ENGINE_VERSION,
 };
-use open_scribe_models::{Catalog, VerifyError};
+use open_scribe_models::{Catalog, ModelLayout, VerifyError};
 use open_scribe_store::{ImportMediaRequest, SessionStore, StoreError};
 use open_scribe_types::SessionId;
 use std::path::PathBuf;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 #[test]
 fn every_manifest_speech_model_names_this_exact_engine() {
@@ -92,7 +92,10 @@ fn verified_file_import_review_export_preserves_original_evidence() {
         &mut |_| {},
     )
     .unwrap();
-    let original = store.transcript_document(&session).unwrap();
+    let original = store
+        .conversation_document(&session, crate::DocumentScope::FinalOnly)
+        .map(|document| document.segments)
+        .unwrap();
     let first = original
         .first()
         .expect("real recognizer produced timed text");
@@ -129,7 +132,7 @@ fn verified_file_import_review_export_preserves_original_evidence() {
         library.availability(&session).unwrap(),
         TranscriptAvailability::Final
     );
-    let reviewed = library.document(&session).unwrap();
+    let reviewed = library.document(&session).unwrap().segments;
     assert_eq!(reviewed[0].verbatim_text, verbatim);
     assert_eq!(reviewed[0].effective_text, "Reviewed agreement evidence");
     assert!(reviewed[0].corrected);
@@ -158,7 +161,11 @@ fn verified_file_import_review_export_preserves_original_evidence() {
     let exported_reference =
         serde_json::from_value(exported["segments"][0]["evidence_ref"].clone()).unwrap();
     assert_eq!(
-        library.resolve_evidence(&exported_reference).unwrap().state,
+        library
+            .store()
+            .resolve_evidence(&exported_reference)
+            .unwrap()
+            .state,
         ResolutionState::Available
     );
     // Export omits the advisory resolver hint. All identity, time, and digest
@@ -346,6 +353,7 @@ fn the_pinned_model_installs_and_transcribes_an_imported_conversation() {
     let text = library
         .document(&session)
         .unwrap()
+        .segments
         .iter()
         .map(|segment| segment.effective_text.clone())
         .collect::<Vec<_>>()
@@ -358,4 +366,108 @@ fn the_pinned_model_installs_and_transcribes_an_imported_conversation() {
         "SPEECH_END_TO_END_GREEN segments={} text={text:?}",
         outcomes[0].segment_count
     );
+}
+
+#[test]
+fn removing_an_installed_model_keeps_its_bytes_and_the_recording() {
+    let fixture = imported(1);
+    let media_before = std::fs::read(&fixture.media).unwrap();
+    let models = SpeechModels::open(&fixture.root).unwrap();
+    let record = Catalog::canonical()
+        .unwrap()
+        .get("whisper-small.en-q5_1")
+        .unwrap()
+        .clone();
+    let layout = ModelLayout::new(&fixture.root);
+    let installed = layout.installed_path(&record);
+    std::fs::create_dir_all(installed.parent().unwrap()).unwrap();
+    let weights = b"not-a-weight";
+    std::fs::write(&installed, weights).unwrap();
+
+    let held = models.begin_model_run(&record.id).unwrap();
+    assert!(matches!(
+        models.remove(&record.id, RemovalChoice::Wait),
+        Err(SpeechModelError::ActiveRun)
+    ));
+    assert_eq!(std::fs::read(&installed).unwrap(), weights);
+    assert!(matches!(
+        models.remove(&record.id, RemovalChoice::CancelActive),
+        Err(SpeechModelError::ActiveRun)
+    ));
+    assert!(held.cancel.load(Ordering::Acquire));
+    assert_eq!(std::fs::read(&installed).unwrap(), weights);
+    drop(held);
+
+    let removed = models
+        .remove(&record.id, RemovalChoice::Wait)
+        .expect("idle removal quarantines the version");
+    assert!(!installed.exists());
+    assert_eq!(
+        std::fs::read(removed.quarantined_directory.join(&record.file_name)).unwrap(),
+        weights
+    );
+    assert_eq!(std::fs::read(&fixture.media).unwrap(), media_before);
+    assert!(matches!(
+        models.load(&record.id),
+        Err(SpeechModelError::NotInstalled)
+    ));
+    assert!(matches!(
+        models.transcribe(
+            &record.id,
+            &fixture.session,
+            None,
+            &AtomicBool::new(false),
+            &mut |_, _, _| {}
+        ),
+        Err(SpeechError::Model(SpeechModelError::NotInstalled))
+    ));
+    assert_eq!(std::fs::read(&fixture.media).unwrap(), media_before);
+    assert!(matches!(
+        models.remove("not-a-model", RemovalChoice::Wait),
+        Err(SpeechModelError::UnknownModel)
+    ));
+    assert!(matches!(
+        models.remove("whisper-small-q5_1", RemovalChoice::Wait),
+        Err(SpeechModelError::NotInstalled)
+    ));
+}
+
+#[test]
+fn an_explicit_download_restarts_and_a_short_partial_installs_nothing() {
+    let root = tempfile::tempdir().unwrap();
+    let models = SpeechModels::open(root.path()).unwrap();
+    let record = Catalog::canonical()
+        .unwrap()
+        .get("whisper-small.en-q5_1")
+        .unwrap()
+        .clone();
+    let recording = root.path().join("Sessions/s/audio/keep.caf");
+    std::fs::create_dir_all(recording.parent().unwrap()).unwrap();
+    std::fs::write(&recording, b"recording-bytes").unwrap();
+
+    let plan = models.plan_download(&record.id).unwrap();
+    assert_eq!(plan.url, record.download_origins[0]);
+    assert!(plan.url.starts_with("https://"));
+    assert_eq!(plan.expected_length, record.byte_length);
+    assert_eq!(plan.resume_offset, 0);
+    assert_eq!(
+        plan.partial_path,
+        ModelLayout::new(root.path()).partial_path(&record)
+    );
+    assert_eq!(std::fs::metadata(&plan.partial_path).unwrap().len(), 0);
+
+    std::fs::write(&plan.partial_path, b"stale").unwrap();
+    let again = models.plan_download(&record.id).unwrap();
+    assert_eq!(again.resume_offset, 0);
+    assert_eq!(std::fs::metadata(&again.partial_path).unwrap().len(), 0);
+    std::fs::write(&again.partial_path, b"short").unwrap();
+    let error = models.finish_download(&record.id).unwrap_err();
+    assert_eq!(error.class(), "truncated");
+    assert_eq!(std::fs::read(&again.partial_path).unwrap(), b"short");
+    assert!(models.statuses().iter().all(|status| !status.installed));
+    assert_eq!(std::fs::read(&recording).unwrap(), b"recording-bytes");
+    assert!(matches!(
+        models.plan_download("not-a-model"),
+        Err(SpeechModelError::UnknownModel)
+    ));
 }

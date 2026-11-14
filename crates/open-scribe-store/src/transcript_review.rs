@@ -10,25 +10,28 @@
 //! regenerable projection without foreign keys, so deletion must clear it
 //! explicitly.
 
-use super::{SessionStore, StoreError, wall_time_milliseconds};
+use super::conversation_titles::{TITLE_COLUMNS, TITLE_JOIN, TitleRow};
+use super::{SessionStore, StoreError, TitleSource, TrackSourceKind, wall_time_milliseconds};
 use open_scribe_types::SessionId;
-use rusqlite::{OptionalExtension, Transaction, params};
-use sha2::{Digest, Sha256};
+use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use uuid::Uuid;
 
 pub(super) const REVIEW_MIGRATION_VERSION: i64 = 6;
 const MAX_CORRECTION_BYTES: usize = 4096;
 const MAX_SPEAKER_LABEL_BYTES: usize = 128;
 const MAX_QUERY_TERMS: usize = 16;
-const MAX_SEARCH_RESULTS: u32 = 200;
+pub(super) const MAX_SEARCH_RESULTS: u32 = 200;
 /// The only speaker cluster before diarization: the whole source track.
 pub(super) const SOURCE_CLUSTER: &str = "source";
 
+/// Review tables are append-only, so the latest row of any of them is the
+/// last one appended: the highest rowid. Wall-clock time can step back and
+/// never orders them.
 pub(super) const EFFECTIVE_TEXT: &str = "COALESCE(
     (SELECT corrections.text FROM transcript_corrections AS corrections
      WHERE corrections.revision_id = segments.revision_id
        AND corrections.sequence = segments.sequence
-     ORDER BY corrections.created_at_ms DESC, corrections.rowid DESC LIMIT 1),
+     ORDER BY corrections.rowid DESC LIMIT 1),
     segments.text)";
 
 pub(super) fn apply_review_schema(transaction: &Transaction<'_>) -> Result<(), StoreError> {
@@ -91,8 +94,9 @@ pub(super) fn apply_review_schema(transaction: &Transaction<'_>) -> Result<(), S
     Ok(())
 }
 
-/// Rebuilds one session's search rows from its selected revisions. Callers
-/// run it in the transaction that changed a selection or a correction.
+/// Rebuilds one session's search rows from its selected revisions. Only the
+/// writes that change a selection (`select_revision`) or a correction
+/// (`append_correction`) call it, in their own transaction.
 pub(super) fn reindex_session_search(
     transaction: &Transaction<'_>,
     session_id: &str,
@@ -126,40 +130,52 @@ pub enum SpeakerLabelOrigin {
     Human,
 }
 
+impl SpeakerLabelOrigin {
+    /// The token `transcript.v1` and the diarization record store.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::SourceDefault => "source_default",
+            Self::Human => "human",
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SessionSpeaker {
     pub track_id: String,
-    pub source_kind: String,
+    pub source_kind: TrackSourceKind,
     pub label: String,
     pub origin: SpeakerLabelOrigin,
 }
 
-/// One selected Final segment as the transcript document presents it.
+/// One stored speaker-name change. A null stored label is presented as the
+/// source default; it is not dropped.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct TranscriptDocumentSegment {
-    pub revision_id: String,
+pub struct SpeakerLabelRevision {
+    pub label: String,
+    pub origin: SpeakerLabelOrigin,
+    pub created_at_ms: i64,
+}
+
+/// The source-derived name plus every stored rename for one track, oldest first.
+/// A track with no stored rename has an empty `revisions` list. The source
+/// default stays available either way.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SpeakerLabelHistory {
     pub track_id: String,
-    pub sequence: u32,
-    pub start_nanoseconds: i64,
-    pub end_nanoseconds: i64,
-    pub verbatim_text: String,
-    /// Lowercase SHA-256 of the immutable verbatim text; evidence
-    /// references bind to it.
-    pub verbatim_sha256: String,
-    pub effective_text: String,
-    /// True when a human correction supplies the effective text.
-    pub corrected: bool,
-    pub speaker_label: String,
-    pub speaker_origin: SpeakerLabelOrigin,
-    /// A human-confirmed identity for this exact turn, independent of its
-    /// source track. None preserves the existing source label.
-    pub named_speaker_id: Option<String>,
+    pub source_kind: TrackSourceKind,
+    pub source_default_label: String,
+    pub revisions: Vec<SpeakerLabelRevision>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TranscriptSearchHit {
     pub session_id: String,
+    /// The title the library shows for the conversation.
     pub session_title: String,
+    pub title_source: TitleSource,
+    pub placeholder_at_ms: Option<i64>,
     pub revision_id: String,
     pub track_id: String,
     pub sequence: u32,
@@ -198,7 +214,8 @@ impl SessionStore {
                            JOIN transcript_revisions AS revisions
                              ON revisions.id = segments.revision_id
                            WHERE segments.revision_id = ?1 AND segments.sequence = ?2
-                             AND revisions.session_id = ?3)",
+                             AND revisions.session_id = ?3
+                             AND revisions.finality = 'final')",
             params![revision_id, sequence, session.0],
             |row| row.get(0),
         )?;
@@ -207,21 +224,14 @@ impl SessionStore {
                 "segment does not belong to this session",
             ));
         }
-        let correction_id = Uuid::now_v7().to_string();
-        transaction.execute(
-            "INSERT INTO transcript_corrections(
-                id, session_id, revision_id, sequence, text, created_at_ms)
-             VALUES(?1, ?2, ?3, ?4, ?5, ?6)",
-            params![
-                correction_id,
-                session.0,
-                revision_id,
-                sequence,
-                text,
-                wall_time_milliseconds()
-            ],
+        let correction_id = append_correction(
+            &transaction,
+            &session.0,
+            revision_id,
+            sequence,
+            text.as_deref(),
+            wall_time_milliseconds(),
         )?;
-        reindex_session_search(&transaction, &session.0)?;
         transaction.commit()?;
         Ok(correction_id)
     }
@@ -235,19 +245,7 @@ impl SessionStore {
         label: Option<&str>,
     ) -> Result<(), StoreError> {
         let _writer = self.write_guard()?;
-        let label = match label {
-            Some(label) => {
-                let trimmed = label.trim();
-                if trimmed.is_empty()
-                    || trimmed.len() > MAX_SPEAKER_LABEL_BYTES
-                    || trimmed.chars().any(char::is_control)
-                {
-                    return Err(StoreError::InvalidRequest("speaker label is invalid"));
-                }
-                Some(trimmed.to_owned())
-            }
-            None => None,
-        };
+        let label = label.map(checked_speaker_label).transpose()?;
         let transaction = self.connection.transaction()?;
         require_reviewable_session(&transaction, &session.0)?;
         let owned: bool = transaction.query_row(
@@ -278,112 +276,71 @@ impl SessionStore {
     }
 
     pub fn session_speakers(&self, session: &SessionId) -> Result<Vec<SessionSpeaker>, StoreError> {
+        speaker_labels(&self.connection, &session.0)
+    }
+
+    /// Oldest-first speaker names for every source track.
+    /// `source_default_label` comes from the source kind even when no row
+    /// stores it. A stored null label is one revision of that source default.
+    /// A join row with no `created_at_ms` is a track that has no revision.
+    pub fn speaker_label_history(
+        &self,
+        session: &SessionId,
+    ) -> Result<Vec<SpeakerLabelHistory>, StoreError> {
         let mut statement = self.connection.prepare(
-            "SELECT tracks.id, sources.kind,
-                    (SELECT adjudications.label FROM speaker_adjudications AS adjudications
-                     WHERE adjudications.session_id = tracks.session_id
-                       AND adjudications.track_id = tracks.id
-                       AND adjudications.cluster = ?2
-                     ORDER BY adjudications.created_at_ms DESC, adjudications.rowid DESC
-                     LIMIT 1)
-             FROM tracks JOIN sources ON sources.id = tracks.source_id
+            "SELECT tracks.id, sources.kind, adjudications.label, adjudications.created_at_ms
+             FROM tracks
+             JOIN sources ON sources.id = tracks.source_id
+             LEFT JOIN speaker_adjudications AS adjudications
+               ON adjudications.session_id = tracks.session_id
+              AND adjudications.track_id = tracks.id
+              AND adjudications.cluster = ?2
              WHERE tracks.session_id = ?1
-             ORDER BY tracks.id",
+             ORDER BY tracks.id, adjudications.rowid",
         )?;
-        let speakers = statement
+        let rows = statement
             .query_map(params![session.0, SOURCE_CLUSTER], |row| {
                 Ok((
                     row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
+                    row.get::<_, TrackSourceKind>(1)?,
                     row.get::<_, Option<String>>(2)?,
+                    row.get::<_, Option<i64>>(3)?,
                 ))
             })?
             .collect::<Result<Vec<_>, _>>()?;
-        Ok(speakers
-            .into_iter()
-            .map(|(track_id, source_kind, human)| {
-                let (label, origin) = match human {
-                    Some(label) => (label, SpeakerLabelOrigin::Human),
-                    None => (
-                        default_speaker_label(&source_kind).to_owned(),
-                        SpeakerLabelOrigin::SourceDefault,
-                    ),
-                };
-                SessionSpeaker {
+        let mut histories: Vec<SpeakerLabelHistory> = Vec::new();
+        for (track_id, source_kind, stored_label, created_at_ms) in rows {
+            let same_track = histories
+                .last()
+                .is_some_and(|history| history.track_id == track_id);
+            if !same_track {
+                histories.push(SpeakerLabelHistory {
                     track_id,
                     source_kind,
-                    label,
-                    origin,
-                }
-            })
-            .collect())
-    }
-
-    /// Selected Final text across tracks on the session timeline, with
-    /// effective text, correction provenance, and speaker identity.
-    pub fn transcript_document(
-        &self,
-        session: &SessionId,
-    ) -> Result<Vec<TranscriptDocumentSegment>, StoreError> {
-        let speakers = self.session_speakers(session)?;
-        let turn_speakers = self.transcript_turn_speakers(session)?;
-        let mut statement = self.connection.prepare(&format!(
-            "SELECT segments.revision_id, revisions.track_id, segments.sequence,
-                    segments.start_ns, segments.end_ns, segments.text, {EFFECTIVE_TEXT}
-             FROM transcript_selections AS selections
-             JOIN transcript_revisions AS revisions ON revisions.id = selections.revision_id
-             JOIN transcript_segments AS segments ON segments.revision_id = revisions.id
-             WHERE selections.session_id = ?1
-             ORDER BY segments.start_ns, revisions.track_id, segments.sequence"
-        ))?;
-        let rows = statement
-            .query_map([&session.0], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, u32>(2)?,
-                    row.get::<_, i64>(3)?,
-                    row.get::<_, i64>(4)?,
-                    row.get::<_, String>(5)?,
-                    row.get::<_, String>(6)?,
-                ))
-            })?
-            .collect::<Result<Vec<_>, _>>()?;
-        rows.into_iter()
-            .map(
-                |(revision_id, track_id, sequence, start, end, verbatim, effective)| {
-                    let speaker = speakers
-                        .iter()
-                        .find(|speaker| speaker.track_id == track_id)
-                        .ok_or(StoreError::IntegrityMismatch(
-                            "transcript track has no source identity",
-                        ))?;
-                    let named = turn_speakers.get(&(revision_id.clone(), sequence));
-                    Ok(TranscriptDocumentSegment {
-                        corrected: effective != verbatim,
-                        speaker_label: named
-                            .map_or_else(|| speaker.label.clone(), |person| person.label.clone()),
-                        speaker_origin: if named.is_some() {
-                            SpeakerLabelOrigin::Human
-                        } else {
-                            speaker.origin
-                        },
-                        named_speaker_id: named.map(|person| person.id.clone()),
-                        revision_id,
-                        track_id,
-                        sequence,
-                        start_nanoseconds: start,
-                        end_nanoseconds: end,
-                        verbatim_sha256: Sha256::digest(verbatim.as_bytes())
-                            .iter()
-                            .map(|byte| format!("{byte:02x}"))
-                            .collect(),
-                        verbatim_text: verbatim,
-                        effective_text: effective,
-                    })
-                },
-            )
-            .collect()
+                    source_default_label: source_kind.default_speaker_label().to_owned(),
+                    revisions: Vec::new(),
+                });
+            }
+            let Some(created_at_ms) = created_at_ms else {
+                continue;
+            };
+            let Some(history) = histories.last_mut() else {
+                continue;
+            };
+            let (label, origin) = match stored_label {
+                Some(label) => (label, SpeakerLabelOrigin::Human),
+                None => (
+                    history.source_default_label.clone(),
+                    SpeakerLabelOrigin::SourceDefault,
+                ),
+            };
+            history.revisions.push(SpeakerLabelRevision {
+                label,
+                origin,
+                created_at_ms,
+            });
+        }
+        Ok(histories)
     }
 
     /// Searches effective Final text of selected revisions. Every
@@ -399,38 +356,159 @@ impl SessionStore {
             return Ok(Vec::new());
         };
         let limit = limit.clamp(1, MAX_SEARCH_RESULTS);
-        let mut statement = self.connection.prepare(
-            "SELECT transcript_search.session_id, sessions.title, transcript_search.revision_id,
+        let mut statement = self.connection.prepare(&format!(
+            "SELECT transcript_search.session_id, transcript_search.revision_id,
                     transcript_search.track_id, transcript_search.sequence,
-                    transcript_search.start_ns, transcript_search.end_ns, transcript_search.text
+                    transcript_search.start_ns, transcript_search.end_ns, transcript_search.text,
+                    {TITLE_COLUMNS}
              FROM transcript_search
              JOIN sessions ON sessions.id = transcript_search.session_id
+             {TITLE_JOIN}
              WHERE transcript_search MATCH ?1
                AND sessions.lifecycle <> 'deleted'
                AND (?2 IS NULL OR transcript_search.session_id = ?2)
              ORDER BY transcript_search.rank, transcript_search.session_id,
                       transcript_search.start_ns
-             LIMIT ?3",
-        )?;
-        let hits = statement
+             LIMIT ?3"
+        ))?;
+        let rows = statement
             .query_map(
                 params![expression, session.map(|session| &session.0), limit],
-                |row| {
-                    Ok(TranscriptSearchHit {
-                        session_id: row.get(0)?,
-                        session_title: row.get(1)?,
-                        revision_id: row.get(2)?,
-                        track_id: row.get(3)?,
-                        sequence: row.get(4)?,
-                        start_nanoseconds: row.get(5)?,
-                        end_nanoseconds: row.get(6)?,
-                        effective_text: row.get(7)?,
-                    })
-                },
+                SearchRow::read,
             )?
-            .collect::<Result<_, _>>()?;
-        Ok(hits)
+            .collect::<Result<Vec<_>, _>>()?;
+        rows.into_iter().map(SearchRow::resolve).collect()
     }
+}
+
+/// One search match as read, before its session title resolves. Both text
+/// and speaker search select these columns, then [`TITLE_COLUMNS`].
+pub(super) struct SearchRow {
+    session_id: String,
+    revision_id: String,
+    track_id: String,
+    sequence: u32,
+    start_nanoseconds: i64,
+    end_nanoseconds: i64,
+    effective_text: String,
+    title: TitleRow,
+}
+
+impl SearchRow {
+    pub(super) fn read(row: &rusqlite::Row<'_>) -> rusqlite::Result<Self> {
+        Ok(Self {
+            session_id: row.get(0)?,
+            revision_id: row.get(1)?,
+            track_id: row.get(2)?,
+            sequence: row.get(3)?,
+            start_nanoseconds: row.get(4)?,
+            end_nanoseconds: row.get(5)?,
+            effective_text: row.get(6)?,
+            title: TitleRow::read(row, 7)?,
+        })
+    }
+
+    pub(super) fn resolve(self) -> Result<TranscriptSearchHit, StoreError> {
+        let title = self.title.resolve()?;
+        Ok(TranscriptSearchHit {
+            session_id: self.session_id,
+            session_title: title.display_title,
+            title_source: title.source,
+            placeholder_at_ms: title.placeholder_at_ms,
+            revision_id: self.revision_id,
+            track_id: self.track_id,
+            sequence: self.sequence,
+            start_nanoseconds: self.start_nanoseconds,
+            end_nanoseconds: self.end_nanoseconds,
+            effective_text: self.effective_text,
+        })
+    }
+}
+
+/// The one read of a session's source-track speakers: each track's latest
+/// human name, or its source default.
+pub(super) fn speaker_labels(
+    connection: &Connection,
+    session_id: &str,
+) -> Result<Vec<SessionSpeaker>, StoreError> {
+    let mut statement = connection.prepare_cached(
+        "SELECT tracks.id, sources.kind,
+                (SELECT adjudications.label FROM speaker_adjudications AS adjudications
+                 WHERE adjudications.session_id = tracks.session_id
+                   AND adjudications.track_id = tracks.id
+                   AND adjudications.cluster = ?2
+                 ORDER BY adjudications.rowid DESC LIMIT 1)
+         FROM tracks JOIN sources ON sources.id = tracks.source_id
+         WHERE tracks.session_id = ?1
+         ORDER BY tracks.id",
+    )?;
+    let speakers = statement
+        .query_map(params![session_id, SOURCE_CLUSTER], |row| {
+            let source_kind: TrackSourceKind = row.get(1)?;
+            let (label, origin) = match row.get::<_, Option<String>>(2)? {
+                Some(label) => (label, SpeakerLabelOrigin::Human),
+                None => (
+                    source_kind.default_speaker_label().to_owned(),
+                    SpeakerLabelOrigin::SourceDefault,
+                ),
+            };
+            Ok(SessionSpeaker {
+                track_id: row.get(0)?,
+                source_kind,
+                label,
+                origin,
+            })
+        })?
+        .collect::<Result<_, _>>()?;
+    Ok(speakers)
+}
+
+/// Appends one correction and reindexes the session in the same
+/// transaction, so search never shows the replaced text.
+pub(super) fn append_correction(
+    transaction: &Transaction<'_>,
+    session_id: &str,
+    revision_id: &str,
+    sequence: u32,
+    text: Option<&str>,
+    now: i64,
+) -> Result<String, StoreError> {
+    let correction_id =
+        insert_correction(transaction, session_id, revision_id, sequence, text, now)?;
+    reindex_session_search(transaction, session_id)?;
+    Ok(correction_id)
+}
+
+/// The correction row alone. Only a revision that is not yet selected, and
+/// so not yet indexed, may take one without reindexing.
+pub(super) fn insert_correction(
+    transaction: &Transaction<'_>,
+    session_id: &str,
+    revision_id: &str,
+    sequence: u32,
+    text: Option<&str>,
+    now: i64,
+) -> Result<String, StoreError> {
+    let correction_id = Uuid::now_v7().to_string();
+    transaction.execute(
+        "INSERT INTO transcript_corrections(
+            id, session_id, revision_id, sequence, text, created_at_ms)
+         VALUES(?1, ?2, ?3, ?4, ?5, ?6)",
+        params![correction_id, session_id, revision_id, sequence, text, now],
+    )?;
+    Ok(correction_id)
+}
+
+/// The one speaker-name rule, for track names and named people alike.
+pub(super) fn checked_speaker_label(label: &str) -> Result<&str, StoreError> {
+    let label = label.trim();
+    if label.is_empty()
+        || label.len() > MAX_SPEAKER_LABEL_BYTES
+        || label.chars().any(char::is_control)
+    {
+        return Err(StoreError::InvalidRequest("speaker label is invalid"));
+    }
+    Ok(label)
 }
 
 pub(super) fn require_reviewable_session(
@@ -449,15 +527,6 @@ pub(super) fn require_reviewable_session(
         Some("ready_for_review") => Ok(()),
         Some(_) => Err(StoreError::InvalidState("session is not ready for review")),
         None => Err(StoreError::InvalidRequest("session does not exist")),
-    }
-}
-
-fn default_speaker_label(source_kind: &str) -> &'static str {
-    match source_kind {
-        "microphone" => "Local user",
-        "application_audio" => "Remote participants",
-        "system_audio" => "System audio",
-        _ => "Unknown speaker",
     }
 }
 

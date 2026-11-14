@@ -135,7 +135,12 @@ fn audio_ranges_recheck_the_sealed_bytes_and_deletion_is_reported() {
         .store
         .cite_transcript_segment(
             &session,
-            &fixture.store.transcript_document(&session).unwrap()[0].revision_id,
+            &fixture
+                .store
+                .conversation_document(&session, crate::DocumentScope::FinalOnly)
+                .map(|document| document.segments)
+                .unwrap()[0]
+                .revision_id,
             0,
         )
         .unwrap();

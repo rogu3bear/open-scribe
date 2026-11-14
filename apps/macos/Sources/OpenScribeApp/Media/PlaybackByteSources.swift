@@ -187,7 +187,7 @@ struct ImportedPlaybackDescriptorReceipt: Equatable, Sendable {
 }
 
 struct RecoveredPlaybackDescriptorReceipt: Equatable, Sendable {
-  static let chunkByteLength: UInt64 = 64 * 1024
+  static let chunkByteLength = nativeCapturePolicy().playbackChunkBytes
 
   let fileDescriptor: Int32
   let byteLength: UInt64
@@ -235,7 +235,7 @@ struct RecoveredPlaybackDescriptorReceipt: Equatable, Sendable {
 }
 
 enum ImportedPlaybackMemoryPolicy {
-  static let maximumSnapshotByteLength: UInt64 = 256 * 1024 * 1024
+  static let maximumSnapshotByteLength = nativeCapturePolicy().playbackSnapshotMaxBytes
 
   static func validate(_ receipt: ImportedPlaybackDescriptorReceipt) throws {
     guard
@@ -684,6 +684,7 @@ final class CallbackCAFDecoder: @unchecked Sendable {
   init(
     source: any CallbackAudioByteSource,
     fileTypeHint: AudioFileTypeID = kAudioFileCAFType,
+    outputSampleRate: Double? = nil,
     onClose: @escaping @Sendable () -> Void
   ) throws {
     let context = CallbackAudioFileContext(source: source)
@@ -731,7 +732,7 @@ final class CallbackCAFDecoder: @unchecked Sendable {
     }
     guard
       let processingFormat = AVAudioFormat(
-        standardFormatWithSampleRate: fileFormat.mSampleRate,
+        standardFormatWithSampleRate: outputSampleRate ?? fileFormat.mSampleRate,
         channels: fileFormat.mChannelsPerFrame
       )
     else {

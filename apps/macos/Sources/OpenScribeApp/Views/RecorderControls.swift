@@ -1,40 +1,47 @@
+import AppKit
 import SwiftUI
 
+/// Pause, Resume, the microphone choices, and Add Marker for the recording in
+/// progress. The toolbar and the menu bar show the same controls.
 struct RecorderControls: View {
-  /// A `.menu`-style `MenuBarExtra` never shows a `.popover`, so the menu bar
-  /// presents Sources as a native submenu instead. The main window keeps the
-  /// popover.
-  enum SourcesPresentation { case popover, menu }
-
   @ObservedObject var recorder: LiveMicrophoneRecordingController
   @ObservedObject var store: RuntimeLibraryStore
-  var sourcesPresentation: SourcesPresentation = .popover
-  @StateObject private var picker = RecorderApplicationPicker()
-  @State private var showsSources = false
 
   var body: some View {
     if recorder.canPause {
-      Button("Pause", systemImage: "pause.fill") {
+      HostedButton(
+        title: ConversationControlLabels.pause, identifier: "Pause recording",
+        shortcut: ConversationControlLabels.pauseShortcut
+      ) {
         Task {
           await recorder.stop(pausing: true)
           store.refresh()
         }
-      }.keyboardShortcut("p", modifiers: [.command, .shift])
+      }
     }
     if recorder.canResume {
-      Button("Resume", systemImage: "play.fill") {
+      HostedButton(
+        title: ConversationControlLabels.resume, identifier: "Resume recording",
+        shortcut: ConversationControlLabels.pauseShortcut
+      ) {
         Task {
           await recorder.start(resuming: true)
           store.refresh()
         }
-      }.keyboardShortcut("p", modifiers: [.command, .shift])
+      }
     }
-    if recorder.showsUseThisMicrophone {
-      Button("Use this microphone instead") {
+    if let microphoneName = recorder.replacementMicrophoneName {
+      Button {
         recorder.confirmDifferentMicrophone()
         store.refresh()
+      } label: {
+        Text("Use \(microphoneName) instead")
+          .lineLimit(1)
+          .truncationMode(.middle)
       }
-      Button("Keep the selected microphone.") {
+      .accessibilityLabel("Use \(microphoneName) instead")
+      .help("Use \(microphoneName) instead of the previously selected microphone")
+      Button("Keep the selected microphone") {
         recorder.dismissDifferentMicrophone()
         store.refresh()
       }
@@ -45,22 +52,41 @@ struct RecorderControls: View {
       }
     }
     if recorder.canMark {
-      Button("Add Marker", systemImage: "bookmark") {
+      HostedButton(
+        title: ConversationControlLabels.addMarker, identifier: "Add marker",
+        shortcut: ConversationControlLabels.markerShortcut
+      ) {
         recorder.addMarker()
         store.refresh()
       }
-      .keyboardShortcut("m", modifiers: [.command, .shift])
     }
+  }
+}
+
+/// Which sources the next recording captures. It is its own control, apart
+/// from Record, in the toolbar and in the menu bar.
+struct RecorderSourcesControl: View {
+  /// A `.menu`-style `MenuBarExtra` never shows a `.popover`, so the menu bar
+  /// presents Sources as a native submenu instead. The main window keeps the
+  /// popover.
+  enum Presentation { case popover, menu }
+
+  @ObservedObject var recorder: LiveMicrophoneRecordingController
+  @ObservedObject var store: RuntimeLibraryStore
+  var presentation: Presentation = .popover
+  @StateObject private var picker = RecorderApplicationPicker()
+  @State private var showsSources = false
+
+  var body: some View {
     let sourcesEnabled = recorder.canStart || recorder.canResume
-    switch sourcesPresentation {
+    switch presentation {
     case .popover:
       Button("Sources", systemImage: "slider.horizontal.3") { showsSources = true }
         .disabled(!sourcesEnabled)
         .help(recorder.sourceSelectionPresentation.help)
         .popover(isPresented: $showsSources) {
-          VStack(alignment: .leading, spacing: 12) {
-            Text("Recording sources").font(.headline)
-              .accessibilityAddTraits(.isHeader)
+          VStack(alignment: .leading, spacing: ScribeSpacing.compact) {
+            Text("Recording sources").scribeSectionHeading()
             sourceSelectionSummary
             sourceButtons
             if let error = picker.errorMessage {
@@ -70,7 +96,7 @@ struct RecorderControls: View {
               "Application selection limits computer audio to the chosen app. Changes take effect when you explicitly record or resume."
             )
             .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-          }.padding(16).frame(width: 340)
+          }.padding(ScribeSpacing.standard).frame(width: 340)
         }
     case .menu:
       Menu("Sources", systemImage: "slider.horizontal.3") {
@@ -114,32 +140,13 @@ struct RecorderControls: View {
   }
 }
 
-/// Status color stays on the glyph; body text uses the native readable foreground.
-struct CaptureIssueLabel: View {
-  let message: String
-  var isFailure = false
-
-  var body: some View {
-    Label {
-      Text(message)
-        .foregroundStyle(.primary)
-        .fixedSize(horizontal: false, vertical: true)
-    } icon: {
-      Image(systemName: isFailure ? "exclamationmark.circle" : "exclamationmark.triangle")
-        .foregroundStyle(isFailure ? Color.red : Color.orange)
-    }
-    .accessibilityElement(children: .combine)
-  }
-}
-
 struct RecorderEventList: View {
   let events: [NativeRecorderEvent]
   var heading = "Markers and recording events"
   var body: some View {
     if !events.isEmpty {
-      VStack(alignment: .leading, spacing: 8) {
-        Text(heading).font(.headline)
-          .accessibilityAddTraits(.isHeader)
+      LazyVStack(alignment: .leading, spacing: ScribeSpacing.related) {
+        Text(heading).scribeSectionHeading()
         ForEach(events, id: \.id) { event in
           HStack(alignment: .firstTextBaseline) {
             Text(
@@ -157,18 +164,20 @@ struct RecorderEventList: View {
   }
   private func title(_ event: NativeRecorderEvent) -> String {
     switch event.kind {
-    case "marker_added": event.label.isEmpty ? "Marker" : event.label
-    case "capture_paused": "Paused"
-    case "capture_resumed": "Resumed"
-    case "source_scope_selected": "Selected: \(event.label)"
-    case "storage_observed": "Storage: \(event.label)"
-    case "source_failed": "\(event.label) stopped"
-    case "microphone_restore_requested": "Reconnect microphone"
-    case "microphone_restore_cancelled": "Microphone reconnect cancelled"
-    case "microphone_retired_unstarted": "Microphone stopped"
-    case "system_sleep_observed": "Mac went to sleep"
-    case "system_wake_observed": "Mac woke"
-    default: event.kind
+    case .markerAdded: event.label.isEmpty ? "Marker" : event.label
+    case .pauseRequested: "Pausing"
+    case .capturePaused: "Paused"
+    case .resumeRequested: "Resuming"
+    case .captureResumed: "Resumed"
+    case .pausedSessionFinalized: "Saved while paused"
+    case .sourceScopeSelected: "Selected: \(event.label)"
+    case .storageObserved: "Storage: \(event.label)"
+    case .sourceFailed: "\(event.label) stopped"
+    case .microphoneRestoreRequested: "Reconnect microphone"
+    case .microphoneRestoreCancelled: "Microphone reconnect cancelled"
+    case .microphoneRetiredUnstarted: "Microphone stopped"
+    case .systemSleepObserved: "Mac went to sleep"
+    case .systemWakeObserved: "Mac woke"
     }
   }
 }

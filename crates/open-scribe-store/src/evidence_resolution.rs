@@ -52,7 +52,7 @@ impl ResolvedEvidence {
 }
 
 fn text_digest(text: &str) -> String {
-    format!("{:x}", Sha256::digest(text.as_bytes()))
+    sha256_hex(text.as_bytes())
 }
 
 fn reference(
@@ -492,7 +492,7 @@ impl SessionStore {
 
 fn entry_end(entry: &SessionMediaEntry) -> i64 {
     entry.start_nanoseconds
-        + i64::try_from(u128::from(entry.sample_count) * 1_000_000_000 / 48_000).unwrap_or(i64::MAX)
+        + i64::try_from(frames_to_nanoseconds(entry.sample_count)).unwrap_or(i64::MAX)
 }
 
 #[cfg(test)]

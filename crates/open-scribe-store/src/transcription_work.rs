@@ -47,14 +47,6 @@ pub(super) fn apply_schema(tx: &Transaction<'_>) -> Result<(), StoreError> {
             "ALTER TABLE transcription_intent ADD COLUMN last_outcome_admission TEXT",
         )?;
     }
-    tx.execute(
-        "INSERT OR IGNORE INTO schema_migrations VALUES(11, ?1)",
-        [wall_time_milliseconds()],
-    )?;
-    tx.execute(
-        "INSERT OR IGNORE INTO schema_migrations VALUES(16, ?1)",
-        [wall_time_milliseconds()],
-    )?;
     Ok(())
 }
 
@@ -103,7 +95,7 @@ impl SessionStore {
     /// Active admission is retained until its runner acknowledges the stop.
     pub fn cancel_transcription(&mut self, session: &SessionId) -> Result<(), StoreError> {
         let _writer = self.write_guard()?;
-        if self.session_lifecycle(&session.0)? == "deleted" {
+        if self.session_lifecycle(&session.0)? == SessionLifecycle::Deleted {
             return Ok(());
         }
         super::session_deletion::require_available(&self.connection, &session.0)?;
@@ -248,7 +240,7 @@ impl SessionStore {
         if self.deletion_pending(session)?
             || self.work_admission_active()?
             || self.transcription_is_declined(session)?
-            || self.session_lifecycle(&session.0)? != "ready_for_review"
+            || self.session_lifecycle(&session.0)? != SessionLifecycle::ReadyForReview
             || open_scribe_domain::transcription_hold(
                 false,
                 TranscriptionIntent::ReconcileRetained,
@@ -340,7 +332,7 @@ impl SessionStore {
         let _writer = self.write_guard()?;
         if self.capture_active()?
             || self.deletion_pending(session)?
-            || self.session_lifecycle(&session.0)? != "ready_for_review"
+            || self.session_lifecycle(&session.0)? != SessionLifecycle::ReadyForReview
         {
             return Ok(false);
         }

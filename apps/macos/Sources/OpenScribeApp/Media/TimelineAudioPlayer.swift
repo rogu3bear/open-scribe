@@ -6,7 +6,7 @@ enum TimelinePlaybackError: Error { case invalidPlan, incompleteSegment }
 /// Bounded PCM rendering is shared by native output and device-free proof.
 /// Rust's leased, validated source files remain authoritative; gaps render as silence.
 final class TimelinePCMReader: @unchecked Sendable {
-  static let sampleRate = 48_000.0
+  static let sampleRate = NativeCapturePolicy.current.sampleRate
   let format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 2)!
   let totalFrames: Int64
   private struct Entry {
@@ -29,7 +29,8 @@ final class TimelinePCMReader: @unchecked Sendable {
     let origin = min(0, segments.map(\.startNanoseconds).min()!)
     entries = try segments.map { segment in
       let startSeconds = (Double(segment.startNanoseconds) - Double(origin)) / 1_000_000_000
-      guard startSeconds.isFinite, startSeconds >= 0, startSeconds < Double(Int64.max / 48_000),
+      guard startSeconds.isFinite, startSeconds >= 0,
+        startSeconds < Double(Int64.max / Int64(Self.sampleRate)),
         segment.sampleCount > 0, segment.sampleCount < UInt64(Int64.max / 2),
         segment.channels == 1 || segment.channels == 2
       else { throw TimelinePlaybackError.invalidPlan }
@@ -186,6 +187,9 @@ final class TimelineAudioPlayer {
   private var generation: UUID?
   private var playbackStartNanoseconds: Int64 = 0
   private var playbackEndNanoseconds: Int64 = 0
+  /// Session-timeline position accepted by the last explicit Play after the
+  /// output engine started. Stop leaves it in place.
+  private(set) var lastOpenedStartNanoseconds: Int64?
 
   var transcriptPositionNanoseconds: Int64? {
     guard isPlaying, let player, let renderTime = player.lastRenderTime,
@@ -229,6 +233,7 @@ final class TimelineAudioPlayer {
         completion(PlaybackTermination(generation: generation, outcome: .outputRouteChanged))
       }
       player.play()
+      lastOpenedStartNanoseconds = reader.playbackStartNanoseconds
     } catch {
       stop()
       throw error

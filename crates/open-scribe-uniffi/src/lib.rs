@@ -5,6 +5,144 @@
 
 use std::sync::{Arc, Mutex};
 
+use open_scribe_core::{
+    MediaSourceKind, RecorderEventKind, RuntimePlayableMediaAvailability, SessionHealth,
+    SessionInterruptionReason, SessionLifecycle, SourceLifecycle, StorageLevel, TitleSource,
+    TranscriptFinality, TranscriptionFailureClass, TranscriptionRunState,
+};
+
+/// One Swift enum per Rust vocabulary, converted both ways by variant name.
+/// The `token` form also exports Rust's `Display`, so Swift's `description`
+/// (and string interpolation) is the exact stored token, owned here.
+macro_rules! vocabulary {
+    ($native:ident, $core:ident, $($variant:ident),+ $(,)?) => {
+        #[derive(Clone, Copy, Debug, Eq, PartialEq, uniffi::Enum)]
+        pub enum $native { $($variant),+ }
+        vocabulary!(@convert $native, $core, $($variant),+);
+    };
+    (token $native:ident, $core:ident, $($variant:ident),+ $(,)?) => {
+        #[derive(Clone, Copy, Debug, Eq, PartialEq, uniffi::Enum)]
+        #[uniffi::export(Display)]
+        pub enum $native { $($variant),+ }
+        impl std::fmt::Display for $native {
+            fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str($core::from(*self).as_str())
+            }
+        }
+        vocabulary!(@convert $native, $core, $($variant),+);
+    };
+    (@convert $native:ident, $core:ident, $($variant:ident),+) => {
+        impl From<$native> for $core { fn from(value: $native) -> Self { match value { $($native::$variant => Self::$variant),+ } } }
+        impl From<$core> for $native { fn from(value: $core) -> Self { match value { $($core::$variant => Self::$variant),+ } } }
+    };
+}
+
+vocabulary!(
+    NativeMediaSourceKind,
+    MediaSourceKind,
+    Microphone,
+    ApplicationAudio,
+    SystemAudio
+);
+vocabulary!(
+    NativeSessionInterruptionReason,
+    SessionInterruptionReason,
+    CaptureStartFailed,
+    CaptureFailed,
+    FirstSampleRejected,
+    StopWithoutDurableSample,
+    SegmentSealFailed,
+    PermissionRevoked
+);
+vocabulary!(
+    token NativeSessionLifecycle,
+    SessionLifecycle,
+    Preparing,
+    Recording,
+    Paused,
+    Finalizing,
+    ReadyForReview,
+    Interrupted,
+    Deleted
+);
+vocabulary!(token NativeSessionHealth, SessionHealth, Healthy, Degraded);
+vocabulary!(
+    NativeSourceLifecycle,
+    SourceLifecycle,
+    Required,
+    Opening,
+    Open,
+    Capturing,
+    Failed,
+    Sealed,
+    Unavailable
+);
+vocabulary!(token NativeStorageLevel, StorageLevel, Unchecked, Normal, Warning, Critical);
+vocabulary!(
+    token NativeRecorderEventKind,
+    RecorderEventKind,
+    PauseRequested,
+    CapturePaused,
+    ResumeRequested,
+    CaptureResumed,
+    PausedSessionFinalized,
+    MarkerAdded,
+    SourceScopeSelected,
+    StorageObserved,
+    SourceFailed,
+    SystemSleepObserved,
+    SystemWakeObserved,
+    MicrophoneRestoreRequested,
+    MicrophoneRestoreCancelled,
+    MicrophoneRetiredUnstarted
+);
+vocabulary!(
+    NativeTitleSource,
+    TitleSource,
+    Placeholder,
+    Suggested,
+    Person
+);
+vocabulary!(
+    NativePlayableMediaAvailability,
+    RuntimePlayableMediaAvailability,
+    Available,
+    Unavailable,
+    Corrupt
+);
+vocabulary!(token NativeTranscriptFinality, TranscriptFinality, Draft, Final, Superseded);
+vocabulary!(
+    token NativeTranscriptionRunState,
+    TranscriptionRunState,
+    Running,
+    Complete,
+    Failed,
+    Cancelled
+);
+vocabulary!(
+    NativeTranscriptionFailureClass,
+    TranscriptionFailureClass,
+    Cancelled,
+    CapturePreempted,
+    ModelUnavailable,
+    EngineError,
+    ResourceExhausted,
+    InvalidResult,
+    InputUnavailable,
+    StorageError,
+    Orphaned,
+    StaleReconciliation,
+    Superseded
+);
+
+#[uniffi::export]
+impl NativeSessionLifecycle {
+    /// Capture that is not yet saved, interrupted or deleted.
+    pub fn is_open_capture(&self) -> bool {
+        SessionLifecycle::from(*self).is_open_capture()
+    }
+}
+
 /// Non-media state used to prove the native Rust-to-Swift boundary.
 #[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
 pub struct NativeStatus {
@@ -29,21 +167,37 @@ pub fn native_status() -> NativeStatus {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, uniffi::Enum)]
-pub enum NativeMediaSourceKind {
-    Microphone,
-    ApplicationAudio,
-    SystemAudio,
+/// One capability the product may name, with the exclusion words for its maturity.
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct NativeCapabilityClaim {
+    pub id: String,
+    pub terminology: String,
+    pub maturity: String,
+    pub public_label: String,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, uniffi::Enum)]
-pub enum NativeSessionInterruptionReason {
-    CaptureStartFailed,
-    CaptureFailed,
-    FirstSampleRejected,
-    StopWithoutDurableSample,
-    SegmentSealFailed,
-    PermissionRevoked,
+/// The release sentence and the checked capability rows. No row is invented here.
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct NativeReleaseClaims {
+    pub no_public_release: String,
+    pub capabilities: Vec<NativeCapabilityClaim>,
+}
+
+/// Returns the embedded capability registry for product surfaces.
+#[uniffi::export]
+pub fn native_release_claims() -> NativeReleaseClaims {
+    NativeReleaseClaims {
+        no_public_release: open_scribe_core::NO_PUBLIC_RELEASE.to_owned(),
+        capabilities: open_scribe_core::capability_claims()
+            .into_iter()
+            .map(|claim| NativeCapabilityClaim {
+                id: claim.id,
+                terminology: claim.terminology,
+                maturity: claim.maturity,
+                public_label: claim.public_label,
+            })
+            .collect(),
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, uniffi::Enum)]
@@ -85,6 +239,7 @@ pub struct NativeMediaOpenAuthorization {
     pub relative_path: String,
     pub absolute_path: String,
     pub channels: u16,
+    pub sample_rate_hz: u32,
     pub mapped_start_nanoseconds: i64,
 }
 
@@ -206,13 +361,13 @@ pub struct NativeRecoveredPlayableSession {
 pub struct NativeRuntimeSourceSnapshot {
     pub kind: NativeMediaSourceKind,
     pub display_name: String,
-    pub lifecycle: String,
+    pub lifecycle: NativeSourceLifecycle,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
 pub struct NativeRuntimePlayableMediaSnapshot {
     pub source_display_name: String,
-    pub availability: String,
+    pub availability: NativePlayableMediaAvailability,
     pub absolute_path: Option<String>,
     pub duration_nanoseconds: u64,
     pub sample_count: u64,
@@ -223,12 +378,23 @@ pub struct NativeRuntimePlayableMediaSnapshot {
 pub struct NativeRuntimeSessionSnapshot {
     pub session_id: String,
     pub title: String,
-    pub lifecycle: String,
-    pub health: String,
+    /// What a reader sees: a person's title, else a suggestion, else the
+    /// stored placeholder. Empty from older producers; fall back to `title`.
+    #[uniffi(default = "")]
+    pub display_title: String,
+    pub title_source: NativeTitleSource,
+    /// The capture time a placeholder display title names, for the app to
+    /// format in the reader's locale.
+    #[uniffi(default = None)]
+    pub placeholder_at_ms: Option<i64>,
+    #[uniffi(default = 0)]
+    pub created_at_ms: i64,
+    pub lifecycle: NativeSessionLifecycle,
+    pub health: NativeSessionHealth,
     pub elapsed_seconds: u64,
     pub journal_durable: bool,
     pub media_files_open: bool,
-    pub interruption_reason: Option<String>,
+    pub interruption_reason: Option<NativeSessionInterruptionReason>,
     pub recovered: bool,
     pub has_capture_timeline: bool,
     pub sources: Vec<NativeRuntimeSourceSnapshot>,
@@ -239,10 +405,15 @@ pub struct NativeRuntimeSessionSnapshot {
     /// Historical recovery failure, not a currently owned capture.
     #[uniffi(default = false)]
     pub capture_recovery_isolated: bool,
+    /// The session holds audio; an attempt without it never recorded anything.
+    #[uniffi(default = false)]
+    pub preserved_audio: bool,
+    /// Rust's Trash rule for this session's lifecycle and audio.
+    #[uniffi(default = false)]
+    pub can_move_to_trash: bool,
 }
 
-/// Content-free transcript progress: `state` is `none`, `running`, `final`,
-/// `partial`, or `failed`; chunk counts cover the running runs only.
+/// Content-free transcript progress; chunk counts cover the running runs only.
 #[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
 pub struct NativeRuntimeTranscriptSnapshot {
     pub document: NativeDocumentAvailability,
@@ -251,12 +422,15 @@ pub struct NativeRuntimeTranscriptSnapshot {
     pub selected_revision_ids: Vec<String>,
     pub document_version: String,
     pub attempt: NativeAttemptState,
-    pub attempt_failure: Option<String>,
+    pub attempt_failure: Option<NativeTranscriptionFailureClass>,
     pub total_tracks: u32,
     pub final_tracks: u32,
     pub completed_chunks: u32,
     pub total_chunks: u32,
-    pub failure_class: Option<String>,
+    pub failure_class: Option<NativeTranscriptionFailureClass>,
+    /// Readable live Draft windows (not superseded by later text).
+    #[uniffi(default = 0)]
+    pub draft_windows: u32,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
@@ -276,6 +450,7 @@ pub struct NativeImportedMediaEvidence {
     pub last_journal_sequence: u64,
     pub original_untouched: bool,
     pub ready_for_review: bool,
+    pub repeated_source: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, uniffi::Record)]
@@ -304,6 +479,55 @@ pub fn native_import_policy() -> NativeImportPolicy {
     }
 }
 
+/// The name and speaker label a capture source has until it is renamed.
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct NativeSourceDefaults {
+    pub display_name: String,
+    pub speaker_label: String,
+}
+
+/// Rust-owned capture limits and defaults. The native app uses these values
+/// as given and keeps no copies of them.
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct NativeCapturePolicy {
+    pub sample_rate_hz: u32,
+    pub segment_frame_count: u64,
+    pub live_draft_window_max_nanoseconds: i64,
+    pub storage_reserve_bytes: u64,
+    pub storage_warning_bytes: u64,
+    pub transcription_disk_floor_bytes: u64,
+    pub playback_chunk_bytes: u64,
+    pub playback_snapshot_max_bytes: u64,
+    pub microphone: NativeSourceDefaults,
+    pub application_audio: NativeSourceDefaults,
+    pub system_audio: NativeSourceDefaults,
+}
+
+#[uniffi::export]
+pub fn native_capture_policy() -> NativeCapturePolicy {
+    let policy = open_scribe_core::capture_policy();
+    let defaults = |kind| {
+        let defaults = open_scribe_core::source_defaults(kind);
+        NativeSourceDefaults {
+            display_name: defaults.display_name.to_owned(),
+            speaker_label: defaults.speaker_label.to_owned(),
+        }
+    };
+    NativeCapturePolicy {
+        sample_rate_hz: policy.sample_rate_hz,
+        segment_frame_count: policy.segment_frame_count,
+        live_draft_window_max_nanoseconds: policy.live_draft_window_max_nanoseconds,
+        storage_reserve_bytes: policy.storage_reserve_bytes,
+        storage_warning_bytes: policy.storage_warning_bytes,
+        transcription_disk_floor_bytes: open_scribe_core::TRANSCRIPTION_DISK_FLOOR_BYTES,
+        playback_chunk_bytes: policy.playback_chunk_bytes,
+        playback_snapshot_max_bytes: policy.playback_snapshot_max_bytes,
+        microphone: defaults(MediaSourceKind::Microphone),
+        application_audio: defaults(MediaSourceKind::ApplicationAudio),
+        system_audio: defaults(MediaSourceKind::SystemAudio),
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
 pub struct NativeOriginalImportMetadata {
     pub display_name: String,
@@ -326,6 +550,7 @@ impl From<open_scribe_core::ImportedMediaEvidence> for NativeImportedMediaEviden
             last_journal_sequence: evidence.last_journal_sequence,
             original_untouched: evidence.original_untouched,
             ready_for_review: evidence.ready_for_review,
+            repeated_source: evidence.repeated_source,
         }
     }
 }
@@ -463,16 +688,18 @@ impl NativeImportedPlaybackLease {
                 open_scribe_core::ImportedPlaybackLease::maximum_snapshot_byte_length(),
             ),
             NativePlaybackLeaseStrategy::RecoveredVerifiedChunks => format!(
-                "v2;fd={};byte_length={};sha256={};chunk_byte_length=65536",
+                "v2;fd={};byte_length={};sha256={};chunk_byte_length={}",
                 self.lease.raw_file_descriptor(),
                 self.lease.byte_length(),
                 self.lease.digest_sha256(),
+                open_scribe_core::ImportedPlaybackLease::chunk_byte_length(),
             ),
             NativePlaybackLeaseStrategy::ImportedCompressed => format!(
-                "v3;fd={};byte_length={};sha256={};chunk_byte_length=65536;format=m4a",
+                "v3;fd={};byte_length={};sha256={};chunk_byte_length={};format=m4a",
                 self.lease.raw_file_descriptor(),
                 self.lease.byte_length(),
                 self.lease.digest_sha256(),
+                open_scribe_core::ImportedPlaybackLease::chunk_byte_length(),
             ),
         }
     }
@@ -488,6 +715,7 @@ impl NativeRecordingPreparation {
         denominator: u32,
     ) -> Result<(), NativeStorageError> {
         self.controller()?
+            .store_mut()
             .anchor_capture_clock(
                 open_scribe_types::SessionId(session_id),
                 open_scribe_core::CaptureClock {
@@ -506,6 +734,7 @@ impl NativeRecordingPreparation {
     ) -> Result<NativeMediaOpenAuthorization, NativeStorageError> {
         let a = self
             .controller()?
+            .store_mut()
             .authorize_next_segment(
                 open_scribe_types::SessionId(session_id),
                 previous_segment_id,
@@ -521,6 +750,7 @@ impl NativeRecordingPreparation {
             relative_path: a.relative_path,
             absolute_path: a.absolute_path.to_string_lossy().into_owned(),
             channels: a.channels,
+            sample_rate_hz: a.sample_rate_hz,
             mapped_start_nanoseconds: a.mapped_start_nanoseconds,
         })
     }
@@ -531,6 +761,7 @@ impl NativeRecordingPreparation {
         segment_id: String,
     ) -> Result<(), NativeStorageError> {
         self.controller()?
+            .store_mut()
             .abandon_reserved_segment(open_scribe_types::SessionId(session_id), segment_id)
             .map_err(map_storage_error)
     }
@@ -540,7 +771,8 @@ impl NativeRecordingPreparation {
         session_id: String,
     ) -> Result<Vec<NativeTimelineSegment>, NativeStorageError> {
         self.controller()?
-            .playback_timeline(open_scribe_types::SessionId(session_id))
+            .store()
+            .playback_timeline(&open_scribe_types::SessionId(session_id))
             .map_err(map_storage_error)
             .map(|segments| {
                 segments
@@ -570,6 +802,7 @@ impl NativeRecordingPreparation {
         available_bytes: u64,
     ) -> Result<NativeMixdownAuthorization, NativeStorageError> {
         self.controller()?
+            .store_mut()
             .authorize_mixdown(open_scribe_types::SessionId(session_id), available_bytes)
             .map_err(map_storage_error)
             .map(|value| NativeMixdownAuthorization {
@@ -588,6 +821,7 @@ impl NativeRecordingPreparation {
         receipt: NativeMixdownReceipt,
     ) -> Result<NativeValidatedMixdown, NativeStorageError> {
         self.controller()?
+            .store_mut()
             .accept_mixdown(open_scribe_core::MixdownReceipt {
                 session_id: open_scribe_types::SessionId(receipt.session_id),
                 relative_path: receipt.relative_path,
@@ -607,6 +841,7 @@ impl NativeRecordingPreparation {
         session_id: String,
     ) -> Result<Option<NativeValidatedMixdown>, NativeStorageError> {
         self.controller()?
+            .store()
             .validated_mixdown(&open_scribe_types::SessionId(session_id))
             .map_err(map_storage_error)
             .map(|value| value.map(map_validated_mixdown))
@@ -617,6 +852,7 @@ impl NativeRecordingPreparation {
         session_id: String,
     ) -> Result<Option<Arc<NativeImportedPlaybackLease>>, NativeStorageError> {
         self.controller()?
+            .store()
             .lease_validated_mixdown(&open_scribe_types::SessionId(session_id))
             .map_err(map_storage_error)
             .map(|value| {
@@ -645,32 +881,15 @@ impl NativeRecordingPreparation {
         title: String,
     ) -> Result<String, NativeStorageError> {
         self.controller()?
-            .rename_session(open_scribe_types::SessionId(session_id), title)
+            .store_mut()
+            .rename_session(&open_scribe_types::SessionId(session_id), &title)
             .map_err(map_storage_error)
     }
 
-    pub fn prepare_session(
-        &self,
-        title: String,
-    ) -> Result<NativePreparedSession, NativeStorageError> {
-        let receipt = self
-            .controller()?
-            .prepare_session(title)
-            .map_err(map_storage_error)?;
-        Ok(NativePreparedSession {
-            session_id: receipt.session_id.0,
-            schema_version: receipt.schema_version,
-            journal_version: receipt.journal_version,
-            last_journal_sequence: receipt.last_journal_sequence,
-            journal_durable: receipt.journal_durable,
-            media_files_open: receipt.media_files_open,
-            recording_started: false,
-        })
-    }
-
+    /// `title: None` lets Rust name the capture with its placeholder.
     pub fn prepare_session_with_required_sources(
         &self,
-        title: String,
+        title: Option<String>,
         required_sources: Vec<NativeMediaSourceKind>,
     ) -> Result<NativePreparedSession, NativeStorageError> {
         let receipt = self
@@ -679,7 +898,7 @@ impl NativeRecordingPreparation {
                 title,
                 required_sources
                     .into_iter()
-                    .map(map_media_source_kind)
+                    .map(MediaSourceKind::from)
                     .collect(),
             )
             .map_err(map_storage_error)?;
@@ -700,6 +919,7 @@ impl NativeRecordingPreparation {
     ) -> Result<NativeRecordingStartedEvidence, NativeStorageError> {
         let evidence = self
             .controller()?
+            .store_mut()
             .confirm_recording(open_scribe_types::SessionId(session_id))
             .map_err(map_storage_error)?;
         Ok(NativeRecordingStartedEvidence {
@@ -707,12 +927,12 @@ impl NativeRecordingPreparation {
             required_sources: evidence
                 .required_sources
                 .into_iter()
-                .map(map_native_media_source_kind)
+                .map(NativeMediaSourceKind::from)
                 .collect(),
             active_sources: evidence
                 .active_sources
                 .into_iter()
-                .map(map_native_media_source_kind)
+                .map(NativeMediaSourceKind::from)
                 .collect(),
             journal_durable: evidence.journal_durable,
             media_files_open: evidence.media_files_open,
@@ -729,9 +949,10 @@ impl NativeRecordingPreparation {
     ) -> Result<NativeMediaOpenAuthorization, NativeStorageError> {
         let authorization = self
             .controller()?
-            .authorize_initial_media(open_scribe_core::AuthorizeMediaOpenRequest {
+            .store_mut()
+            .authorize_media_open(open_scribe_core::AuthorizeMediaOpenRequest {
                 session_id: open_scribe_types::SessionId(session_id),
-                source_kind: map_media_source_kind(source_kind),
+                source_kind: source_kind.into(),
                 source_display_name,
             })
             .map_err(map_storage_error)?;
@@ -745,6 +966,7 @@ impl NativeRecordingPreparation {
             relative_path: authorization.relative_path,
             absolute_path: authorization.absolute_path.to_string_lossy().into_owned(),
             channels: authorization.channels,
+            sample_rate_hz: authorization.sample_rate_hz,
             mapped_start_nanoseconds: authorization.mapped_start_nanoseconds,
         })
     }
@@ -843,10 +1065,11 @@ impl NativeRecordingPreparation {
     ) -> Result<NativeSessionInterruptionEvidence, NativeStorageError> {
         let evidence = self
             .controller()?
-            .interrupt_session(
-                open_scribe_types::SessionId(session_id),
-                map_session_interruption_reason(reason),
-            )
+            .store_mut()
+            .interrupt_session(open_scribe_core::InterruptSessionRequest {
+                session_id: open_scribe_types::SessionId(session_id),
+                reason: reason.into(),
+            })
             .map_err(map_storage_error)?;
         Ok(NativeSessionInterruptionEvidence {
             session_id: evidence.session_id.0,
@@ -866,11 +1089,12 @@ impl NativeRecordingPreparation {
     ) -> Result<NativeSourceFailureEvidence, NativeStorageError> {
         let evidence = self
             .controller()?
-            .record_source_failure(
-                open_scribe_types::SessionId(session_id),
-                map_media_source_kind(source_kind),
-                map_source_failure_reason(reason),
-            )
+            .store_mut()
+            .record_source_failure(open_scribe_core::SourceFailureRequest {
+                session_id: open_scribe_types::SessionId(session_id),
+                source_kind: source_kind.into(),
+                reason: map_source_failure_reason(reason),
+            })
             .map_err(map_storage_error)?;
         Ok(NativeSourceFailureEvidence {
             session_id: evidence.session_id.0,
@@ -890,8 +1114,10 @@ impl NativeRecordingPreparation {
     ) -> Result<Vec<NativeRecoveredPlayableSession>, NativeStorageError> {
         let recovered = self
             .controller()?
-            .recover_playable_sessions()
-            .map_err(map_storage_error)?;
+            .store_mut()
+            .recover_library()
+            .map_err(map_storage_error)?
+            .playable;
         Ok(recovered.into_iter().map(recovery::map_recovered).collect())
     }
 
@@ -902,7 +1128,11 @@ impl NativeRecordingPreparation {
     ) -> Result<NativeImportedMediaEvidence, NativeStorageError> {
         let evidence = self
             .controller()?
-            .import_recoverable_caf(title, source_path.into())
+            .store_mut()
+            .import_recoverable_caf(open_scribe_core::ImportMediaRequest {
+                title,
+                source_path: source_path.into(),
+            })
             .map_err(map_storage_error)?;
         Ok(evidence.into())
     }
@@ -915,9 +1145,12 @@ impl NativeRecordingPreparation {
     ) -> Result<NativeImportedMediaEvidence, NativeStorageError> {
         let evidence = self
             .controller()?
+            .store_mut()
             .import_normalized_caf(
-                title,
-                normalized_path.into(),
+                open_scribe_core::ImportMediaRequest {
+                    title,
+                    source_path: normalized_path.into(),
+                },
                 open_scribe_core::OriginalImportMetadata {
                     display_name: original.display_name,
                     byte_length: original.byte_length,
@@ -940,9 +1173,12 @@ impl NativeRecordingPreparation {
         let original = metadata.original;
         let evidence = self
             .controller()?
+            .store_mut()
             .import_compressed_m4a(
-                title,
-                source_path.into(),
+                open_scribe_core::ImportMediaRequest {
+                    title,
+                    source_path: source_path.into(),
+                },
                 open_scribe_core::CompressedImportMetadata {
                     original: open_scribe_core::OriginalImportMetadata {
                         display_name: original.display_name,
@@ -966,7 +1202,8 @@ impl NativeRecordingPreparation {
     ) -> Result<Arc<NativeImportedPlaybackLease>, NativeStorageError> {
         let lease = self
             .controller()?
-            .lease_imported_playback(open_scribe_types::SessionId(session_id))
+            .store()
+            .lease_imported_playback(&open_scribe_types::SessionId(session_id))
             .map_err(map_storage_error)?;
         let strategy = if lease.media_format() == "m4a-alac-or-aac" {
             NativePlaybackLeaseStrategy::ImportedCompressed
@@ -991,11 +1228,12 @@ impl NativeRecordingPreparation {
     ) -> Result<Arc<NativeImportedPlaybackLease>, NativeStorageError> {
         let lease = self
             .controller()?
+            .store()
             .lease_recovered_playback(
-                open_scribe_types::SessionId(session_id),
-                source_id,
-                track_id,
-                segment_id,
+                &open_scribe_types::SessionId(session_id),
+                &source_id,
+                &track_id,
+                &segment_id,
             )
             .map_err(map_storage_error)?;
         Ok(Arc::new(NativeImportedPlaybackLease {
@@ -1009,6 +1247,7 @@ impl NativeRecordingPreparation {
     ) -> Result<NativeRuntimeLibrarySnapshot, NativeStorageError> {
         let snapshot = self
             .controller()?
+            .store()
             .runtime_library_snapshot()
             .map_err(map_storage_error)?;
         Ok(NativeRuntimeLibrarySnapshot {
@@ -1027,6 +1266,7 @@ impl NativeRecordingPreparation {
     ) -> Result<NativeRuntimeLibrarySnapshot, NativeStorageError> {
         let snapshot = self
             .controller()?
+            .store()
             .runtime_library_snapshot_at_host(host_time)
             .map_err(map_storage_error)?;
         Ok(NativeRuntimeLibrarySnapshot {
@@ -1050,53 +1290,6 @@ impl NativeRecordingPreparation {
         self.controller
             .lock()
             .map_err(|_| NativeStorageError::InvalidState)
-    }
-}
-
-const fn map_media_source_kind(kind: NativeMediaSourceKind) -> open_scribe_core::MediaSourceKind {
-    match kind {
-        NativeMediaSourceKind::Microphone => open_scribe_core::MediaSourceKind::Microphone,
-        NativeMediaSourceKind::ApplicationAudio => {
-            open_scribe_core::MediaSourceKind::ApplicationAudio
-        }
-        NativeMediaSourceKind::SystemAudio => open_scribe_core::MediaSourceKind::SystemAudio,
-    }
-}
-
-const fn map_native_media_source_kind(
-    kind: open_scribe_core::MediaSourceKind,
-) -> NativeMediaSourceKind {
-    match kind {
-        open_scribe_core::MediaSourceKind::Microphone => NativeMediaSourceKind::Microphone,
-        open_scribe_core::MediaSourceKind::ApplicationAudio => {
-            NativeMediaSourceKind::ApplicationAudio
-        }
-        open_scribe_core::MediaSourceKind::SystemAudio => NativeMediaSourceKind::SystemAudio,
-    }
-}
-
-const fn map_session_interruption_reason(
-    reason: NativeSessionInterruptionReason,
-) -> open_scribe_core::SessionInterruptionReason {
-    match reason {
-        NativeSessionInterruptionReason::CaptureStartFailed => {
-            open_scribe_core::SessionInterruptionReason::CaptureStartFailed
-        }
-        NativeSessionInterruptionReason::CaptureFailed => {
-            open_scribe_core::SessionInterruptionReason::CaptureFailed
-        }
-        NativeSessionInterruptionReason::FirstSampleRejected => {
-            open_scribe_core::SessionInterruptionReason::FirstSampleRejected
-        }
-        NativeSessionInterruptionReason::StopWithoutDurableSample => {
-            open_scribe_core::SessionInterruptionReason::StopWithoutDurableSample
-        }
-        NativeSessionInterruptionReason::SegmentSealFailed => {
-            open_scribe_core::SessionInterruptionReason::SegmentSealFailed
-        }
-        NativeSessionInterruptionReason::PermissionRevoked => {
-            open_scribe_core::SessionInterruptionReason::PermissionRevoked
-        }
     }
 }
 
@@ -1128,74 +1321,55 @@ fn map_validated_mixdown(value: open_scribe_core::ValidatedMixdown) -> NativeVal
 fn map_runtime_session_snapshot(
     snapshot: open_scribe_core::RuntimeSessionSnapshot,
 ) -> NativeRuntimeSessionSnapshot {
-    let transcript =
-        (snapshot.lifecycle == "ready_for_review").then(|| NativeRuntimeTranscriptSnapshot {
+    let transcript = (snapshot.lifecycle == SessionLifecycle::ReadyForReview).then(|| {
+        NativeRuntimeTranscriptSnapshot {
             document: snapshot.transcript.document.into(),
             replacement_resumable: snapshot.transcript.replacement_resumable,
             state: snapshot.transcript.state.into(),
             selected_revision_ids: snapshot.transcript.selected_revision_ids.clone(),
             document_version: snapshot.transcript.document_version.clone(),
             attempt: snapshot.transcript.attempt.into(),
-            attempt_failure: snapshot.transcript.attempt_failure.clone(),
+            attempt_failure: snapshot.transcript.attempt_failure.map(Into::into),
             total_tracks: snapshot.transcript.total_tracks,
             final_tracks: snapshot.transcript.final_tracks,
             completed_chunks: snapshot.transcript.completed_chunks,
             total_chunks: snapshot.transcript.total_chunks,
-            failure_class: snapshot.transcript.failure_class.clone(),
-        });
+            failure_class: snapshot.transcript.failure_class.map(Into::into),
+            draft_windows: snapshot.transcript.draft_windows,
+        }
+    });
     NativeRuntimeSessionSnapshot {
         session_id: snapshot.session_id.0,
         title: snapshot.title,
-        lifecycle: snapshot.lifecycle,
-        health: snapshot.health,
+        display_title: snapshot.display_title,
+        title_source: snapshot.title_source.into(),
+        placeholder_at_ms: snapshot.placeholder_at_ms,
+        created_at_ms: snapshot.created_at_ms,
+        lifecycle: snapshot.lifecycle.into(),
+        health: snapshot.health.into(),
         elapsed_seconds: snapshot.elapsed_seconds,
         journal_durable: snapshot.journal_durable,
         media_files_open: snapshot.media_files_open,
-        interruption_reason: snapshot.interruption_reason.map(|reason| {
-            match reason {
-                open_scribe_core::SessionInterruptionReason::CaptureStartFailed => {
-                    "capture_start_failed"
-                }
-                open_scribe_core::SessionInterruptionReason::CaptureFailed => "capture_failed",
-                open_scribe_core::SessionInterruptionReason::FirstSampleRejected => {
-                    "first_sample_rejected"
-                }
-                open_scribe_core::SessionInterruptionReason::StopWithoutDurableSample => {
-                    "stop_without_durable_sample"
-                }
-                open_scribe_core::SessionInterruptionReason::SegmentSealFailed => {
-                    "segment_seal_failed"
-                }
-                open_scribe_core::SessionInterruptionReason::PermissionRevoked => {
-                    "permission_revoked"
-                }
-            }
-            .to_owned()
-        }),
+        interruption_reason: snapshot.interruption_reason.map(Into::into),
         recovered: snapshot.recovered,
         has_capture_timeline: snapshot.has_capture_timeline,
         capture_recovery_isolated: snapshot.capture_recovery_isolated,
+        preserved_audio: snapshot.preserved_audio,
+        can_move_to_trash: snapshot.can_move_to_trash,
         sources: snapshot
             .sources
             .into_iter()
             .map(|source| NativeRuntimeSourceSnapshot {
-                kind: map_native_media_source_kind(source.kind),
+                kind: source.kind.into(),
                 display_name: source.display_name,
-                lifecycle: source.lifecycle,
+                lifecycle: source.lifecycle.into(),
             })
             .collect(),
         playable_media: snapshot
             .playable_media
             .map(|media| NativeRuntimePlayableMediaSnapshot {
                 source_display_name: media.source_display_name,
-                availability: match media.availability {
-                    open_scribe_core::RuntimePlayableMediaAvailability::Available => "available",
-                    open_scribe_core::RuntimePlayableMediaAvailability::Unavailable => {
-                        "unavailable"
-                    }
-                    open_scribe_core::RuntimePlayableMediaAvailability::Corrupt => "corrupt",
-                }
-                .to_owned(),
+                availability: media.availability.into(),
                 absolute_path: media
                     .absolute_path
                     .map(|path| path.to_string_lossy().into_owned()),
@@ -1330,17 +1504,6 @@ pub enum NativeSessionError {
     MediaNotSafe,
 }
 
-impl NativeSessionError {
-    #[must_use]
-    pub const fn code(&self) -> &'static str {
-        match self {
-            Self::IllegalTransition => "illegal_transition",
-            Self::DurabilityEvidenceMissing => "durability_evidence_missing",
-            Self::MediaNotSafe => "media_not_safe",
-        }
-    }
-}
-
 #[uniffi::export]
 pub fn native_fixture_catalog() -> Vec<NativeSessionSnapshot> {
     open_scribe_core::fixture_snapshots()
@@ -1453,7 +1616,7 @@ fn map_snapshot(
             .map(|source| NativeSourceSnapshot {
                 id: source.id.0,
                 name: source.name,
-                kind: source_kind_name(source.kind).into(),
+                kind: source.kind.as_str().into(),
                 activity: source_activity_name(source.activity).into(),
                 health: source_health_name(source.health).into(),
                 health_detail: source.health_detail,
@@ -1515,14 +1678,6 @@ const fn recovery_name(status: open_scribe_types::RecoveryStatus) -> &'static st
     }
 }
 
-const fn source_kind_name(kind: open_scribe_types::SourceKind) -> &'static str {
-    match kind {
-        open_scribe_types::SourceKind::Microphone => "microphone",
-        open_scribe_types::SourceKind::ApplicationAudio => "application_audio",
-        open_scribe_types::SourceKind::SystemAudio => "system_audio",
-    }
-}
-
 const fn source_activity_name(activity: open_scribe_types::SourceActivity) -> &'static str {
     match activity {
         open_scribe_types::SourceActivity::Selected => "selected",
@@ -1551,6 +1706,8 @@ const fn permission_name(permission: open_scribe_types::PermissionState) -> &'st
 
 mod context;
 pub use context::*;
+mod provider;
+pub use provider::*;
 mod evidence;
 pub use evidence::*;
 mod recorder;
@@ -1563,6 +1720,8 @@ mod recovery;
 pub use recovery::*;
 mod transcript_library;
 pub use transcript_library::*;
+#[cfg(test)]
+mod evidence_tests;
 uniffi::setup_scaffolding!();
 
 #[cfg(test)]
@@ -1594,6 +1753,20 @@ mod tests {
     }
 
     #[test]
+    fn capture_policy_crosses_as_the_store_values() {
+        let policy = native_capture_policy();
+        assert_eq!(
+            policy.sample_rate_hz,
+            open_scribe_types::MEDIA_SAMPLE_RATE_HZ
+        );
+        assert_eq!(policy.transcription_disk_floor_bytes, 1 << 30);
+        assert_eq!(policy.storage_reserve_bytes, 512 * 1024 * 1024);
+        assert_eq!(policy.microphone.speaker_label, "You");
+        assert_eq!(policy.application_audio.speaker_label, "Others");
+        assert_eq!(policy.system_audio.display_name, "Mac system audio");
+    }
+
+    #[test]
     fn starting_remains_ready_across_uniffi() {
         let snapshot = native_fixture(NativeFixture::Starting);
 
@@ -1618,7 +1791,7 @@ mod tests {
         )
         .unwrap_err();
 
-        assert_eq!(error.code(), "illegal_transition");
+        assert!(matches!(error, NativeSessionError::IllegalTransition));
     }
 
     #[test]
@@ -1635,7 +1808,10 @@ mod tests {
         )
         .unwrap_err();
 
-        assert_eq!(error.code(), "durability_evidence_missing");
+        assert!(matches!(
+            error,
+            NativeSessionError::DurabilityEvidenceMissing
+        ));
     }
 
     #[test]
@@ -1650,6 +1826,27 @@ mod tests {
         assert_eq!(status.persistence, "Durable local audio and recovery");
         assert_eq!(status.capture, "Development microphone + system audio");
         assert_eq!(status.intelligence, "Not implemented");
+    }
+
+    #[test]
+    fn native_release_claims_exclude_every_unproved_capability() {
+        let release = native_release_claims();
+
+        assert_eq!(release.no_public_release, "No public release is available.");
+        assert_eq!(release.capabilities.len(), 8);
+        assert!(
+            release
+                .capabilities
+                .iter()
+                .all(|claim| claim.public_label != "Available")
+        );
+        assert!(
+            release
+                .capabilities
+                .iter()
+                .any(|claim| claim.id == "local-transcription"
+                    && claim.public_label == "Unavailable")
+        );
     }
 
     #[test]
@@ -1782,7 +1979,10 @@ mod tests {
         let controller =
             NativeRecordingPreparation::open(root.to_string_lossy().into_owned()).unwrap();
         let prepared = controller
-            .prepare_session("UniFFI media preparation".to_owned())
+            .prepare_session_with_required_sources(
+                Some("UniFFI media preparation".to_owned()),
+                vec![NativeMediaSourceKind::Microphone],
+            )
             .unwrap();
         assert!(prepared.journal_durable);
         assert!(!prepared.media_files_open);
@@ -1847,10 +2047,14 @@ mod tests {
         let runtime = controller.runtime_library_snapshot().unwrap();
         let current = runtime.current_session.unwrap();
         assert_eq!(current.session_id, first_sample.session_id);
-        assert_eq!(current.lifecycle, "recording");
+        assert_eq!(current.lifecycle, NativeSessionLifecycle::Recording);
+        assert_eq!(current.lifecycle.to_string(), "recording");
         assert_eq!(current.sources.len(), 1);
         assert_eq!(current.sources[0].kind, NativeMediaSourceKind::Microphone);
-        assert_eq!(current.sources[0].lifecycle, "capturing");
+        assert_eq!(
+            current.sources[0].lifecycle,
+            NativeSourceLifecycle::Capturing
+        );
         assert!(runtime.saved_sessions.is_empty());
         let interruption = controller
             .interrupt_session(
@@ -1881,7 +2085,10 @@ mod tests {
         let controller =
             NativeRecordingPreparation::open(root.to_string_lossy().into_owned()).unwrap();
         let prepared = controller
-            .prepare_session("Recovered identity".to_owned())
+            .prepare_session_with_required_sources(
+                Some("Recovered identity".to_owned()),
+                vec![NativeMediaSourceKind::Microphone],
+            )
             .unwrap();
         let authorization = controller
             .authorize_initial_media(

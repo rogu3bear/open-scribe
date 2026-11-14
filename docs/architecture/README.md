@@ -53,6 +53,11 @@ and a pull-request candidate is admitted only after its exact checkout passes th
 relevant local gates, `git diff --check`, and an independent review. It proves no
 capture, recovery, signing, notarization, deployment, or release.
 
+ADR 0019 is **proposed**: Apple's on-device speech transcriber writes Draft
+windows during capture (macOS 26+, never gating it), and on-device suggestions
+title placeholder conversations without overriding a person's name. whisper.cpp
+remains the only Final engine. It awaits operator approval.
+
 ## Required founding decisions
 
 | Proposed ADR | Status |

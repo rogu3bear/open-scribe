@@ -1,4 +1,5 @@
 use crate::catalog::{ModelHeader, ModelRecord};
+use open_scribe_types::lowercase_hex;
 use sha2::{Digest, Sha256};
 use std::fmt;
 use std::fs::{File, OpenOptions};
@@ -100,7 +101,7 @@ pub fn verify_staged(
         return Err(VerifyError::ChangedDuringRead);
     }
     check_header(&record.header, &header)?;
-    let digest = hex(&hasher.finalize());
+    let digest = lowercase_hex(&hasher.finalize());
     if digest != record.sha256 {
         return Err(VerifyError::DigestMismatch);
     }
@@ -176,16 +177,6 @@ pub(crate) fn modified_nanoseconds(metadata: &std::fs::Metadata) -> i128 {
     i128::from(metadata.mtime()) * 1_000_000_000 + i128::from(metadata.mtime_nsec())
 }
 
-fn hex(bytes: &[u8]) -> String {
-    use fmt::Write;
-    bytes
-        .iter()
-        .fold(String::with_capacity(bytes.len() * 2), |mut out, byte| {
-            let _ = write!(out, "{byte:02x}");
-            out
-        })
-}
-
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
@@ -210,7 +201,7 @@ pub(crate) mod tests {
             file_name: "fixture.bin".into(),
             download_origins: vec!["https://example.invalid/fixture.bin".into()],
             removal_group: "asr".into(),
-            sha256: hex(&Sha256::digest(bytes)),
+            sha256: lowercase_hex(&Sha256::digest(bytes)),
             byte_length: bytes.len() as u64,
             bundled: false,
         }

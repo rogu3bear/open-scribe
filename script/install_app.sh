@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Replace the one local Open Scribe install and clear its privacy decisions
-# so the next microphone or screen capture asks again. This is not a signed
-# release and does not publish anything.
+# Replace the one local Open Scribe install and sign it with the stable
+# Developer ID identity. An existing microphone grant for app.open-scribe.dev
+# is kept. This is not a notarized release and does not publish anything.
 set -euo pipefail
 
 export PATH="/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:${PATH:-}"
@@ -60,8 +60,6 @@ registered_copies() {
 }
 
 quit_app
-tccutil reset All "$bundle_id"
-printf 'PRIVACY_RESET service=All bundle=%s\n' "$bundle_id"
 
 while IFS= read -r path; do
 	[[ -n "$path" ]] || continue
@@ -70,6 +68,7 @@ done < <(registered_copies)
 
 rm -rf "$destination"
 ditto "$source_app" "$destination"
+"$script_dir/sign_local_app.sh" "$destination"
 # The packaging directory is not a second install.
 rm -rf "$repo_root/dist/Open Scribe.app"
 "$lsregister" -f "$destination"

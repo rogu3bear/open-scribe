@@ -31,6 +31,10 @@ pub fn recording_evidence_sufficient(
     required > 0 && required == active && journal && media
 }
 
+/// Below this free space on the library volume, transcription waits so
+/// capture keeps room to write.
+pub const TRANSCRIPTION_DISK_FLOOR_BYTES: u64 = 1 << 30;
+
 pub fn transcription_hold(
     manual: bool,
     intent: TranscriptionIntent,
@@ -44,7 +48,7 @@ pub fn transcription_hold(
     }
     if observations
         .available_disk_bytes
-        .is_some_and(|bytes| bytes < 1 << 30)
+        .is_some_and(|bytes| bytes < TRANSCRIPTION_DISK_FLOOR_BYTES)
     {
         return Some(WorkHold::DiskPressure);
     }

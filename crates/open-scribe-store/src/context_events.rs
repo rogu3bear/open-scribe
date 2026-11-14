@@ -259,12 +259,12 @@ impl SessionStore {
             return Err(invalid("the event reason does not match the scope mode"));
         }
 
-        let lifecycle: String = self.connection.query_row(
+        let lifecycle: SessionLifecycle = self.connection.query_row(
             "SELECT lifecycle FROM sessions WHERE id = ?1",
             [&session.0],
             |row| row.get(0),
         )?;
-        if lifecycle != "recording" || self.capture_clock(&session.0)?.is_none() {
+        if lifecycle != SessionLifecycle::Recording || self.capture_clock(&session.0)?.is_none() {
             return reject(ContextRejection::NotRecording);
         }
         // A frame from before the latest pause or resume boundary was not

@@ -327,6 +327,15 @@ fn assert_damage_is_isolated(
         .find(|session| session.session_id == damaged)
         .unwrap();
     assert!(historical.capture_recovery_isolated);
+    assert!(historical.preserved_audio, "sealed samples are kept audio");
+    assert!(
+        !historical.can_move_to_trash,
+        "isolated history holding audio is never discarded as an empty attempt"
+    );
+    assert!(matches!(
+        store.begin_session_deletion(&damaged),
+        Err(StoreError::InvalidState(_))
+    ));
     assert_eq!(
         historical.lifecycle, "paused",
         "last accepted lifecycle remains evidence"
@@ -532,6 +541,48 @@ fn isolated_recording_history_cannot_advance_a_live_clock_or_occupy_now() {
     );
     assert_eq!(fs::read(&journal).unwrap(), preserved);
     assert_eq!(media_bytes(&sources), media);
+}
+
+/// A capture that never accepted a sample holds nothing to recover. Once a
+/// launch isolates it, it can leave the library through Trash like any other.
+#[test]
+fn an_isolated_attempt_without_audio_can_be_moved_to_trash() {
+    let temp = TempDir::new().unwrap();
+    let mut store = SessionStore::open(temp.path()).unwrap();
+    let attempt = store
+        .prepare_session(PrepareSessionRequest {
+            title: "Never started".into(),
+            origin: SessionOrigin::Capture,
+        })
+        .unwrap()
+        .session_id;
+    let journal = store
+        .session_directory(&attempt.0)
+        .unwrap()
+        .join(JOURNAL_NAME);
+    let bytes = fs::read(&journal).unwrap();
+    fs::write(&journal, &bytes[..bytes.len() - 1]).unwrap();
+    drop(store);
+
+    let mut store = SessionStore::open(temp.path()).unwrap();
+    store.recover_library().unwrap();
+    let snapshot = store.runtime_library_snapshot().unwrap();
+    let listed = snapshot
+        .saved_sessions
+        .iter()
+        .find(|session| session.session_id == attempt)
+        .expect("isolated history stays listed");
+    assert!(listed.capture_recovery_isolated);
+    assert!(!listed.preserved_audio);
+    assert!(listed.can_move_to_trash);
+
+    let inventory = store.begin_session_deletion(&attempt).unwrap();
+    assert_eq!(inventory.media_files, 0);
+    fs::rename(&inventory.directory, temp.path().join("Trash")).unwrap();
+    store.complete_session_deletion(&attempt, None).unwrap();
+    let after = store.runtime_library_snapshot().unwrap();
+    assert!(after.current_session.is_none());
+    assert!(after.saved_sessions.is_empty());
 }
 
 #[test]
@@ -891,4 +942,80 @@ fn crash_while_draining_a_pause_recovers_the_captured_media() {
     assert_eq!(session_column(&store, &session, "health"), "healthy");
     assert_eq!(store.playback_timeline(&session).unwrap().len(), 2);
     assert_eq!(media_bytes(&sources), bytes);
+}
+
+/// An active recording with durable samples and one unstarted successor is
+/// killed by dropping the store. Relaunch keeps the original bytes, plays the
+/// valid tracks, marks the successor as a gap, and a second relaunch repeats
+/// that result without another gap record.
+#[test]
+fn forced_termination_preserves_bytes_marks_the_gap_and_recovers_idempotently() {
+    let temp = TempDir::new().unwrap();
+    let mut store = SessionStore::open(temp.path()).unwrap();
+    let (session, sources) = recording_pair(&mut store);
+    let successor = store
+        .authorize_next_segment(session.clone(), sources[0].segment_id.clone())
+        .unwrap();
+    create_media(&mut store, &successor);
+    let captured = media_bytes(&sources);
+    let successor_bytes = fs::read(&successor.absolute_path).unwrap();
+    drop(store);
+
+    let mut store = SessionStore::open(temp.path()).unwrap();
+    let recovery = store.recover_library().unwrap();
+    assert_eq!(
+        finding_for(&recovery, &session),
+        Some(RecoveryDisposition::PlayableMediaRecovered)
+    );
+    assert_eq!(
+        session_column(&store, &session, "lifecycle"),
+        "ready_for_review"
+    );
+    assert_eq!(session_column(&store, &session, "health"), "degraded");
+    assert_eq!(segment_lifecycle(&store, &successor.segment_id), "gap");
+    assert_eq!(media_bytes(&sources), captured);
+    assert_eq!(fs::read(&successor.absolute_path).unwrap(), successor_bytes);
+    let timeline = store.playback_timeline(&session).unwrap();
+    let covered = |track: &str| {
+        timeline
+            .iter()
+            .filter(|segment| segment.track_id == track)
+            .map(|segment| segment.sample_count)
+            .sum::<u64>()
+    };
+    assert!(covered(&sources[0].track_id) > 0);
+    assert!(covered(&sources[1].track_id) > 0);
+    assert!(
+        timeline
+            .iter()
+            .all(|segment| segment.track_id != successor.track_id
+                || segment.segment_id != successor.segment_id)
+    );
+    let gaps = journal_records(&store, &session)
+        .into_iter()
+        .filter(|record| record.body.event_kind == "segment_capture_gap")
+        .count();
+    assert_eq!(gaps, 1);
+    let playable = timeline.len();
+    drop(store);
+
+    let mut store = SessionStore::open(temp.path()).unwrap();
+    let second = store.recover_library().unwrap();
+    assert_eq!(finding_for(&second, &session), None);
+    assert_eq!(
+        session_column(&store, &session, "lifecycle"),
+        "ready_for_review"
+    );
+    assert_eq!(session_column(&store, &session, "health"), "degraded");
+    assert_eq!(segment_lifecycle(&store, &successor.segment_id), "gap");
+    assert_eq!(media_bytes(&sources), captured);
+    assert_eq!(fs::read(&successor.absolute_path).unwrap(), successor_bytes);
+    assert_eq!(store.playback_timeline(&session).unwrap().len(), playable);
+    assert_eq!(
+        journal_records(&store, &session)
+            .into_iter()
+            .filter(|record| record.body.event_kind == "segment_capture_gap")
+            .count(),
+        gaps
+    );
 }

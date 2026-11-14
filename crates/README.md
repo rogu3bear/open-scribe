@@ -16,10 +16,10 @@ Shared crates must remain free of filesystem, SQLite, network, Apple, model-runt
 
 - `open-scribe-store` — the SQLite library and per-session recovery journal: capture timelines, media integrity and recovery, imports, transcripts and human review, context scope and events, evidence resolution, two-phase deletion, and restoring a verified portable package as a new session
 - `open-scribe-asr` — `SpeechRecognizer` capability, 48 kHz to 16 kHz mono conversion, chunk planning, overlap reconciliation, and the in-process whisper.cpp 1.8.3 recognizer (Accelerate and Metal)
-- `open-scribe-diarize` — intended VAD/embedding/clustering pipeline
-- `open-scribe-memory` — intended structured meeting-memory validation
-- `open-scribe-models` — checked model catalog, staging from a chosen file, verification, and atomic installation policy; it never downloads or loads a model
+- `open-scribe-diarize` — source-topology disposition before clustering. Known microphone, application, and system sources stay topology; every other source stays unresolved. No VAD, embedder, clustering threshold, or model weight is selected.
+- `open-scribe-memory` — provider-scope authorization. Configuration grants no category and opens no connection. Claim generation remains unimplemented
+- `open-scribe-models` — checked model catalog, staging from a chosen file, verification, atomic installation, and quarantine of an installed version; it never downloads, loads, or deletes model bytes
 - `open-scribe-core` — native orchestration: recording preparation, the review library, transcript, audio, and portable package exports, opening a portable package from another Mac, and local model installation and transcription
 - `open-scribe-uniffi` — the coarse Swift control and query boundary
 
-Local transcription runs through a manifest-verified model the user installs from a chosen file. Diarization remains Unavailable.
+Local transcription runs through a manifest-verified model the user installs from a chosen file. Voice diarization remains unavailable; review records that fact instead of inventing speakers.

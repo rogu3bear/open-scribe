@@ -43,7 +43,7 @@ enum PolicyDocument: String, CaseIterable, Identifiable, Sendable {
   }
 
   func validatedText(_ data: Data) throws -> String {
-    let digest = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    let digest = SHA256.hash(data: data).lowercaseHex
     guard let expected = PolicyDocumentDigests.sha256[rawValue], digest == expected,
       let text = String(data: data, encoding: .utf8), !text.isEmpty
     else { throw PolicyDocumentError.unavailable }

@@ -18,10 +18,12 @@ impl SessionStore {
     ) -> Result<Vec<RecoveryFinding>, StoreError> {
         let _writer = self.write_guard()?;
         let candidates = {
-            let mut query = self.connection.prepare(
+            let mut query = self.connection.prepare(concat!(
                 "SELECT segments.session_id, segments.id, segments.track_id, segments.relative_path
                  FROM segments JOIN sessions ON sessions.id = segments.session_id
-                 WHERE sessions.lifecycle IN ('recording', 'interrupted', 'preparing', 'finalizing', 'paused')
+                 WHERE sessions.lifecycle IN ",
+                unsaved_lifecycles_sql!(),
+                "
                    AND segments.lifecycle IN ('opening', 'open')
                    AND segments.original_start IS NULL
                    AND (
@@ -52,14 +54,13 @@ impl SessionStore {
                             AND EXISTS (
                                 SELECT 1 FROM session_events restore
                                 WHERE restore.session_id = segments.session_id
-                                  AND restore.event_kind IN (
-                                    'microphone_restore_requested',
-                                    'microphone_restore_cancelled',
-                                    'microphone_retired_unstarted')
+                                  AND restore.event_kind IN ",
+                microphone_restore_kinds_sql!(),
+                "
                             )
                         )
-                   )",
-            )?;
+                   )"
+            ))?;
             query
                 .query_map([], |r| {
                     Ok((
@@ -130,14 +131,6 @@ impl SessionStore {
                     }),
                 )?
             };
-            let (sequence, prior) = next_database_event(&self.connection, session)?;
-            let digest = event_digest(
-                session,
-                sequence,
-                "segment_capture_gap",
-                &record.body.payload,
-                prior.as_deref(),
-            )?;
             let tx = self.connection.transaction()?;
             tx.execute(
                 "UPDATE segments SET lifecycle = 'gap', recovery_state = 'gap' WHERE id = ?1",
@@ -147,16 +140,20 @@ impl SessionStore {
             // a capturing track, or one that already holds a sealed segment, once
             // nothing on it is still open.
             tx.execute(
-                "UPDATE tracks SET lifecycle = 'sealed'
+                concat!(
+                    "UPDATE tracks SET lifecycle = 'sealed'
                  WHERE id = ?1
                    AND NOT EXISTS(
                        SELECT 1 FROM segments
-                       WHERE track_id = ?1 AND lifecycle IN ('opening', 'open', 'capturing'))
+                       WHERE track_id = ?1 AND lifecycle IN ",
+                    active_media_sql!(),
+                    ")
                    AND (
                        lifecycle = 'capturing'
                        OR EXISTS(
                            SELECT 1 FROM segments
-                           WHERE track_id = ?1 AND lifecycle = 'sealed'))",
+                           WHERE track_id = ?1 AND lifecycle = 'sealed'))"
+                ),
                 [track],
             )?;
             tx.execute("UPDATE sources SET lifecycle = 'sealed' WHERE id = (SELECT source_id FROM tracks WHERE id = ?1 AND lifecycle = 'sealed')", [track])?;
@@ -165,7 +162,8 @@ impl SessionStore {
             // A restored microphone that never took a sample is not sealed audio.
             // Leave ordinary successors on the sealed-predecessor path above.
             tx.execute(
-                "UPDATE sources SET lifecycle = 'failed'
+                concat!(
+                    "UPDATE sources SET lifecycle = 'failed'
                  WHERE id = (SELECT source_id FROM tracks WHERE id = ?1)
                    AND kind = 'microphone'
                    AND lifecycle IN ('opening', 'open')
@@ -175,10 +173,10 @@ impl SessionStore {
                    AND EXISTS(
                        SELECT 1 FROM session_events
                        WHERE session_id = ?2
-                         AND event_kind IN (
-                           'microphone_restore_requested',
-                           'microphone_restore_cancelled',
-                           'microphone_retired_unstarted'))",
+                         AND event_kind IN ",
+                    microphone_restore_kinds_sql!(),
+                    ")"
+                ),
                 params![track, session],
             )?;
             tx.execute(
@@ -195,44 +193,40 @@ impl SessionStore {
                 [track],
             )?;
             tx.execute(
-                "UPDATE required_sources SET lifecycle = 'failed'
+                concat!(
+                    "UPDATE required_sources SET lifecycle = 'failed'
                  WHERE session_id = ?1 AND kind = 'microphone'
                    AND lifecycle IN ('required', 'opening', 'open')
                    AND NOT EXISTS(
                        SELECT 1 FROM sources
                        WHERE session_id = ?1 AND kind = 'microphone'
-                         AND lifecycle IN ('opening', 'open', 'capturing'))
+                         AND lifecycle IN ",
+                    active_media_sql!(),
+                    ")
                    AND EXISTS(
                        SELECT 1 FROM session_events
                        WHERE session_id = ?1
-                         AND event_kind IN (
-                           'microphone_restore_requested',
-                           'microphone_restore_cancelled',
-                           'microphone_retired_unstarted'))",
+                         AND event_kind IN ",
+                    microphone_restore_kinds_sql!(),
+                    ")"
+                ),
                 [session],
             )?;
             tx.execute(
-                "UPDATE sessions
+                concat!(
+                    "UPDATE sessions
                  SET health = 'degraded',
                      media_files_open = EXISTS(
                          SELECT 1 FROM segments
                          WHERE session_id = ?1
-                           AND lifecycle IN ('opening', 'open', 'capturing')
-                     )
-                 WHERE id = ?1",
+                           AND lifecycle IN ",
+                    active_media_sql!(),
+                    ")
+                 WHERE id = ?1"
+                ),
                 [session],
             )?;
-            insert_event_with_id(
-                &tx,
-                &record.body.event_id,
-                session,
-                sequence,
-                "segment_capture_gap",
-                record.body.wall_time_milliseconds,
-                &record.body.payload,
-                prior.as_deref(),
-                &digest,
-            )?;
+            insert_journaled_event(&tx, &record, "segment_capture_gap")?;
             tx.commit()?;
         }
         Ok(())
@@ -244,9 +238,15 @@ impl SessionStore {
     ) -> Result<Vec<RecoveryFinding>, StoreError> {
         let sessions = {
             let mut query = self.connection.prepare(
-                "SELECT id FROM sessions WHERE lifecycle IN ('recording', 'interrupted', 'paused', 'finalizing', 'preparing')
+                concat!(
+                    "SELECT id FROM sessions WHERE lifecycle IN ",
+                    unsaved_lifecycles_sql!(),
+                    "
                  AND EXISTS(SELECT 1 FROM segments WHERE session_id = sessions.id AND lifecycle IN ('gap', 'sealed'))
-                 AND NOT EXISTS(SELECT 1 FROM segments WHERE session_id = sessions.id AND lifecycle IN ('opening', 'open', 'capturing'))"
+                 AND NOT EXISTS(SELECT 1 FROM segments WHERE session_id = sessions.id AND lifecycle IN ",
+                    active_media_sql!(),
+                    ")"
+                ),
             )?;
             query
                 .query_map([], |r| r.get::<_, String>(0))?
@@ -291,13 +291,16 @@ impl SessionStore {
             // Opened files that never accepted a sample are gaps, not audio.
             // Close the session's media flag without promoting it to review.
             self.connection.execute(
-                "UPDATE sessions SET media_files_open = 0
+                concat!(
+                    "UPDATE sessions SET media_files_open = 0
                  WHERE id = ?1
                    AND NOT EXISTS (
                         SELECT 1 FROM segments
                         WHERE session_id = ?1
-                          AND lifecycle IN ('opening', 'open', 'capturing')
-                   )",
+                          AND lifecycle IN ",
+                    active_media_sql!(),
+                    ")"
+                ),
                 [session],
             )?;
             return Ok(false);
@@ -335,14 +338,6 @@ impl SessionStore {
             .get("has_gaps")
             .and_then(Value::as_bool)
             .unwrap_or(true);
-        let (sequence, prior) = next_database_event(&self.connection, session)?;
-        let digest = event_digest(
-            session,
-            sequence,
-            "timeline_recovered",
-            &record.body.payload,
-            prior.as_deref(),
-        )?;
         let tx = self.connection.transaction()?;
         tx.execute(
             "UPDATE sessions
@@ -356,17 +351,7 @@ impl SessionStore {
              WHERE id = ?1",
             params![session, record.body.wall_time_milliseconds, journaled_gaps],
         )?;
-        insert_event_with_id(
-            &tx,
-            &record.body.event_id,
-            session,
-            sequence,
-            "timeline_recovered",
-            record.body.wall_time_milliseconds,
-            &record.body.payload,
-            prior.as_deref(),
-            &digest,
-        )?;
+        insert_journaled_event(&tx, &record, "timeline_recovered")?;
         tx.execute("INSERT INTO recovery_runs(id, schema_version, session_id, disposition, created_at_ms) VALUES(?1, ?2, ?3, 'timeline_recovered', ?4)",
             params![Uuid::now_v7().to_string(), SCHEMA_VERSION, session, record.body.wall_time_milliseconds])?;
         tx.commit()?;

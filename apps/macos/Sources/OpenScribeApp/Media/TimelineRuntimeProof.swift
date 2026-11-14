@@ -1,3 +1,5 @@
+// Proof launches exist only in Debug builds; candidates build Debug.
+#if DEBUG
 @preconcurrency import AVFoundation
 import AppKit
 import Darwin
@@ -51,7 +53,8 @@ enum TimelineRuntimeProof {
           buffer(frames: count, value: values[index], channels: writers[index].authorization.channels,
             rightValue: index == 1 ? -8192 : nil),
           hostTime: anchor
-            + AVAudioTime.hostTime(forSeconds: starts[index] + Double(written) / 48_000))
+            + AVAudioTime.hostTime(
+              forSeconds: starts[index] + Double(written) / NativeCapturePolicy.current.sampleRate))
         written += UInt64(count)
       }
     }
@@ -63,7 +66,7 @@ enum TimelineRuntimeProof {
   ) throws -> AVAudioPCMBuffer {
     guard
       let format = AVAudioFormat(
-        commonFormat: .pcmFormatInt16, sampleRate: 48_000,
+        commonFormat: .pcmFormatInt16, sampleRate: NativeCapturePolicy.current.sampleRate,
         channels: AVAudioChannelCount(channels), interleaved: false),
       let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frames),
       let samples = buffer.int16ChannelData
@@ -84,7 +87,9 @@ enum TimelineRuntimeProof {
     }
     let plan = try preparation.playbackTimeline(sessionId: sessionId)
     guard plan.count == 4, Set(plan.map(\.trackId)).count == 2,
-      plan.filter({ $0.sequence == 0 }).allSatisfy({ $0.sampleCount == 1_440_000 }),
+      plan.filter({ $0.sequence == 0 }).allSatisfy({
+        $0.sampleCount == SegmentedCAFWriter.segmentFrames
+      }),
       plan.filter({ $0.sequence == 1 }).allSatisfy({ $0.sampleCount == 48_000 })
     else { throw TimelinePlaybackError.invalidPlan }
     let reader = try TimelinePCMReader(segments: plan)
@@ -131,8 +136,10 @@ enum TimelineRuntimeProof {
       guard tracks.count == 2,
         tracks.values.allSatisfy({ segments in
           segments.count >= 2
-            && segments.allSatisfy { $0.sampleCount > 0 && $0.sampleCount <= 1_440_000 }
-            && segments.reduce(0) { $0 + $1.sampleCount } >= 1_440_000
+            && segments.allSatisfy {
+              $0.sampleCount > 0 && $0.sampleCount <= SegmentedCAFWriter.segmentFrames
+            }
+            && segments.reduce(0) { $0 + $1.sampleCount } >= SegmentedCAFWriter.segmentFrames
         })
       else { throw TimelinePlaybackError.invalidPlan }
       let drift = plan.filter { $0.sequence > 0 }.map { abs($0.gapNanoseconds) }.max() ?? 0
@@ -161,11 +168,9 @@ enum TimelineRuntimeProof {
         "rendered_frames": renderedFrames,
         "playback_milliseconds": 1_250,
       ]
-      try JSONSerialization.data(withJSONObject: report, options: [.sortedKeys])
-        .write(to: root.appendingPathComponent("recovery-verified.json"), options: .atomic)
+      try ProofFiles.write(report, name: "recovery-verified.json", root: root)
     } catch {
-      try? String(describing: error).write(
-        to: root.appendingPathComponent("proof-error"), atomically: true, encoding: .utf8)
+      ProofFiles.fail(error, root: root)
     }
     NSApp.terminate(nil)
   }
@@ -186,14 +191,13 @@ enum TimelineRuntimeProof {
         let id = try String(
           contentsOf: root.appendingPathComponent("capture-ready"), encoding: .utf8)
         let report = try verify(root: root, sessionId: id)
-        try JSONSerialization.data(withJSONObject: report, options: [.sortedKeys])
-          .write(to: root.appendingPathComponent("recovery-verified.json"), options: .atomic)
+        try ProofFiles.write(report, name: "recovery-verified.json", root: root)
         NSApp.terminate(nil)
       }
     } catch {
-      try? String(describing: error).write(
-        to: root.appendingPathComponent("proof-error"), atomically: true, encoding: .utf8)
+      ProofFiles.fail(error, root: root)
       NSApp.terminate(nil)
     }
   }
 }
+#endif

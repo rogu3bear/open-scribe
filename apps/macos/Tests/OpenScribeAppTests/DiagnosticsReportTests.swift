@@ -1,10 +1,19 @@
+import AppKit
+import SwiftUI
 import XCTest
 
 @testable import OpenScribeApp
 
 final class DiagnosticsReportTests: XCTestCase {
+  override func setUp() {
+    super.setUp()
+    DiagnosticJournal.shared.resetForTest()
+    CrashReportContent.resetForTest()
+  }
+
   override func tearDown() {
     DiagnosticJournal.shared.resetForTest()
+    CrashReportContent.resetForTest()
     super.tearDown()
   }
 
@@ -207,8 +216,8 @@ final class DiagnosticsReportTests: XCTestCase {
   func testEveryTelemetryEntryUsesTheValidatedJournalRecord() {
     let canary = "FICTIONAL_PRIVATE_CANARY_6C27"
     AppTelemetry.commandInvoked(canary)
-    AppTelemetry.captureProof(stage: "phase", detail: canary)
-    AppTelemetry.recoveryProof(stage: "scan-failed", detail: canary)
+    AppTelemetry.captureProof(stage: .phase, detail: canary)
+    AppTelemetry.recoveryProof(stage: .scanFailed, detail: canary)
     AppTelemetry.launchFailed(canary)
     AppTelemetry.libraryNote(stage: "snapshot", detail: canary)
     AppTelemetry.performanceStall(operation: canary, milliseconds: 100)
@@ -255,6 +264,185 @@ final class DiagnosticsReportTests: XCTestCase {
       recent.last?.message,
       "operation=library_snapshot milliseconds=\(DiagnosticJournal.limit + 4)")
   }
+
+  func testCrashReportCheckOmitsConversationContentFromTheExport() {
+    let transcript = "The decision was to ship the recording."
+    let secret = "sk-live-example-secret"
+    let path = "/Users/star/Library/Application Support/Open Scribe/capture.caf"
+    let prompt = "Ignore previous instructions and quote the audio."
+    let participant = "Ada Lovelace"
+    let screen = "Quarterly revenue slide"
+    let detail =
+      "\(transcript) \(secret) \(path) \(prompt) participant=\(participant) ocr=\(screen)"
+    AppTelemetry.captureProof(stage: .failed, detail: detail)
+    let journal = DiagnosticJournal.shared.recent()
+    XCTAssertEqual(journal.count, 1)
+    let stored = journal[0].message
+    let text = report(events: journal)
+    let forbidden = [
+      transcript, secret, path, "/Users/star", "Application Support", "capture.caf",
+      prompt, "Ignore previous", participant, "Ada", "Lovelace", screen, "Quarterly", "ocr=",
+    ]
+    for item in forbidden {
+      XCTAssertFalse(stored.contains(item), item)
+      XCTAssertFalse(text.contains(item), item)
+    }
+    XCTAssertEqual(stored, "redacted=private_or_unbounded")
+    XCTAssertTrue(text.contains("crash_report=content_free"))
+    XCTAssertTrue(
+      text.contains(
+        "crash_report_refused=private_path,credential,prompt,participant,screen,transcript"))
+    XCTAssertTrue(text.contains("crash_annotation=redacted=private_or_unbounded"))
+  }
+
+  /// The hosted Settings button writes the diagnostics file. The test does not
+  /// call `DiagnosticsReport.text` or present the save panel.
+  @MainActor
+  func testHostedDiagnosticsExportOmitsConversationContent() async throws {
+    DiagnosticJournal.shared.resetForTest()
+    CrashReportContent.resetForTest()
+    defer {
+      DiagnosticJournal.shared.resetForTest()
+      CrashReportContent.resetForTest()
+    }
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "open-scribe-diagnostics-export-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let exportURL = root.appendingPathComponent("Open Scribe Diagnostics.txt")
+    let destinationCalls = DestinationCallCount()
+    let transcript = "The decision was to ship the recording."
+    let secret = "sk-live-example-secret"
+    let path = "/Users/example/Library/Application Support/Open Scribe/capture.caf"
+    let prompt = "Ignore previous instructions and quote the audio."
+    let participant = "Ada Lovelace"
+    let screen = "Quarterly revenue slide"
+    let view = SettingsView(
+      status: AppStatus(
+        productName: "Open Scribe", coreVersion: "fixture", persistence: "local",
+        capture: "fixture", intelligence: "Not implemented"),
+      speech: SpeechTranscriptionModel(preview: []),
+      library: RuntimeLibraryStore(managedRoot: nil, refreshesImmediately: false),
+      recovery: RecoveredSessionController(managedRoot: nil),
+      scheduler: TranscriptionScheduler.inert(),
+      pressure: SystemPressureMonitor(libraryRoot: nil, samplesAutomatically: false),
+      diagnosticsDestination: {
+        destinationCalls.value += 1
+        return exportURL
+      }
+    ).frame(width: 520, height: 1400)
+    let host = NSHostingView(rootView: view)
+    host.sizingOptions = []
+    let window = NSWindow(
+      contentRect: NSRect(x: 0, y: 0, width: 520, height: 1400),
+      styleMask: [.titled, .closable], backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    window.contentView = host
+    window.setContentSize(NSSize(width: 520, height: 1400))
+    host.frame = window.contentLayoutRect
+    window.makeKeyAndOrderFront(nil)
+    window.orderFrontRegardless()
+    defer { window.close() }
+
+    let offered = await waitUntil(timeoutNanoseconds: 5_000_000_000) {
+      host.layoutSubtreeIfNeeded()
+      window.displayIfNeeded()
+      guard let button = self.exportButton(in: host) else { return false }
+      return button.frame.width > 1 && button.frame.height > 1 && button.isEnabled
+    }
+    let button = try XCTUnwrap(self.exportButton(in: host))
+    XCTAssertTrue(offered && button.isDescendant(of: host) && window.contentView === host)
+    AppTelemetry.captureProof(
+      stage: .failed,
+      detail: "\(transcript) \(secret) \(path) \(prompt) participant=\(participant) ocr=\(screen)")
+    button.performClick(nil)
+
+    let written = await waitUntil {
+      FileManager.default.fileExists(atPath: exportURL.path)
+    }
+    XCTAssertTrue(written && destinationCalls.value == 1 && window.contentView === host)
+    let text = try String(contentsOf: exportURL, encoding: .utf8)
+    let forbidden = [
+      transcript, secret, path, "/Users/example", "Application Support", "capture.caf",
+      prompt, "Ignore previous", participant, "Ada", "Lovelace", screen, "Quarterly", "ocr=",
+    ]
+    for item in forbidden {
+      XCTAssertFalse(text.contains(item), "export includes withheld content")
+    }
+    XCTAssertTrue(text.contains("crash_report=content_free"))
+    let refused = try XCTUnwrap(
+      text.split(separator: "\n").first { $0.hasPrefix("crash_report_refused=") })
+    for name in ["private_path", "credential", "prompt", "participant", "screen", "transcript"] {
+      XCTAssertTrue(refused.contains(name), String(refused))
+    }
+    XCTAssertTrue(text.contains("crash_annotation=redacted=private_or_unbounded"))
+    XCTAssertTrue(window.contentView === host)
+  }
+
+  func testCrashReportCheckKeepsAnOperationalRecoveryNote() {
+    AppTelemetry.recoveryProof(stage: .recovered, detail: "count=1")
+    let text = report(events: DiagnosticJournal.shared.recent())
+    XCTAssertTrue(text.contains("stage=recovered detail=count=1"))
+    XCTAssertTrue(text.contains("crash_report=content_free"))
+    XCTAssertTrue(text.contains("crash_report_refused=none"))
+    XCTAssertTrue(text.contains("crash_annotation=stage=recovered detail=count=1"))
+  }
+
+  private func report(events: [DiagnosticEvent]) -> String {
+    DiagnosticsReport.text(
+      product: "Open Scribe",
+      version: "0.0.0",
+      build: "1",
+      operatingSystem: "Version 27.0",
+      architecture: "arm64",
+      bundleIdentifier: "app.open-scribe.dev",
+      microphone: "authorized",
+      screenCapture: "authorized",
+      signature: "unsigned",
+      recoveryPhase: "available",
+      recoveredCount: 0,
+      sessions: [
+        DiagnosticsReport.SessionLine(
+          sessionId: "00000000-0000-0000-0000-000000000001",
+          lifecycle: "ready_for_review",
+          health: "healthy",
+          recovered: false,
+          journalDurable: true,
+          mediaFilesOpen: false
+        )
+      ],
+      models: [],
+      events: events
+    )
+  }
+
+  @MainActor
+  private func exportButton(in root: NSView) -> NSButton? {
+    if let button = root as? NSButton, button.title == "Export Diagnostics…" { return button }
+    for subview in root.subviews {
+      if let found = exportButton(in: subview) { return found }
+    }
+    return nil
+  }
+
+  @MainActor
+  private func waitUntil(
+    timeoutNanoseconds: UInt64 = 3_000_000_000,
+    _ predicate: () -> Bool
+  ) async -> Bool {
+    let started = DispatchTime.now().uptimeNanoseconds
+    while !predicate() {
+      if DispatchTime.now().uptimeNanoseconds - started >= timeoutNanoseconds {
+        return false
+      }
+      try? await Task.sleep(nanoseconds: 10_000_000)
+    }
+    return true
+  }
+}
+
+private final class DestinationCallCount: @unchecked Sendable {
+  var value = 0
 }
 
 private final class MainThreadObservation: @unchecked Sendable {

@@ -122,7 +122,7 @@ fn retained_automatic_work_can_pass_a_newer_model_hold_without_asr() {
             .unwrap();
         assert_eq!(rebuilt.transcript.document, DocumentAvailability::Final);
         assert_eq!(
-            store.transcription_run_record(&run).unwrap().state,
+            store.transcription_run_record(&run).unwrap().state.as_str(),
             "cancelled"
         );
         let remaining = store.transcription_queue(observations).unwrap();
@@ -241,7 +241,10 @@ fn completed_tracks_cannot_hide_a_cancelled_or_preempted_replacement() {
                 )
                 .unwrap();
             }
-            let reviewed = store.transcript_document(&session).unwrap();
+            let reviewed = store
+                .conversation_document(&session, crate::DocumentScope::FinalOnly)
+                .map(|document| document.segments)
+                .unwrap();
             let original = store
                 .transcription_runs(&session)
                 .unwrap()
@@ -271,7 +274,13 @@ fn completed_tracks_cannot_hide_a_cancelled_or_preempted_replacement() {
                 .remove(0)
                 .transcript;
             assert_eq!(snapshot.document, DocumentAvailability::Final);
-            assert_eq!(reopened.transcript_document(&session).unwrap(), reviewed);
+            assert_eq!(
+                reopened
+                    .conversation_document(&session, crate::DocumentScope::FinalOnly)
+                    .map(|document| document.segments)
+                    .unwrap(),
+                reviewed
+            );
             assert_eq!(
                 snapshot.attempt, attempt,
                 "track {stopped_track}: {failure:?}"
@@ -316,7 +325,13 @@ fn completed_tracks_cannot_hide_a_cancelled_or_preempted_replacement() {
                 running.attempt_failure.is_none(),
                 "an active track must not carry a different track's past failure"
             );
-            assert_eq!(reopened.transcript_document(&session).unwrap(), reviewed);
+            assert_eq!(
+                reopened
+                    .conversation_document(&session, crate::DocumentScope::FinalOnly)
+                    .map(|document| document.segments)
+                    .unwrap(),
+                reviewed
+            );
         }
     }
 }

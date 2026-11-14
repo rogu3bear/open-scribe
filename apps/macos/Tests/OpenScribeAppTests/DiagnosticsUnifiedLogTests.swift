@@ -101,8 +101,8 @@ final class DiagnosticsUnifiedLogTests: XCTestCase {
     DiagnosticJournal.shared.resetForTest()
     defer { DiagnosticJournal.shared.resetForTest() }
     AppTelemetry.commandInvoked(canaries[0])
-    AppTelemetry.captureProof(stage: "requested", detail: canaries[1])
-    AppTelemetry.recoveryProof(stage: "scan-failed", detail: canaries[2])
+    AppTelemetry.captureProof(stage: .requested, detail: canaries[1])
+    AppTelemetry.recoveryProof(stage: .scanFailed, detail: canaries[2])
     AppTelemetry.launchFailed(canaries[3])
     AppTelemetry.libraryNote(stage: "snapshot", detail: canaries[4])
     AppTelemetry.performanceStall(operation: canaries[5], milliseconds: 123)

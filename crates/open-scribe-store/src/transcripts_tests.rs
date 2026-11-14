@@ -1,5 +1,5 @@
 use std::fs::File;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 use rusqlite::Connection;
@@ -220,7 +220,8 @@ fn cancellation_wins_selection_even_when_a_completed_revision_crosses_the_stop_b
     assert!(
         fixture
             .store
-            .transcript_document(&fixture.session)
+            .conversation_document(&fixture.session, crate::DocumentScope::FinalOnly)
+            .map(|document| document.segments)
             .unwrap()
             .is_empty()
     );
@@ -417,7 +418,10 @@ fn failed_runs_keep_their_evidence_and_retries_reuse_only_matching_chunks() {
 
     let runs = fixture.store.transcription_runs(&fixture.session).unwrap();
     assert_eq!(runs[0].state, "failed");
-    assert_eq!(runs[0].failure_class.as_deref(), Some("engine_error"));
+    assert_eq!(
+        runs[0].failure_class.map(|class| class.as_str()),
+        Some("engine_error")
+    );
     assert_eq!((runs[0].completed_chunks, runs[0].total_chunks), (1, 2));
     assert_eq!(runs[1].state, "complete");
 
@@ -502,6 +506,130 @@ fn replacement_never_displaces_the_selected_revision_until_it_completes() {
             .select_transcript_revision(&fixture.session, "another-track", &first)
             .is_err()
     );
+}
+
+#[test]
+fn replacement_preserves_audio_and_the_selected_revision_until_completion() {
+    let mut fixture = imported_fixture(144_000);
+    let source = fixture.root.parent().unwrap().join("source.caf");
+    let source_before = std::fs::read(&source).unwrap();
+    let media_before = std::fs::read(&fixture.media).unwrap();
+    let session = fixture.session.clone();
+
+    let first_identity = identity(&fixture, "options-a");
+    let first_run = fixture
+        .store
+        .begin_transcription_run(&first_identity, &plan())
+        .unwrap();
+    let first = complete_all(&mut fixture, &first_run, ["kept meadow", "kept close"]);
+    let selected = fixture
+        .store
+        .conversation_document(&session, crate::DocumentScope::FinalOnly)
+        .map(|document| document.segments)
+        .unwrap();
+    assert_eq!(selected.len(), 2);
+    assert!(selected.iter().all(|segment| segment.revision_id == first));
+    assert_eq!(selected[0].effective_text, "kept meadow");
+
+    let replacement_identity = TranscriptionRunIdentity {
+        model_id: "replacement-model".into(),
+        model_sha256: "c".repeat(64),
+        ..first_identity
+    };
+    let running = fixture
+        .store
+        .begin_transcription_run(&replacement_identity, &plan())
+        .unwrap();
+    fixture
+        .store
+        .complete_transcript_chunk(&running.run_id, 0, "en", &hypothesis("partial replacement"))
+        .unwrap();
+
+    let during = fixture
+        .store
+        .conversation_document(&session, crate::DocumentScope::FinalOnly)
+        .map(|document| document.segments)
+        .unwrap();
+    assert_eq!(during.len(), 2);
+    assert!(during.iter().all(|segment| segment.revision_id == first));
+    assert_eq!(during[0].effective_text, "kept meadow");
+    assert_eq!(
+        fixture.store.transcript_revisions(&session).unwrap().len(),
+        1
+    );
+    assert_eq!(std::fs::read(&fixture.media).unwrap(), media_before);
+
+    fixture
+        .store
+        .complete_transcript_chunk(&running.run_id, 1, "en", &hypothesis("new close"))
+        .unwrap();
+    assert_eq!(
+        fixture.store.transcript_revisions(&session).unwrap().len(),
+        1
+    );
+    assert_eq!(
+        fixture.store.transcript_revision_segments(&first).unwrap()[0].text,
+        "kept meadow"
+    );
+    assert_eq!(std::fs::read(&fixture.media).unwrap(), media_before);
+
+    let committed = [
+        segment(&running.chunks[0], SECOND / 10, "partial replacement"),
+        segment(&running.chunks[1], SECOND, "new close"),
+    ];
+    let second = fixture
+        .store
+        .commit_transcript_revision(&running.run_id, &committed, "{}", "[]")
+        .unwrap();
+    assert_ne!(second, first);
+    let revisions = fixture.store.transcript_revisions(&session).unwrap();
+    assert_eq!(revisions.len(), 2);
+    assert!(
+        revisions
+            .iter()
+            .any(|revision| revision.revision_id == first && !revision.selected)
+    );
+    assert!(
+        revisions
+            .iter()
+            .any(|revision| revision.revision_id == second && revision.selected)
+    );
+    assert_eq!(
+        fixture
+            .store
+            .conversation_document(&session, crate::DocumentScope::FinalOnly)
+            .map(|document| document.segments)
+            .unwrap()[0]
+            .effective_text,
+        "partial replacement"
+    );
+    assert_eq!(
+        fixture.store.transcript_revision_segments(&first).unwrap()[0].text,
+        "kept meadow"
+    );
+    assert_eq!(std::fs::read(&fixture.media).unwrap(), media_before);
+    assert_eq!(std::fs::read(&source).unwrap(), source_before);
+
+    let lease = fixture.store.lease_imported_playback(&session).unwrap();
+    let mut opened = Vec::new();
+    lease.file().read_to_end(&mut opened).unwrap();
+    assert_eq!(opened.len() as u64, lease.byte_length());
+    assert_eq!(opened, media_before);
+
+    let reopened = SessionStore::open(&fixture.root).unwrap();
+    assert_eq!(
+        reopened.transcript_revision_segments(&first).unwrap()[0].text,
+        "kept meadow"
+    );
+    assert_eq!(
+        reopened
+            .conversation_document(&session, crate::DocumentScope::FinalOnly)
+            .map(|document| document.segments)
+            .unwrap()[0]
+            .effective_text,
+        "partial replacement"
+    );
+    assert_eq!(std::fs::read(&fixture.media).unwrap(), media_before);
 }
 
 #[test]
@@ -647,7 +775,7 @@ fn schema_v4_fixture_migrates_without_rewriting_sealed_evidence() {
             .unwrap()
             .map(Result::unwrap)
             .collect();
-        assert_eq!(versions, (1..=16).collect::<Vec<_>>());
+        assert_eq!(versions, (1..=21).collect::<Vec<_>>());
         let derived: i64 = store
             .connection
             .query_row(
@@ -706,7 +834,10 @@ fn launch_fails_incomplete_running_transcription_as_orphaned() {
     let runs = fixture.store.transcription_runs(&fixture.session).unwrap();
     assert_eq!(runs.len(), 1);
     assert_eq!(runs[0].state, "failed");
-    assert_eq!(runs[0].failure_class.as_deref(), Some("orphaned"));
+    assert_eq!(
+        runs[0].failure_class.map(|class| class.as_str()),
+        Some("orphaned")
+    );
     assert_eq!(
         findings
             .iter()
@@ -937,7 +1068,10 @@ fn retained_candidates_select_the_newest_complete_stale_run_per_unselected_track
     assert_eq!(record.identity, stale);
     assert_eq!(record.plan, plan());
     assert_eq!(record.state, "failed");
-    assert_eq!(record.failure_class.as_deref(), Some("invalid_result"));
+    assert_eq!(
+        record.failure_class.map(|class| class.as_str()),
+        Some("invalid_result")
+    );
     assert_eq!((record.complete_chunks, record.total_chunks), (2, 2));
     assert!(matches!(
         fixture.store.transcription_run_record("missing"),
@@ -982,7 +1116,10 @@ fn runtime_snapshot_reports_transcript_posture_from_runs_and_selections() {
         .unwrap();
     let failed = posture(&fixture);
     assert_eq!(failed.state, RuntimeTranscriptState::Failed);
-    assert_eq!(failed.failure_class.as_deref(), Some("engine_error"));
+    assert_eq!(
+        failed.failure_class,
+        Some(crate::TranscriptionFailureClass::EngineError)
+    );
     assert_eq!((failed.completed_chunks, failed.total_chunks), (0, 0));
 
     let stopped = fixture
@@ -1030,11 +1167,15 @@ fn runtime_snapshot_reports_transcript_posture_from_runs_and_selections() {
     let after = posture(&fixture);
     assert_eq!(after.state, RuntimeTranscriptState::Final);
     assert_eq!(after.attempt, open_scribe_types::AttemptState::Failed);
-    assert_eq!(after.attempt_failure.as_deref(), Some("engine_error"));
+    assert_eq!(
+        after.attempt_failure,
+        Some(crate::TranscriptionFailureClass::EngineError)
+    );
     assert!(
         !fixture
             .store
-            .transcript_document(&fixture.session)
+            .conversation_document(&fixture.session, crate::DocumentScope::FinalOnly)
+            .map(|document| document.segments)
             .unwrap()
             .is_empty()
     );
@@ -1096,7 +1237,392 @@ fn accepted_capture_preemption_projects_honestly_without_rewriting_engine_histor
             .transcription_run_record(&replacement.run_id)
             .unwrap()
             .failure_class
-            .as_deref(),
+            .map(|class| class.as_str()),
         Some("cancelled")
     );
+}
+
+fn window(start: i64, end: i64) -> Vec<PlannedTranscriptChunk> {
+    vec![PlannedTranscriptChunk {
+        span_index: 0,
+        start_nanoseconds: start,
+        end_nanoseconds: end,
+    }]
+}
+
+fn commit_window(
+    fixture: &mut Fixture,
+    options: &str,
+    start: i64,
+    end: i64,
+    text: &str,
+    draft: bool,
+) -> String {
+    let handle = fixture
+        .store
+        .begin_transcription_run(&identity(fixture, options), &window(start, end))
+        .unwrap();
+    let chunk = handle.chunks[0].clone();
+    fixture
+        .store
+        .complete_transcript_chunk(&handle.run_id, chunk.sequence, "en", &hypothesis(text))
+        .unwrap();
+    let segment = RevisionSegmentInput {
+        start_nanoseconds: start + SECOND / 10,
+        end_nanoseconds: start + SECOND / 2,
+        text: text.into(),
+        mean_probability: Some(0.8),
+        no_speech_probability: None,
+        chunk_identity: chunk.identity,
+    };
+    if draft {
+        fixture
+            .store
+            .commit_draft_transcript_revision(&handle.run_id, &[segment], "{}", "[]")
+            .unwrap()
+    } else {
+        fixture
+            .store
+            .commit_transcript_revision(&handle.run_id, &[segment], "{}", "[]")
+            .unwrap()
+    }
+}
+
+fn revision_finality(fixture: &Fixture, revision_id: &str) -> String {
+    fixture
+        .store
+        .transcript_revisions(&fixture.session)
+        .unwrap()
+        .into_iter()
+        .find(|revision| revision.revision_id == revision_id)
+        .unwrap()
+        .finality
+        .as_str()
+        .to_owned()
+}
+
+fn revision_text(fixture: &Fixture, revision_id: &str) -> String {
+    fixture
+        .store
+        .transcript_revision_segments(revision_id)
+        .unwrap()
+        .into_iter()
+        .map(|segment| segment.text)
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+#[test]
+fn a_final_range_supersedes_an_overlapping_draft_and_leaves_its_text() {
+    let mut fixture = imported_fixture(144_000);
+    let media_before = std::fs::read(&fixture.media).unwrap();
+    let schema: String = fixture
+        .store
+        .connection
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'transcript_revisions'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(schema.contains("'draft'"));
+    assert!(schema.contains("'superseded'"));
+
+    let overlapping = commit_window(
+        &mut fixture,
+        "draft-overlap",
+        0,
+        2 * SECOND,
+        "provisional zephyr",
+        true,
+    );
+    let later = commit_window(
+        &mut fixture,
+        "draft-later",
+        2 * SECOND,
+        3 * SECOND,
+        "later meadow",
+        true,
+    );
+    assert_eq!(revision_finality(&fixture, &overlapping), "draft");
+    assert_eq!(revision_finality(&fixture, &later), "draft");
+    assert!(
+        fixture
+            .store
+            .transcript_revisions(&fixture.session)
+            .unwrap()
+            .iter()
+            .all(|revision| !revision.selected)
+    );
+    assert!(
+        fixture
+            .store
+            .search_transcripts("zephyr", Some(&fixture.session), 10)
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        fixture
+            .store
+            .select_transcript_revision(&fixture.session, &fixture.track, &overlapping)
+            .is_err()
+    );
+    assert!(
+        fixture
+            .store
+            .conversation_document(&fixture.session, crate::DocumentScope::FinalOnly)
+            .map(|document| document.segments)
+            .unwrap()
+            .is_empty()
+    );
+    let provisional = fixture
+        .store
+        .conversation_document(&fixture.session, crate::DocumentScope::Readable)
+        .map(|document| document.segments)
+        .unwrap();
+    assert_eq!(
+        provisional
+            .iter()
+            .map(|segment| (segment.finality.as_str(), segment.effective_text.as_str()))
+            .collect::<Vec<_>>(),
+        [("draft", "provisional zephyr"), ("draft", "later meadow")]
+    );
+
+    let sealed = commit_window(
+        &mut fixture,
+        "final-overlap",
+        0,
+        2 * SECOND,
+        "sealed meridian",
+        false,
+    );
+    assert_eq!(revision_finality(&fixture, &overlapping), "superseded");
+    assert_eq!(revision_text(&fixture, &overlapping), "provisional zephyr");
+    assert_ne!(overlapping, sealed);
+    assert_eq!(revision_finality(&fixture, &sealed), "final");
+    assert_eq!(revision_finality(&fixture, &later), "draft");
+    assert_eq!(revision_text(&fixture, &later), "later meadow");
+    let history = fixture
+        .store
+        .transcript_revisions(&fixture.session)
+        .unwrap();
+    assert!(
+        history
+            .iter()
+            .find(|revision| revision.revision_id == sealed)
+            .unwrap()
+            .selected
+    );
+    assert!(
+        history
+            .iter()
+            .filter(|revision| revision.revision_id != sealed)
+            .all(|revision| !revision.selected)
+    );
+    assert_eq!(
+        fixture
+            .store
+            .conversation_document(&fixture.session, crate::DocumentScope::FinalOnly)
+            .map(|document| document.segments)
+            .unwrap()
+            .iter()
+            .map(|segment| segment.effective_text.as_str())
+            .collect::<Vec<_>>(),
+        ["sealed meridian"]
+    );
+    assert!(
+        fixture
+            .store
+            .conversation_document(&fixture.session, crate::DocumentScope::FinalOnly)
+            .map(|document| document.segments)
+            .unwrap()
+            .iter()
+            .all(|segment| segment.finality == "final")
+    );
+    let readable = fixture
+        .store
+        .conversation_document(&fixture.session, crate::DocumentScope::Readable)
+        .map(|document| document.segments)
+        .unwrap();
+    assert_eq!(
+        readable
+            .iter()
+            .map(|segment| (segment.finality.as_str(), segment.effective_text.as_str()))
+            .collect::<Vec<_>>(),
+        [("final", "sealed meridian"), ("draft", "later meadow")]
+    );
+    assert!(
+        fixture
+            .store
+            .search_transcripts("zephyr", Some(&fixture.session), 10)
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        fixture
+            .store
+            .search_transcripts("meadow", Some(&fixture.session), 10)
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        fixture
+            .store
+            .search_transcripts("meridian", Some(&fixture.session), 10)
+            .unwrap()
+            .len(),
+        1
+    );
+    assert!(
+        fixture
+            .store
+            .connection
+            .execute(
+                "UPDATE transcript_segments SET text = 'mutated' WHERE revision_id = ?1",
+                [&overlapping],
+            )
+            .is_err()
+    );
+    assert!(
+        fixture
+            .store
+            .connection
+            .execute(
+                "UPDATE transcript_revisions SET finality = 'final' WHERE id = ?1",
+                [&later],
+            )
+            .is_err()
+    );
+    assert!(
+        fixture
+            .store
+            .connection
+            .execute(
+                "UPDATE transcript_revisions SET finality = 'draft' WHERE id = ?1",
+                [&sealed],
+            )
+            .is_err()
+    );
+    assert!(
+        fixture
+            .store
+            .connection
+            .execute(
+                "UPDATE transcript_revisions SET reconciliation_version = 'changed' WHERE id = ?1",
+                [&overlapping],
+            )
+            .is_err()
+    );
+    assert_eq!(revision_text(&fixture, &overlapping), "provisional zephyr");
+    assert_eq!(std::fs::read(&fixture.media).unwrap(), media_before);
+}
+
+#[test]
+fn migration_19_keeps_an_existing_final_revision_and_accepts_a_draft() {
+    let mut fixture = imported_fixture(144_000);
+    let media_before = std::fs::read(&fixture.media).unwrap();
+    let handle = fixture
+        .store
+        .begin_transcription_run(&identity(&fixture, "legacy-final"), &plan())
+        .unwrap();
+    let revision = complete_all(&mut fixture, &handle, ["kept alpha", "kept bravo"]);
+    let text_before = revision_text(&fixture, &revision);
+    fixture
+        .store
+        .connection
+        .pragma_update(None, "foreign_keys", false)
+        .unwrap();
+    let downgraded = (|| -> Result<(), crate::StoreError> {
+        let transaction = fixture.store.connection.transaction()?;
+        let triggers = super::suspend_triggers_that_reference_revisions(&transaction)?;
+        transaction.execute_batch(
+            "CREATE TABLE transcript_revisions__legacy (
+                id TEXT PRIMARY KEY,
+                schema_version INTEGER NOT NULL,
+                session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+                track_id TEXT NOT NULL,
+                run_id TEXT NOT NULL UNIQUE REFERENCES transcription_runs(id) ON DELETE CASCADE,
+                kind TEXT NOT NULL CHECK (kind = 'verbatim'),
+                finality TEXT NOT NULL CHECK (finality = 'final'),
+                reconciliation_version TEXT NOT NULL,
+                rejections_json TEXT NOT NULL,
+                discontinuities_json TEXT NOT NULL,
+                created_at_ms INTEGER NOT NULL
+            );
+            INSERT INTO transcript_revisions__legacy
+                SELECT id, schema_version, session_id, track_id, run_id, kind, finality,
+                       reconciliation_version, rejections_json, discontinuities_json, created_at_ms
+                FROM transcript_revisions;
+            DROP TABLE transcript_revisions;
+            ALTER TABLE transcript_revisions__legacy RENAME TO transcript_revisions;
+            CREATE TRIGGER transcript_revisions_immutable
+                BEFORE UPDATE ON transcript_revisions
+                BEGIN SELECT RAISE(ABORT, 'transcript revisions are immutable'); END;",
+        )?;
+        super::restore_trigger_sql(&transaction, &triggers)?;
+        transaction.commit()?;
+        Ok(())
+    })();
+    let restored = fixture
+        .store
+        .connection
+        .pragma_update(None, "foreign_keys", true);
+    downgraded.unwrap();
+    restored.unwrap();
+    let root = fixture.root.clone();
+    fixture.store = SessionStore::open(&root).unwrap();
+    let schema: String = fixture
+        .store
+        .connection
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'transcript_revisions'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(schema.contains("'draft'"));
+    assert_eq!(revision_finality(&fixture, &revision), "final");
+    assert_eq!(revision_text(&fixture, &revision), text_before);
+    let versions: Vec<i64> = fixture
+        .store
+        .connection
+        .prepare("SELECT version FROM schema_migrations ORDER BY version")
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!(versions, (1..=21).collect::<Vec<_>>());
+    let draft = commit_window(
+        &mut fixture,
+        "after-migration",
+        700_000_000,
+        1_900_000_000,
+        "migrated draft",
+        true,
+    );
+    assert_eq!(revision_finality(&fixture, &draft), "draft");
+    assert_eq!(
+        fixture
+            .store
+            .conversation_document(&fixture.session, crate::DocumentScope::FinalOnly)
+            .map(|document| document.segments)
+            .unwrap()
+            .iter()
+            .map(|segment| segment.effective_text.as_str())
+            .collect::<Vec<_>>(),
+        ["kept alpha", "kept bravo"]
+    );
+    assert!(
+        fixture
+            .store
+            .conversation_document(&fixture.session, crate::DocumentScope::Readable)
+            .map(|document| document.segments)
+            .unwrap()
+            .iter()
+            .any(
+                |segment| segment.finality == "draft" && segment.effective_text == "migrated draft"
+            )
+    );
+    assert_eq!(std::fs::read(&fixture.media).unwrap(), media_before);
 }

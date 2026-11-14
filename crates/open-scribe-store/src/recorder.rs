@@ -1,5 +1,6 @@
 //! Journal-owned recorder controls. All time positions use the capture clock;
 //! platform adapters supply observations, never durable lifecycle decisions.
+use super::storage_reserve::{RESERVE_BYTES, WARNING_BYTES, preflight_bytes};
 use super::*;
 
 #[derive(Clone, Debug)]
@@ -45,23 +46,18 @@ pub enum RecorderAction {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RecorderEvent {
     pub id: String,
-    pub kind: String,
+    pub kind: RecorderEventKind,
     pub session_nanoseconds: i64,
     pub label: String,
 }
 
 #[derive(Clone, Debug)]
 pub struct RecorderDetail {
-    pub lifecycle: String,
+    pub lifecycle: SessionLifecycle,
     pub captured_nanoseconds: i64,
-    pub storage_level: String,
+    pub storage_level: StorageLevel,
     pub events: Vec<RecorderEvent>,
 }
-
-// One persisted policy owner. Reserve is available for sealing/recovery and is
-// never spent opening another source segment under critical pressure.
-pub(super) const RESERVE_BYTES: u64 = 512 * 1024 * 1024;
-const WARNING_BYTES: u64 = 1024 * 1024 * 1024;
 
 impl SessionStore {
     pub fn recorder_action(
@@ -79,16 +75,16 @@ impl SessionStore {
             return self.observe_critical_storage(session, *available_bytes);
         }
         let state = self.recorder_detail(&session)?;
-        let phase = state.lifecycle.as_str();
+        let phase = state.lifecycle;
         let (kind, payload) = match action {
             RecorderAction::BeginPause => {
-                if phase != "recording" {
+                if phase != SessionLifecycle::Recording {
                     return Err(StoreError::InvalidState("pause requires Recording"));
                 }
-                ("pause_requested", json!({}))
+                (RecorderEventKind::PauseRequested, json!({}))
             }
             RecorderAction::CompletePause { host_time } => {
-                if phase != "finalizing" || self.has_active_segments(&session.0)? {
+                if phase != SessionLifecycle::Finalizing || self.has_active_segments(&session.0)? {
                     return Err(StoreError::InvalidState(
                         "pause awaits drained, sealed sources",
                     ));
@@ -103,32 +99,32 @@ impl SessionStore {
                     return Err(StoreError::InvalidRequest("pause precedes drained media"));
                 }
                 (
-                    "capture_paused",
+                    RecorderEventKind::CapturePaused,
                     json!({"host_time": host_time, "session_nanoseconds": state.captured_nanoseconds}),
                 )
             }
             RecorderAction::PrepareResume => {
-                if phase != "paused" {
+                if phase != SessionLifecycle::Paused {
                     return Err(StoreError::InvalidState("resume requires Paused"));
                 }
                 self.require_storage_headroom(&session.0)?;
                 (
-                    "resume_requested",
+                    RecorderEventKind::ResumeRequested,
                     json!({"session_nanoseconds": state.captured_nanoseconds}),
                 )
             }
             RecorderAction::AnchorResume { host_time } => {
-                if phase != "preparing"
+                if phase != SessionLifecycle::Preparing
                     || self
                         .latest_capture_boundary(&session.0)?
                         .as_ref()
-                        .map(|(kind, _)| kind.as_str())
-                        != Some("resume_requested")
+                        .map(|(kind, _)| *kind)
+                        != Some(RecorderEventKind::ResumeRequested)
                 {
                     return Err(StoreError::InvalidState("resume was not requested"));
                 }
                 let pause = self
-                    .latest_recorder_payload(&session.0, "capture_paused")?
+                    .latest_recorder_payload(&session.0, RecorderEventKind::CapturePaused)?
                     .ok_or(StoreError::InvalidState("pause boundary is missing"))?;
                 if host_time <= payload_u64(&pause, "host_time")? {
                     return Err(StoreError::InvalidRequest(
@@ -137,23 +133,26 @@ impl SessionStore {
                 }
                 self.map_capture_time(&session.0, host_time)?;
                 (
-                    "capture_resumed",
+                    RecorderEventKind::CaptureResumed,
                     json!({"host_time": host_time, "session_nanoseconds": payload_i64(&pause, "session_nanoseconds")?}),
                 )
             }
             RecorderAction::FinishPaused => {
-                if phase != "paused" || self.has_active_segments(&session.0)? {
+                if phase != SessionLifecycle::Paused || self.has_active_segments(&session.0)? {
                     return Err(StoreError::InvalidState(
                         "paused finalization requires sealed sources",
                     ));
                 }
                 (
-                    "paused_session_finalized",
+                    RecorderEventKind::PausedSessionFinalized,
                     json!({"session_nanoseconds": state.captured_nanoseconds}),
                 )
             }
             RecorderAction::RestoreMicrophone => {
-                if !matches!(phase, "recording" | "paused") {
+                if !matches!(
+                    phase,
+                    SessionLifecycle::Recording | SessionLifecycle::Paused
+                ) {
                     return Err(StoreError::InvalidState(
                         "microphone restore requires an open recording",
                     ));
@@ -172,12 +171,17 @@ impl SessionStore {
                     ));
                 }
                 (
-                    "microphone_restore_requested",
+                    RecorderEventKind::MicrophoneRestoreRequested,
                     json!({"label": "Reconnect microphone", "session_nanoseconds": state.captured_nanoseconds}),
                 )
             }
             RecorderAction::CancelMicrophoneRestore => {
-                if !matches!(phase, "recording" | "paused" | "preparing") {
+                if !matches!(
+                    phase,
+                    SessionLifecycle::Recording
+                        | SessionLifecycle::Paused
+                        | SessionLifecycle::Preparing
+                ) {
                     return Err(StoreError::InvalidState(
                         "microphone restore cancellation requires an open recording",
                     ));
@@ -189,16 +193,26 @@ impl SessionStore {
                 }
                 let gapped = self.gap_unstarted_microphone_segments(&session.0)?;
                 let lifecycle = self.microphone_required_lifecycle(&session.0)?;
-                if gapped == 0 && !matches!(lifecycle.as_str(), "required" | "opening" | "open") {
+                if gapped == 0
+                    && !matches!(
+                        lifecycle,
+                        SourceLifecycle::Required
+                            | SourceLifecycle::Opening
+                            | SourceLifecycle::Open
+                    )
+                {
                     return Ok(state);
                 }
                 (
-                    "microphone_restore_cancelled",
+                    RecorderEventKind::MicrophoneRestoreCancelled,
                     json!({"label": "Microphone reconnect cancelled", "session_nanoseconds": state.captured_nanoseconds}),
                 )
             }
             RecorderAction::RetireUnstartedMicrophone => {
-                if !matches!(phase, "preparing" | "recording") {
+                if !matches!(
+                    phase,
+                    SessionLifecycle::Preparing | SessionLifecycle::Recording
+                ) {
                     return Err(StoreError::InvalidState(
                         "an unstarted microphone can be retired only while capture is open",
                     ));
@@ -221,26 +235,28 @@ impl SessionStore {
                     ));
                 }
                 (
-                    "microphone_retired_unstarted",
+                    RecorderEventKind::MicrophoneRetiredUnstarted,
                     json!({"label": "Microphone stopped", "session_nanoseconds": state.captured_nanoseconds}),
                 )
             }
             RecorderAction::Marker { host_time, label } => {
-                if !matches!(phase, "recording" | "paused")
-                    || label.len() > 512
+                if !matches!(
+                    phase,
+                    SessionLifecycle::Recording | SessionLifecycle::Paused
+                ) || label.len() > 512
                     || label.contains('\0')
                 {
                     return Err(StoreError::InvalidRequest(
                         "marker requires capture or pause and a bounded label",
                     ));
                 }
-                let position = if phase == "paused" {
+                let position = if phase == SessionLifecycle::Paused {
                     state.captured_nanoseconds
                 } else {
                     self.map_capture_time(&session.0, host_time)?
                 };
                 (
-                    "marker_added",
+                    RecorderEventKind::MarkerAdded,
                     json!({"marker_id": Uuid::now_v7().to_string(), "label": label, "host_time": host_time, "session_nanoseconds": position.max(0)}),
                 )
             }
@@ -249,8 +265,10 @@ impl SessionStore {
                 identity,
                 display_name,
             } => {
-                if !matches!(phase, "preparing" | "paused")
-                    || self.has_active_segments(&session.0)?
+                if !matches!(
+                    phase,
+                    SessionLifecycle::Preparing | SessionLifecycle::Paused
+                ) || self.has_active_segments(&session.0)?
                 {
                     return Err(StoreError::InvalidState(
                         "source changes require an idle boundary",
@@ -291,54 +309,45 @@ impl SessionStore {
                 };
                 let added: Vec<&str> = kind.map(MediaSourceKind::as_str).into_iter().collect();
                 (
-                    "source_scope_selected",
+                    RecorderEventKind::SourceScopeSelected,
                     json!({"audio_kind": kind.map(MediaSourceKind::as_str), "identity": identity, "label": display_name, "session_nanoseconds": state.captured_nanoseconds, "ended": ended, "added": added}),
                 )
             }
             RecorderAction::ObserveStorage { available_bytes } => {
-                let five_minute_pcm_bytes: u64 = self
-                    .required_source_kinds(&session.0)?
-                    .into_iter()
-                    .map(|kind| u64::from(kind.capture_channels()) * 48_000 * 2 * 300)
-                    .sum();
-                let preflight_bytes = RESERVE_BYTES + five_minute_pcm_bytes;
+                let preflight_bytes = preflight_bytes(self.required_source_kinds(&session.0)?);
                 let critical = available_bytes < RESERVE_BYTES
-                    || (matches!(phase, "preparing" | "paused")
-                        && available_bytes < preflight_bytes);
+                    || (matches!(
+                        phase,
+                        SessionLifecycle::Preparing | SessionLifecycle::Paused
+                    ) && available_bytes < preflight_bytes);
                 let level = if critical {
                     // Preflight-critical (preparing/paused) can still have
                     // available_bytes >= RESERVE_BYTES; free emergency blocks
                     // before the journal replacement needs to allocate.
                     self.release_storage_reserve()?;
-                    "critical"
+                    StorageLevel::Critical
                 } else if available_bytes < WARNING_BYTES {
-                    "warning"
+                    StorageLevel::Warning
                 } else {
-                    "normal"
+                    StorageLevel::Normal
                 };
-                if self
-                    .latest_recorder_payload(&session.0, "storage_observed")?
-                    .as_ref()
-                    .and_then(|p| p.get("level"))
-                    .and_then(Value::as_str)
-                    == Some(level)
-                {
+                if self.latest_storage_level(&session.0)? == level {
                     return Ok(state);
                 }
                 (
-                    "storage_observed",
-                    json!({"level": level, "available_bytes": available_bytes, "reserve_bytes": RESERVE_BYTES, "warning_bytes": WARNING_BYTES, "preflight_bytes": preflight_bytes, "session_nanoseconds": state.captured_nanoseconds}),
+                    RecorderEventKind::StorageObserved,
+                    json!({"level": level.as_str(), "available_bytes": available_bytes, "reserve_bytes": RESERVE_BYTES, "warning_bytes": WARNING_BYTES, "preflight_bytes": preflight_bytes, "session_nanoseconds": state.captured_nanoseconds}),
                 )
             }
             RecorderAction::ObserveSystemPower { host_time, asleep } => {
-                if !matches!(phase, "preparing" | "recording" | "finalizing" | "paused") {
+                if !phase.is_open_capture() {
                     return Err(StoreError::InvalidState(
                         "power changes are journaled only for an open session",
                     ));
                 }
                 // The log entry must not depend on the clock: an unmappable
                 // host time falls back to the last sealed position.
-                let position = if phase == "recording" {
+                let position = if phase == SessionLifecycle::Recording {
                     self.map_capture_time(&session.0, host_time)
                         .unwrap_or(state.captured_nanoseconds)
                 } else {
@@ -346,15 +355,15 @@ impl SessionStore {
                 };
                 (
                     if asleep {
-                        "system_sleep_observed"
+                        RecorderEventKind::SystemSleepObserved
                     } else {
-                        "system_wake_observed"
+                        RecorderEventKind::SystemWakeObserved
                     },
                     json!({"host_time": host_time, "session_nanoseconds": position.max(0)}),
                 )
             }
         };
-        let record = self.append_session_journal(&session.0, kind, None, payload)?;
+        let record = self.append_session_journal(&session.0, kind.as_str(), None, payload)?;
         self.project_recorder_event(&session.0, &record, true)?;
         self.recorder_detail(&session)
     }
@@ -369,49 +378,48 @@ impl SessionStore {
         available_bytes: u64,
     ) -> Result<RecorderDetail, StoreError> {
         self.release_storage_reserve()?;
-        let five_minute_pcm_bytes: u64 = self
-            .required_source_kinds(&session.0)?
-            .into_iter()
-            .map(|kind| u64::from(kind.capture_channels()) * 48_000 * 2 * 300)
-            .sum();
-        let preflight_bytes = RESERVE_BYTES + five_minute_pcm_bytes;
-        if self
-            .latest_recorder_payload(&session.0, "storage_observed")?
-            .as_ref()
-            .and_then(|p| p.get("level"))
-            .and_then(Value::as_str)
-            == Some("critical")
-        {
+        let preflight_bytes = preflight_bytes(self.required_source_kinds(&session.0)?);
+        if self.latest_storage_level(&session.0)? == StorageLevel::Critical {
             return self.recorder_detail(&session);
         }
         let captured_nanoseconds: i64 = self.connection.query_row(
-            "SELECT COALESCE(MAX(mapped_start_ns + sample_count * 1000000000 / 48000), 0)
+            "SELECT COALESCE(MAX(mapped_start_ns + sample_count * 1000000000 / ?2), 0)
              FROM segments WHERE session_id = ?1 AND lifecycle = 'sealed'",
-            [&session.0],
+            params![session.0, MEDIA_SAMPLE_RATE_HZ],
             |row| row.get(0),
         )?;
         let payload = json!({
-            "level": "critical",
+            "level": StorageLevel::Critical.as_str(),
             "available_bytes": available_bytes,
             "reserve_bytes": RESERVE_BYTES,
             "warning_bytes": WARNING_BYTES,
             "preflight_bytes": preflight_bytes,
             "session_nanoseconds": captured_nanoseconds,
         });
-        let record = self.append_session_journal(&session.0, "storage_observed", None, payload)?;
+        let record = self.append_session_journal(
+            &session.0,
+            RecorderEventKind::StorageObserved.as_str(),
+            None,
+            payload,
+        )?;
         self.project_recorder_event(&session.0, &record, true)?;
         self.recorder_detail(&session)
     }
 
     pub fn recorder_detail(&self, session: &SessionId) -> Result<RecorderDetail, StoreError> {
-        let lifecycle = self.connection.query_row(
+        let lifecycle = SessionLifecycle::parse(&self.connection.query_row::<String, _, _>(
             "SELECT lifecycle FROM sessions WHERE id = ?1",
             [&session.0],
             |r| r.get(0),
-        )?;
+        )?)?;
         let captured_nanoseconds: i64 = self.connection.query_row(
-            "SELECT COALESCE(MAX(mapped_start_ns + sample_count * 1000000000 / 48000), 0) FROM segments WHERE session_id = ?1 AND lifecycle = 'sealed'", [&session.0], |r| r.get(0))?;
-        let mut statement = self.connection.prepare("SELECT id, event_kind, session_nanoseconds, payload_json FROM session_events WHERE session_id = ?1 AND event_kind IN ('marker_added', 'capture_paused', 'capture_resumed', 'source_scope_selected', 'storage_observed', 'source_failed', 'system_sleep_observed', 'system_wake_observed', 'microphone_restore_requested', 'microphone_restore_cancelled', 'microphone_retired_unstarted') ORDER BY sequence")?;
+            "SELECT COALESCE(MAX(mapped_start_ns + sample_count * 1000000000 / ?2), 0) FROM segments WHERE session_id = ?1 AND lifecycle = 'sealed'", params![session.0, MEDIA_SAMPLE_RATE_HZ], |r| r.get(0))?;
+        let mut statement = self.connection.prepare(concat!(
+            "SELECT id, event_kind, session_nanoseconds, payload_json FROM session_events
+             WHERE session_id = ?1 AND event_kind IN ",
+            recorder_detail_kinds_sql!(),
+            " ORDER BY sequence"
+        ))?;
         let events = statement
             .query_map([&session.0], |r| {
                 Ok((
@@ -423,8 +431,9 @@ impl SessionStore {
             })?
             .map(|r| {
                 let (id, kind, session_nanoseconds, payload) = r?;
+                let kind = RecorderEventKind::parse(&kind)?;
                 let payload: Value = serde_json::from_str(&payload)?;
-                if kind == "source_failed" {
+                if kind == RecorderEventKind::SourceFailed {
                     return self.source_failure_event(&session.0, id, &payload);
                 }
                 let label = payload
@@ -441,13 +450,7 @@ impl SessionStore {
                 })
             })
             .collect::<Result<_, StoreError>>()?;
-        let storage_level = self
-            .latest_recorder_payload(&session.0, "storage_observed")?
-            .as_ref()
-            .and_then(|p| p.get("level"))
-            .and_then(Value::as_str)
-            .unwrap_or("unchecked")
-            .to_owned();
+        let storage_level = self.latest_storage_level(&session.0)?;
         Ok(RecorderDetail {
             lifecycle,
             captured_nanoseconds,
@@ -467,12 +470,12 @@ impl SessionStore {
         let source_id = payload_string(payload, "source_id")?;
         let (display_name, session_nanoseconds): (Option<String>, i64) = self.connection.query_row(
             "SELECT sources.display_name,
-                    COALESCE(MAX(segments.mapped_start_ns + segments.sample_count * 1000000000 / 48000), 0)
+                    COALESCE(MAX(segments.mapped_start_ns + segments.sample_count * 1000000000 / ?3), 0)
              FROM sources
              LEFT JOIN tracks ON tracks.source_id = sources.id
              LEFT JOIN segments ON segments.track_id = tracks.id AND segments.lifecycle = 'sealed'
              WHERE sources.session_id = ?1 AND sources.id = ?2",
-            params![session, source_id],
+            params![session, source_id, MEDIA_SAMPLE_RATE_HZ],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )?;
         let label = match display_name {
@@ -481,7 +484,7 @@ impl SessionStore {
         };
         Ok(RecorderEvent {
             id,
-            kind: "source_failed".to_owned(),
+            kind: RecorderEventKind::SourceFailed,
             session_nanoseconds,
             label,
         })
@@ -490,10 +493,10 @@ impl SessionStore {
     pub(super) fn latest_recorder_payload(
         &self,
         session: &str,
-        kind: &str,
+        kind: RecorderEventKind,
     ) -> Result<Option<Value>, StoreError> {
         let mut query = self.connection.prepare("SELECT payload_json FROM session_events WHERE session_id = ?1 AND event_kind = ?2 ORDER BY sequence DESC LIMIT 1")?;
-        let mut rows = query.query(params![session, kind])?;
+        let mut rows = query.query(params![session, kind.as_str()])?;
         rows.next()?
             .map(|r| -> Result<_, StoreError> {
                 Ok(serde_json::from_str(&r.get::<_, String>(0)?)?)
@@ -501,14 +504,31 @@ impl SessionStore {
             .transpose()
     }
 
+    /// The level of the latest `storage_observed`; `Unchecked` before any.
+    pub(super) fn latest_storage_level(&self, session: &str) -> Result<StorageLevel, StoreError> {
+        self.latest_recorder_payload(session, RecorderEventKind::StorageObserved)?
+            .as_ref()
+            .and_then(|payload| payload.get("level"))
+            .and_then(Value::as_str)
+            .map_or(Ok(StorageLevel::Unchecked), StorageLevel::parse)
+    }
+
     pub(super) fn has_active_segments(&self, session: &str) -> Result<bool, StoreError> {
-        Ok(self.connection.query_row("SELECT EXISTS(SELECT 1 FROM segments WHERE session_id = ?1 AND lifecycle IN ('opening', 'open', 'capturing'))", [session], |r| r.get(0))?)
+        Ok(self.connection.query_row(
+            concat!(
+                "SELECT EXISTS(SELECT 1 FROM segments WHERE session_id = ?1 AND lifecycle IN ",
+                active_media_sql!(),
+                ")"
+            ),
+            [session],
+            |r| r.get(0),
+        )?)
     }
 
     fn latest_capture_boundary(
         &self,
         session: &str,
-    ) -> Result<Option<(String, Value)>, StoreError> {
+    ) -> Result<Option<(RecorderEventKind, Value)>, StoreError> {
         let mut query = self.connection.prepare(
             "SELECT event_kind, payload_json FROM session_events WHERE session_id = ?1
              AND event_kind IN ('capture_paused', 'resume_requested', 'capture_resumed')
@@ -518,7 +538,7 @@ impl SessionStore {
         rows.next()?
             .map(|row| -> Result<_, StoreError> {
                 Ok((
-                    row.get(0)?,
+                    RecorderEventKind::parse(&row.get::<_, String>(0)?)?,
                     serde_json::from_str(&row.get::<_, String>(1)?)?,
                 ))
             })
@@ -533,7 +553,8 @@ impl SessionStore {
         host: u64,
     ) -> Result<(), StoreError> {
         if let Some((kind, payload)) = self.latest_capture_boundary(session)?
-            && (kind != "capture_resumed" || host < payload_u64(&payload, "host_time")?)
+            && (kind != RecorderEventKind::CaptureResumed
+                || host < payload_u64(&payload, "host_time")?)
         {
             return Err(StoreError::InvalidState(
                 "sample precedes the resume boundary",
@@ -558,20 +579,17 @@ impl SessionStore {
         )?)
     }
 
-    fn microphone_required_lifecycle(&self, session: &str) -> Result<String, StoreError> {
-        self.connection
+    fn microphone_required_lifecycle(&self, session: &str) -> Result<SourceLifecycle, StoreError> {
+        let lifecycle: String = self
+            .connection
             .query_row(
                 "SELECT lifecycle FROM required_sources
                  WHERE session_id = ?1 AND kind = 'microphone'",
                 [session],
                 |row| row.get(0),
             )
-            .map_err(|error| match error {
-                rusqlite::Error::QueryReturnedNoRows => {
-                    StoreError::InvalidState("microphone is not part of this recording")
-                }
-                other => StoreError::Sqlite(other),
-            })
+            .map_err(missing_row("microphone is not part of this recording"))?;
+        SourceLifecycle::parse(&lifecycle)
     }
 
     fn microphone_is_capturing(&self, session: &str) -> Result<bool, StoreError> {
@@ -596,12 +614,16 @@ impl SessionStore {
     /// Failed, or a restore that was requested and has not opened a live source.
     fn microphone_is_retired_for_restore(&self, session: &str) -> Result<bool, StoreError> {
         Ok(self.connection.query_row(
-            "SELECT EXISTS(SELECT 1 FROM required_sources
+            concat!(
+                "SELECT EXISTS(SELECT 1 FROM required_sources
              WHERE session_id = ?1 AND kind = 'microphone'
                AND lifecycle IN ('failed', 'required'))
              AND NOT EXISTS(SELECT 1 FROM sources
              WHERE session_id = ?1 AND kind = 'microphone'
-               AND lifecycle IN ('opening', 'open', 'capturing'))",
+               AND lifecycle IN ",
+                active_media_sql!(),
+                ")"
+            ),
             [session],
             |row| row.get(0),
         )?)
@@ -646,14 +668,6 @@ impl SessionStore {
             });
             let record =
                 self.append_session_journal(session, "segment_capture_gap", Some(path), payload)?;
-            let (sequence, prior) = next_database_event(&self.connection, session)?;
-            let digest = event_digest(
-                session,
-                sequence,
-                "segment_capture_gap",
-                &record.body.payload,
-                prior.as_deref(),
-            )?;
             let now = wall_time_milliseconds();
             let tx = self.connection.transaction()?;
             let changed = tx.execute(
@@ -678,38 +692,35 @@ impl SessionStore {
                 params![source, session],
             )?;
             tx.execute(
-                "UPDATE sessions SET health = 'degraded',
+                concat!(
+                    "UPDATE sessions SET health = 'degraded',
                      media_files_open = EXISTS(
                          SELECT 1 FROM segments
                          WHERE session_id = ?1
-                           AND lifecycle IN ('opening', 'open', 'capturing')
-                     ),
+                           AND lifecycle IN ",
+                    active_media_sql!(),
+                    "),
                      updated_at_ms = ?2
-                 WHERE id = ?1",
+                 WHERE id = ?1"
+                ),
                 params![session, now],
             )?;
-            insert_event_with_id(
-                &tx,
-                &record.body.event_id,
-                session,
-                sequence,
-                "segment_capture_gap",
-                record.body.wall_time_milliseconds,
-                &record.body.payload,
-                prior.as_deref(),
-                &digest,
-            )?;
+            insert_journaled_event(&tx, &record, "segment_capture_gap")?;
             tx.commit()?;
         }
         if !segments.is_empty() {
             self.connection.execute(
-                "UPDATE required_sources SET lifecycle = 'failed'
+                concat!(
+                    "UPDATE required_sources SET lifecycle = 'failed'
                  WHERE session_id = ?1 AND kind = 'microphone'
                    AND lifecycle IN ('required', 'opening', 'open')
                    AND NOT EXISTS(
                      SELECT 1 FROM sources
                      WHERE session_id = ?1 AND kind = 'microphone'
-                       AND lifecycle IN ('opening', 'open', 'capturing'))",
+                       AND lifecycle IN ",
+                    active_media_sql!(),
+                    ")"
+                ),
                 [session],
             )?;
         }
@@ -717,13 +728,7 @@ impl SessionStore {
     }
 
     pub(super) fn require_storage_headroom(&self, session: &str) -> Result<(), StoreError> {
-        if self
-            .latest_recorder_payload(session, "storage_observed")?
-            .as_ref()
-            .and_then(|p| p.get("level"))
-            .and_then(Value::as_str)
-            == Some("critical")
-        {
+        if self.latest_storage_level(session)? == StorageLevel::Critical {
             return Err(StoreError::InvalidState(
                 "storage reserve prohibits opening media",
             ));
@@ -761,29 +766,18 @@ impl SessionStore {
         records: &[JournalRecord],
     ) -> Result<(), StoreError> {
         let _writer = self.write_guard()?;
-        for record in records.iter().filter(|r| {
-            matches!(
-                r.body.event_kind.as_str(),
-                "pause_requested"
-                    | "capture_paused"
-                    | "resume_requested"
-                    | "capture_resumed"
-                    | "paused_session_finalized"
-                    | "marker_added"
-                    | "source_scope_selected"
-                    | "storage_observed"
-                    | "system_sleep_observed"
-                    | "system_wake_observed"
-                    | "microphone_restore_requested"
-                    | "microphone_restore_cancelled"
-                    | "microphone_retired_unstarted"
-            )
-        }) {
+        for record in records {
+            let Ok(kind) = RecorderEventKind::parse(&record.body.event_kind) else {
+                continue;
+            };
+            if !kind.is_recorder_journaled() {
+                continue;
+            }
             // Replay projects the event without moving the lifecycle: the row
             // already holds whatever later actions produced. The one exception
             // is a finished pause, which nothing can follow, so its lifecycle
             // effect is replayed exactly as the live action applied it.
-            let apply_lifecycle = record.body.event_kind == "paused_session_finalized";
+            let apply_lifecycle = kind == RecorderEventKind::PausedSessionFinalized;
             self.project_recorder_event(session, record, apply_lifecycle)?;
         }
         Ok(())
@@ -803,30 +797,19 @@ impl SessionStore {
         if present {
             return Ok(());
         }
-        let kind = record.body.event_kind.as_str();
+        let kind = RecorderEventKind::parse(&record.body.event_kind)?;
         let p = &record.body.payload;
-        let (sequence, prior) = next_database_event(&self.connection, session)?;
-        let digest = event_digest(session, sequence, kind, p, prior.as_deref())?;
         let tx = self.connection.transaction()?;
-        if apply_lifecycle {
-            let phase = match kind {
-                "pause_requested" => Some("finalizing"),
-                "capture_paused" => Some("paused"),
-                "resume_requested" => Some("preparing"),
-                "paused_session_finalized" => Some("ready_for_review"),
-                _ => None,
-            };
-            if let Some(phase) = phase {
-                tx.execute(
-                    "UPDATE sessions SET lifecycle = ?2, updated_at_ms = ?3 WHERE id = ?1",
-                    params![session, phase, record.body.wall_time_milliseconds],
-                )?;
-            }
+        if apply_lifecycle && let Some(phase) = kind.lifecycle_effect() {
+            tx.execute(
+                "UPDATE sessions SET lifecycle = ?2, updated_at_ms = ?3 WHERE id = ?1",
+                params![session, phase.as_str(), record.body.wall_time_milliseconds],
+            )?;
         }
-        if kind == "marker_added" {
+        if kind == RecorderEventKind::MarkerAdded {
             tx.execute("INSERT OR IGNORE INTO markers(id, schema_version, session_id, session_nanoseconds, label) VALUES(?1, ?2, ?3, ?4, ?5)", params![payload_string(p, "marker_id")?, SCHEMA_VERSION, session, payload_i64(p, "session_nanoseconds")?, payload_string(p, "label")?])?;
         }
-        if kind == "microphone_restore_requested" {
+        if kind == RecorderEventKind::MicrophoneRestoreRequested {
             // The sealed failure stays. The next microphone authorization is a
             // new source, and only an explicit restore makes that kind required.
             // `required` is accepted so a retry of an attempt that never opened
@@ -838,7 +821,11 @@ impl SessionStore {
                 [session],
             )?;
         }
-        if kind == "microphone_restore_cancelled" || kind == "microphone_retired_unstarted" {
+        if matches!(
+            kind,
+            RecorderEventKind::MicrophoneRestoreCancelled
+                | RecorderEventKind::MicrophoneRetiredUnstarted
+        ) {
             tx.execute(
                 "UPDATE required_sources SET lifecycle = 'failed'
                  WHERE session_id = ?1 AND kind = 'microphone'
@@ -846,7 +833,7 @@ impl SessionStore {
                 [session],
             )?;
         }
-        if kind == "source_scope_selected" {
+        if kind == RecorderEventKind::SourceScopeSelected {
             // A failed source is already retired; its failure evidence stays projected.
             tx.execute("UPDATE sources SET lifecycle = 'ended' WHERE session_id = ?1 AND kind != 'microphone' AND lifecycle != 'failed'", [session])?;
             tx.execute(
@@ -854,27 +841,19 @@ impl SessionStore {
                 [session],
             )?;
             if let Some(audio_kind) = p.get("audio_kind").and_then(Value::as_str) {
-                MediaSourceKind::from_str(audio_kind)?;
+                parse_source_kind(audio_kind)?;
                 tx.execute("INSERT INTO required_sources(session_id, schema_version, kind, lifecycle) VALUES(?1, ?2, ?3, 'required')", params![session, SCHEMA_VERSION, audio_kind])?;
             }
         }
-        if kind == "storage_observed" && p.get("level").and_then(Value::as_str) != Some("normal") {
+        if kind == RecorderEventKind::StorageObserved
+            && p.get("level").and_then(Value::as_str) != Some(StorageLevel::Normal.as_str())
+        {
             tx.execute(
                 "UPDATE sessions SET health = 'degraded' WHERE id = ?1",
                 [session],
             )?;
         }
-        insert_event_with_id(
-            &tx,
-            &record.body.event_id,
-            session,
-            sequence,
-            kind,
-            record.body.wall_time_milliseconds,
-            p,
-            prior.as_deref(),
-            &digest,
-        )?;
+        insert_journaled_event(&tx, record, kind.as_str())?;
         tx.commit()?;
         Ok(())
     }

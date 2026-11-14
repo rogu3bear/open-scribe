@@ -23,7 +23,9 @@ struct CaptureSourceHealthTelemetryRecord: Equatable, Sendable {
 }
 
 enum AppTelemetry {
-  private static let subsystem = Bundle.main.bundleIdentifier ?? "app.open-scribe.dev"
+  /// The running app's bundle id; the development id when none is readable.
+  static let bundleIdentifier = Bundle.main.bundleIdentifier ?? "app.open-scribe.dev"
+  private static let subsystem = bundleIdentifier
   private static let scenes = Logger(subsystem: subsystem, category: "Scenes")
   private static let commands = Logger(subsystem: subsystem, category: "Commands")
   private static let capture = Logger(subsystem: subsystem, category: "CaptureProof")
@@ -34,18 +36,20 @@ enum AppTelemetry {
   static let signposter = OSSignposter(subsystem: subsystem, category: "Performance")
 
   /// Both sinks consume the same validated record. No raw Error, path or
-  /// caller-supplied message reaches the public unified log first.
+  /// caller-supplied message reaches the public unified log first. The crash
+  /// annotation observes each emission once, before redaction.
   private static func emit(
     _ logger: Logger, category: String, message: String,
     failure: Bool = false, journal: Bool = true
   ) {
+    CrashReportContent.observe(message)
     let safe = DiagnosticPrivacy.sanitize(category: category, message: message)
     if failure {
       logger.error("\(safe.message, privacy: .public)")
     } else {
       logger.info("\(safe.message, privacy: .public)")
     }
-    if journal { DiagnosticJournal.shared.record(category: safe.category, message: safe.message) }
+    if journal { DiagnosticJournal.shared.append(safe) }
   }
 
   static func sceneAppeared(_ scene: String, status: AppStatus) {
@@ -54,19 +58,11 @@ enum AppTelemetry {
       message: "scene=\(scene) rust_core_version=\(status.coreVersion)")
   }
 
-  static func sceneAppeared(_ scene: String, snapshot: SessionPresentation) {
-    emit(
-      scenes, category: "Scenes",
-      message:
-        "scene=\(scene) fixture=\(snapshot.fixtureName) lifecycle=\(snapshot.lifecycle) presentation=\(snapshot.presentation) journal_durable=\(snapshot.journalDurable) media_files_open=\(snapshot.mediaFilesOpen)"
-    )
-  }
-
   static func runtimeSceneAppeared(_ scene: String, session: RuntimeSessionPresentation?) {
     emit(
       scenes, category: "Scenes",
       message:
-        "scene=\(scene) runtime_session=\(session?.sessionId ?? "none") lifecycle=\(session?.lifecycle ?? "idle") journal_durable=\(session?.journalDurable ?? false) media_files_open=\(session?.mediaFilesOpen ?? false)"
+        "scene=\(scene) runtime_session=\(session?.sessionId ?? "none") lifecycle=\(session?.lifecycle.description ?? "idle") journal_durable=\(session?.journalDurable ?? false) media_files_open=\(session?.mediaFilesOpen ?? false)"
     )
   }
 
@@ -74,8 +70,9 @@ enum AppTelemetry {
     emit(commands, category: "Commands", message: "command=\(command)")
   }
 
-  static func captureProof(stage: String, detail: String) {
-    emit(capture, category: "CaptureProof", message: "stage=\(stage) detail=\(detail)")
+  static func captureProof(stage: CaptureProofStage, detail: String) {
+    emit(
+      capture, category: "CaptureProof", message: "stage=\(stage.rawValue) detail=\(detail)")
   }
 
   static func captureSourceHealth(_ record: CaptureSourceHealthTelemetryRecord) {
@@ -86,8 +83,9 @@ enum AppTelemetry {
       journal: record.observation.event != .progress)
   }
 
-  static func recoveryProof(stage: String, detail: String) {
-    emit(recovery, category: "RecoveryProof", message: "stage=\(stage) detail=\(detail)")
+  static func recoveryProof(stage: RecoveryProofStage, detail: String) {
+    emit(
+      recovery, category: "RecoveryProof", message: "stage=\(stage.rawValue) detail=\(detail)")
   }
 
   static func launchFailed(_ failure: String) {

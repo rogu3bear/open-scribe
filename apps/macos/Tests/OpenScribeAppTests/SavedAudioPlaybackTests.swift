@@ -40,7 +40,7 @@ final class SavedAudioPlaybackTests: RecoveredSessionTestCase {
       importedPlaybackLeaseProvider: { _ in lease },
       player: player
     )
-    let imported = savedSession(availability: "available", absolutePath: "/tmp/imported.caf")
+    let imported = savedSession(availability: .available, absolutePath: "/tmp/imported.caf")
 
     controller.play(imported)
     await assertEventually { controller.playingSessionId == imported.sessionId }
@@ -61,7 +61,7 @@ final class SavedAudioPlaybackTests: RecoveredSessionTestCase {
       importedPlaybackLeaseProvider: { _ in ImportedPlaybackLeaseFake(path: descriptorReceipt()) },
       player: player
     )
-    let imported = savedSession(availability: "available", absolutePath: "/tmp/imported.m4a")
+    let imported = savedSession(availability: .available, absolutePath: "/tmp/imported.m4a")
 
     controller.play(imported, startNanoseconds: 12_500_000_000)
     await assertEventually { controller.playingSessionId == imported.sessionId }
@@ -83,7 +83,7 @@ final class SavedAudioPlaybackTests: RecoveredSessionTestCase {
     )
     let imported = savedSession(
       sessionId: "pending-import",
-      availability: "available",
+      availability: .available,
       absolutePath: "/tmp/pending.caf"
     )
 
@@ -103,7 +103,7 @@ final class SavedAudioPlaybackTests: RecoveredSessionTestCase {
     player.holdImportedPlayback = false
     let replacement = savedSession(
       sessionId: "replacement-import",
-      availability: "available",
+      availability: .available,
       absolutePath: "/tmp/replacement.caf"
     )
     controller.play(replacement)
@@ -172,7 +172,7 @@ final class SavedAudioPlaybackTests: RecoveredSessionTestCase {
   }
 
   func testUnavailableAndCorruptCapturedSessionsUseNeutralSavedAudioMessaging() {
-    for availability in ["unavailable", "corrupt"] {
+    for availability in [NativePlayableMediaAvailability.unavailable, .corrupt] {
       let player = RecoveredAudioPlayerFake()
       let leaseRequested = SendableFlag()
       let controller = RecoveredSessionController(
@@ -196,7 +196,7 @@ final class SavedAudioPlaybackTests: RecoveredSessionTestCase {
       XCTAssertFalse(leaseRequested.value)
       XCTAssertEqual(
         controller.errorMessage,
-        availability == "corrupt"
+        availability == .corrupt
           ? "Saved audio appears corrupt and was not opened."
           : "Saved audio is unavailable and was not opened.")
       XCTAssertEqual(controller.errorSessionId, captured.sessionId)
@@ -213,7 +213,7 @@ final class SavedAudioPlaybackTests: RecoveredSessionTestCase {
 
     controller.play(
       savedSession(
-        sessionId: "session-captured", availability: "available", absolutePath: nil,
+        sessionId: "session-captured", availability: .available, absolutePath: nil,
         sourceDisplayName: "Mac microphone"))
     await assertEventually { controller.errorSessionId == "session-captured" }
 
@@ -234,7 +234,7 @@ final class SavedAudioPlaybackTests: RecoveredSessionTestCase {
       importedPlaybackLeaseProvider: { _ in selectedLease.lease },
       player: player
     )
-    let first = savedSession(availability: "available", absolutePath: "/tmp/first.caf")
+    let first = savedSession(availability: .available, absolutePath: "/tmp/first.caf")
     controller.play(first)
     await assertEventually { controller.playingSessionId == first.sessionId }
     XCTAssertTrue(player.retainedLease === firstLease)
@@ -245,8 +245,8 @@ final class SavedAudioPlaybackTests: RecoveredSessionTestCase {
       native: NativeRuntimeSessionSnapshot(
         sessionId: "session-replacement",
         title: "Replacement",
-        lifecycle: "ready_for_review",
-        health: "healthy",
+        titleSource: .person, lifecycle: .readyForReview,
+        health: .healthy,
         elapsedSeconds: 2,
         journalDurable: true,
         mediaFilesOpen: false,
@@ -256,7 +256,7 @@ final class SavedAudioPlaybackTests: RecoveredSessionTestCase {
         sources: [],
         playableMedia: NativeRuntimePlayableMediaSnapshot(
           sourceDisplayName: "replacement.caf",
-          availability: "available",
+          availability: .available,
           absolutePath: "/tmp/replacement.caf",
           durationNanoseconds: 2_000_000_000,
           sampleCount: 96_000,
@@ -659,7 +659,7 @@ final class SavedAudioPlaybackTests: RecoveredSessionTestCase {
       importedPlaybackLeaseProvider: { _ in lease },
       player: player
     )
-    let imported = savedSession(availability: "available", absolutePath: "/tmp/imported.caf")
+    let imported = savedSession(availability: .available, absolutePath: "/tmp/imported.caf")
 
     controller.play(imported)
     await assertEventually { controller.playingSessionId == imported.sessionId }
@@ -687,7 +687,7 @@ final class SavedAudioPlaybackTests: RecoveredSessionTestCase {
       importedPlaybackLeaseProvider: { _ in lease },
       player: player
     )
-    let imported = savedSession(availability: "available", absolutePath: nil)
+    let imported = savedSession(availability: .available, absolutePath: nil)
 
     controller.play(imported)
     await assertEventually { controller.playingSessionId == imported.sessionId }
@@ -718,12 +718,12 @@ final class SavedAudioPlaybackTests: RecoveredSessionTestCase {
     )
     let first = savedSession(
       sessionId: "session-first",
-      availability: "available",
+      availability: .available,
       absolutePath: "/tmp/first.caf"
     )
     let second = savedSession(
       sessionId: "session-second",
-      availability: "available",
+      availability: .available,
       absolutePath: "/tmp/second.caf"
     )
 
@@ -767,7 +767,7 @@ final class SavedAudioPlaybackTests: RecoveredSessionTestCase {
     )
     let captured = savedSession(
       sessionId: "session-captured",
-      availability: "available",
+      availability: .available,
       absolutePath: "/managed/large.caf",
       byteLength: 268_435_457,
       sourceDisplayName: "Mac microphone"

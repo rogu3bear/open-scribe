@@ -38,9 +38,10 @@ Import copies user-selected audio into the conversation library without changing
 the original or starting transcription. PCM CAF may be four hours of stereo
 16-bit 48 kHz audio. Files above 256 MiB play as verified chunks and are not
 held in memory. M4A AAC/Apple Lossless imports have a 4 GiB source limit and
-the same four-hour duration limit. Compressed preservation supports a single
-audio track at 48 kHz with one or two channels; small mono M4A at other rates
-uses the existing bounded 48 kHz CAF normalization path. Unsupported layouts,
+the same four-hour duration limit. M4A imports retain a byte-identical managed
+original with one or two channels. Transcription derives a temporary 48 kHz
+PCM companion from the verified original; importing a different sample rate
+does not replace the original with decoded audio. Unsupported layouts,
 rates, formats, or policy excesses
 fail with a visible explanation. Capture must finish before import begins.
 The picker accepts several recordings and imports them in order, one copy and
@@ -50,7 +51,7 @@ imported. The batch waits between files while capture holds admission and does
 not change the selected conversation for every successful import. Originals
 are always kept; there is no automatic compression or deletion.
 
-Swift probes the selected file and a private staged copy. Rust verifies the
+Swift probes a private staged copy. Rust verifies the
 staged digest, copies and synchronizes managed media, checks its exact bytes,
 then journals and atomically publishes a Ready for Review session. Large M4A
 playback retains an identity-bound descriptor and verifies 64 KiB chunks while
@@ -60,13 +61,17 @@ playback revalidates the full digest before opening a decoder. Original metadata
 remains separate from the managed media contract. ADR 0007 owns the boundary;
 this slice does not qualify its complete platform or M1 runtime matrix.
 
+See the [conversation review guide](../../docs/REVIEW_GUIDE.md) for the main
+recording, import, playback, correction, search, and export controls.
+
 ## Conversation review
 
 The conversation reader shows the actual date added to the library, stored
 media size and source names. The added date is not an inferred recording date.
 It offers original-language written transcripts using an explicitly installed
-compatible model; selecting files does not download weights. Automatic
-transcription still follows Settings and Rust's existing admission policy.
+compatible model. Download fetches only that published catalog file. Choosing
+a local file does not fetch anything else. Recording does not download a model.
+Automatic transcription still follows Settings and Rust's existing admission policy.
 
 Click a passage's speaker label to confirm a person for that passage, reuse a
 person already named in the conversation, or reset to its audio-source label.
@@ -76,8 +81,11 @@ never transfer by passage number to a replacement transcript. Whole-source
 labels remain separately editable. Filter the reader by person or search the
 library with `speaker:Dana`; speaker searches match a literal name prefix,
 without interpreting punctuation as search syntax. Names are human assertions,
-not voice recognition. Automatic diarization remains unavailable until the
-model and calibration prerequisites in ADRs 0008–0009 are satisfied.
+not voice recognition. Opening a transcript records that microphone,
+application, and system tracks keep those source labels, and that imported
+or other unknown audio stays unresolved. Automatic diarization remains
+unavailable until the model and calibration prerequisites in ADRs 0008–0009
+are satisfied. The review does not invent speaker numbers.
 
 During saved-audio playback, Follow playback reads the native renderer clock
 and keeps the current passage in view. It can be turned off for free reading.

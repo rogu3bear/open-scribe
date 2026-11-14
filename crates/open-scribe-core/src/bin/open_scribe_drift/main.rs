@@ -5,15 +5,17 @@
 //! never overwrites existing evidence. Exit 0 is GREEN, 1 is RED, 2 is an
 //! unusable invocation or input.
 
-use open_scribe_core::{
-    DriftOptions, StimulusSpec, TWO_HOURS_NANOSECONDS, measure_drift, write_stimulus_wav,
-};
+mod measurement;
+mod stimulus;
+
+use measurement::{DriftOptions, TWO_HOURS_NANOSECONDS, measure_drift};
 use open_scribe_store::SessionStore;
 use open_scribe_types::SessionId;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::PathBuf;
 use std::process::ExitCode;
+use stimulus::{StimulusSpec, write_stimulus_wav};
 
 const USAGE: &str = "usage:
   open-scribe-drift stimulus --seed N --seconds S --out NEW_DIRECTORY

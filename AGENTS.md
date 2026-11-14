@@ -1,6 +1,6 @@
 # Open Scribe Agent Contract
 
-This file routes work to repository truth. `CLAUDE.md` is its byte-identical mirror; `./script/check.sh --scaffold` enforces that invariant.
+This file routes work to repository truth for every agent harness. There is no `CLAUDE.md`: Claude Code loads this file natively, and a project `CLAUDE.md` would suppress it; `./script/check.sh --scaffold` enforces its absence.
 
 ## Current stage
 

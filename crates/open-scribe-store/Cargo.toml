@@ -8,6 +8,7 @@ authors.workspace = true
 publish.workspace = true
 
 [dependencies]
+open-scribe-diarize = { path = "../open-scribe-diarize" }
 open-scribe-domain = { path = "../open-scribe-domain" }
 open-scribe-evidence = { path = "../open-scribe-evidence" }
 open-scribe-types = { path = "../open-scribe-types" }

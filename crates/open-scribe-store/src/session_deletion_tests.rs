@@ -3,6 +3,9 @@ use crate::transcripts::tests::{
     Fixture, complete_all, identity, imported_fixture, plan, sample, write_caf,
 };
 use crate::{ImportMediaRequest, SESSIONS_DIRECTORY};
+use open_scribe_evidence::{
+    AdjudicationAction, ClaimKind, ClaimProducer, ClaimStatus, DERIVED_CLAIM_SCHEMA, DerivedClaim,
+};
 use sha2::{Digest, Sha256};
 use std::path::Path;
 
@@ -21,6 +24,53 @@ fn session_tables(store: &SessionStore) -> Vec<String> {
         .unwrap()
         .collect::<Result<_, _>>()
         .unwrap()
+}
+
+#[test]
+fn deletion_declares_every_session_table() {
+    // Emptied by ON DELETE CASCADE from transcription_runs and
+    // transcript_named_speakers.
+    const CASCADED: [&str; 2] = ["transcript_revisions", "transcript_turn_speakers"];
+    let fixture = imported_fixture(48_000);
+    let mut declared: Vec<String> = SESSION_OWNED_TABLES
+        .iter()
+        .chain(&CASCADED)
+        .map(|table| (*table).to_owned())
+        .collect();
+    declared.push("deletion_receipts".to_owned());
+    declared.sort();
+    assert_eq!(declared, session_tables(&fixture.store));
+}
+
+fn insert_claim(fixture: &mut Fixture, revision: &str) {
+    let session = fixture.session.clone();
+    let cited = fixture
+        .store
+        .cite_transcript_segment(&session, revision, 0)
+        .unwrap();
+    let claim = DerivedClaim {
+        schema: DERIVED_CLAIM_SCHEMA.to_owned(),
+        claim_id: "claim-decision".into(),
+        revision_id: "revision-a".into(),
+        session_id: session.0.clone(),
+        kind: ClaimKind::Decision,
+        text: "The team agreed to ship the local recorder.".into(),
+        status: ClaimStatus::Agreed,
+        supporting: vec![cited],
+        contradicting: Vec::new(),
+        producer: ClaimProducer::ModelRun,
+        adjudication: None,
+    };
+    fixture.store.insert_derived_claim(&claim).unwrap();
+    let mut corrected = claim
+        .with_adjudication(
+            AdjudicationAction::Corrected,
+            "revision-b",
+            "adjudication-1",
+        )
+        .unwrap();
+    corrected.text = "The team deferred the remote recorder.".into();
+    fixture.store.insert_derived_claim(&corrected).unwrap();
 }
 
 fn reviewed_fixture() -> (Fixture, String) {
@@ -88,7 +138,7 @@ fn import_second(fixture: &mut Fixture) -> SessionId {
 
 #[test]
 fn deletion_states_its_scope_requires_trash_and_removes_every_owned_row() {
-    let (mut fixture, _) = reviewed_fixture();
+    let (mut fixture, revision) = reviewed_fixture();
     let session = fixture.session.clone();
     let kept = import_second(&mut fixture);
     let media_digest = digest(&fixture.media);
@@ -97,7 +147,10 @@ fn deletion_states_its_scope_requires_trash_and_removes_every_owned_row() {
     fs::create_dir_all(&exports).unwrap();
     fs::write(exports.join("notes.txt"), b"exported").unwrap();
     fixture.store.cancel_transcription(&session).unwrap();
+    insert_claim(&mut fixture, &revision);
+    fixture.store.prepare_speaker_diarization(&session).unwrap();
     assert_eq!(rows(&fixture.store, "transcription_intent", &session), 1);
+    assert_eq!(rows(&fixture.store, "derived_claim_revisions", &session), 2);
 
     let inventory = fixture.store.begin_session_deletion(&session).unwrap();
     assert_eq!(
@@ -115,6 +168,7 @@ fn deletion_states_its_scope_requires_trash_and_removes_every_owned_row() {
             context_events: 0,
             export_files: 1,
             export_bytes: 8,
+            derived_items: 1,
         }
     );
 
@@ -123,6 +177,7 @@ fn deletion_states_its_scope_requires_trash_and_removes_every_owned_row() {
         Err(StoreError::InvalidState(_))
     ));
     assert_eq!(rows(&fixture.store, "transcript_revisions", &session), 1);
+    assert_eq!(rows(&fixture.store, "derived_claim_revisions", &session), 2);
     assert_eq!(
         fixture
             .store
@@ -348,6 +403,40 @@ fn confirmation_freezes_review_and_legacy_checkpoints_without_blocking_orphan_de
             .is_ok()
     );
     assert!(other.mark_transcript_chunk_running(&run.run_id, 0).is_ok());
+}
+
+#[test]
+fn cancelling_deletion_preserves_media_bytes_and_review_rows() {
+    let (mut fixture, _) = reviewed_fixture();
+    let session = fixture.session.clone();
+    fixture.store.cancel_transcription(&session).unwrap();
+    let media_digest = digest(&fixture.media);
+    let segments = rows(&fixture.store, "segments", &session);
+    let corrections = rows(&fixture.store, "transcript_corrections", &session);
+    assert!(segments > 0);
+    assert!(corrections > 0);
+    fixture.store.begin_session_deletion(&session).unwrap();
+    fixture.store.abandon_session_deletion(&session).unwrap();
+    assert_eq!(digest(&fixture.media), media_digest);
+    assert_eq!(rows(&fixture.store, "segments", &session), segments);
+    assert_eq!(
+        rows(&fixture.store, "transcript_corrections", &session),
+        corrections
+    );
+    assert_eq!(
+        rows(&fixture.store, "session_deletion_intents", &session),
+        0
+    );
+    let lifecycle: String = fixture
+        .store
+        .connection
+        .query_row(
+            "SELECT lifecycle FROM sessions WHERE id = ?1",
+            [&session.0],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_ne!(lifecycle, "deleted");
 }
 
 #[test]

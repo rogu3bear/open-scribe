@@ -19,6 +19,9 @@ future app distribution; they do not change the open-source license.
 
 The [founding product contract](docs/product/FOUNDING_PRD.md) owns intent. Start with [AGENTS.md](AGENTS.md) for task routing, [ANCHOR.md](ANCHOR.md) for invariants, and [NORTH_STAR.md](NORTH_STAR.md) for purpose.
 
+For the main library, recording, search, correction, and export controls, see
+the [conversation review guide](docs/REVIEW_GUIDE.md).
+
 ## Intended architecture
 
 - **SwiftUI/macOS:** native application scenes and Apple-platform adapters.

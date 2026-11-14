@@ -5,7 +5,9 @@ use crate::{
     transcribe_request,
 };
 use open_scribe_asr::{DecodeOptions, SpeechRecognizer};
-use open_scribe_store::{SessionStore, StoreError, TranscriptionOperation, TranscriptionRunPolicy};
+use open_scribe_store::{
+    RetainedRunUse, SessionStore, StoreError, TranscriptionOperation, TranscriptionRunPolicy,
+};
 use open_scribe_types::{SessionId, TranscriptionIntent, WorkOutcome};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -81,23 +83,11 @@ pub fn plan_transcription_operation(
         } else if store.selected_final_matches_input(session, &track, &input.input_digest)? {
             continue;
         }
-        let candidates = runs.iter().rev().filter(|run| {
-            run.track_id == track
-                && run.total_chunks > 0
-                && run.completed_chunks == run.total_chunks
-                && (matches!(run.state.as_str(), "running" | "cancelled")
-                    || (intent == TranscriptionIntent::ReprocessAll && run.state == "complete")
-                    || (run.state == "failed"
-                        && matches!(
-                            run.failure_class.as_deref(),
-                            Some(
-                                "invalid_result"
-                                    | "stale_reconciliation"
-                                    | "orphaned"
-                                    | "storage_error"
-                            )
-                        )))
-        });
+        let purpose = RetainedRunUse::for_intent(intent);
+        let candidates = runs
+            .iter()
+            .rev()
+            .filter(|run| run.track_id == track && run.retains_chunks(purpose));
         let mut retained = None;
         for run in candidates {
             let record = store.transcription_run_record(&run.run_id)?;
@@ -141,7 +131,7 @@ pub fn execute_transcription_plan(
     let mut outcomes = Vec::new();
     for (index, track) in plan.tracks.iter().enumerate() {
         if cancel.load(Ordering::Acquire) {
-            return Err(StoreError::InvalidState("transcription deferred or cancelled").into());
+            return Err(TranscriptionError::Cancelled);
         }
         if plan.intent != TranscriptionIntent::ReprocessAll
             && store.has_compatible_selected_final(&plan.session, &track.track_id)?
@@ -161,9 +151,7 @@ pub fn execute_transcription_plan(
             });
         } else {
             let Some(ref mut recognizer) = recognizer else {
-                return Err(
-                    StoreError::InvalidState("recognition required but no model loaded").into(),
-                );
+                return Err(TranscriptionError::RecognizerRequired);
             };
             outcomes.push(transcribe_request(
                 store,

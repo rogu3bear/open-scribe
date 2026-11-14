@@ -22,7 +22,12 @@ fn playable_count(recovery: &LibraryRecovery, session: &SessionId) -> usize {
 }
 
 fn lifecycle(store: &SessionStore, session: &SessionId) -> String {
-    store.recorder_detail(session).unwrap().lifecycle
+    store
+        .recorder_detail(session)
+        .unwrap()
+        .lifecycle
+        .as_str()
+        .to_owned()
 }
 
 /// Rotates both sources `rotations` times with 10 ms segments, sealing each

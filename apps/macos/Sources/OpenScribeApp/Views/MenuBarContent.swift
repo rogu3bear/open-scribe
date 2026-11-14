@@ -11,6 +11,8 @@ struct MenuBarContent: View {
   @ObservedObject var navigation: MainWorkspaceNavigation
   @ObservedObject var scheduler: TranscriptionScheduler
   @ObservedObject var speech: SpeechTranscriptionModel
+  /// Copies a saved conversation's transcript, as the window's Copy does.
+  var copyConversation: (@MainActor (RuntimeSessionPresentation) -> Void)?
 
   @MainActor
   init(
@@ -21,11 +23,13 @@ struct MenuBarContent: View {
     context: ContextScopeModel? = nil,
     navigation: MainWorkspaceNavigation? = nil,
     scheduler: TranscriptionScheduler? = nil,
-    speech: SpeechTranscriptionModel? = nil
+    speech: SpeechTranscriptionModel? = nil,
+    copyConversation: (@MainActor (RuntimeSessionPresentation) -> Void)? = nil
   ) {
+    self.copyConversation = copyConversation
     self.store = store
     self.importedMediaAuthority = importedMediaAuthority
-    self.liveRecording = liveRecording ?? LiveMicrophoneRecordingController()
+    self.liveRecording = liveRecording ?? LiveMicrophoneRecordingController(managedRoot: nil)
     self.recoveredSessions =
       recoveredSessions ?? RecoveredSessionController(managedRoot: nil)
     self.context = context ?? ContextScopeModel(binding: { nil })
@@ -35,82 +39,92 @@ struct MenuBarContent: View {
   }
 
   var body: some View {
-    if let current = store.currentSession {
-      CaptureStatusLabel(text: current.statusText, symbolName: Self.statusSymbol(for: current))
-      Text(current.timerText)
+    let library = store.library
+    let status = CaptureStatusPresentation.current(
+      session: store.currentSession, snapshotStale: false, livePhase: liveRecording.phase,
+      liveText: liveRecording.statusText)
+    CaptureStatusLabel(text: status.text, symbolName: status.symbolName)
+      .accessibilityLabel(status.accessibilityText)
+    if let timer = status.timer {
+      Text(timer)
         .font(.system(.body, design: .monospaced))
+    }
+    if let current = library.now {
       ForEach(current.sources, id: \.kind) { source in
         Label("\(source.name): \(source.stateText)", systemImage: source.symbolName)
       }
-      if let interruption = current.interruptionText {
-        CaptureIssueLabel(message: interruption)
-      }
-    } else {
-      Text(pendingStatusText)
-        .accessibilityLabel(pendingStatusText)
+    }
+    if let current = store.currentSession, !current.didNotRecord,
+      let attention = current.interruptionText
+    {
+      CaptureIssueLabel(message: attention)
     }
     if let errorMessage = liveRecording.errorMessage {
       CaptureIssueLabel(message: errorMessage, isFailure: true)
     }
+    if let storageNotice = liveRecording.storagePressureNotice {
+      CaptureIssueLabel(message: storageNotice)
+    }
     if let libraryError = store.errorMessage {
       CaptureIssueLabel(message: libraryError, isFailure: true)
     }
-    let savedCount = LibraryConversationLists.saved(store.savedSessions).count
+    let savedCount = library.saved.count
     if savedCount > 0 {
       Text(
         "\(store.isSnapshotStale ? "Last known: " : "")\(savedCount) saved conversation\(savedCount == 1 ? "" : "s")"
       )
       .foregroundStyle(.secondary)
     }
-    if let activity = scheduler.summaryText(
-      titles: Dictionary(
-        uniqueKeysWithValues: store.savedSessions.map {
-          ($0.sessionId, ConversationIdentityPresentation.title($0.title))
-        }),
-      progress: speech.progressFraction)
+    if let copyConversation, let latest = library.latestCopyable {
+      Button("Copy “\(library.titles[latest.sessionId] ?? latest.displayTitle)”") {
+        copyConversation(latest)
+      }
+      .help("Copy the most recent conversation's transcript, ready to paste")
+    }
+    if let activity = scheduler.summaryText(titles: library.titles, progress: speech.progressFraction)
     {
       Text(activity)
         .foregroundStyle(.secondary)
         .accessibilityLabel(activity)
     }
     if liveRecording.canStart {
-      Button(
-        store.currentSession?.lifecycle == "interrupted"
-          ? "Start New Recording" : "Record — \(liveRecording.sourceSelectionPresentation.summary)"
+      HostedButton(
+        title: Self.recordTitle(
+          lifecycle: store.currentSession?.lifecycle,
+          summary: liveRecording.sourceSelectionPresentation.summary),
+        identifier: "Menu bar record", shortcut: ConversationControlLabels.recordShortcut,
+        isEnabled: recordActionEnabled
       ) {
         Task {
           await liveRecording.start()
           store.refresh()
         }
       }
-      .disabled(!recordActionEnabled)
-      .keyboardShortcut("r", modifiers: [.command, .shift])
     }
     if liveRecording.canStop {
-      Button("Stop and Save") {
+      HostedButton(
+        title: ConversationControlLabels.stopAndSave, identifier: "Menu bar stop",
+        shortcut: ConversationControlLabels.stopShortcut
+      ) {
         Task {
           await liveRecording.stop()
           store.refresh()
         }
       }
-      .keyboardShortcut("s", modifiers: [.command, .shift])
     }
-    RecorderControls(recorder: liveRecording, store: store, sourcesPresentation: .menu)
+    RecorderControls(recorder: liveRecording, store: store)
+    RecorderSourcesControl(recorder: liveRecording, store: store, presentation: .menu)
     ContextMenuSection(model: context)
-    let conversations = (store.currentSession.map { [$0] } ?? []) + store.savedSessions
-    if let recovered = Self.preservedConversation(
-      in: conversations, media: recoveredSessions.sessions
-    ) {
+    if let recovered = library.preservedConversation(media: recoveredSessions.sessions) {
       Divider()
-      let title = ConversationIdentityPresentation.title(recovered.title)
-      let reference = ConversationIdentityPresentation.references(for: conversations)[
-        recovered.sessionId]
+      let title = library.titles[recovered.sessionId] ?? recovered.displayTitle
+      let reference = library.references[recovered.sessionId]
       Text("\(title)\(reference.map { " · \($0)" } ?? "")")
-        .help(recovered.title)
+        .help(title)
         .accessibilityLabel("\(title)\(reference.map { ", reference \($0)" } ?? "")")
-      Text("Verified local audio is available for review.")
+      Text("Its audio is saved and ready to review.")
         .foregroundStyle(.secondary)
-      Button("Review Preserved Audio") {
+      Button(ConversationControlLabels.reviewPreservedAudio) {
         navigation.reviewPreservedAudio(sessionId: recovered.sessionId)
         openPrimaryWindow()
       }
@@ -159,6 +173,12 @@ struct MenuBarContent: View {
     )
   }
 
+  /// The one capture action in an idle menu. An interrupted session offers a
+  /// new recording; every other idle menu names the selected sources.
+  static func recordTitle(lifecycle: NativeSessionLifecycle?, summary: String) -> String {
+    lifecycle == .interrupted ? "Start New Recording" : "Record — \(summary)"
+  }
+
   static func statusSymbol(for session: RuntimeSessionPresentation) -> String {
     session.captureStatusSymbolName
   }
@@ -166,27 +186,13 @@ struct MenuBarContent: View {
   static func preservedConversation(
     in sessions: [RuntimeSessionPresentation], media: [NativeRecoveredPlayableSession]
   ) -> RuntimeSessionPresentation? {
-    sessions.first {
-      ($0.lifecycle == "interrupted" || $0.lifecycle == "ready_for_review")
-        && ($0.needsAttention || $0.recovered) && $0.hasVerifiedPreservedAudio(from: media)
-    }
+    LibraryPresentation.preservedConversation(in: sessions, media: media)
   }
 
   private func openPrimaryWindow() {
     AppTelemetry.commandInvoked("open-primary")
     if !MainWindow.focusExisting() {
       openWindow(id: "main")
-    }
-  }
-
-  private var pendingStatusText: String {
-    switch liveRecording.phase {
-    case .requestingPermission, .preparing, .starting, .pausing, .paused: liveRecording.statusText
-    case .capturing: "Confirming durable recording…"
-    case .stopping: "Securing recording…"
-    case .saved: liveRecording.statusText
-    case .failed: liveRecording.statusText
-    default: liveRecording.readinessText
     }
   }
 }
@@ -241,48 +247,9 @@ struct MenuBarLabel: View {
     livePhase: LiveMicrophoneRecordingPhase,
     liveStatus: String
   ) -> (text: String, symbolName: String, accessibilityText: String) {
-    if snapshotStale {
-      return ("State unavailable", "exclamationmark.circle", "Live recording state unavailable")
-    }
-    if let session {
-      if let paused = session.pausedStatusSymbolName {
-        return (
-          "\(session.statusText) · \(session.timerText)", paused,
-          "\(session.statusText), \(session.timerText)"
-        )
-      }
-      if session.isRecording {
-        return (
-          "Recording · \(session.timerText)",
-          session.captureStatusSymbolName,
-          "Recording \(session.capturingSourcesText), \(session.timerText)"
-        )
-      }
-      return (
-        session.statusText,
-        session.captureStatusSymbolName,
-        session.statusText
-      )
-    }
-    return switch livePhase {
-    case .capturing:
-      (
-        "Confirming recording", SymbolResolver.captureSymbol(for: .starting),
-        "Confirming durable recording"
-      )
-    case .starting:
-      (liveStatus, SymbolResolver.captureSymbol(for: .starting), liveStatus)
-    case .paused:
-      (liveStatus, SymbolResolver.pausedCaptureSymbolName, liveStatus)
-    case .failed:
-      (liveStatus, "exclamationmark.circle", liveStatus)
-    case .saved:
-      (liveStatus, "waveform.badge.checkmark", liveStatus)
-    case .requestingPermission, .preparing, .pausing, .stopping:
-      (liveStatus, SymbolResolver.captureSymbol(for: .starting), liveStatus)
-    case .idle:
-      ("Open Scribe", SymbolResolver.captureSymbol(for: .ready), liveStatus)
-    }
+    let status = CaptureStatusPresentation.current(
+      session: session, snapshotStale: snapshotStale, livePhase: livePhase, liveText: liveStatus)
+    return (status.statusItemText, status.symbolName, status.accessibilityText)
   }
 }
 

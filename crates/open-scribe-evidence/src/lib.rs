@@ -4,7 +4,10 @@
 //! deterministic validation (ADR 0013). Native Rust resolves references
 //! through the media ledger, transcript revisions, and SQLite; other surfaces
 //! consume resolved projections and never reinterpret reference identity.
-//! Derived-claim schemas remain unimplemented.
+//! `claim` owns `open-scribe.derived-claim/v1` validation. `delta` owns
+//! `open-scribe.meeting-memory-delta/v1` validation. The store persists
+//! append-only revisions, resolves their evidence, and ingests a delta.
+//! Navigation UI consumes the resolved projection.
 
 #![forbid(unsafe_code)]
 
@@ -12,6 +15,18 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 
 pub const EVIDENCE_REF_SCHEMA: &str = "open-scribe.evidence-ref/v1";
+
+mod claim;
+pub use claim::{
+    Adjudication, AdjudicationAction, ClaimError, ClaimKind, ClaimProducer, ClaimStatus,
+    DERIVED_CLAIM_SCHEMA, DerivedClaim, claim_status_allowed,
+};
+mod delta;
+pub use delta::{
+    DeltaError, DeltaIngestReceipt, DeltaOperation, DeltaOperationReceipt, DerivedClaimSummary,
+    MAX_DELTA_BYTES, MEETING_MEMORY_DELTA_RECEIPT_SCHEMA, MEETING_MEMORY_DELTA_SCHEMA,
+    MeetingMemoryDelta,
+};
 
 /// What an evidence reference cites.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
@@ -135,7 +150,7 @@ impl EvidenceRef {
     }
 }
 
-fn identifier_is_valid(value: &str) -> bool {
+pub(crate) fn identifier_is_valid(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= 128
         && value

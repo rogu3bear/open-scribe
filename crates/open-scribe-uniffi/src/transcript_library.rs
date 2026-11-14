@@ -4,11 +4,23 @@
 
 use super::*;
 use open_scribe_core::{
-    SpeakerLabelOrigin, TranscriptAvailability, TranscriptExportError, TranscriptExportFormat,
-    TranscriptLibrary,
+    NamedSpeakerTurn, SpeakerDisposition, SpeakerLabelOrigin, SuggestionBasis, TrackSourceKind,
+    TranscriptAvailability, TranscriptExportError, TranscriptExportFormat, TranscriptLibrary,
 };
 use open_scribe_types::SessionId;
 use std::path::Path;
+
+vocabulary!(
+    token NativeTrackSourceKind,
+    TrackSourceKind,
+    Microphone,
+    ApplicationAudio,
+    SystemAudio,
+    ImportedAudio
+);
+vocabulary!(token NativeSpeakerLabelOrigin, SpeakerLabelOrigin, SourceDefault, Human);
+vocabulary!(token NativeSpeakerDisposition, SpeakerDisposition, Topology, Unresolved);
+vocabulary!(token NativeSuggestionBasis, SuggestionBasis, Draft, Final);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, uniffi::Enum)]
 pub enum NativeTranscriptAvailability {
@@ -28,6 +40,28 @@ pub enum NativeTranscriptExportFormat {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct NativeTranscriptProvenanceRange {
+    pub start_nanoseconds: i64,
+    pub end_nanoseconds: i64,
+}
+
+/// Stored identity of one readable model revision. Repeating the model is not
+/// claimed to produce the same words.
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct NativeTranscriptProvenance {
+    pub revision_id: String,
+    pub track_id: String,
+    pub engine: String,
+    pub engine_version: String,
+    pub model_id: String,
+    pub model_sha256: String,
+    pub input_digest: String,
+    pub run_state: NativeTranscriptionRunState,
+    pub finality: NativeTranscriptFinality,
+    pub ranges: Vec<NativeTranscriptProvenanceRange>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
 pub struct NativeTranscriptSegment {
     pub revision_id: String,
     pub track_id: String,
@@ -40,6 +74,8 @@ pub struct NativeTranscriptSegment {
     pub speaker_label: String,
     pub speaker_named_by_user: bool,
     pub named_speaker_id: Option<String>,
+    /// `Final` for a selected revision, `Draft` for provisional text.
+    pub finality: NativeTranscriptFinality,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
@@ -65,17 +101,94 @@ pub enum NativeTranscriptSpeakerAssignment {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct NativeSpeakerLabelRevision {
+    pub label: String,
+    pub origin: NativeSpeakerLabelOrigin,
+    pub created_at_ms: i64,
+}
+
+/// `source_default_label` is derived from the source kind. `revisions` holds
+/// only stored renames, oldest first. An empty list means no rename is stored.
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct NativeSpeakerLabelHistory {
+    pub track_id: String,
+    pub source_kind: NativeTrackSourceKind,
+    pub source_default_label: String,
+    pub revisions: Vec<NativeSpeakerLabelRevision>,
+}
+
+/// One selected passage a person can merge or split.
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct NativeNamedSpeakerTurn {
+    pub revision_id: String,
+    pub sequence: u32,
+}
+
+/// One stored assignment. A null speaker is the source name.
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct NativeNamedSpeakerTurnRevision {
+    pub label: String,
+    pub origin: NativeSpeakerLabelOrigin,
+    pub speaker_id: Option<String>,
+    pub created_at_ms: i64,
+}
+
+/// Source name plus every stored assignment for one selected passage,
+/// oldest first. A passage nobody has named has an empty `revisions` list.
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct NativeNamedSpeakerTurnHistory {
+    pub revision_id: String,
+    pub sequence: u32,
+    pub track_id: String,
+    pub source_default_label: String,
+    pub revisions: Vec<NativeNamedSpeakerTurnRevision>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
 pub struct NativeSessionSpeaker {
     pub track_id: String,
-    pub source_kind: String,
+    pub source_kind: NativeTrackSourceKind,
     pub label: String,
     pub named_by_user: bool,
+}
+
+/// The readable transcript and its source speakers, read together.
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct NativeConversationDocument {
+    pub segments: Vec<NativeTranscriptSegment>,
+    pub speakers: Vec<NativeSessionSpeaker>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct NativeSpeakerDiarizationTrack {
+    pub track_id: String,
+    pub source_kind: NativeTrackSourceKind,
+    pub disposition: NativeSpeakerDisposition,
+    pub label: String,
+    pub label_origin: NativeSpeakerLabelOrigin,
+}
+
+/// Voice clustering is `unavailable` until a calibrated model exists.
+/// `topology` keeps a known audio source; `unresolved` keeps an unknown one.
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct NativeSpeakerDiarization {
+    pub run_id: String,
+    pub algorithm_id: String,
+    pub clustering_state: String,
+    pub reason: String,
+    pub inserted: bool,
+    pub tracks: Vec<NativeSpeakerDiarizationTrack>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
 pub struct NativeTranscriptSearchHit {
     pub session_id: String,
+    /// The title the library shows for the conversation.
     pub session_title: String,
+    pub title_source: NativeTitleSource,
+    /// The capture time a placeholder title names; see the session snapshot.
+    #[uniffi(default = None)]
+    pub placeholder_at_ms: Option<i64>,
     pub revision_id: String,
     pub track_id: String,
     pub sequence: u32,
@@ -89,6 +202,45 @@ pub struct NativeTranscriptExportReceipt {
     pub availability: NativeTranscriptAvailability,
     pub byte_length: u64,
     pub segment_count: u32,
+}
+
+/// A conversation's title: what a reader sees and where it came from.
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct NativeConversationTitle {
+    pub stored_title: String,
+    pub display_title: String,
+    pub source: NativeTitleSource,
+    pub placeholder_at_ms: Option<i64>,
+    pub suggested_title: Option<String>,
+    pub suggestion_engine: Option<String>,
+    pub suggestion_basis: Option<NativeSuggestionBasis>,
+    /// Whether `suggest_title` would store a suggestion on each basis now.
+    pub accepts_draft_suggestion: bool,
+    pub accepts_final_suggestion: bool,
+}
+
+/// One speaker's consecutive passages of the reading copy.
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct NativeConversationTurn {
+    pub speaker: String,
+    pub start_nanoseconds: i64,
+    pub text: String,
+    pub draft: bool,
+}
+
+/// The clipboard reading copy: one paragraph per speaker turn. The app heads
+/// it with the title, a localized date, and the participants. `turns` is the
+/// same text as data.
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
+pub struct NativeConversationText {
+    pub title: String,
+    pub created_at_ms: i64,
+    pub duration_nanoseconds: i64,
+    pub participants: Vec<String>,
+    pub has_draft: bool,
+    pub turn_count: u32,
+    pub body: String,
+    pub turns: Vec<NativeConversationTurn>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
@@ -105,17 +257,7 @@ pub struct NativeSessionDeletionInventory {
     pub context_events: u32,
     pub export_files: u32,
     pub export_bytes: u64,
-}
-
-/// One Final transcript rebuilt from retained chunks without a model.
-#[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
-pub struct NativeRetainedTranscriptRecovery {
-    pub session_id: String,
-    pub track_id: String,
-    pub run_id: String,
-    pub revision_id: String,
-    pub reused_chunks: u32,
-    pub segment_count: u32,
+    pub derived_items: u32,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
@@ -153,24 +295,56 @@ impl NativeTranscriptLibrary {
         &self,
         session_id: String,
     ) -> Result<Vec<NativeTranscriptSegment>, NativeStorageError> {
-        let segments = self
+        Ok(self.conversation_document(session_id)?.segments)
+    }
+
+    /// The readable transcript and its source speakers from one read
+    /// transaction, so the reader does not ask for each separately.
+    pub fn conversation_document(
+        &self,
+        session_id: String,
+    ) -> Result<NativeConversationDocument, NativeStorageError> {
+        let document = self
             .library()?
             .document(&SessionId(session_id))
             .map_err(map_storage_error)?;
-        Ok(segments
+        Ok(NativeConversationDocument {
+            segments: document.segments.into_iter().map(map_segment).collect(),
+            speakers: document.speakers.into_iter().map(map_speaker).collect(),
+        })
+    }
+
+    /// Readable revisions only. The result names the stored engine, model
+    /// revision, input digest, run state, and evidence ranges.
+    pub fn inspect_provenance(
+        &self,
+        session_id: String,
+    ) -> Result<Vec<NativeTranscriptProvenance>, NativeStorageError> {
+        let provenance = self
+            .library()?
+            .store()
+            .transcript_provenance(&SessionId(session_id))
+            .map_err(map_storage_error)?;
+        Ok(provenance
             .into_iter()
-            .map(|segment| NativeTranscriptSegment {
-                revision_id: segment.revision_id,
-                track_id: segment.track_id,
-                sequence: segment.sequence,
-                start_nanoseconds: segment.start_nanoseconds,
-                end_nanoseconds: segment.end_nanoseconds,
-                verbatim_text: segment.verbatim_text,
-                effective_text: segment.effective_text,
-                corrected: segment.corrected,
-                speaker_label: segment.speaker_label,
-                speaker_named_by_user: segment.speaker_origin == SpeakerLabelOrigin::Human,
-                named_speaker_id: segment.named_speaker_id,
+            .map(|item| NativeTranscriptProvenance {
+                revision_id: item.revision_id,
+                track_id: item.track_id,
+                engine: item.engine,
+                engine_version: item.engine_version,
+                model_id: item.model_id,
+                model_sha256: item.model_sha256,
+                input_digest: item.input_digest,
+                run_state: item.run_state.into(),
+                finality: item.finality.into(),
+                ranges: item
+                    .ranges
+                    .into_iter()
+                    .map(|range| NativeTranscriptProvenanceRange {
+                        start_nanoseconds: range.start_nanoseconds,
+                        end_nanoseconds: range.end_nanoseconds,
+                    })
+                    .collect(),
             })
             .collect())
     }
@@ -181,17 +355,73 @@ impl NativeTranscriptLibrary {
     ) -> Result<Vec<NativeSessionSpeaker>, NativeStorageError> {
         let speakers = self
             .library()?
-            .speakers(&SessionId(session_id))
+            .store()
+            .session_speakers(&SessionId(session_id))
             .map_err(map_storage_error)?;
-        Ok(speakers
+        Ok(speakers.into_iter().map(map_speaker).collect())
+    }
+
+    /// Oldest-first speaker names for each source track. The source default
+    /// is always named. A stored empty label is that source name. A track
+    /// with no stored rename has an empty revision list.
+    pub fn speaker_label_history(
+        &self,
+        session_id: String,
+    ) -> Result<Vec<NativeSpeakerLabelHistory>, NativeStorageError> {
+        let histories = self
+            .library()?
+            .store()
+            .speaker_label_history(&SessionId(session_id))
+            .map_err(map_storage_error)?;
+        Ok(histories
             .into_iter()
-            .map(|speaker| NativeSessionSpeaker {
-                track_id: speaker.track_id,
-                source_kind: speaker.source_kind,
-                label: speaker.label,
-                named_by_user: speaker.origin == SpeakerLabelOrigin::Human,
+            .map(|history| NativeSpeakerLabelHistory {
+                track_id: history.track_id,
+                source_kind: history.source_kind.into(),
+                source_default_label: history.source_default_label,
+                revisions: history
+                    .revisions
+                    .into_iter()
+                    .map(|revision| NativeSpeakerLabelRevision {
+                        label: revision.label,
+                        origin: revision.origin.into(),
+                        created_at_ms: revision.created_at_ms,
+                    })
+                    .collect(),
             })
             .collect())
+    }
+
+    /// Records that known audio sources keep their topology and that voice
+    /// clustering is unavailable. An unchanged decision writes nothing.
+    /// Speaker names, transcript text, and media stay as they were.
+    pub fn prepare_speaker_diarization(
+        &self,
+        session_id: String,
+    ) -> Result<NativeSpeakerDiarization, NativeStorageError> {
+        let decision = self
+            .library()?
+            .store_mut()
+            .prepare_speaker_diarization(&SessionId(session_id))
+            .map_err(map_storage_error)?;
+        Ok(NativeSpeakerDiarization {
+            run_id: decision.run_id,
+            algorithm_id: decision.algorithm_id,
+            clustering_state: decision.clustering_state,
+            reason: decision.reason,
+            inserted: decision.inserted,
+            tracks: decision
+                .tracks
+                .into_iter()
+                .map(|track| NativeSpeakerDiarizationTrack {
+                    track_id: track.track_id,
+                    source_kind: track.source_kind.into(),
+                    disposition: track.disposition.into(),
+                    label: track.label,
+                    label_origin: track.label_origin.into(),
+                })
+                .collect(),
+        })
     }
 
     /// `None` restores the verbatim reading.
@@ -220,7 +450,45 @@ impl NativeTranscriptLibrary {
         label: Option<String>,
     ) -> Result<(), NativeStorageError> {
         self.library()?
+            .store_mut()
             .rename_speaker(&SessionId(session_id), &track_id, label.as_deref())
+            .map_err(map_storage_error)
+    }
+
+    pub fn conversation_title(
+        &self,
+        session_id: String,
+    ) -> Result<NativeConversationTitle, NativeStorageError> {
+        let title = self
+            .library()?
+            .store()
+            .conversation_title(&SessionId(session_id))
+            .map_err(map_storage_error)?;
+        Ok(NativeConversationTitle {
+            stored_title: title.stored_title,
+            display_title: title.display_title,
+            source: title.source.into(),
+            placeholder_at_ms: title.placeholder_at_ms,
+            suggested_title: title.suggested_title,
+            suggestion_engine: title.suggestion_engine,
+            suggestion_basis: title.suggestion_basis.map(Into::into),
+            accepts_draft_suggestion: title.accepts_draft_suggestion,
+            accepts_final_suggestion: title.accepts_final_suggestion,
+        })
+    }
+
+    /// Stores a title derived from the transcript. Returns false when the
+    /// current title refuses it (see `NativeConversationTitle`).
+    pub fn suggest_title(
+        &self,
+        session_id: String,
+        title: String,
+        engine: String,
+        basis: NativeSuggestionBasis,
+    ) -> Result<bool, NativeStorageError> {
+        self.library()?
+            .store_mut()
+            .suggest_conversation_title(&SessionId(session_id), &title, &engine, basis.into())
             .map_err(map_storage_error)
     }
 
@@ -229,7 +497,8 @@ impl NativeTranscriptLibrary {
         session_id: String,
     ) -> Result<NativeConversationReviewMetadata, NativeStorageError> {
         self.library()?
-            .review_metadata(&SessionId(session_id))
+            .store()
+            .conversation_review_metadata(&SessionId(session_id))
             .map(|metadata| NativeConversationReviewMetadata {
                 added_at_ms: metadata.added_at_ms,
                 origin: metadata.origin,
@@ -244,7 +513,8 @@ impl NativeTranscriptLibrary {
         session_id: String,
     ) -> Result<Vec<NativeNamedTranscriptSpeaker>, NativeStorageError> {
         self.library()?
-            .named_speakers(&SessionId(session_id))
+            .store()
+            .named_transcript_speakers(&SessionId(session_id))
             .map(|speakers| {
                 speakers
                     .into_iter()
@@ -276,7 +546,8 @@ impl NativeTranscriptLibrary {
             NativeTranscriptSpeakerAssignment::Source => TranscriptSpeakerAssignment::Source,
         };
         self.library()?
-            .assign_speaker(&SessionId(session_id), &revision_id, sequence, &assignment)
+            .store_mut()
+            .assign_transcript_speaker(&SessionId(session_id), &revision_id, sequence, &assignment)
             .map_err(map_storage_error)
     }
 
@@ -287,35 +558,77 @@ impl NativeTranscriptLibrary {
         label: String,
     ) -> Result<(), NativeStorageError> {
         self.library()?
-            .rename_named_speaker(&SessionId(session_id), &speaker_id, &label)
+            .store_mut()
+            .rename_transcript_speaker(&SessionId(session_id), &speaker_id, &label)
             .map_err(map_storage_error)
     }
 
-    /// Rebuilds Final transcripts from chunks earlier runs retained but could
-    /// not commit, without loading a model. `session_id` limits the pass to
-    /// one conversation. Media, failed runs, and selected revisions are
-    /// untouched.
-    pub fn recover_retained_transcripts(
+    /// Moves every selected passage of `absorb_id` onto `keep_id`. Both
+    /// people remain. A second identical call returns zero.
+    pub fn merge_named_speakers(
         &self,
-        session_id: Option<String>,
-    ) -> Result<Vec<NativeRetainedTranscriptRecovery>, NativeStorageError> {
-        let session = session_id.map(SessionId);
+        session_id: String,
+        keep_id: String,
+        absorb_id: String,
+    ) -> Result<u32, NativeStorageError> {
         self.library()?
-            .recover_retained_transcripts(session.as_ref())
-            .map(|recovered| {
-                recovered
-                    .into_iter()
-                    .map(|outcome| NativeRetainedTranscriptRecovery {
-                        session_id: outcome.session_id.0,
-                        track_id: outcome.track_id,
-                        run_id: outcome.run_id,
-                        revision_id: outcome.revision_id,
-                        reused_chunks: outcome.reused_chunks,
-                        segment_count: outcome.segment_count,
-                    })
-                    .collect()
-            })
+            .store_mut()
+            .merge_named_speakers(&SessionId(session_id), &keep_id, &absorb_id)
             .map_err(map_storage_error)
+    }
+
+    /// Moves the named passages to a new person and leaves at least one
+    /// selected passage with the original person.
+    pub fn split_named_speaker(
+        &self,
+        session_id: String,
+        speaker_id: String,
+        turns: Vec<NativeNamedSpeakerTurn>,
+        label: String,
+    ) -> Result<String, NativeStorageError> {
+        let turns = turns
+            .into_iter()
+            .map(|turn| NamedSpeakerTurn {
+                revision_id: turn.revision_id,
+                sequence: turn.sequence,
+            })
+            .collect::<Vec<_>>();
+        self.library()?
+            .store_mut()
+            .split_named_speaker(&SessionId(session_id), &speaker_id, &turns, &label)
+            .map_err(map_storage_error)
+    }
+
+    /// Oldest-first assignments for each selected passage. The source name
+    /// is always present. A later rename does not rewrite an earlier line.
+    pub fn named_speaker_turn_history(
+        &self,
+        session_id: String,
+    ) -> Result<Vec<NativeNamedSpeakerTurnHistory>, NativeStorageError> {
+        let histories = self
+            .library()?
+            .store()
+            .named_speaker_turn_history(&SessionId(session_id))
+            .map_err(map_storage_error)?;
+        Ok(histories
+            .into_iter()
+            .map(|history| NativeNamedSpeakerTurnHistory {
+                revision_id: history.revision_id,
+                sequence: history.sequence,
+                track_id: history.track_id,
+                source_default_label: history.source_default_label,
+                revisions: history
+                    .revisions
+                    .into_iter()
+                    .map(|revision| NativeNamedSpeakerTurnRevision {
+                        label: revision.label,
+                        origin: revision.origin.into(),
+                        speaker_id: revision.speaker_id,
+                        created_at_ms: revision.created_at_ms,
+                    })
+                    .collect(),
+            })
+            .collect())
     }
 
     pub fn search(
@@ -334,6 +647,8 @@ impl NativeTranscriptLibrary {
             .map(|hit| NativeTranscriptSearchHit {
                 session_id: hit.session_id,
                 session_title: hit.session_title,
+                title_source: hit.title_source.into(),
+                placeholder_at_ms: hit.placeholder_at_ms,
                 revision_id: hit.revision_id,
                 track_id: hit.track_id,
                 sequence: hit.sequence,
@@ -367,13 +682,46 @@ impl NativeTranscriptLibrary {
         })
     }
 
+    /// Reads the readable document once, Draft text included; nothing is
+    /// written. A recording in progress reads its stored Draft windows.
+    pub fn conversation_text(
+        &self,
+        session_id: String,
+        include_timestamps: bool,
+    ) -> Result<NativeConversationText, NativeStorageError> {
+        let text = self
+            .library()?
+            .conversation_text(&SessionId(session_id), include_timestamps)
+            .map_err(map_storage_error)?;
+        Ok(NativeConversationText {
+            title: text.title,
+            created_at_ms: text.created_at_ms,
+            duration_nanoseconds: text.duration_nanoseconds,
+            participants: text.participants,
+            has_draft: text.has_draft,
+            turn_count: text.turn_count,
+            body: text.body,
+            turns: text
+                .turns
+                .into_iter()
+                .map(|turn| NativeConversationTurn {
+                    speaker: turn.speaker,
+                    start_nanoseconds: turn.start_nanoseconds,
+                    text: turn.text,
+                    draft: turn.draft,
+                })
+                .collect(),
+        })
+    }
+
     pub fn begin_deletion(
         &self,
         session_id: String,
     ) -> Result<NativeSessionDeletionInventory, NativeStorageError> {
         let inventory = self
             .library()?
-            .begin_deletion(&SessionId(session_id))
+            .store_mut()
+            .begin_session_deletion(&SessionId(session_id))
             .map_err(map_storage_error)?;
         Ok(NativeSessionDeletionInventory {
             session_id: inventory.session_id.0,
@@ -388,12 +736,14 @@ impl NativeTranscriptLibrary {
             context_events: inventory.context_events,
             export_files: inventory.export_files,
             export_bytes: inventory.export_bytes,
+            derived_items: inventory.derived_items,
         })
     }
 
     pub fn abandon_deletion(&self, session_id: String) -> Result<(), NativeStorageError> {
         self.library()?
-            .abandon_deletion(&SessionId(session_id))
+            .store_mut()
+            .abandon_session_deletion(&SessionId(session_id))
             .map_err(map_storage_error)
     }
 
@@ -538,6 +888,13 @@ pub struct NativePackageImportReceipt {
     pub markers: u32,
 }
 
+/// A transcript timestamp: `m:ss` under an hour, `h:mm:ss` from an hour.
+/// Copy and the reader print the same stamp.
+#[uniffi::export]
+pub fn transcript_clock(nanoseconds: i64) -> String {
+    open_scribe_core::compact_clock(nanoseconds)
+}
+
 /// Checks an untrusted `.openscribe` package without opening a library.
 #[uniffi::export]
 pub fn verify_portable_package(
@@ -546,6 +903,32 @@ pub fn verify_portable_package(
     open_scribe_core::verify_portable_package(Path::new(&package_path))
         .map(map_portable_summary)
         .map_err(map_session_export_error)
+}
+
+fn map_segment(segment: open_scribe_core::TranscriptDocumentSegment) -> NativeTranscriptSegment {
+    NativeTranscriptSegment {
+        revision_id: segment.revision_id,
+        track_id: segment.track_id,
+        sequence: segment.sequence,
+        start_nanoseconds: segment.start_nanoseconds,
+        end_nanoseconds: segment.end_nanoseconds,
+        verbatim_text: segment.verbatim_text,
+        effective_text: segment.effective_text,
+        corrected: segment.corrected,
+        speaker_label: segment.speaker_label,
+        speaker_named_by_user: segment.speaker_origin == SpeakerLabelOrigin::Human,
+        named_speaker_id: segment.named_speaker_id,
+        finality: segment.finality.into(),
+    }
+}
+
+fn map_speaker(speaker: open_scribe_core::SessionSpeaker) -> NativeSessionSpeaker {
+    NativeSessionSpeaker {
+        track_id: speaker.track_id,
+        source_kind: speaker.source_kind.into(),
+        label: speaker.label,
+        named_by_user: speaker.origin == SpeakerLabelOrigin::Human,
+    }
 }
 
 fn map_file_receipt(receipt: open_scribe_core::FileExportReceipt) -> NativeFileExportReceipt {

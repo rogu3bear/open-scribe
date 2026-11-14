@@ -12,7 +12,7 @@ import Foundation
 /// first-sample receipts, and the last written host time live behind
 /// `publishedLock`. Conversion and segment-fill counters stay queue-only.
 final class SegmentedCAFWriter: ManagedSegmentWriting, @unchecked Sendable {
-  static let segmentFrames: UInt64 = 30 * 48_000
+  static let segmentFrames = NativeCapturePolicy.current.segmentFrameCount
   private let preparation: NativeRecordingPreparationProtocol
   private let makeSuccessor: @Sendable (NativeMediaOpenAuthorization) throws -> ManagedCAFWriter
   private let publishedLock = NSLock()
@@ -41,7 +41,7 @@ final class SegmentedCAFWriter: ManagedSegmentWriting, @unchecked Sendable {
     self.preparation = preparation
     self.makeSuccessor = makeSuccessor
     format = AVAudioFormat(
-      commonFormat: .pcmFormatInt16, sampleRate: 48_000,
+      commonFormat: .pcmFormatInt16, sampleRate: Double(current.authorization.sampleRateHz),
       channels: AVAudioChannelCount(current.authorization.channels), interleaved: false
     )!
   }
@@ -76,6 +76,10 @@ final class SegmentedCAFWriter: ManagedSegmentWriting, @unchecked Sendable {
 
   func acceptedFirstSampleEvidence(segmentId: String) -> NativeFirstSampleEvidence? {
     publishedLock.withLock { acceptedFirstSampleEvidence[segmentId] }
+  }
+
+  func firstAcceptedReceipt() -> NativeFirstSampleReceipt? {
+    publishedLock.withLock { acceptedFirstSamples.first }
   }
 
   func writeCapturedBuffer(_ input: AVAudioPCMBuffer) throws -> AVAudioFrameCount {
@@ -113,10 +117,12 @@ final class SegmentedCAFWriter: ManagedSegmentWriting, @unchecked Sendable {
       for channel in 0..<Int(format.channelCount) {
         destination[channel].update(from: source[channel].advanced(by: Int(offset)), count: Int(count))
       }
-      let pieceHost = hostTime + AVAudioTime.hostTime(forSeconds: Double(offset) / 48_000)
+      let pieceHost =
+        hostTime + AVAudioTime.hostTime(forSeconds: Double(offset) / format.sampleRate)
       let written = try writer.writeCapturedBuffer(piece)
       frames += UInt64(written)
-      let pieceEnd = pieceHost + AVAudioTime.hostTime(forSeconds: Double(written) / 48_000)
+      let pieceEnd =
+        pieceHost + AVAudioTime.hostTime(forSeconds: Double(written) / format.sampleRate)
       publishedLock.withLock { lastEndHostTime = pieceEnd }
       if !currentHasFirstSample {
         let receipt = try writer.firstSampleReceipt(
@@ -147,7 +153,7 @@ final class SegmentedCAFWriter: ManagedSegmentWriting, @unchecked Sendable {
     let authorization = predecessor.authorization
     let storage = try preparation.recorderAction(sessionId: authorization.sessionId,
       action: .observeStorage(availableBytes: RecorderStorage.availableBytes(at: authorization.absolutePath)))
-    guard storage.storageLevel != "critical" else { throw ManagedCAFWriterError.storagePressure }
+    guard storage.storageLevel != .critical else { throw ManagedCAFWriterError.storagePressure }
     // Reserve/open successor first. A crash at any following step leaves an
     // independently journaled predecessor and an explicit successor identity.
     let next = try preparation.authorizeNextSegment(
@@ -186,7 +192,7 @@ final class SegmentedCAFWriter: ManagedSegmentWriting, @unchecked Sendable {
       let output = AVAudioPCMBuffer(
         pcmFormat: format,
         frameCapacity: AVAudioFrameCount(
-          ceil(Double(input.frameLength) * 48_000 / input.format.sampleRate)) + 1)
+          ceil(Double(input.frameLength) * format.sampleRate / input.format.sampleRate)) + 1)
     else { throw ManagedCAFWriterError.conversionFailed }
     let supply = SegmentConverterInput(buffer: input)
     var error: NSError?

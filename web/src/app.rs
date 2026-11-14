@@ -25,10 +25,9 @@ pub fn shell(options: LeptosOptions) -> impl IntoView {
             <head>
                 <meta charset="utf-8"/>
                 <meta name="viewport" content="width=device-width, initial-scale=1"/>
-                <meta name="theme-color" content="#ffffff"/>
-                <AutoReload options=options.clone()/>
+                <meta name="theme-color" content="#f7f7f5" media="(prefers-color-scheme: light)"/>
+                <meta name="theme-color" content="#11110f" media="(prefers-color-scheme: dark)"/>
                 <HashedStylesheet options=options.clone()/>
-                <EdgeHydrationScripts options=options/>
                 <MetaTags/>
             </head>
             <body><App/></body>
@@ -41,19 +40,15 @@ pub fn App() -> impl IntoView {
     provide_meta_context();
 
     view! {
-        <Title text="Open Scribe — local evidence for important conversations"/>
         <Meta
             name="description"
             content="Open Scribe is an early-stage, local-first macOS project for preserving conversations as inspectable evidence."
         />
-        <Meta property="og:title" content="Open Scribe"/>
         <Meta
             property="og:description"
             content="An early-stage local-first macOS project. No public download or recording capability exists yet."
         />
         <Meta property="og:type" content="website"/>
-        <Meta property="og:url" content=CANONICAL_ORIGIN/>
-        <Link rel="canonical" href=CANONICAL_ORIGIN/>
 
         <Router>
             <Routes fallback=|| view! { <NotFoundPage/> }.into_view()>
@@ -74,8 +69,26 @@ pub fn App() -> impl IntoView {
 }
 
 #[component]
-fn SiteLayout(children: Children) -> impl IntoView {
+fn SiteLayout(
+    title: &'static str,
+    path: Option<&'static str>,
+    children: Children,
+) -> impl IntoView {
+    let title = if path == Some("/") {
+        "Open Scribe — local evidence for important conversations".to_owned()
+    } else {
+        format!("{title} — Open Scribe")
+    };
+    let canonical = path.map(|path| format!("{CANONICAL_ORIGIN}{path}"));
     view! {
+        <Title text=title.clone()/>
+        <Meta property="og:title" content=title/>
+        {canonical.map(|url| view! {
+            <Meta property="og:url" content=url.clone()/>
+            <Link rel="canonical" href=url/>
+        })}
+        {path.is_none().then(|| view! { <Meta name="robots" content="noindex"/> })}
+        <a class="skip-link" href="#main-content">"Skip to content"</a>
         <header class="site-header">
             <a class="wordmark" href="/">"Open Scribe"</a>
             <nav aria-label="Primary">
@@ -86,7 +99,7 @@ fn SiteLayout(children: Children) -> impl IntoView {
                 <a href="/download">"Download"</a>
             </nav>
         </header>
-        {children()}
+        <main id="main-content" tabindex="-1">{children()}</main>
         <footer>
             <p>"Open Scribe is an unreleased open-source project."</p>
             <nav aria-label="Project">
@@ -101,28 +114,32 @@ fn SiteLayout(children: Children) -> impl IntoView {
 #[component]
 pub fn HomePage() -> impl IntoView {
     view! {
-        <SiteLayout>
-            <main id="main-content">
-                <section class="intro" aria-labelledby="home-title">
-                    <p class="status">"Development build — no public release"</p>
-                    <h1 id="home-title">"Local evidence for important conversations."</h1>
-                    <p class="lede">
-                        "Open Scribe is being built for Mac operators who need recoverable conversation records and a clear line between source evidence and derived interpretation."
-                    </p>
-                    <p class="notice">
-                        "There is no public download or service. Capability status below is generated from the checked capability manifest; development fixtures are not available to users."
-                    </p>
-                </section>
-                <section aria-labelledby="principles-title">
-                    <h2 id="principles-title">"What the project intends to protect"</h2>
-                    <ul>
-                        <li>"Deliberate, visible recording authority."</li>
-                        <li>"Recoverable local media before derived intelligence."</li>
-                        <li>"Source-linked review that does not present model output as fact."</li>
-                    </ul>
-                </section>
+        <SiteLayout title="Home" path=Some("/")>
+            <section class="intro" aria-labelledby="home-title">
+                <h1 id="home-title">"Return to what was said."</h1>
+                <p class="lede">
+                    "Open Scribe is being built for one task: review a conversation against its original audio, and keep the corrections that matter."
+                </p>
+                <p class="notice">
+                    "There is no public download or service. "
+                    <a href=format!("{REPOSITORY}/blob/main/CONTRIBUTING.md")>"Build from source"</a>
+                    " or "
+                    <a href=format!("{REPOSITORY}/blob/main/docs/REVIEW_GUIDE.md")>"read the review guide"</a>"."
+                </p>
+            </section>
+            <section aria-labelledby="principles-title">
+                <h2 id="principles-title">"The intended review workflow"</h2>
+                <ol class="review-steps">
+                    <li><strong>"Keep the source."</strong>" Deliberately record or import a conversation, keeping its audio on the Mac."</li>
+                    <li><strong>"Check the words."</strong>" Find a passage, hear its source, and correct the transcript or speaker name."</li>
+                    <li><strong>"Use the result."</strong>" Export reviewed text and source audio. Return to the saved conversation when you need it."</li>
+                </ol>
+            </section>
+            <details id="development-status" class="development-status">
+                <summary>"Development status"</summary>
+                <p>"The checked capability manifest records what has been qualified. Development fixtures are not available to users."</p>
                 <CapabilityStatus/>
-            </main>
+            </details>
         </SiteLayout>
     }
 }
@@ -141,12 +158,11 @@ fn capability_rows() -> Vec<(String, &'static str)> {
                 .iter()
                 .filter_map(|capability| {
                     let terminology = capability["terminology"].as_str()?;
-                    let maturity = match capability["maturity"].as_str()? {
-                        "Available" => "Available",
-                        "Fixture" => "Development fixture — not available to users",
-                        _ => "Unavailable",
-                    };
-                    Some((terminology.to_owned(), maturity))
+                    let maturity = capability["maturity"].as_str()?;
+                    Some((
+                        terminology.to_owned(),
+                        open_scribe_types::public_capability_label(maturity),
+                    ))
                 })
                 .collect()
         })
@@ -158,12 +174,15 @@ fn CapabilityStatus() -> impl IntoView {
     view! {
         <section aria-labelledby="capabilities-title">
             <h2 id="capabilities-title">"Current capability status"</h2>
-            <ul class="capabilities">
-                {capability_rows()
-                    .into_iter()
-                    .map(|(terminology, maturity)| view! { <li>{terminology}" — "{maturity}</li> })
-                    .collect_view()}
-            </ul>
+            <table class="capabilities" aria-labelledby="capabilities-title">
+                <thead><tr><th scope="col">"Capability"</th><th scope="col">"Status"</th></tr></thead>
+                <tbody>
+                    {capability_rows()
+                        .into_iter()
+                        .map(|(terminology, maturity)| view! { <tr><th scope="row">{terminology}</th><td>{maturity}</td></tr> })
+                        .collect_view()}
+                </tbody>
+            </table>
         </section>
     }
 }
@@ -171,46 +190,42 @@ fn CapabilityStatus() -> impl IntoView {
 #[component]
 fn ProductPage() -> impl IntoView {
     view! {
-        <SiteLayout>
-            <main id="main-content">
-                <p class="status">"Intended capability"</p>
-                <h1>"Product"</h1>
-                <p class="lede">"The intended macOS product preserves conversations locally, then supports evidence-linked review. These capabilities are not implemented in the current milestone."</p>
-                <nav aria-label="Product modes">
-                    <ul>
-                        <li><a href="/record">"Record mode"</a></li>
-                        <li><a href="/meeting">"Meeting mode"</a></li>
-                    </ul>
-                </nav>
-            </main>
+        <SiteLayout title="Product" path=Some("/product")>
+            <h1>"One conversation, kept together."</h1>
+            <p class="lede">"The intended Mac workflow brings original audio, reviewed text, and human corrections into one local record."</p>
+            <p>"Open Scribe is a developer preview. The public product is not available; "<a href="/#development-status">"see development status"</a>"."</p>
+            <nav aria-label="Product modes">
+                <ul>
+                    <li><a href="/record">"Record mode"</a></li>
+                    <li><a href="/meeting">"Meeting mode"</a></li>
+                </ul>
+            </nav>
         </SiteLayout>
     }
 }
 
 #[component]
 fn RecordPage() -> impl IntoView {
-    view! { <IntentPage title="Record mode" summary="Intended behavior: explicit source selection, unmistakable active-state feedback, and recoverable local media. Recording exists only as a development fixture and is not available to users."/> }
+    view! { <IntentPage path="/record" title="Record mode" summary="Choose what to record. The intended mode keeps microphone and selected computer audio as recoverable local evidence, then supports transcript review. Recording remains a development fixture, not a public capability."/> }
 }
 
 #[component]
 fn MeetingPage() -> impl IntoView {
-    view! { <IntentPage title="Meeting mode" summary="Intended behavior: prepare, preserve, and review a conversation without a meeting bot or required cloud account. Meeting mode is not implemented."/> }
+    view! { <IntentPage path="/meeting" title="Meeting mode" summary="Start with the conversation. The intended mode adds optional screen context only after you authorize its scope. Source evidence stays distinct from interpretation. Meeting mode is not available."/> }
 }
 
 #[component]
 fn HowItWorksPage() -> impl IntoView {
     view! {
-        <SiteLayout>
-            <main id="main-content">
-                <p class="status">"Intended system, not implemented behavior"</p>
-                <h1>"How it works"</h1>
-                <ol>
-                    <li>"The operator deliberately chooses what to record."</li>
-                    <li>"Durable local media and recovery state come first."</li>
-                    <li>"Transcript and context remain linked to source evidence."</li>
-                    <li>"Derived interpretation stays distinguishable from observed material."</li>
-                </ol>
-            </main>
+        <SiteLayout title="How It Works" path=Some("/how-it-works")>
+            <h1>"How it works"</h1>
+            <p>"This is the intended workflow. Open Scribe remains a developer preview."</p>
+            <ol>
+                <li>"Choose the microphone and any computer audio to record."</li>
+                <li>"Keep the original audio and its recovery state on the Mac."</li>
+                <li>"Review timed text against the audio. Correct words and speaker names."</li>
+                <li>"Add context or interpretation only when wanted, with a clear link to the source."</li>
+            </ol>
         </SiteLayout>
     }
 }
@@ -218,12 +233,11 @@ fn HowItWorksPage() -> impl IntoView {
 #[component]
 fn DownloadPage() -> impl IntoView {
     view! {
-        <SiteLayout>
-            <main id="main-content">
-                <h1>"Download"</h1>
-                <p class="lede">"No public release is available."</p>
-                <p>"Source compilation and development receipts are not signing, notarization, distribution, or release proof."</p>
-            </main>
+        <SiteLayout title="Download" path=Some("/download")>
+            <h1>"Download"</h1>
+            <p class="lede">{open_scribe_types::NO_PUBLIC_RELEASE}</p>
+            <p>"Source compilation and development receipts are not signing, notarization, distribution, or release proof."</p>
+            <p><a href=format!("{REPOSITORY}/blob/main/CONTRIBUTING.md")>"Contributor build instructions"</a></p>
         </SiteLayout>
     }
 }
@@ -231,53 +245,55 @@ fn DownloadPage() -> impl IntoView {
 #[component]
 fn DocumentationPage() -> impl IntoView {
     view! {
-        <SiteLayout>
-            <main id="main-content">
-                <h1>"Documentation"</h1>
-                <p>"Founding product, architecture, privacy, and security documents live with the source so their status can be reviewed with the code."</p>
-                <p><a href=format!("{REPOSITORY}/tree/main/docs")>"Read repository documentation"</a></p>
-            </main>
+        <SiteLayout title="Documentation" path=Some("/documentation")>
+            <h1>"Documentation"</h1>
+            <ul>
+                <li><a href=format!("{REPOSITORY}/blob/main/docs/REVIEW_GUIDE.md")>"Review a conversation"</a>" — recording, playback, corrections, search, and export."</li>
+                <li><a href=format!("{REPOSITORY}/blob/main/CONTRIBUTING.md")>"Build from source"</a>" — the contributor workflow."</li>
+                <li><a href=format!("{REPOSITORY}/blob/main/docs/TESTING.md")>"Verification limits"</a>" — what the development evidence establishes."</li>
+            </ul>
+            <p><a href=format!("{REPOSITORY}/tree/main/docs")>"All repository documentation"</a></p>
         </SiteLayout>
     }
 }
 
 #[component]
 fn PrivacyPage() -> impl IntoView {
-    view! { <CanonicalDocument title="Privacy" source=PRIVACY_NOTICE/> }
+    view! { <CanonicalDocument title="Privacy" path="/privacy" source=PRIVACY_NOTICE/> }
 }
 
 #[component]
 fn TermsPage() -> impl IntoView {
-    view! { <CanonicalDocument title="Terms" source=TERMS/> }
+    view! { <CanonicalDocument title="Terms" path="/terms" source=TERMS/> }
 }
 
 #[component]
 fn SecurityPage() -> impl IntoView {
-    view! { <CanonicalDocument title="Security" source=SECURITY_POLICY/> }
+    view! { <CanonicalDocument title="Security" path="/security" source=SECURITY_POLICY/> }
 }
 
 #[component]
-fn CanonicalDocument(title: &'static str, source: &'static str) -> impl IntoView {
+fn CanonicalDocument(
+    title: &'static str,
+    path: &'static str,
+    source: &'static str,
+) -> impl IntoView {
     view! {
-        <SiteLayout>
-            <main id="main-content">
-                <h1>{title}</h1>
-                <p class="status">"Canonical repository text; draft status is preserved verbatim."</p>
-                <pre class="canonical-document">{source}</pre>
-            </main>
+        <SiteLayout title=title path=Some(path)>
+            <h1>{title}</h1>
+            <p class="status">"Canonical repository text; draft status is preserved verbatim."</p>
+            <pre class="canonical-document">{source}</pre>
         </SiteLayout>
     }
 }
 
 #[component]
-fn IntentPage(title: &'static str, summary: &'static str) -> impl IntoView {
+fn IntentPage(path: &'static str, title: &'static str, summary: &'static str) -> impl IntoView {
     view! {
-        <SiteLayout>
-            <main id="main-content">
-                <p class="status">"Intended capability"</p>
-                <h1>{title}</h1>
-                <p class="lede">{summary}</p>
-            </main>
+        <SiteLayout title=title path=Some(path)>
+            <h1>{title}</h1>
+            <p class="lede">{summary}</p>
+            <p><a href="/how-it-works">"Follow the intended workflow"</a>" or "<a href="/#development-status">"check development status"</a>"."</p>
         </SiteLayout>
     }
 }
@@ -285,11 +301,9 @@ fn IntentPage(title: &'static str, summary: &'static str) -> impl IntoView {
 #[component]
 fn NotFoundPage() -> impl IntoView {
     view! {
-        <SiteLayout>
-            <main id="main-content">
-                <h1>"Page not found"</h1>
-                <p><a href="/">"Return to Open Scribe"</a></p>
-            </main>
+        <SiteLayout title="Page not found" path=None>
+            <h1>"Page not found"</h1>
+            <p><a href="/">"Return to Open Scribe"</a></p>
         </SiteLayout>
     }
 }
@@ -298,31 +312,6 @@ fn NotFoundPage() -> impl IntoView {
 #[cfg(feature = "ssr")]
 fn HashedStylesheet(options: LeptosOptions) -> impl IntoView {
     view! { <link id="leptos" rel="stylesheet" href=asset_href(&options, "css", crate::asset_hashes::CSS_HASH)/> }
-}
-
-/// A hashed build boots from the same-origin module that `hash_assets.mjs`
-/// emits, so the exact ADR 0015 CSP needs no inline script. Only an unhashed
-/// development build hydrates inline.
-#[component]
-#[cfg(feature = "ssr")]
-fn EdgeHydrationScripts(options: LeptosOptions) -> impl IntoView {
-    let js_href = asset_href(&options, "js", crate::asset_hashes::JS_HASH);
-    let wasm_href = asset_href(&options, "wasm", crate::asset_hashes::WASM_HASH);
-    let boot = if crate::asset_hashes::BOOT_HASH.is_empty() {
-        let hydration_script = format!(
-            "import({js_href:?}).then(mod => {{ mod.default({{ module_or_path: {wasm_href:?} }}).then(() => {{ mod.hydrate(); }}); }});"
-        );
-        view! { <script type="module">{hydration_script}</script> }.into_any()
-    } else {
-        let boot_href = asset_href(&options, "boot.js", crate::asset_hashes::BOOT_HASH);
-        view! { <script type="module" src=boot_href></script> }.into_any()
-    };
-
-    view! {
-        <link rel="modulepreload" href=js_href/>
-        <link rel="preload" href=wasm_href r#as="fetch" r#type="application/wasm"/>
-        {boot}
-    }
 }
 
 #[cfg(feature = "ssr")]
@@ -351,16 +340,57 @@ pub fn render_ssr_snapshot() -> String {
 /// server or making a request. This proves route composition, not edge delivery.
 #[cfg(feature = "ssr")]
 pub fn render_ssr_snapshot_at(path: &str) -> String {
+    use futures::{StreamExt, executor::block_on, stream};
+
+    let _ = any_spawner::Executor::init_futures_executor();
     let owner = Owner::new();
-    let body = owner.with(|| {
+    owner.with(|| {
         provide_context(leptos_router::location::RequestUrl::new(path));
-        let (server_meta, _server_meta_output) = leptos_meta::ServerMetaContext::new();
+        let (server_meta, metadata) = leptos_meta::ServerMetaContext::new();
         provide_context(server_meta);
-        view! { <App/> }.to_html()
-    });
-    format!(
-        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>Open Scribe — local evidence for important conversations</title><link rel=\"canonical\" href=\"{CANONICAL_ORIGIN}\"></head><body>{body}</body></html>"
-    )
+        let options = LeptosOptions::builder()
+            .output_name("open-scribe-web")
+            .build();
+        let html = shell(options).to_html();
+        // Use the production metadata collector, including route-specific titles.
+        block_on(async {
+            metadata
+                .inject_meta_context(stream::iter([html]))
+                .await
+                .collect::<String>()
+                .await
+        })
+    })
+}
+
+#[cfg(test)]
+mod capability_equality {
+    #[test]
+    fn website_rows_equal_the_runtime_registry() {
+        let website = include_str!("../../docs/capabilities/manifest.v1.json");
+        let runtime = include_str!("../../crates/open-scribe-core/runtime-capabilities.v1.json");
+        assert_eq!(website, runtime);
+        let manifest: serde_json::Value = serde_json::from_str(runtime).expect("registry json");
+        let expected = manifest["capabilities"]
+            .as_array()
+            .expect("capabilities")
+            .iter()
+            .map(|capability| {
+                let terminology = capability["terminology"]
+                    .as_str()
+                    .expect("terminology")
+                    .to_owned();
+                let maturity = capability["maturity"].as_str().expect("maturity");
+                (
+                    terminology,
+                    open_scribe_types::public_capability_label(maturity),
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(super::capability_rows(), expected);
+        assert_eq!(expected.len(), 8);
+        assert!(expected.iter().all(|(_, label)| *label != "Available"));
+    }
 }
 
 #[cfg(all(test, feature = "ssr"))]
@@ -370,11 +400,11 @@ mod tests {
     #[test]
     fn ssr_is_useful_without_hydration() {
         let html = render_ssr_snapshot();
+        assert!(html.to_ascii_lowercase().starts_with("<!doctype html>"));
 
         for required in [
-            "<!doctype html>",
             "<main",
-            "Local evidence for important conversations.",
+            "Return to what was said.",
             "There is no public download or service.",
             "https://open-scribe.app",
             "/privacy",
@@ -425,6 +455,34 @@ mod tests {
 
     #[test]
     fn router_snapshots_preserve_canonical_legal_text_and_unknown_routes() {
+        for path in [
+            "/",
+            "/product",
+            "/record",
+            "/meeting",
+            "/how-it-works",
+            "/download",
+            "/documentation",
+            "/privacy",
+            "/terms",
+            "/security",
+            "/qualification-nonexistent",
+        ] {
+            let html = super::render_ssr_snapshot_at(path);
+            assert_eq!(
+                html.matches("<main id=\"main-content\" tabindex=\"-1\">")
+                    .count(),
+                1,
+                "{path}"
+            );
+            assert_eq!(html.matches("</main>").count(), 1, "{path}");
+            assert!(
+                html.contains("href=\"#main-content\" class=\"skip-link\""),
+                "{path}"
+            );
+            assert!(html.find("</header>").unwrap() < html.find("<main").unwrap());
+            assert!(html.find("</main>").unwrap() < html.find("<footer").unwrap());
+        }
         for (path, heading, source) in [
             ("/privacy", "Privacy", super::PRIVACY_NOTICE),
             ("/terms", "Terms", super::TERMS),
@@ -440,29 +498,42 @@ mod tests {
         }
         let unknown = super::render_ssr_snapshot_at("/qualification-nonexistent");
         assert!(unknown.contains("<h1>Page not found</h1>"));
-        assert!(!unknown.contains("Local evidence for important conversations."));
+        assert!(!unknown.contains("Return to what was said."));
     }
 
     #[test]
-    fn hashed_builds_boot_without_inline_script() {
-        use leptos::prelude::*;
-
-        let options = LeptosOptions::builder()
-            .output_name("open-scribe-web")
-            .build();
-        let html = view! { <super::EdgeHydrationScripts options=options/> }.to_html();
-        let boot = crate::asset_hashes::BOOT_HASH;
-        if boot.is_empty() {
-            assert!(html.contains("<script type=\"module\">import("));
-        } else {
-            let src = format!(
-                "<script type=\"module\" src=\"/pkg/open-scribe-web.{boot}.boot.js\"></script>"
-            );
-            assert!(html.contains(&src), "hashed build omitted {src:?}");
+    fn static_routes_have_specific_metadata_and_no_hydration_request() {
+        for (path, title) in [
+            (
+                "/",
+                "Open Scribe — local evidence for important conversations",
+            ),
+            ("/product", "Product — Open Scribe"),
+            ("/record", "Record mode — Open Scribe"),
+            ("/meeting", "Meeting mode — Open Scribe"),
+            ("/how-it-works", "How It Works — Open Scribe"),
+            ("/download", "Download — Open Scribe"),
+            ("/documentation", "Documentation — Open Scribe"),
+            ("/privacy", "Privacy — Open Scribe"),
+            ("/terms", "Terms — Open Scribe"),
+            ("/security", "Security — Open Scribe"),
+        ] {
+            let html = super::render_ssr_snapshot_at(path);
+            assert!(html.contains(&format!("<title>{title}</title>")), "{path}");
             assert!(
-                !html.contains("import("),
-                "hashed build emitted inline script"
+                html.contains(&format!("href=\"{}{path}\"", super::CANONICAL_ORIGIN)),
+                "{path}"
             );
+            assert!(!html.contains("<script"), "{path} booted a script");
+            assert!(
+                !html.contains("modulepreload"),
+                "{path} preloaded JavaScript"
+            );
+            assert!(!html.contains("application/wasm"), "{path} preloaded Wasm");
         }
+        let missing = super::render_ssr_snapshot_at("/not-a-page");
+        assert!(missing.contains("<title>Page not found — Open Scribe</title>"));
+        assert!(missing.contains("name=\"robots\" content=\"noindex\""));
+        assert!(!missing.contains("rel=\"canonical\""));
     }
 }

@@ -10,7 +10,6 @@
 use super::*;
 use rusqlite::OptionalExtension;
 
-pub(super) const CONTEXT_MIGRATION_VERSION: i64 = 8;
 pub const CONTEXT_SCOPE_SCHEMA: &str = "open-scribe.context-scope/v1";
 const MAX_TARGETS: usize = 16;
 const MAX_DISPLAYS: usize = 16;
@@ -29,7 +28,6 @@ pub const CONTEXT_EXCLUSIONS: [&str; 7] = [
     "private_windows",
     "lock_screen",
 ];
-const OPEN_LIFECYCLES: [&str; 4] = ["preparing", "recording", "finalizing", "paused"];
 
 pub(super) fn apply_context_schema(transaction: &Transaction<'_>) -> Result<(), StoreError> {
     transaction.execute_batch(
@@ -364,15 +362,17 @@ fn condition_from(value: &str) -> Result<ContextCondition, StoreError> {
 }
 
 impl SessionStore {
-    pub(super) fn session_lifecycle(&self, session: &str) -> Result<String, StoreError> {
-        self.connection
+    pub fn session_lifecycle(&self, session: &str) -> Result<SessionLifecycle, StoreError> {
+        let lifecycle: String = self
+            .connection
             .query_row(
                 "SELECT lifecycle FROM sessions WHERE id = ?1",
                 [session],
                 |row| row.get(0),
             )
             .optional()?
-            .ok_or(StoreError::InvalidRequest("unknown session"))
+            .ok_or(StoreError::InvalidRequest("unknown session"))?;
+        SessionLifecycle::parse(&lifecycle)
     }
 
     /// The latest epoch row for the session, with its stored condition.
@@ -402,7 +402,7 @@ impl SessionStore {
     ) -> Result<ContextDetail, StoreError> {
         let _writer = self.write_guard()?;
         let lifecycle = self.session_lifecycle(&session.0)?;
-        if !OPEN_LIFECYCLES.contains(&lifecycle.as_str()) {
+        if !lifecycle.is_open_capture() {
             return Err(StoreError::InvalidState(
                 "context requires an open capture session",
             ));
@@ -513,7 +513,7 @@ impl SessionStore {
         let _writer = self.write_guard()?;
         super::session_deletion::require_available(&self.connection, &session.0)?;
         let lifecycle = self.session_lifecycle(&session.0)?;
-        if !OPEN_LIFECYCLES.contains(&lifecycle.as_str()) && lifecycle != "ready_for_review" {
+        if !lifecycle.is_open_capture() && lifecycle != SessionLifecycle::ReadyForReview {
             return Err(StoreError::InvalidState("the session cannot be declared"));
         }
         let participants: Vec<String> = declaration
@@ -550,7 +550,7 @@ impl SessionStore {
 
     pub fn context_detail(&self, session: &SessionId) -> Result<ContextDetail, StoreError> {
         let lifecycle = self.session_lifecycle(&session.0)?;
-        let open = OPEN_LIFECYCLES.contains(&lifecycle.as_str());
+        let open = lifecycle.is_open_capture();
         let mut statement = self.connection.prepare(
             "SELECT scope_id, epoch, receipt_json, condition, reason, authorized_at_ms, changed_at_ms
              FROM context_scopes WHERE session_id = ?1 ORDER BY rowid",
@@ -645,8 +645,6 @@ impl SessionStore {
         let kind = record.body.event_kind.as_str();
         let p = &record.body.payload;
         let at = record.body.wall_time_milliseconds;
-        let (sequence, prior) = next_database_event(&self.connection, session)?;
-        let digest = event_digest(session, sequence, kind, p, prior.as_deref())?;
         let tx = self.connection.transaction()?;
         let set_condition = |condition: &str, epoch_key: &str, reason: Option<&str>| {
             tx.execute(
@@ -745,17 +743,7 @@ impl SessionStore {
             }
             _ => return Err(StoreError::IntegrityMismatch("not a context record")),
         }
-        insert_event_with_id(
-            &tx,
-            &record.body.event_id,
-            session,
-            sequence,
-            kind,
-            at,
-            p,
-            prior.as_deref(),
-            &digest,
-        )?;
+        insert_journaled_event(&tx, record, kind)?;
         tx.commit()?;
         Ok(())
     }

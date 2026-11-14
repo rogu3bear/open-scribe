@@ -23,11 +23,16 @@ final class RuntimeLibraryStore: ObservableObject {
 
   @Published private(set) var currentSession: RuntimeSessionPresentation?
   @Published private(set) var savedSessions: [RuntimeSessionPresentation] = []
+  /// The library as every surface lists it, rebuilt with each new snapshot.
+  @Published private(set) var library = LibraryPresentation.empty
   @Published private(set) var isSnapshotStale = false
   @Published private(set) var errorMessage: String?
   /// The result of the last title or details edit, for the workspace notice.
   @Published private(set) var editMessage: String?
   @Published private(set) var editMessageIsFailure = false
+  /// A title edit asked for from the library, before Rust stores it.
+  @Published private(set) var pendingRename: RuntimeSessionPresentation?
+  @Published private(set) var pendingRenameGeneration = 0
   /// Supplied before the first snapshot starts. A read begun during recovery
   /// can still contain a terminated recording after the barrier completes.
   private let isLaunchRecoveryPending: @MainActor () -> Bool
@@ -46,6 +51,7 @@ final class RuntimeLibraryStore: ObservableObject {
   private var refreshGeneration: UInt64 = 0
   private var refreshQueued = false
   private var loggedSnapshotSignature = ""
+  private var libraryDay = Calendar.current.startOfDay(for: Date())
 
   init(
     snapshotProvider: @escaping SnapshotProvider,
@@ -102,8 +108,7 @@ final class RuntimeLibraryStore: ObservableObject {
   }
 
   private var tracksLiveClock: Bool {
-    guard let lifecycle = currentSession?.lifecycle else { return false }
-    return ["preparing", "recording", "paused", "finalizing"].contains(lifecycle)
+    currentSession?.lifecycle.isOpenCapture() ?? false
   }
 
   convenience init(
@@ -184,6 +189,9 @@ final class RuntimeLibraryStore: ObservableObject {
       let stored = try await StructuredNativeIO.mutation { try renameProvider(sessionId, title) }
       AppTelemetry.libraryNote(stage: "rename", detail: "session=\(sessionToken) result=renamed")
       report(edit: nil)
+      if pendingRename?.sessionId == sessionId {
+        pendingRename = nil
+      }
       refresh()
       return stored
     } catch {
@@ -217,6 +225,20 @@ final class RuntimeLibraryStore: ObservableObject {
   }
 
   func dismissEditMessage() {
+    report(edit: nil)
+  }
+
+  /// Opens the title editor for one saved or interrupted conversation.
+  /// Rust is not asked to store a title until the editor confirms.
+  func beginRename(_ session: RuntimeSessionPresentation) {
+    pendingRename = session
+    pendingRenameGeneration &+= 1
+    report(edit: nil)
+  }
+
+  /// Closes the title editor and leaves the stored title as it was.
+  func cancelRename() {
+    pendingRename = nil
     report(edit: nil)
   }
 
@@ -267,7 +289,7 @@ final class RuntimeLibraryStore: ObservableObject {
       guard evidence.originalUntouched, evidence.readyForReview else {
         throw RuntimeLibraryStoreError.importEvidenceRejected
       }
-      Task { @MainActor [weak self] in self?.refresh() }
+      publishImportedAudio(evidence)
       return evidence
     }
     guard let original = prepared.original else {
@@ -280,7 +302,7 @@ final class RuntimeLibraryStore: ObservableObject {
     guard evidence.originalUntouched, evidence.readyForReview else {
       throw RuntimeLibraryStoreError.importEvidenceRejected
     }
-    Task { @MainActor [weak self] in self?.refresh() }
+    publishImportedAudio(evidence)
     return evidence
   }
 
@@ -308,10 +330,21 @@ final class RuntimeLibraryStore: ObservableObject {
     guard evidence.originalUntouched, evidence.readyForReview else {
       throw RuntimeLibraryStoreError.importEvidenceRejected
     }
+    publishImportedAudio(evidence)
+    return evidence
+  }
+
+  nonisolated private func publishImportedAudio(_ evidence: NativeImportedMediaEvidence) {
+    let repeatedSource = evidence.repeatedSource
     Task { @MainActor [weak self] in
       self?.refresh()
+      guard repeatedSource else { return }
+      self?.report(
+        edit:
+          "This audio is already in the library. Open Scribe saved a separate conversation and left the existing one unchanged.",
+        failure: false
+      )
     }
-    return evidence
   }
 
   private func noteSnapshotIfChanged(
@@ -328,7 +361,7 @@ final class RuntimeLibraryStore: ObservableObject {
     AppTelemetry.libraryNote(
       stage: "snapshot",
       detail:
-        "current=\(DiagnosticPrivacy.token(current?.sessionId ?? "none")) saved=\(saved.count) lifecycle=\(DiagnosticPrivacy.token(current?.lifecycle ?? "idle"))"
+        "current=\(DiagnosticPrivacy.token(current?.sessionId ?? "none")) saved=\(saved.count) lifecycle=\(DiagnosticPrivacy.token(current?.lifecycle.description ?? "idle"))"
     )
   }
 
@@ -369,14 +402,19 @@ final class RuntimeLibraryStore: ObservableObject {
           ? nil : native.currentSession.map(RuntimeSessionPresentation.init(native:))
         let nextSaved = native.savedSessions.map(RuntimeSessionPresentation.init(native:))
         let announcements = captureAnnouncements.update(current: nextCurrent, saved: nextSaved)
+        let now = Date()
+        let day = Calendar.current.startOfDay(for: now)
         // Identical snapshots must not invalidate SwiftUI. The one-second poll
-        // otherwise redraws the whole library while the app is idle.
+        // otherwise redraws the whole library while the app is idle. A new day
+        // regroups Today and Yesterday.
         guard
           currentSession != nextCurrent || savedSessions != nextSaved || isSnapshotStale
-            || errorMessage != nil
+            || errorMessage != nil || day != libraryDay
         else { break }
         currentSession = nextCurrent
         savedSessions = nextSaved
+        libraryDay = day
+        library = LibraryPresentation(current: nextCurrent, saved: nextSaved, now: now)
         isSnapshotStale = false
         errorMessage = nil
         noteSnapshotIfChanged(current: nextCurrent, saved: nextSaved)
@@ -388,9 +426,11 @@ final class RuntimeLibraryStore: ObservableObject {
       case .failure:
         let alreadyFailed = isSnapshotStale && errorMessage != nil
         currentSession = nil
+        let lastKnown = LibraryPresentation(current: nil, saved: savedSessions, now: Date())
+        if lastKnown != library { library = lastKnown }
         isSnapshotStale = true
         errorMessage =
-          "Live recording state is unavailable. The saved list is last known; recorded media was not changed."
+          "Open Scribe can't read the library right now. The list shows what it last saw; no recording was changed."
         if !alreadyFailed {
           loggedSnapshotSignature = ""
           AppTelemetry.libraryNote(stage: "snapshot-failed", detail: "code=unavailable")

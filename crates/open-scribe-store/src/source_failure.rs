@@ -5,8 +5,8 @@ use uuid::Uuid;
 
 use super::{
     JOURNAL_NAME, JournalRecord, JournalValidation, MediaSourceKind, RecoveryDisposition,
-    SessionStore, StoreError, event_digest, insert_event_with_id, next_database_event,
-    payload_string, validate_journal,
+    SessionHealth, SessionLifecycle, SessionStore, StoreError, insert_journaled_event, missing_row,
+    parse_source_kind, payload_string, validate_journal,
 };
 
 /// Bounded reason for durably retiring one capture source while another continues.
@@ -67,8 +67,8 @@ struct ParsedSourceFailure {
 }
 
 struct SourceFailureProjectionState {
-    session_lifecycle: String,
-    session_health: String,
+    session_lifecycle: SessionLifecycle,
+    session_health: SessionHealth,
     source_lifecycle: String,
     required_lifecycle: String,
     continuing_sources: i64,
@@ -120,14 +120,9 @@ impl SessionStore {
             }
             if state.source_lifecycle == "sealed"
                 && state.required_lifecycle == "sealed"
-                && state.session_lifecycle == "recording"
+                && state.session_lifecycle == SessionLifecycle::Recording
             {
-                self.project_source_failure(
-                    &request.session_id.0,
-                    &accepted.body.payload,
-                    accepted,
-                    &source_id,
-                )?;
+                self.project_source_failure(&request.session_id.0, accepted, &source_id)?;
             }
             self.validate_projected_source_failure(
                 &request.session_id.0,
@@ -137,7 +132,7 @@ impl SessionStore {
             )?;
             return Ok(source_failure_evidence(request, accepted.body.sequence));
         }
-        if state.session_lifecycle != "recording"
+        if state.session_lifecycle != SessionLifecycle::Recording
             || state.source_lifecycle != "sealed"
             || state.required_lifecycle != "sealed"
         {
@@ -163,7 +158,7 @@ impl SessionStore {
             None,
             payload.clone(),
         )?;
-        self.project_source_failure(&request.session_id.0, &payload, &journal_record, &source_id)?;
+        self.project_source_failure(&request.session_id.0, &journal_record, &source_id)?;
         self.validate_projected_source_failure(
             &request.session_id.0,
             ParsedSourceFailure {
@@ -184,20 +179,12 @@ impl SessionStore {
     fn project_source_failure(
         &mut self,
         session_id: &str,
-        payload: &Value,
         journal_record: &JournalRecord,
         source_id: &str,
     ) -> Result<(), StoreError> {
+        let payload = &journal_record.body.payload;
         let parsed = parse_source_failure_payload(payload)?;
         let source_kind = parsed.source_kind.as_str();
-        let (event_sequence, prior_digest) = next_database_event(&self.connection, session_id)?;
-        let digest = event_digest(
-            session_id,
-            event_sequence,
-            "source_failed",
-            payload,
-            prior_digest.as_deref(),
-        )?;
         let transaction = self.connection.transaction()?;
         let source_changed = transaction.execute(
             "UPDATE sources SET lifecycle = 'failed'
@@ -230,17 +217,7 @@ impl SessionStore {
                 "source failure projection has no continuing source",
             ));
         }
-        insert_event_with_id(
-            &transaction,
-            &journal_record.body.event_id,
-            session_id,
-            event_sequence,
-            "source_failed",
-            journal_record.body.wall_time_milliseconds,
-            payload,
-            prior_digest.as_deref(),
-            &digest,
-        )?;
+        insert_journaled_event(&transaction, journal_record, "source_failed")?;
         transaction.commit()?;
         Ok(())
     }
@@ -260,12 +237,7 @@ impl SessionStore {
                 params![session_id, source_kind.as_str()],
                 |row| row.get(0),
             )
-            .map_err(|error| match error {
-                rusqlite::Error::QueryReturnedNoRows => {
-                    StoreError::InvalidState("required source projection does not exist")
-                }
-                other => StoreError::Sqlite(other),
-            })
+            .map_err(missing_row("required source projection does not exist"))
     }
 
     /// The source row a journaled failure names. A record without a source
@@ -338,12 +310,7 @@ impl SessionStore {
                     })
                 },
             )
-            .map_err(|error| match error {
-                rusqlite::Error::QueryReturnedNoRows => {
-                    StoreError::InvalidState("required source projection does not exist")
-                }
-                other => StoreError::Sqlite(other),
-            })
+            .map_err(missing_row("required source projection does not exist"))
     }
 
     fn validate_projected_source_failure(
@@ -355,8 +322,8 @@ impl SessionStore {
     ) -> Result<(), StoreError> {
         let state =
             self.source_failure_projection_state(session_id, parsed.source_kind, source_id)?;
-        if state.session_lifecycle != "recording"
-            || state.session_health != "degraded"
+        if state.session_lifecycle != SessionLifecycle::Recording
+            || state.session_health != SessionHealth::Degraded
             || state.source_lifecycle != "failed"
             || state.required_lifecycle != "failed"
             || state.continuing_sources == 0
@@ -427,8 +394,8 @@ impl SessionStore {
             // The required row may have been retired or re-added by a later
             // scope change; the failed source row itself stays failed.
             let (session_lifecycle, session_health, source_lifecycle, required_lifecycle): (
-                String,
-                String,
+                SessionLifecycle,
+                SessionHealth,
                 String,
                 Option<String>,
             ) = self.connection.query_row(
@@ -454,10 +421,8 @@ impl SessionStore {
             if event_projected {
                 // A projected failure is durable whatever the recorder did next:
                 // the session stays degraded and the source stays failed.
-                if !matches!(
-                    session_lifecycle.as_str(),
-                    "recording" | "finalizing" | "paused" | "preparing" | "interrupted"
-                ) || session_health != "degraded"
+                if !session_lifecycle.is_unsaved()
+                    || session_health != SessionHealth::Degraded
                     || source_lifecycle != "failed"
                 {
                     return Ok(RecoveryDisposition::IntegrityMismatch);
@@ -473,7 +438,7 @@ impl SessionStore {
                 || trailing
                     .first()
                     .is_some_and(|record| record.body.event_kind != "session_interrupted")
-                || session_lifecycle != "recording"
+                || session_lifecycle != SessionLifecycle::Recording
                 || source_lifecycle != "sealed"
                 || required_lifecycle.as_deref() != Some("sealed")
             {
@@ -482,7 +447,7 @@ impl SessionStore {
             unprojected = Some((*failure, source_id));
         }
         if let Some((failure, source_id)) = &unprojected {
-            self.project_source_failure(session_id, &failure.body.payload, failure, source_id)?;
+            self.project_source_failure(session_id, failure, source_id)?;
         }
         Ok(if unprojected.is_some() {
             RecoveryDisposition::SourceFailureProjectionRepaired
@@ -493,7 +458,7 @@ impl SessionStore {
 }
 
 fn parse_source_failure_payload(payload: &Value) -> Result<ParsedSourceFailure, StoreError> {
-    let source_kind = MediaSourceKind::from_str(payload_string(payload, "source_kind")?)?;
+    let source_kind = parse_source_kind(payload_string(payload, "source_kind")?)?;
     let reason = SourceFailureReason::from_str(payload_string(payload, "reason")?)?;
     if payload.get("recording_continues").and_then(Value::as_bool) != Some(true) {
         return Err(StoreError::IntegrityMismatch(
@@ -539,7 +504,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        AuthorizeMediaOpenRequest, FirstSampleReceipt, InterruptSessionRequest,
+        AuthorizeMediaOpenRequest, CaptureClock, FirstSampleReceipt, InterruptSessionRequest,
         MediaOpenAuthorization, MediaOpenReceipt, PrepareSessionRequest, SealSegmentReceipt,
         SessionInterruptionReason, SessionOrigin,
     };
@@ -647,6 +612,123 @@ mod tests {
             interrupted.interruption_reason,
             Some(SessionInterruptionReason::PermissionRevoked)
         );
+    }
+
+    #[test]
+    fn source_loss_names_the_failed_source_and_keeps_the_uncovered_interval() {
+        let temp = TempDir::new().unwrap();
+        let mut store = SessionStore::open(temp.path().join("Open Scribe")).unwrap();
+        let session_id = store
+            .prepare_session_with_required_sources(
+                PrepareSessionRequest {
+                    title: "Source loss".into(),
+                    origin: SessionOrigin::Capture,
+                },
+                vec![MediaSourceKind::Microphone, MediaSourceKind::SystemAudio],
+            )
+            .unwrap()
+            .session_id;
+        store
+            .anchor_capture_clock(
+                session_id.clone(),
+                CaptureClock {
+                    host_anchor: 1,
+                    numerator: 1,
+                    denominator: 1,
+                },
+            )
+            .unwrap();
+        let microphone = open_source(&mut store, &session_id, MediaSourceKind::Microphone);
+        let system = open_source(&mut store, &session_id, MediaSourceKind::SystemAudio);
+        accept_first_sample(&mut store, &microphone);
+        accept_first_sample(&mut store, &system);
+        store.confirm_recording(session_id.clone()).unwrap();
+        seal_source(&mut store, &system);
+        let lost_bytes = fs::read(&system.absolute_path).unwrap();
+        let evidence = store
+            .record_source_failure(SourceFailureRequest {
+                session_id: session_id.clone(),
+                source_kind: MediaSourceKind::SystemAudio,
+                reason: SourceFailureReason::CaptureFailed,
+            })
+            .unwrap();
+        assert!(evidence.source_failed);
+        assert!(evidence.session_degraded);
+        assert!(evidence.recording_continues);
+        assert!(!evidence.session_interrupted);
+
+        let recording = store.runtime_library_snapshot().unwrap();
+        let current = recording.current_session.unwrap();
+        assert_eq!(current.lifecycle, "recording");
+        assert_eq!(current.health, "degraded");
+        let failed_name = current
+            .sources
+            .iter()
+            .find(|source| source.kind == MediaSourceKind::SystemAudio)
+            .unwrap();
+        assert_eq!(failed_name.lifecycle, "failed");
+        assert_eq!(
+            current
+                .sources
+                .iter()
+                .find(|source| source.kind == MediaSourceKind::Microphone)
+                .unwrap()
+                .lifecycle,
+            "capturing"
+        );
+        let loss = store
+            .recorder_detail(&session_id)
+            .unwrap()
+            .events
+            .into_iter()
+            .find(|event| event.kind == "source_failed")
+            .unwrap();
+        assert_eq!(loss.label, failed_name.display_name);
+        assert!(loss.session_nanoseconds > 0);
+
+        seal_source_with_samples(&mut store, &microphone, 48_000, 1_000_042_000);
+        assert_eq!(fs::read(&system.absolute_path).unwrap(), lost_bytes);
+        let loss_after = store
+            .recorder_detail(&session_id)
+            .unwrap()
+            .events
+            .into_iter()
+            .find(|event| event.kind == "source_failed")
+            .unwrap();
+        assert_eq!(loss_after.session_nanoseconds, loss.session_nanoseconds);
+        assert_eq!(loss_after.label, loss.label);
+
+        let saved = store.runtime_library_snapshot().unwrap();
+        let session = saved
+            .saved_sessions
+            .into_iter()
+            .chain(saved.current_session)
+            .find(|session| session.session_id == session_id)
+            .unwrap();
+        assert_eq!(session.lifecycle, "ready_for_review");
+        assert_eq!(session.health, "degraded");
+        assert_eq!(
+            session
+                .sources
+                .iter()
+                .find(|source| source.kind == MediaSourceKind::SystemAudio)
+                .unwrap()
+                .lifecycle,
+            "failed"
+        );
+        let timeline = store.playback_timeline(&session_id).unwrap();
+        let covered = |track: &str| {
+            timeline
+                .iter()
+                .filter(|segment| segment.track_id == track)
+                .map(|segment| segment.sample_count)
+                .sum::<u64>()
+        };
+        let failed_samples = covered(&system.track_id);
+        let continued_samples = covered(&microphone.track_id);
+        assert!(continued_samples > failed_samples);
+        assert!(failed_samples > 0);
+        assert_eq!(fs::read(&system.absolute_path).unwrap(), lost_bytes);
     }
 
     #[test]
@@ -947,11 +1029,20 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        MediaSourceKind::from_str(&kind).unwrap()
+        parse_source_kind(&kind).unwrap()
     }
 
     fn seal_source(store: &mut SessionStore, authorization: &MediaOpenAuthorization) {
-        replace_with_recoverable_pcm_caf(authorization, 960);
+        seal_source_with_samples(store, authorization, 960, 52_000);
+    }
+
+    fn seal_source_with_samples(
+        store: &mut SessionStore,
+        authorization: &MediaOpenAuthorization,
+        sample_count: u64,
+        final_sample_host_time: u64,
+    ) {
+        replace_with_recoverable_pcm_caf(authorization, sample_count);
         let final_byte_length = fs::metadata(&authorization.absolute_path).unwrap().len();
         store
             .seal_segment(SealSegmentReceipt {
@@ -961,8 +1052,8 @@ mod tests {
                 open_token: authorization.open_token.clone(),
                 writer_generation: authorization.writer_generation,
                 relative_path: authorization.relative_path.clone(),
-                final_sample_host_time: 52_000,
-                sample_count: 960,
+                final_sample_host_time,
+                sample_count,
                 final_byte_length,
             })
             .unwrap();

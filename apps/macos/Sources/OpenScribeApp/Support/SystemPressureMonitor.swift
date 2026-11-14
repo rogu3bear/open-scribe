@@ -14,8 +14,8 @@ struct SystemPressureReading: Equatable, Sendable {
     case critical
   }
 
-  /// Bytes the library volume can still give this app for important usage,
-  /// from `volumeAvailableCapacityForImportantUsage`; `nil` when unreadable.
+  /// Bytes the library volume can still give this app, from
+  /// `RecorderStorage.availableBytes`; `nil` when unreadable.
   let availableDiskBytes: Int64?
   /// The last level the kernel's memory-pressure source delivered.
   let memoryPressure: MemoryPressure
@@ -40,7 +40,8 @@ struct SystemPressureReading: Equatable, Sendable {
     sampledAt: .distantPast)
 
   /// Below this, transcription waits so capture keeps room to write.
-  static let minimumDiskBytesForTranscription: Int64 = 1 << 30
+  static let minimumDiskBytesForTranscription = Int64(
+    NativeCapturePolicy.current.transcriptionDiskFloorBytes)
 
   var diskIsLow: Bool {
     guard let availableDiskBytes else { return false }
@@ -196,11 +197,10 @@ final class SystemPressureMonitor: ObservableObject {
     }
   }
 
-  /// `volumeAvailableCapacityForImportantUsage` on the volume holding `url`:
-  /// what macOS will let this app write, counting purgeable space.
+  /// The recorder's reading of the volume holding `url`; `nil` when the
+  /// volume does not report it.
   nonisolated static func availableDiskBytes(at url: URL) -> Int64? {
-    let values = try? url.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
-    return values?.volumeAvailableCapacityForImportantUsage
+    (try? RecorderStorage.availableBytes(at: url.path)).map { Int64(clamping: $0) }
   }
 
   nonisolated static func hostFreeMemoryBytes() -> UInt64? {

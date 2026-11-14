@@ -1,5 +1,9 @@
+import Combine
 import SwiftUI
+import UniformTypeIdentifiers
 
+/// The main window: the library on the left; on the right, the recording in
+/// progress as a live transcript, or a saved conversation as an interview.
 struct ContentView: View {
   @Environment(\.isSceneVerification) private var isSceneVerification
   @ObservedObject var store: RuntimeLibraryStore
@@ -12,55 +16,68 @@ struct ContentView: View {
   @ObservedObject var pressure: SystemPressureMonitor
   @ObservedObject var context: ContextScopeModel
   @ObservedObject var navigation: MainWorkspaceNavigation
-  @State private var searchQuery = ""
-  @State private var renaming: ConversationMetadataPresentation?
+  /// Titles and name suggestions. Hosted proofs keep the inert default, so
+  /// no language model runs inside them.
+  @ObservedObject var suggestions: ConversationSuggestionModel = .inert
+  /// Transcript export asks for a destination. The panel is the shipped
+  /// default; a hosted proof can supply a file URL and still press Export.
+  var exportTranscriptDestination: @MainActor (String) -> URL? = ConversationExportPanel.choose
+  @StateObject private var librarySearch = LibrarySearchState()
 
   private var selectedSessionId: String? {
     navigation.selectedSessionId
   }
 
-  private var selectedSessionBinding: Binding<String?> {
-    Binding(
-      get: { navigation.selectedSessionId },
-      set: { selectedSessionId in
-        navigation.select(selectedSessionId)
-      }
-    )
-  }
-
   private var selectedSession: RuntimeSessionPresentation? {
-    if store.currentSession?.sessionId == selectedSessionId {
-      return store.currentSession
-    }
-    return store.savedSessions.first { $0.sessionId == selectedSessionId }
+    store.library.session(selectedSessionId)
   }
 
-  private var conversationReferences: [String: String] {
-    ConversationIdentityPresentation.references(
-      for: store.savedSessions + (store.currentSession.map { [$0] } ?? [])
-    )
+  private var canRecord: Bool {
+    MainWorkspaceActions.canRecord(
+      liveCanStart: liveRecording.canStart, importIsBusy: importedMediaAuthority.isBusy)
+  }
+
+  private var actions: ConversationActions {
+    ConversationActions(
+      store: store, transcripts: transcripts, playback: recoveredSessions,
+      recorderIdle: liveRecording.canStart)
   }
 
   var body: some View {
     NavigationSplitView {
-      conversationSidebar
+      LibrarySidebar(
+        store: store, importedMediaAuthority: importedMediaAuthority,
+        liveRecording: liveRecording, transcripts: transcripts, speech: speech,
+        scheduler: scheduler, pressure: pressure, navigation: navigation,
+        search: librarySearch, actions: actions,
+        onOpenSearchHit: openSearchHit
+      )
     } detail: {
-      selectedWorkspace
+      detail
     }
     .navigationSplitViewStyle(.balanced)
-    .toolbar {
-      ToolbarItemGroup(placement: .primaryAction) {
-        captureButton
-        RecorderControls(recorder: liveRecording, store: store)
-        importButton
-        if importedMediaAuthority.canOpenPackages {
-          openPackageButton
-        }
+    .background {
+      AudioDropMount { urls in
+        importedMediaAuthority.stageDroppedAudio(urls)
       }
+    }
+    .toolbar {
+      // Record is its own item, so it reads as the window's one capture
+      // action rather than sharing a capsule with Sources.
+      ToolbarItem(placement: .primaryAction) { captureButton }
+      ToolbarItemGroup(placement: .primaryAction) {
+        RecorderControls(recorder: liveRecording, store: store)
+      }
+      ToolbarItem(placement: .primaryAction) {
+        RecorderSourcesControl(recorder: liveRecording, store: store)
+      }
+      ToolbarItemGroup(placement: .primaryAction) { importButton }
     }
     .onAppear {
       store.refresh()
       AppTelemetry.runtimeSceneAppeared("primary", session: store.currentSession)
+      let library = store
+      suggestions.onTitleStored = { library.refresh() }
       // Selection is published state. Applying it on the next turn keeps the
       // first library layout from redrawing inside its own appearance pass.
       Task { @MainActor in
@@ -71,11 +88,14 @@ struct ContentView: View {
       synchronizeSelection(preferCurrentSession: false)
     }
     .onChange(of: store.savedSessions.map(\.sessionId)) { _ in
-      navigation.synchronize(
-        currentSessionId: store.currentSession?.sessionId,
-        savedSessionIds: store.savedSessions.map(\.sessionId),
-        preferCurrentSession: false
-      )
+      synchronizeSelection(preferCurrentSession: false)
+    }
+    .onReceive(store.$savedSessions) { sessions in
+      suggestions.considerLibrary(sessions)
+    }
+    .onReceive(liveRecording.liveCaptions.$lines) { lines in
+      guard let sessionId = store.currentSession?.sessionId, liveRecording.canStop else { return }
+      suggestions.considerLive(sessionId: sessionId, lines: lines)
     }
     .onChange(of: importedMediaAuthority.importedSessionId) { importedSessionId in
       navigation.acceptImportedConversation(
@@ -83,29 +103,8 @@ struct ContentView: View {
         savedSessionIds: store.savedSessions.map(\.sessionId)
       )
     }
-    .onChange(of: searchQuery) { query in
-      transcripts.search(query)
-    }
-    .confirmationDialog(
-      "Move this conversation to Trash?",
-      isPresented: Binding(
-        get: { transcripts.pendingDeletion != nil },
-        set: { presented in
-          if !presented { transcripts.cancelDeletion() }
-        }
-      ),
-      presenting: transcripts.pendingDeletion
-    ) { _ in
-      Button("Move to Trash", role: .destructive) {
-        if transcripts.confirmDeletion() {
-          store.refresh()
-        }
-      }
-      Button("Cancel", role: .cancel) {
-        transcripts.cancelDeletion()
-      }
-    } message: { inventory in
-      Text(SessionDeletionSummary.text(inventory))
+    .task(id: librarySearch.query) {
+      await transcripts.search(librarySearch.query)
     }
     .onChange(of: selectedSessionId) { selectedSessionId in
       if MainWorkspaceSelection.shouldStopDetachedPlayback(
@@ -122,251 +121,97 @@ struct ContentView: View {
     }
   }
 
-  private var conversationSidebar: some View {
-    VStack(spacing: 0) {
-      conversationList
-      LibraryActivityFooter(
-        scheduler: scheduler, speech: speech, pressure: pressure,
-        titles: Dictionary(
-          uniqueKeysWithValues: store.savedSessions.map {
-            ($0.sessionId, ConversationIdentityPresentation.title($0.title))
-          }))
-    }
-    .navigationSplitViewColumnWidth(min: 220, ideal: 260, max: 340)
-  }
+  // MARK: Detail
 
-  private var conversationList: some View {
-    let references = conversationReferences
-    return List(selection: selectedSessionBinding) {
-      if !searchQuery.trimmingCharacters(in: .whitespaces).isEmpty {
-        Section("Transcript Matches") {
-          if transcripts.searchResults.isEmpty {
-            Text("No matching transcript text")
-              .foregroundStyle(.secondary)
-          }
-          ForEach(transcripts.searchResults, id: \.self) { hit in
-            let title = ConversationIdentityPresentation.title(hit.sessionTitle)
-            let reference = references[hit.sessionId]
-            Button {
-              openSearchHit(hit)
-            } label: {
-              VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 8) {
-                  Text(title)
-                  if let reference {
-                    Text(reference).monospaced().fixedSize()
-                  }
-                }
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                Text(hit.effectiveText)
-                  .lineLimit(2)
-              }
-            }
-            .buttonStyle(.plain)
-            .help(hit.sessionTitle)
-            .accessibilityLabel(
-              "\(title)\(reference.map { ", reference \($0)" } ?? ""): \(hit.effectiveText)"
-            )
-          }
-        }
-      }
-
-      if let current = store.currentSession {
-        Section("Now") {
-          if current.lifecycle == "interrupted" {
-            ConversationSidebarRow(
-              session: current, reference: references[current.sessionId],
-              isSelected: selectedSessionId == current.sessionId,
-              transcription: scheduler.state(for: current.sessionId)
-            )
-            .tag(current.sessionId)
-            .contextMenu {
-              Button("Rename…") {
-                renaming = ConversationMetadataPresentation(session: current)
-              }
-              Button("Move to Trash…", role: .destructive) {
-                requestDeletion(current)
-              }
-              .disabled(!liveRecording.canStart || current.deletionUnavailableReason != nil)
-              .help(current.deletionUnavailableReason ?? "Move this conversation to Trash.")
-            }
-          } else {
-            ConversationSidebarRow(
-              session: current, reference: references[current.sessionId],
-              isSelected: selectedSessionId == current.sessionId,
-              transcription: scheduler.state(for: current.sessionId)
-            )
-            .tag(current.sessionId)
-          }
-        }
-      }
-
-      if !LibraryConversationLists.interrupted(store.savedSessions).isEmpty {
-        Section("Interrupted") {
-          ForEach(LibraryConversationLists.interrupted(store.savedSessions)) { session in
-            ConversationSidebarRow(
-              session: session, reference: references[session.sessionId],
-              isSelected: selectedSessionId == session.sessionId,
-              transcription: scheduler.state(for: session.sessionId)
-            )
-            .tag(session.sessionId)
-            .contextMenu {
-              Button("Rename…") {
-                renaming = ConversationMetadataPresentation(session: session)
-              }
-              Button("Move to Trash…", role: .destructive) {
-                requestDeletion(session)
-              }
-              .disabled(!liveRecording.canStart || session.deletionUnavailableReason != nil)
-              .help(session.deletionUnavailableReason ?? "Move this conversation to Trash.")
-            }
-          }
-        }
-      }
-
-      Section("Conversations") {
-        let saved = LibraryConversationLists.saved(store.savedSessions)
-        if saved.isEmpty {
-          Text("No saved conversations yet")
-            .foregroundStyle(.secondary)
-        } else {
-          ForEach(saved) { session in
-            ConversationSidebarRow(
-              session: session, reference: references[session.sessionId],
-              isSelected: selectedSessionId == session.sessionId,
-              transcription: scheduler.state(for: session.sessionId)
-            )
-            .tag(session.sessionId)
-            .contextMenu {
-              Button("Rename…") {
-                renaming = ConversationMetadataPresentation(session: session)
-              }
-              Button("Move to Trash…", role: .destructive) {
-                requestDeletion(session)
-              }
-              .disabled(!liveRecording.canStart || session.deletionUnavailableReason != nil)
-              .help(session.deletionUnavailableReason ?? "Move this conversation to Trash.")
-            }
-          }
-        }
-      }
-    }
-    .listStyle(.sidebar)
-    .sheet(item: $renaming) { presentation in
-      ConversationRenameSheet(session: presentation.session, store: store) {
-        presentation.close(&renaming)
-      }
-    }
-    .searchable(text: $searchQuery, placement: .sidebar, prompt: "Search transcripts")
-    .onDeleteCommand {
-      // Delete (or Edit > Delete) moves the selected saved conversation to
-      // Trash through the same confirmation as the context menu.
-      guard liveRecording.canStart,
-        let session = store.savedSessions.first(where: { $0.sessionId == selectedSessionId })
-      else { return }
-      requestDeletion(session)
-    }
-    .navigationTitle("Library")
-  }
-
-  @ViewBuilder
-  private var selectedWorkspace: some View {
-    VStack(spacing: 0) {
-      statusBanner
-      if let selectedSession {
-        if selectedSession.sessionId == store.currentSession?.sessionId,
-          selectedSession.lifecycle != "interrupted"
-        {
-          CompactLiveView(store: store, liveRecording: liveRecording, context: context)
-        } else {
-          ConversationWorkspaceView(
-            session: selectedSession,
-            store: store,
-            playbackController: recoveredSessions,
-            transcripts: transcripts,
-            speech: speech,
-            scheduler: scheduler,
-            reference: conversationReferences[selectedSession.sessionId],
-            audioReviewRequest: navigation.audioReviewRequest,
-            canStartNewRecording: MainWorkspaceActions.canRecord(
-              liveCanStart: liveRecording.canStart, importIsBusy: importedMediaAuthority.isBusy
-            ),
-            newRecordingUnavailableReason: importedMediaAuthority.isBusy
-              ? "Wait for the current import to finish before starting a new recording."
-              : liveRecording.isLaunchRecoveryPending()
-                ? liveRecording.readinessText
-                : "Finish the current recording action before starting a new recording.",
-            onStartNewRecording: startRecording,
-            loadRecorderEvents: { (try? liveRecording.detail(sessionId: $0).events) ?? [] }
-          )
-          .id(selectedSession.sessionId)
-        }
+  /// The selected document fills the column from the toolbar down; the
+  /// window's notices sit inside it, in the document's notice position.
+  @ViewBuilder private var document: some View {
+    if let selectedSession {
+      if selectedSession.sessionId == store.currentSession?.sessionId,
+        selectedSession.lifecycle != .interrupted
+      {
+        CompactLiveView(
+          store: store, liveRecording: liveRecording, context: context,
+          actions: actions, notices: windowNotices)
       } else {
-        EmptyConversationWorkspace(
-          canRecord: MainWorkspaceActions.canRecord(
-            liveCanStart: liveRecording.canStart,
-            importIsBusy: importedMediaAuthority.isBusy
-          ),
-          canImport: canImport,
-          importIsBusy: importedMediaAuthority.isBusy,
-          onRecord: startRecording,
-          onImport: importedMediaAuthority.chooseAndImport,
-          onOpenPackage: openPackageAction
+        ConversationWorkspaceView(
+          session: selectedSession,
+          store: store,
+          playbackController: recoveredSessions,
+          transcripts: transcripts,
+          speech: speech,
+          scheduler: scheduler,
+          reference: store.library.references[selectedSession.sessionId],
+          audioReviewRequest: navigation.audioReviewRequest,
+          canStartNewRecording: canRecord,
+          newRecordingUnavailableReason: importedMediaAuthority.isBusy
+            ? "Wait for the current import to finish before starting a new recording."
+            : liveRecording.isLaunchRecoveryPending()
+              ? liveRecording.readinessText
+              : "Finish the current recording action before starting a new recording.",
+          onStartNewRecording: startRecording,
+          loadRecorderEvents: { (try? liveRecording.detail(sessionId: $0).events) ?? [] },
+          suggestions: suggestions,
+          exportDestination: exportTranscriptDestination,
+          windowNotices: windowNotices
         )
+        .id(selectedSession.sessionId)
       }
-    }
-    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-  }
-
-  @ViewBuilder
-  private var statusBanner: some View {
-    if !workspaceNotices.isEmpty {
-      VStack(spacing: 0) {
-        ForEach(workspaceNotices) { notice in
-          HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Image(systemName: notice.isFailure ? "exclamationmark.triangle" : "checkmark.circle")
-              .foregroundStyle(notice.isFailure ? Color.red : Color.secondary)
-            Text(notice.message)
-              .frame(maxWidth: .infinity, alignment: .leading)
-          }
-          .font(.callout)
-          .foregroundStyle(notice.isFailure ? Color.primary : Color.secondary)
-          .padding(.horizontal, 16)
-          .padding(.vertical, 8)
-          .accessibilityElement(children: .combine)
-          .accessibilityLabel(
-            "\(notice.isFailure ? "Problem" : "Status"): \(notice.message)"
-          )
-        }
-      }
-      .background(.bar)
+    } else {
+      EmptyConversationWorkspace(
+        canRecord: canRecord,
+        canImport: canImport,
+        hasConversations: !store.library.isEmpty,
+        recordedAudio: liveRecording.captureSelection.recordedAudio,
+        notices: windowNotices,
+        onRecord: startRecording,
+        onOpenPackage: openPackageAction
+      )
     }
   }
 
-  private var captureButton: some View {
-    Group {
-      if liveRecording.canStop {
-        Button("Stop and Save", systemImage: "stop.fill") {
-          Task {
-            await liveRecording.stop()
+  private var detail: some View {
+    document
+      .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+      .background(Interview.paper)
+      .overlay(alignment: .top) {
+        DropConfirmationMount(authority: importedMediaAuthority)
+          .frame(maxWidth: .infinity)
+      }
+      .overlay(alignment: .bottom) {
+        // Pending rename and deletion are published after the first layout.
+        // These strips are created with it and reveal their own controls.
+        VStack(spacing: 0) {
+          RenameConfirmationMount(store: store)
+            .frame(maxWidth: .infinity)
+          DeletionConfirmationMount(transcripts: transcripts) {
             store.refresh()
           }
+          .frame(maxWidth: .infinity)
         }
-        .keyboardShortcut("s", modifiers: [.command, .shift])
-      } else {
-        Button("Record", systemImage: "record.circle") {
-          startRecording()
-        }
-        .disabled(
-          !MainWorkspaceActions.canRecord(
-            liveCanStart: liveRecording.canStart,
-            importIsBusy: importedMediaAuthority.isBusy
-          )
-        )
-        .keyboardShortcut("r", modifiers: [.command, .shift])
-        .help("Record \(liveRecording.captureSelection.recordedAudio)")
       }
+  }
+
+  // MARK: Toolbar
+
+  /// Record, or Stop and Save in its place while recording.
+  @ViewBuilder private var captureButton: some View {
+    if liveRecording.canStop {
+      HostedButton(
+        title: ConversationControlLabels.stopAndSave, symbol: "stop.fill",
+        identifier: "Toolbar stop", shortcut: ConversationControlLabels.stopShortcut
+      ) {
+        Task {
+          await liveRecording.stop()
+          store.refresh()
+        }
+      }
+    } else {
+      HostedButton(
+        title: ConversationControlLabels.record, identifier: "Toolbar record",
+        shortcut: ConversationControlLabels.recordShortcut,
+        help: "Record \(liveRecording.captureSelection.recordedAudio)", style: .record,
+        isEnabled: canRecord, action: startRecording)
     }
   }
 
@@ -377,12 +222,16 @@ struct ContentView: View {
     {
       ImportBatchStatus(imports: importedMediaAuthority, canResume: liveRecording.canStart)
     }
-    if !importedMediaAuthority.hasPendingAudioImports {
-      Button(
-        importedMediaAuthority.isBusy ? "Importing…" : "Import Audio…",
+    if !importedMediaAuthority.hasPendingAudioImports, importedMediaAuthority.canOpenPackages {
+      Menu(
+        importedMediaAuthority.isBusy ? "Importing…" : "Import",
         systemImage: "square.and.arrow.down"
       ) {
-        importedMediaAuthority.chooseAndImport()
+        Button("Audio Files…", systemImage: "waveform") {
+          importedMediaAuthority.chooseAndImport()
+        }
+        .disabled(!canImport)
+        openPackageButton
       }
       .disabled(!canImport)
       .help(
@@ -395,7 +244,7 @@ struct ContentView: View {
     }
   }
 
-  private var openPackageAction: (() -> Void)? {
+  private var openPackageAction: (@MainActor () -> Void)? {
     guard importedMediaAuthority.canOpenPackages else { return nil }
     let authority = importedMediaAuthority
     return { authority.chooseAndOpenPackage() }
@@ -409,8 +258,8 @@ struct ContentView: View {
     .disabled(!canImport)
     .help(
       canImport
-        ? "Open a .openscribe package exported on another Mac as a new conversation"
-        : "Wait for the current recording or import to finish before opening a package"
+        ? ImportedMediaAuthorityAdapter.portablePackageHelp
+        : ImportedMediaAuthorityAdapter.portablePackageWaitHelp
     )
   }
 
@@ -419,44 +268,46 @@ struct ContentView: View {
       && !importedMediaAuthority.hasPendingAudioImports
   }
 
-  private var workspaceNotices: [WorkspaceNotice] {
-    var notices = [WorkspaceNotice]()
-    if let message = liveRecording.errorMessage {
-      notices.append(.init(id: "recording", message: message, isFailure: true))
-    }
+  // MARK: Notices
+
+  private var windowNotices: WindowNotices {
+    var others = [WorkspaceNotice]()
     if let message = store.errorMessage {
-      notices.append(.init(id: "library", message: message, isFailure: true))
+      others.append(.init(id: "library", message: message, isFailure: true))
     }
     if let message = recoveredSessions.errorMessage,
-      MainWorkspacePlaybackNotice.shouldPresent(
-        errorSessionId: recoveredSessions.errorSessionId,
-        selectedSessionId: selectedSessionId
-      )
+      recoveredSessions.errorSessionId == nil
     {
-      notices.append(.init(id: "playback", message: message, isFailure: true))
+      others.append(.init(id: "playback", message: message, isFailure: true))
     }
     if importedMediaAuthority.phase == .failed,
       let message = importedMediaAuthority.statusMessage
     {
-      notices.append(.init(id: "import", message: message, isFailure: true))
-    } else if notices.isEmpty, let message = importedMediaAuthority.statusMessage {
-      notices.append(.init(id: "import", message: message, isFailure: false))
+      others.append(.init(id: "import", message: message, isFailure: true))
+    } else if others.isEmpty, importedMediaAuthority.pendingAudioImport == nil,
+      let message = importedMediaAuthority.statusMessage
+    {
+      others.append(.init(id: "import", message: message, isFailure: false))
     }
     if let message = transcripts.message {
-      notices.append(
+      others.append(
         .init(id: "transcripts", message: message, isFailure: transcripts.messageIsFailure))
     }
-    if let message = store.editMessage, renaming == nil {
-      notices.append(.init(id: "edit", message: message, isFailure: store.editMessageIsFailure))
+    var edit: WorkspaceNotice?
+    if let message = store.editMessage, store.pendingRename == nil {
+      edit = .init(id: "edit", message: message, isFailure: store.editMessageIsFailure)
     }
-    if notices.isEmpty, liveRecording.phase == .saved,
+    if others.isEmpty, edit == nil, liveRecording.phase == .saved,
       selectedSessionId == liveRecording.lastSavedSessionId,
       let message = liveRecording.mixdownStatus
     {
-      notices.append(.init(id: "mixdown", message: message, isFailure: false))
+      others.append(.init(id: "mixdown", message: message, isFailure: false))
     }
-    return notices
+    return WindowNotices(
+      recordingProblem: liveRecording.errorMessage, edit: edit, others: others)
   }
+
+  // MARK: Actions
 
   private func startRecording() {
     Task {
@@ -475,360 +326,63 @@ struct ContentView: View {
     }
   }
 
-  private func requestDeletion(_ session: RuntimeSessionPresentation) {
-    guard session.deletionUnavailableReason == nil else { return }
-    if recoveredSessions.activePlaybackSessionId == session.sessionId {
-      recoveredSessions.stopPlayback()
-    }
-    transcripts.requestDeletion(sessionId: session.sessionId)
-  }
-
+  /// Selection lands only on sessions the sidebar lists. An attempt that
+  /// never recorded has no row of its own; a failed start stays in the
+  /// window's problem banner instead.
   private func synchronizeSelection(preferCurrentSession: Bool) {
     navigation.synchronize(
-      currentSessionId: store.currentSession?.sessionId,
-      savedSessionIds: store.savedSessions.map(\.sessionId),
+      currentSessionId: store.currentSession.flatMap { $0.didNotRecord ? nil : $0.sessionId },
+      savedSessionIds: store.savedSessions.filter { !$0.didNotRecord }.map(\.sessionId),
       preferCurrentSession: preferCurrentSession
     )
   }
 }
-private struct WorkspaceNotice: Identifiable {
-  let id: String
-  let message: String
-  let isFailure: Bool
-}
 
-@MainActor
-final class MainWorkspaceNavigation: ObservableObject {
-  struct AudioReviewRequest: Equatable {
-    let sessionId: String
-    let id = UUID()
-  }
-
-  @Published private(set) var selectedSessionId: String?
-  @Published private(set) var audioReviewRequest: AudioReviewRequest?
-  private(set) var pendingImportedSessionId: String?
-
-  func select(_ sessionId: String?) {
-    guard selectedSessionId != sessionId else { return }
-    selectedSessionId = sessionId
-    audioReviewRequest = nil
-  }
-
-  func reviewPreservedAudio(sessionId: String) {
-    select(sessionId)
-    audioReviewRequest = AudioReviewRequest(sessionId: sessionId)
-  }
-
-  func synchronize(
-    currentSessionId: String?,
-    savedSessionIds: [String],
-    preferCurrentSession: Bool
-  ) {
-    let resolved = MainWorkspaceSelection.resolve(
-      selectedSessionId: selectedSessionId,
-      currentSessionId: currentSessionId,
-      savedSessionIds: savedSessionIds,
-      preferCurrentSession: preferCurrentSession
-    )
-    select(resolved)
-    reconcileImportedConversation(savedSessionIds: savedSessionIds)
-  }
-
-  func acceptImportedConversation(_ sessionId: String?, savedSessionIds: [String]) {
-    pendingImportedSessionId = sessionId
-    reconcileImportedConversation(savedSessionIds: savedSessionIds)
-  }
-
-  private func reconcileImportedConversation(savedSessionIds: [String]) {
-    let resolution = MainWorkspaceSelection.reconcileImportedConversation(
-      pendingImportedSessionId: pendingImportedSessionId,
-      selectedSessionId: selectedSessionId,
-      savedSessionIds: savedSessionIds
-    )
-    select(resolution.selectedSessionId)
-    pendingImportedSessionId = resolution.pendingImportedSessionId
-  }
-}
-
-enum MainWorkspaceSelection {
-  struct ImportedConversationResolution: Equatable {
-    let selectedSessionId: String?
-    let pendingImportedSessionId: String?
-  }
-
-  static func resolve(
-    selectedSessionId: String?,
-    currentSessionId: String?,
-    savedSessionIds: [String],
-    preferCurrentSession: Bool
-  ) -> String? {
-    if preferCurrentSession, let currentSessionId {
-      return currentSessionId
-    }
-
-    let availableSessionIds = Set(savedSessionIds + [currentSessionId].compactMap { $0 })
-    if let selectedSessionId, availableSessionIds.contains(selectedSessionId) {
-      return selectedSessionId
-    }
-    return currentSessionId ?? savedSessionIds.first
-  }
-
-  static func shouldStopDetachedPlayback(
-    activePlaybackSessionId: String?,
-    selectedSessionId: String?
-  ) -> Bool {
-    guard let activePlaybackSessionId else { return false }
-    return activePlaybackSessionId != selectedSessionId
-  }
-
-  static func reconcileImportedConversation(
-    pendingImportedSessionId: String?,
-    selectedSessionId: String?,
-    savedSessionIds: [String]
-  ) -> ImportedConversationResolution {
-    guard let pendingImportedSessionId else {
-      return ImportedConversationResolution(
-        selectedSessionId: selectedSessionId,
-        pendingImportedSessionId: nil
-      )
-    }
-    guard savedSessionIds.contains(pendingImportedSessionId) else {
-      return ImportedConversationResolution(
-        selectedSessionId: selectedSessionId,
-        pendingImportedSessionId: pendingImportedSessionId
-      )
-    }
-    return ImportedConversationResolution(
-      selectedSessionId: pendingImportedSessionId,
-      pendingImportedSessionId: nil
-    )
-  }
-}
-
-enum MainWorkspaceActions {
-  static func canRecord(liveCanStart: Bool, importIsBusy: Bool) -> Bool {
-    liveCanStart && !importIsBusy
-  }
-}
-
-enum MainWorkspacePlaybackNotice {
-  static func shouldPresent(errorSessionId: String?, selectedSessionId: String?) -> Bool {
-    errorSessionId == nil || errorSessionId == selectedSessionId
-  }
-}
-
-enum PlaybackControlAction: Equatable, Sendable {
-  case play
-  case cancel
-  case stop
-
-  static func resolve(isPending: Bool, isPlaying: Bool) -> Self {
-    if isPlaying { return .stop }
-    if isPending { return .cancel }
-    return .play
-  }
-
-  var title: String {
-    switch self {
-    case .play: "Play"
-    case .cancel: "Cancel"
-    case .stop: "Stop"
-    }
-  }
-
-  func isEnabled(hasActivePlayback: Bool) -> Bool {
-    self != .play || !hasActivePlayback
-  }
-}
-
-enum ImportedPlaybackEligibility {
-  static func canPlay(_ media: RuntimePlayableMediaPresentation) -> Bool {
-    media.isPlayable
-  }
-
-  static func status(_ media: RuntimePlayableMediaPresentation) -> String {
-    return media.statusText
-  }
-}
-
-enum LibraryConversationLists {
-  static func saved(_ sessions: [RuntimeSessionPresentation]) -> [RuntimeSessionPresentation] {
-    sessions.filter { $0.lifecycle == "ready_for_review" }
-  }
-
-  static func interrupted(_ sessions: [RuntimeSessionPresentation]) -> [RuntimeSessionPresentation]
-  {
-    sessions.filter { $0.lifecycle == "interrupted" || $0.captureRecoveryIsolated }
-  }
-}
-
-struct ConversationSidebarRow: View {
-  let session: RuntimeSessionPresentation
-  let reference: String?
-  let isSelected: Bool
-  var transcription: TranscriptionJobState?
-
-  private var selectedText: Color { Color(nsColor: .alternateSelectedControlTextColor) }
-
-  private var secondaryText: Color { isSelected ? selectedText : .secondary }
-
-  private var hasMediaWarning: Bool { session.playableMedia.map { !$0.isPlayable } ?? false }
-
-  var statusSymbolName: String? {
-    if session.isRecording { return "record.circle.fill" }
-    if session.needsAttention || hasMediaWarning { return "exclamationmark.triangle" }
-    if transcriptLine?.symbol == "exclamationmark.circle" { return "exclamationmark.circle" }
-    return nil
-  }
-
-  /// Transcript posture for saved conversations only: the store's committed
-  /// state, or the scheduler's position for work that has not started.
-  private var transcriptLine: (symbol: String, text: String)? {
-    guard session.lifecycle == "ready_for_review", session.transcriptionUnavailableReason == nil,
-      session.transcript.hasTranscribableAudio
-    else { return nil }
-    return session.transcript.line(for: transcription)
-  }
-
-  var detailStatusText: String {
-    if let transcriptLine, !session.needsAttention, !hasMediaWarning { return transcriptLine.text }
-    return session.statusText
-  }
-
-  var body: some View {
-    let title = ConversationIdentityPresentation.title(session.title)
-    HStack(alignment: .firstTextBaseline, spacing: 8) {
-      if let symbolName = statusSymbolName {
-        if isSelected {
-          Image(systemName: symbolName)
-        } else {
-          Image(systemName: symbolName)
-            .foregroundStyle(session.isRecording ? Color.red : Color.orange)
-        }
-      }
-      VStack(alignment: .leading, spacing: 5) {
-        HStack(spacing: 8) {
-          Text(title)
-            .lineLimit(1)
-            .truncationMode(.middle)
-          if let reference {
-            Text(reference)
-              .font(.caption.monospaced())
-              .foregroundStyle(secondaryText)
-              .fixedSize()
-          }
-        }
-        HStack(spacing: 6) {
-          Text(session.timerText).monospacedDigit()
-          Text("·")
-          Text(detailStatusText)
-        }
-        .font(.caption)
-        .foregroundStyle(secondaryText)
-        .lineLimit(1)
-      }
-    }
-    .padding(.vertical, 6)
-    .foregroundStyle(isSelected ? selectedText : .primary)
-    .accessibilityElement(children: .combine)
-    .help(session.title)
-    .accessibilityLabel(
-      "\(title), \(session.timerText), \(session.statusText)"
-        + (transcriptLine.map { ", \($0.text)" } ?? "")
-        + (reference.map { ", reference \($0)" } ?? "")
-    )
-  }
-}
-
-/// What the app is doing for the library right now and what the Mac has to
-/// give it. Every figure is a macOS measurement; the line is silent when
-/// nothing is queued and nothing is scarce.
-struct LibraryActivityFooter: View {
-  @ObservedObject var scheduler: TranscriptionScheduler
-  @ObservedObject var speech: SpeechTranscriptionModel
-  @ObservedObject var pressure: SystemPressureMonitor
-  let titles: [String: String]
-
-  private var activityText: String? {
-    scheduler.summaryText(titles: titles, progress: speech.progressFraction)
-  }
-
-  private var pressureText: String {
-    var parts = [pressure.reading.diskText]
-    if pressure.reading.memoryPressure != .normal {
-      parts.append(pressure.reading.memoryText)
-    }
-    if pressure.reading.thermalState != .nominal {
-      parts.append(pressure.reading.thermalText)
-    }
-    return parts.joined(separator: " · ")
-  }
-
-  var body: some View {
-    VStack(alignment: .leading, spacing: 4) {
-      Divider()
-      VStack(alignment: .leading, spacing: 4) {
-        if let activityText {
-          HStack(alignment: .firstTextBaseline, spacing: 6) {
-            Image(systemName: scheduler.runningSessionId != nil ? "ellipsis.circle" : "clock")
-            Text(activityText)
-              .fixedSize(horizontal: false, vertical: true)
-          }
-          if scheduler.runningSessionId != nil, let fraction = speech.progressFraction {
-            ProgressView(value: fraction)
-              .controlSize(.small)
-              .accessibilityLabel("Transcription progress")
-          }
-        }
-        HStack(alignment: .firstTextBaseline, spacing: 6) {
-          Image(systemName: pressure.reading.diskIsLow ? "exclamationmark.triangle" : "internaldrive")
-          Text(pressureText)
-            .fixedSize(horizontal: false, vertical: true)
-        }
-      }
-      .font(.caption)
-      .foregroundStyle(pressure.reading.diskIsLow ? .primary : .secondary)
-      .padding(.horizontal, 16)
-      .padding(.vertical, 8)
-    }
-    .accessibilityElement(children: .combine)
-    .accessibilityLabel(
-      "Library activity. " + (activityText.map { "\($0). " } ?? "") + pressureText)
-  }
-}
-
+/// The window before any conversation is chosen: one sentence about what
+/// Open Scribe does, and the two ways to begin.
 private struct EmptyConversationWorkspace: View {
   let canRecord: Bool
   let canImport: Bool
-  let importIsBusy: Bool
-  let onRecord: () -> Void
-  let onImport: () -> Void
-  let onOpenPackage: (() -> Void)?
+  let hasConversations: Bool
+  let recordedAudio: String
+  let notices: WindowNotices
+  let onRecord: @MainActor () -> Void
+  let onOpenPackage: (@MainActor () -> Void)?
 
   var body: some View {
-    VStack(spacing: 16) {
-      Text("No conversation is open")
-        .font(.title.weight(.semibold))
+    VStack(alignment: .leading, spacing: 18) {
+      Text(hasConversations ? "Choose a conversation" : "Record a conversation")
+        .font(Interview.title(34))
+        .foregroundStyle(Interview.ink)
         .accessibilityAddTraits(.isHeader)
       Text(
-        "Record microphone and computer audio, import local CAF or M4A audio, or open a portable package from another Mac. The source stays on this Mac."
+        "Open Scribe records \(recordedAudio), writes a transcript while you talk, and keeps everything on this Mac. When you stop, Copy puts the whole conversation on the clipboard with names and times."
       )
-      .foregroundStyle(.secondary)
-      .multilineTextAlignment(.center)
-      .frame(maxWidth: 440)
-      HStack {
-        Button("Record", systemImage: "record.circle", action: onRecord)
-          .disabled(!canRecord)
-          .buttonStyle(.borderedProminent)
-        Button(importIsBusy ? "Importing…" : "Import Audio…", action: onImport)
-          .disabled(!canImport)
+      .font(Interview.speech())
+      .foregroundStyle(Interview.quiet)
+      .lineSpacing(Interview.speechLineSpacing)
+      .fixedSize(horizontal: false, vertical: true)
+      HStack(spacing: 12) {
+        HostedButton(
+          title: ConversationControlLabels.record, identifier: "Record conversation",
+          style: .record, isEnabled: canRecord, action: onRecord)
         if let onOpenPackage {
-          Button("Open Portable Package…", action: onOpenPackage)
-            .disabled(!canImport)
+          HostedButton(
+            title: ConversationControlLabels.portablePackage, identifier: "Open portable package",
+            help: canImport
+              ? ImportedMediaAuthorityAdapter.portablePackageHelp
+              : ImportedMediaAuthorityAdapter.portablePackageWaitHelp,
+            style: .large, isEnabled: canImport, action: onOpenPackage)
         }
       }
+      .padding(.top, 6)
+      WindowNoticeList(notices: notices)
+      Text("You can also drop an audio file (M4A or CAF) anywhere in this window.")
+        .font(Interview.meta)
+        .foregroundStyle(Interview.quiet)
     }
-    .padding(32)
+    .frame(maxWidth: 520, alignment: .leading)
+    .padding(40)
     .frame(maxWidth: .infinity, maxHeight: .infinity)
     .accessibilityElement(children: .contain)
   }

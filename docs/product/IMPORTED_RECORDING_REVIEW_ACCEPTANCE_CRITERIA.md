@@ -290,13 +290,17 @@ or transcripts.
   effective labels, and resolvable evidence do not imply transport of the
   editable identity history. IR-AC-17's honest refusal is a safety result,
   never a successful portable backup or a substitute for IR-AC-07/08.
-- **Open preservation gap:** at source revision `25c9d25`, the
+- **Historical preservation gap:** at source revision `25c9d25`, the
   [native normalized-import path][normalized-import] passes a derived CAF and
   original-file metadata to the [store's normalized import][normalized-store],
   which retains the CAF rather than a copy of the source M4A. This is a
-  source-inspection finding; no native scenario was run here. IR-AC-23 follows
-  ADR 0007's default copy requirement and remains unmet for that path. Leaving
-  the external original unchanged does not close the managed-copy requirement.
+  source-inspection finding. The current native importer instead uses the
+  original-preserving compressed path for M4A, and derives the required PCM
+  only for transcription. Existing normalized imports remain playable but
+  cannot export a missing original. The focused regression moves the selected
+  M4A, reopens the library, compares exported original bytes, and checks the
+  48 kHz companion. Its execution receipt is separate from this requirement;
+  implementation alone does not mark IR-AC-23 accepted.
 - **Execution evidence:** bind results to the exact candidate, library and
   fixture identities, operating system, relevant model, and selected export
   formats. Record actual outcome and supporting evidence for each scenario;

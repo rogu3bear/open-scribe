@@ -16,6 +16,13 @@ uniffi = "0.32.0"
 [features]
 bindgen = ["uniffi/cli"]
 
+[dev-dependencies]
+open-scribe-evidence = { path = "../open-scribe-evidence" }
+open-scribe-store = { path = "../open-scribe-store" }
+serde_json = "1"
+sha2 = "0.10"
+tempfile = "3"
+
 [lib]
 path = "src/lib.rs"
 crate-type = ["lib", "staticlib"]

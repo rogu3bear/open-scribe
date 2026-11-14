@@ -15,7 +15,8 @@ cd "$fixture"
 git init -q
 printf '/candidate/\n/log\n/script/\n' >.gitignore
 mkdir script
-cp "$script_dir/candidate.sh" "$script_dir/check_m1_complete.sh" "$script_dir/check_m4_complete.sh" script/
+cp "$script_dir/candidate.sh" "$script_dir/check_m1_complete.sh" "$script_dir/check_m2_complete.sh" \
+	"$script_dir/check_m3_complete.sh" "$script_dir/check_m4_complete.sh" script/
 printf 'committed input\n' >source.txt
 git add .gitignore source.txt
 git -c user.name='Candidate fixture' -c user.email='fixture@example.invalid' \
@@ -162,6 +163,13 @@ check_local_completion() {
 	[[ "$result" == 1 ]] && rg -Fxq 'M4_COMPLETE_HOLD' "$fixture/log"
 	rg -Fxq "qualified_local_only_modes=$expected" "$fixture/log"
 	rg -q 'missing=.*provider_category_authorization' "$fixture/log"
+	rg -Fxq 'provider_source_qualified=0' "$fixture/log"
+	rg -q 'missing=.*system_trash_deletion_runtime,' "$fixture/log"
+	rg -Fxq 'trash_source_qualified=0' "$fixture/log"
+	rg -q 'missing=.*secret_handling,crash_report_content_check,' "$fixture/log"
+	rg -Fxq 'diagnostics_source_qualified=0' "$fixture/log"
+	rg -q 'missing=.*capability_true_website_equality' "$fixture/log"
+	rg -Fxq 'equality_source_qualified=0' "$fixture/log"
 	if [[ -z "$expected" ]]; then
 		rg -q 'missing=candidate_bound_local_only_run,' "$fixture/log"
 	else
@@ -229,6 +237,243 @@ mv "$local_receipt" "$local_receipt.saved"
 ln -s "$local_receipt.saved" "$local_receipt"
 check_local_completion ''
 printf '%s\n' 'M4_COMPLETE_RECEIPT_TEST_GREEN cases=11'
+# M2 admits a name only from a receipt bound to this candidate. The five
+# behavior receipts alone stay HOLD while any unqualified source is unbound.
+m2_missing_all='live_draft_transcript,speaker_diarization,in_app_model_download_and_removal,compressed_import_package_restore,two_hour_package_round_trip'
+m2_source_all='local_whisper_final_transcription,speaker_correction,search,transcript_audio_synchronization_for_capture_timelines,imported_audio_seek,compressed_m4a_transcription_via_decoded_companion,transcript_text_exports,audio_exports,session_manifest,portable_package_writer_and_verifier,portable_package_import_round_trip_for_pcm_sessions'
+m2_behaviors=(
+	live_draft_transcript
+	speaker_diarization
+	in_app_model_download_and_removal
+	compressed_import_package_restore
+	two_hour_package_round_trip
+)
+m2_sources=(
+	local_whisper_final_transcription
+	speaker_correction
+	search
+	transcript_audio_synchronization_for_capture_timelines
+	imported_audio_seek
+	compressed_m4a_transcription_via_decoded_companion
+	transcript_text_exports
+	audio_exports
+	session_manifest
+	portable_package_writer_and_verifier
+	portable_package_import_round_trip_for_pcm_sessions
+)
+m2_marker() {
+	printf 'M2_%s_GREEN' "$(printf '%s' "$1" | tr '[:lower:]' '[:upper:]')"
+}
+write_m2_behavior() {
+	local name="$1" root="$candidate_root/m2-$1.fixture" log receipt
+	log="$root/harness.log"
+	receipt="$candidate_root/m2-$name.json"
+	mkdir -p "$root"
+	printf '%s\ncandidate_record_sha256=%s\n' "$(m2_marker "$name")" "$candidate_record_digest" >"$log"
+	jq -n --arg candidate "$candidate_record_digest" --arg name "$name" --arg root "$root" \
+		--arg digest "$(candidate_sha256 "$log")" \
+		'{schema:1, candidate_sha256:$candidate, behavior:$name, proof_root:$root,
+		  log_sha256:$digest, result:"M2_BEHAVIOR_GREEN", release_admission:false}' >"$receipt"
+}
+expect_m2() {
+	local status="$1" marker="$2" missing="$3" unqualified="$4" behaviors="$5" source="$6" result=0
+	if [[ "$status" == no-candidate ]]; then
+		bash "$fixture/script/check_m2_complete.sh" >"$fixture/log" 2>&1 || result=$?
+		[[ "$result" == 1 ]]
+	elif [[ "$status" == hold ]]; then
+		bash "$fixture/script/check_m2_complete.sh" --candidate "$candidate_record" >"$fixture/log" 2>&1 || result=$?
+		[[ "$result" == 1 ]]
+	else
+		bash "$fixture/script/check_m2_complete.sh" --candidate "$candidate_record" >"$fixture/log" 2>&1 || result=$?
+		[[ "$result" == 0 ]]
+	fi
+	rg -Fxq "$marker" "$fixture/log"
+	rg -Fxq "missing=$missing" "$fixture/log"
+	rg -Fxq "unqualified_source=$unqualified" "$fixture/log"
+	rg -Fxq "qualified_behaviors=$behaviors" "$fixture/log"
+	rg -Fxq "qualified_source=$source" "$fixture/log"
+	rg -Fxq 'release_admission=false' "$fixture/log"
+}
+expect_m2 no-candidate 'M2_COMPLETE_HOLD' "$m2_missing_all" "$m2_source_all" '' ''
+expect_m2 hold 'M2_COMPLETE_HOLD' "$m2_missing_all" "$m2_source_all" '' ''
+write_m2_behavior live_draft_transcript
+live_receipt="$(cat "$candidate_root/m2-live_draft_transcript.json")"
+live_log="$(cat "$candidate_root/m2-live_draft_transcript.fixture/harness.log")"
+live_root="$candidate_root/m2-live_draft_transcript.fixture"
+expect_m2 hold 'M2_COMPLETE_HOLD' \
+	'speaker_diarization,in_app_model_download_and_removal,compressed_import_package_restore,two_hour_package_round_trip' \
+	"$m2_source_all" live_draft_transcript ''
+jq '.candidate_sha256 = "another-build"' <<<"$live_receipt" >"$candidate_root/m2-live_draft_transcript.json"
+expect_m2 hold 'M2_COMPLETE_HOLD' "$m2_missing_all" "$m2_source_all" '' ''
+printf '%s\n' "$live_receipt" >"$candidate_root/m2-live_draft_transcript.json"
+printf 'changed\n' >>"$live_root/harness.log"
+expect_m2 hold 'M2_COMPLETE_HOLD' "$m2_missing_all" "$m2_source_all" '' ''
+printf 'candidate_record_sha256=%s\n' "$candidate_record_digest" >"$live_root/harness.log"
+jq --arg digest "$(candidate_sha256 "$live_root/harness.log")" '.log_sha256 = $digest' \
+	<<<"$live_receipt" >"$candidate_root/m2-live_draft_transcript.json"
+expect_m2 hold 'M2_COMPLETE_HOLD' "$m2_missing_all" "$m2_source_all" '' ''
+printf '%s\n' "$live_log" >"$live_root/harness.log"
+printf '%s\n' "$live_receipt" >"$candidate_root/m2-live_draft_transcript.json"
+mv "$candidate_root/m2-live_draft_transcript.json" "$candidate_root/m2-live_draft_transcript.json.saved"
+ln -s "$candidate_root/m2-live_draft_transcript.json.saved" "$candidate_root/m2-live_draft_transcript.json"
+expect_m2 hold 'M2_COMPLETE_HOLD' "$m2_missing_all" "$m2_source_all" '' ''
+rm "$candidate_root/m2-live_draft_transcript.json"
+mv "$candidate_root/m2-live_draft_transcript.json.saved" "$candidate_root/m2-live_draft_transcript.json"
+jq '.release_admission = true' <<<"$live_receipt" >"$candidate_root/m2-live_draft_transcript.json"
+expect_m2 hold 'M2_COMPLETE_HOLD' "$m2_missing_all" "$m2_source_all" '' ''
+jq '.result = "M2_COMPLETE_GREEN"' <<<"$live_receipt" >"$candidate_root/m2-live_draft_transcript.json"
+expect_m2 hold 'M2_COMPLETE_HOLD' "$m2_missing_all" "$m2_source_all" '' ''
+printf '%s\n' "$live_receipt" >"$candidate_root/m2-live_draft_transcript.json"
+mv "$live_root" "$live_root.saved"
+ln -s "$live_root.saved" "$live_root"
+expect_m2 hold 'M2_COMPLETE_HOLD' "$m2_missing_all" "$m2_source_all" '' ''
+rm "$live_root"
+mv "$live_root.saved" "$live_root"
+expect_m2 hold 'M2_COMPLETE_HOLD' \
+	'speaker_diarization,in_app_model_download_and_removal,compressed_import_package_restore,two_hour_package_round_trip' \
+	"$m2_source_all" live_draft_transcript ''
+for name in "${m2_behaviors[@]}"; do
+	[[ "$name" == live_draft_transcript ]] || write_m2_behavior "$name"
+done
+expect_m2 hold 'M2_COMPLETE_HOLD' '' "$m2_source_all" "$m2_missing_all" ''
+for name in "${m2_sources[@]}"; do
+	write_m2_behavior "$name"
+done
+expect_m2 green 'M2_COMPLETE_GREEN' '' '' "$m2_missing_all" "$m2_source_all"
+if rg -Fxq 'M2_COMPLETE_HOLD' "$fixture/log"; then
+	printf 'CANDIDATE_TEST_RED: hold survived a complete M2 receipt set\n' >&2
+	exit 1
+fi
+printf 'altered diagnostic\n' >>"$candidate_root/m2-search.fixture/harness.log"
+expect_m2 hold 'M2_COMPLETE_HOLD' '' search "$m2_missing_all" \
+	'local_whisper_final_transcription,speaker_correction,transcript_audio_synchronization_for_capture_timelines,imported_audio_seek,compressed_m4a_transcription_via_decoded_companion,transcript_text_exports,audio_exports,session_manifest,portable_package_writer_and_verifier,portable_package_import_round_trip_for_pcm_sessions'
+rm "$candidate_root/m2-two_hour_package_round_trip.json"
+expect_m2 hold 'M2_COMPLETE_HOLD' two_hour_package_round_trip search \
+	'live_draft_transcript,speaker_diarization,in_app_model_download_and_removal,compressed_import_package_restore' \
+	'local_whisper_final_transcription,speaker_correction,transcript_audio_synchronization_for_capture_timelines,imported_audio_seek,compressed_m4a_transcription_via_decoded_companion,transcript_text_exports,audio_exports,session_manifest,portable_package_writer_and_verifier,portable_package_import_round_trip_for_pcm_sessions'
+printf '%s\n' 'M2_COMPLETE_RECEIPT_TEST_GREEN cases=14'
+# M3 admits a name only from a receipt bound to this candidate. Source tests
+# do not clear a hardcoded name, and a complete fixture set is not this tree.
+m3_missing_all='claim_evidence_navigation,claim_adjudication,four_display_runtime_matrix,live_permission_revocation_runtime,two_hour_context_load,voiceover_and_keyboard_inspection,rendered_overlay_review,snapshot_retention,macos13_one_frame_stream_run'
+m3_source_all='participant_topic_declaration,explicit_context_scope_with_epochs,pause_resume_narrow_revoke,sparse_context_event_acceptance,local_change_detection,vision_ocr_reduction,follow_pointer_dwell,no_pixel_retention_default,scope_inspector,perimeter_overlay,topology_names,saved_context_review,evidence_citation_and_resolution_for_every_kind,resolution_gated_context_navigation'
+m3_behaviors=(
+	claim_evidence_navigation
+	claim_adjudication
+	four_display_runtime_matrix
+	live_permission_revocation_runtime
+	two_hour_context_load
+	voiceover_and_keyboard_inspection
+	rendered_overlay_review
+	snapshot_retention
+	macos13_one_frame_stream_run
+)
+m3_sources=(
+	participant_topic_declaration
+	explicit_context_scope_with_epochs
+	pause_resume_narrow_revoke
+	sparse_context_event_acceptance
+	local_change_detection
+	vision_ocr_reduction
+	follow_pointer_dwell
+	no_pixel_retention_default
+	scope_inspector
+	perimeter_overlay
+	topology_names
+	saved_context_review
+	evidence_citation_and_resolution_for_every_kind
+	resolution_gated_context_navigation
+)
+m3_marker() {
+	printf 'M3_%s_GREEN' "$(printf '%s' "$1" | tr '[:lower:]' '[:upper:]')"
+}
+write_m3_behavior() {
+	local name="$1" root="$candidate_root/m3-$1.fixture" log receipt
+	log="$root/harness.log"
+	receipt="$candidate_root/m3-$name.json"
+	mkdir -p "$root"
+	printf '%s\ncandidate_record_sha256=%s\n' "$(m3_marker "$name")" "$candidate_record_digest" >"$log"
+	jq -n --arg candidate "$candidate_record_digest" --arg name "$name" --arg root "$root" \
+		--arg digest "$(candidate_sha256 "$log")" \
+		'{schema:1, candidate_sha256:$candidate, behavior:$name, proof_root:$root,
+		  log_sha256:$digest, result:"M3_BEHAVIOR_GREEN", release_admission:false}' >"$receipt"
+}
+expect_m3() {
+	local status="$1" marker="$2" missing="$3" unqualified="$4" behaviors="$5" source="$6" result=0
+	if [[ "$status" == no-candidate ]]; then
+		bash "$fixture/script/check_m3_complete.sh" >"$fixture/log" 2>&1 || result=$?
+		[[ "$result" == 1 ]]
+	elif [[ "$status" == hold ]]; then
+		bash "$fixture/script/check_m3_complete.sh" --candidate "$candidate_record" >"$fixture/log" 2>&1 || result=$?
+		[[ "$result" == 1 ]]
+	else
+		bash "$fixture/script/check_m3_complete.sh" --candidate "$candidate_record" >"$fixture/log" 2>&1 || result=$?
+		[[ "$result" == 0 ]]
+	fi
+	rg -Fxq "$marker" "$fixture/log"
+	rg -Fxq "missing=$missing" "$fixture/log"
+	rg -Fxq "unqualified_source=$unqualified" "$fixture/log"
+	rg -Fxq "qualified_behaviors=$behaviors" "$fixture/log"
+	rg -Fxq "qualified_source=$source" "$fixture/log"
+	rg -Fxq 'release_admission=false' "$fixture/log"
+}
+expect_m3 no-candidate 'M3_COMPLETE_HOLD' "$m3_missing_all" "$m3_source_all" '' ''
+expect_m3 hold 'M3_COMPLETE_HOLD' "$m3_missing_all" "$m3_source_all" '' ''
+write_m3_behavior claim_evidence_navigation
+claim_receipt="$(cat "$candidate_root/m3-claim_evidence_navigation.json")"
+claim_log="$(cat "$candidate_root/m3-claim_evidence_navigation.fixture/harness.log")"
+claim_root="$candidate_root/m3-claim_evidence_navigation.fixture"
+expect_m3 hold 'M3_COMPLETE_HOLD' \
+	'claim_adjudication,four_display_runtime_matrix,live_permission_revocation_runtime,two_hour_context_load,voiceover_and_keyboard_inspection,rendered_overlay_review,snapshot_retention,macos13_one_frame_stream_run' \
+	"$m3_source_all" claim_evidence_navigation ''
+jq '.candidate_sha256 = "another-build"' <<<"$claim_receipt" >"$candidate_root/m3-claim_evidence_navigation.json"
+expect_m3 hold 'M3_COMPLETE_HOLD' "$m3_missing_all" "$m3_source_all" '' ''
+printf '%s\n' "$claim_receipt" >"$candidate_root/m3-claim_evidence_navigation.json"
+printf 'changed\n' >>"$claim_root/harness.log"
+expect_m3 hold 'M3_COMPLETE_HOLD' "$m3_missing_all" "$m3_source_all" '' ''
+printf 'candidate_record_sha256=%s\n' "$candidate_record_digest" >"$claim_root/harness.log"
+jq --arg digest "$(candidate_sha256 "$claim_root/harness.log")" '.log_sha256 = $digest' \
+	<<<"$claim_receipt" >"$candidate_root/m3-claim_evidence_navigation.json"
+expect_m3 hold 'M3_COMPLETE_HOLD' "$m3_missing_all" "$m3_source_all" '' ''
+printf '%s\n' "$claim_log" >"$claim_root/harness.log"
+printf '%s\n' "$claim_receipt" >"$candidate_root/m3-claim_evidence_navigation.json"
+mv "$candidate_root/m3-claim_evidence_navigation.json" "$candidate_root/m3-claim_evidence_navigation.json.saved"
+ln -s "$candidate_root/m3-claim_evidence_navigation.json.saved" "$candidate_root/m3-claim_evidence_navigation.json"
+expect_m3 hold 'M3_COMPLETE_HOLD' "$m3_missing_all" "$m3_source_all" '' ''
+rm "$candidate_root/m3-claim_evidence_navigation.json"
+mv "$candidate_root/m3-claim_evidence_navigation.json.saved" "$candidate_root/m3-claim_evidence_navigation.json"
+jq '.release_admission = true' <<<"$claim_receipt" >"$candidate_root/m3-claim_evidence_navigation.json"
+expect_m3 hold 'M3_COMPLETE_HOLD' "$m3_missing_all" "$m3_source_all" '' ''
+jq '.result = "M3_COMPLETE_GREEN"' <<<"$claim_receipt" >"$candidate_root/m3-claim_evidence_navigation.json"
+expect_m3 hold 'M3_COMPLETE_HOLD' "$m3_missing_all" "$m3_source_all" '' ''
+printf '%s\n' "$claim_receipt" >"$candidate_root/m3-claim_evidence_navigation.json"
+mv "$claim_root" "$claim_root.saved"
+ln -s "$claim_root.saved" "$claim_root"
+expect_m3 hold 'M3_COMPLETE_HOLD' "$m3_missing_all" "$m3_source_all" '' ''
+rm "$claim_root"
+mv "$claim_root.saved" "$claim_root"
+expect_m3 hold 'M3_COMPLETE_HOLD' \
+	'claim_adjudication,four_display_runtime_matrix,live_permission_revocation_runtime,two_hour_context_load,voiceover_and_keyboard_inspection,rendered_overlay_review,snapshot_retention,macos13_one_frame_stream_run' \
+	"$m3_source_all" claim_evidence_navigation ''
+for name in "${m3_behaviors[@]}"; do
+	[[ "$name" == claim_evidence_navigation ]] || write_m3_behavior "$name"
+done
+expect_m3 hold 'M3_COMPLETE_HOLD' '' "$m3_source_all" "$m3_missing_all" ''
+for name in "${m3_sources[@]}"; do
+	write_m3_behavior "$name"
+done
+expect_m3 green 'M3_COMPLETE_GREEN' '' '' "$m3_missing_all" "$m3_source_all"
+if rg -Fxq 'M3_COMPLETE_HOLD' "$fixture/log"; then
+	printf 'CANDIDATE_TEST_RED: hold survived a complete M3 receipt set\n' >&2
+	exit 1
+fi
+printf 'altered diagnostic\n' >>"$candidate_root/m3-scope_inspector.fixture/harness.log"
+expect_m3 hold 'M3_COMPLETE_HOLD' '' scope_inspector "$m3_missing_all" \
+	'participant_topic_declaration,explicit_context_scope_with_epochs,pause_resume_narrow_revoke,sparse_context_event_acceptance,local_change_detection,vision_ocr_reduction,follow_pointer_dwell,no_pixel_retention_default,perimeter_overlay,topology_names,saved_context_review,evidence_citation_and_resolution_for_every_kind,resolution_gated_context_navigation'
+rm "$candidate_root/m3-macos13_one_frame_stream_run.json"
+expect_m3 hold 'M3_COMPLETE_HOLD' macos13_one_frame_stream_run scope_inspector \
+	'claim_evidence_navigation,claim_adjudication,four_display_runtime_matrix,live_permission_revocation_runtime,two_hour_context_load,voiceover_and_keyboard_inspection,rendered_overlay_review,snapshot_retention' \
+	'participant_topic_declaration,explicit_context_scope_with_epochs,pause_resume_narrow_revoke,sparse_context_event_acceptance,local_change_detection,vision_ocr_reduction,follow_pointer_dwell,no_pixel_retention_default,perimeter_overlay,topology_names,saved_context_review,evidence_citation_and_resolution_for_every_kind,resolution_gated_context_navigation'
+printf '%s\n' 'M3_COMPLETE_RECEIPT_TEST_GREEN cases=15'
 checks_contents="$(cat "$candidate_root/checks.json")"
 jq '.candidate_sha256 = "another-build"' <<<"$checks_contents" >"$candidate_root/checks.json"
 expect_rejection checks-from-another-build candidate_require_checks

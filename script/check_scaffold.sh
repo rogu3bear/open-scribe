@@ -27,7 +27,6 @@ scaffold_cargo() {
 
 required_paths=(
 	AGENTS.md
-	CLAUDE.md
 	NORTH_STAR.md
 	ANCHOR.md
 	LAYERS.md
@@ -70,7 +69,7 @@ if [[ -d .github/workflows ]] && find .github/workflows -type f -print -quit | g
 	fail "GitHub Actions is disabled by ADR 0018; repository workflow files are not allowed"
 fi
 
-cmp -s AGENTS.md CLAUDE.md || fail "AGENTS.md and CLAUDE.md are not byte-identical"
+[[ ! -e CLAUDE.md ]] || fail "CLAUDE.md must not exist; Claude Code loads AGENTS.md natively and a project CLAUDE.md suppresses it"
 ruby script/sync_policy_documents.rb --check
 ruby script/sync_policy_documents_test.rb
 ruby script/prepare_license_materials_test.rb

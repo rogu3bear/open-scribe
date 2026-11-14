@@ -5,9 +5,14 @@ use open_scribe_types::SessionId;
 use rusqlite::OptionalExtension;
 use serde_json::Value;
 
+use super::conversation_titles::{TITLE_COLUMNS, TITLE_JOIN, TitleRow};
+use super::session_deletion::{HOLDS_AUDIO_SQL, trash_eligible};
 use super::{
-    MediaLengthRequirement, MediaSourceKind, SessionInterruptionReason, SessionStore, StoreError,
-    payload_string, valid_media_relative_path, wall_time_milliseconds,
+    MEDIA_SAMPLE_RATE_HZ, MediaLengthRequirement, MediaSourceKind, RecorderEventKind,
+    SessionHealth, SessionInterruptionReason, SessionLifecycle, SessionStore, SourceLifecycle,
+    StoreError, TranscriptionFailureClass, TranscriptionRunState, parse_source_kind,
+    payload_string, saturating_frames_to_nanoseconds, source_defaults, valid_media_relative_path,
+    wall_time_milliseconds,
 };
 
 /// One coarse, content-free source state for native presentation.
@@ -15,7 +20,7 @@ use super::{
 pub struct RuntimeSourceSnapshot {
     pub kind: MediaSourceKind,
     pub display_name: String,
-    pub lifecycle: String,
+    pub lifecycle: SourceLifecycle,
 }
 
 /// Current read-only playback posture for one managed audio file.
@@ -84,7 +89,7 @@ pub struct RuntimeTranscriptSnapshot {
     /// Content-free identity of selection plus human edits, for native reloads.
     pub document_version: String,
     pub attempt: open_scribe_types::AttemptState,
-    pub attempt_failure: Option<String>,
+    pub attempt_failure: Option<TranscriptionFailureClass>,
     /// Sealed tracks a transcript can cover.
     pub total_tracks: u32,
     /// Tracks with a selected Final revision.
@@ -94,7 +99,9 @@ pub struct RuntimeTranscriptSnapshot {
     /// Planned chunks across the running runs, when `state` is `Running`.
     pub total_chunks: u32,
     /// The failure class of the latest failed run, when `state` is `Failed`.
-    pub failure_class: Option<String>,
+    pub failure_class: Option<TranscriptionFailureClass>,
+    /// Live Draft windows still readable (not superseded by later text).
+    pub draft_windows: u32,
 }
 
 /// Rust-owned durable session projection for the native live and library surfaces.
@@ -102,8 +109,14 @@ pub struct RuntimeTranscriptSnapshot {
 pub struct RuntimeSessionSnapshot {
     pub session_id: SessionId,
     pub title: String,
-    pub lifecycle: String,
-    pub health: String,
+    /// What a reader sees: a person's title, else a suggestion, else the placeholder.
+    pub display_title: String,
+    pub title_source: super::TitleSource,
+    /// The capture time the placeholder names while it is the display title.
+    pub placeholder_at_ms: Option<i64>,
+    pub created_at_ms: i64,
+    pub lifecycle: SessionLifecycle,
+    pub health: SessionHealth,
     pub elapsed_seconds: u64,
     pub journal_durable: bool,
     pub media_files_open: bool,
@@ -113,15 +126,21 @@ pub struct RuntimeSessionSnapshot {
     /// A completed launch assessed this unchanged nonterminal capture as
     /// unrecoverable history. Its stored lifecycle remains the last accepted one.
     pub capture_recovery_isolated: bool,
+    /// The session holds audio: samples a capture accepted, or media launch
+    /// recovery promoted. An attempt without it never recorded anything.
+    pub preserved_audio: bool,
+    /// Its lifecycle and audio let a person move it to Trash
+    /// (`session_deletion::trash_eligible`); active processing can still refuse.
+    pub can_move_to_trash: bool,
     pub sources: Vec<RuntimeSourceSnapshot>,
     pub playable_media: Option<RuntimePlayableMediaSnapshot>,
     pub transcript: RuntimeTranscriptSnapshot,
 }
 
 /// One read-only authority snapshot shared by the native live and library surfaces.
-/// `current_session` is the newest nonterminal session. `saved_sessions` holds
-/// reviewable conversations and any older interrupted sessions, which are not
-/// themselves saved recordings.
+/// `current_session` is the newest open or interrupted capture.
+/// `saved_sessions` holds reviewable conversations, older interrupted sessions,
+/// and isolated captures; the last two are not themselves saved recordings.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RuntimeLibrarySnapshot {
     pub current_session: Option<RuntimeSessionSnapshot>,
@@ -184,7 +203,7 @@ impl SessionStore {
             rusqlite::TransactionBehavior::Deferred,
         )?;
         let sessions = {
-            let mut statement = transaction.prepare_cached(
+            let mut statement = transaction.prepare_cached(&format!(
                 "SELECT sessions.id, sessions.title, sessions.origin, sessions.lifecycle, sessions.health,
                         sessions.journal_durable, sessions.media_files_open,
                         sessions.updated_at_ms,
@@ -202,7 +221,7 @@ impl SessionStore {
                          WHERE interrupted.session_id = sessions.id
                            AND interrupted.event_kind = 'session_interrupted'
                          ORDER BY interrupted.sequence DESC LIMIT 1),
-                        (SELECT CAST(MAX(segments.mapped_start_ns / 1000000000.0 * 48000 + segments.sample_count) AS INTEGER)
+                        (SELECT CAST(MAX(segments.mapped_start_ns / 1000000000.0 * ?1 + segments.sample_count) AS INTEGER)
                          FROM segments
                          WHERE segments.session_id = sessions.id
                            AND segments.lifecycle = 'sealed'
@@ -214,12 +233,13 @@ impl SessionStore {
                           SELECT 1 FROM recovery_runs
                           WHERE recovery_runs.session_id = sessions.id
                             AND recovery_runs.disposition IN ('playable_media_recovered', 'timeline_recovered')
-                        )
-                 FROM sessions
+                        ),
+                        sessions.created_at_ms, {HOLDS_AUDIO_SQL}, {TITLE_COLUMNS}
+                 FROM sessions {TITLE_JOIN}
                  WHERE sessions.lifecycle != 'deleted'
-                 ORDER BY sessions.created_at_ms DESC, sessions.id DESC",
-            )?;
-            let rows = statement.query_map([], |row| {
+                 ORDER BY sessions.created_at_ms DESC, sessions.id DESC"
+            ))?;
+            let rows = statement.query_map([MEDIA_SAMPLE_RATE_HZ], |row| {
                 Ok((
                     row.get::<_, String>(0)?,
                     row.get::<_, String>(1)?,
@@ -234,6 +254,9 @@ impl SessionStore {
                     row.get::<_, Option<i64>>(10)?,
                     row.get::<_, Option<i64>>(11)?,
                     row.get::<_, bool>(12)?,
+                    row.get::<_, i64>(13)?,
+                    row.get::<_, bool>(14)?,
+                    TitleRow::read(row, 15)?,
                 ))
             })?;
             rows.collect::<Result<Vec<_>, _>>()?
@@ -256,19 +279,20 @@ impl SessionStore {
             interruption_at_ms,
             recovered_sample_count,
             recovered,
+            created_at_ms,
+            holds_audio,
+            title_row,
         ) in sessions
         {
+            let lifecycle = SessionLifecycle::parse(&lifecycle)?;
+            let health = SessionHealth::parse(&health)?;
             let capture_recovery_isolated = origin == "capture"
-                && matches!(
-                    lifecycle.as_str(),
-                    "preparing" | "recording" | "paused" | "finalizing"
-                )
+                && lifecycle.is_open_capture()
                 && super::library_recovery::capture_isolated(&transaction, &session_id)?;
-            let mut sources =
-                Self::runtime_source_snapshots(&transaction, &session_id, &lifecycle)?;
+            let mut sources = Self::runtime_source_snapshots(&transaction, &session_id, lifecycle)?;
             if capture_recovery_isolated {
                 for source in &mut sources {
-                    source.lifecycle = "unavailable".to_owned();
+                    source.lifecycle = SourceLifecycle::Unavailable;
                 }
             }
             // Recovered tracks have their own validated playback authority. The
@@ -283,12 +307,7 @@ impl SessionStore {
             let playable_media = if recovered || has_capture_timeline {
                 None
             } else {
-                self.runtime_playable_media_snapshot(
-                    &transaction,
-                    &session_id,
-                    &origin,
-                    &lifecycle,
-                )?
+                self.runtime_playable_media_snapshot(&transaction, &session_id, &origin, lifecycle)?
             };
             let interruption_reason = interruption_payload
                 .as_deref()
@@ -297,10 +316,10 @@ impl SessionStore {
                 .as_ref()
                 .map(|payload| payload_string(payload, "reason"))
                 .transpose()?
-                .map(SessionInterruptionReason::from_str)
+                .map(SessionInterruptionReason::parse)
                 .transpose()?;
             let health = if recovered && interruption_reason.is_some() {
-                "degraded".to_owned()
+                SessionHealth::Degraded
             } else {
                 health
             };
@@ -308,24 +327,25 @@ impl SessionStore {
                 .as_ref()
                 .map(|media| media.duration_nanoseconds / 1_000_000_000)
                 .or_else(|| {
-                    (lifecycle == "ready_for_review")
+                    (lifecycle == SessionLifecycle::ReadyForReview)
                         .then_some(recovered_sample_count)
                         .flatten()
                         .map(|sample_count| {
                             u64::try_from(sample_count).unwrap_or(0)
-                                / u64::from(super::MEDIA_SAMPLE_RATE_HZ)
+                                / u64::from(MEDIA_SAMPLE_RATE_HZ)
                         })
                 })
                 .unwrap_or_else(|| {
                     recording_started_at_ms.map_or(0, |started_at_ms| {
-                        let end_milliseconds =
-                            if lifecycle == "recording" && !capture_recovery_isolated {
-                                now_milliseconds.max(started_at_ms)
-                            } else {
-                                interruption_at_ms
-                                    .unwrap_or(updated_at_ms)
-                                    .max(started_at_ms)
-                            };
+                        let end_milliseconds = if lifecycle == SessionLifecycle::Recording
+                            && !capture_recovery_isolated
+                        {
+                            now_milliseconds.max(started_at_ms)
+                        } else {
+                            interruption_at_ms
+                                .unwrap_or(updated_at_ms)
+                                .max(started_at_ms)
+                        };
                         u64::try_from(end_milliseconds.saturating_sub(started_at_ms)).unwrap_or(0)
                             / 1_000
                     })
@@ -334,29 +354,35 @@ impl SessionStore {
                 // Authoritative accepted frames and calibrated capture intervals.
                 // Wall-clock adjustments and metadata edits never advance these.
                 let durable: i64 = transaction.query_row("SELECT MAX(
-                    COALESCE((SELECT MAX(mapped_start_ns + sample_count * 1000000000 / 48000) FROM segments WHERE session_id = ?1 AND lifecycle = 'sealed'),0),
+                    COALESCE((SELECT MAX(mapped_start_ns + sample_count * 1000000000 / ?2) FROM segments WHERE session_id = ?1 AND lifecycle = 'sealed'),0),
                     COALESCE((SELECT MAX(session_nanoseconds) FROM session_events WHERE session_id = ?1 AND event_kind IN ('capture_paused','paused_session_finalized','segment_sealed')),0))",
-                    [&session_id], |row| row.get(0))?;
-                let observed = if lifecycle == "recording" && !capture_recovery_isolated {
-                    host_time
-                        .map(|host| self.map_capture_time(&session_id, host))
-                        .transpose()?
-                        .unwrap_or(durable)
-                } else {
-                    durable
-                };
+                    rusqlite::params![session_id, MEDIA_SAMPLE_RATE_HZ], |row| row.get(0))?;
+                let observed =
+                    if lifecycle == SessionLifecycle::Recording && !capture_recovery_isolated {
+                        host_time
+                            .map(|host| self.map_capture_time(&session_id, host))
+                            .transpose()?
+                            .unwrap_or(durable)
+                    } else {
+                        durable
+                    };
                 elapsed_seconds = observed.max(durable).max(0) as u64 / 1_000_000_000;
-            } else if matches!(lifecycle.as_str(), "paused" | "recording" | "preparing") {
+            } else if matches!(
+                lifecycle,
+                SessionLifecycle::Paused
+                    | SessionLifecycle::Recording
+                    | SessionLifecycle::Preparing
+            ) {
                 // Limited compatibility for legacy untimed captures only.
                 let mut boundary = transaction.prepare_cached("SELECT event_kind, session_nanoseconds, wall_time_ms FROM session_events WHERE session_id = ?1 AND event_kind IN ('capture_paused', 'capture_resumed') ORDER BY sequence DESC LIMIT 1")?;
                 let mut rows = boundary.query([&session_id])?;
                 if let Some(row) = rows.next()? {
-                    let kind: String = row.get(0)?;
+                    let kind = RecorderEventKind::parse(&row.get::<_, String>(0)?)?;
                     let position: i64 = row.get(1)?;
                     let wall: i64 = row.get(2)?;
-                    let advancing = if lifecycle == "recording"
+                    let advancing = if lifecycle == SessionLifecycle::Recording
                         && !capture_recovery_isolated
-                        && kind == "capture_resumed"
+                        && kind == RecorderEventKind::CaptureResumed
                     {
                         now_milliseconds.saturating_sub(wall).max(0) / 1000
                     } else {
@@ -365,15 +391,20 @@ impl SessionStore {
                     elapsed_seconds = (position.max(0) / 1_000_000_000 + advancing) as u64;
                 }
             }
-            let transcript = if lifecycle == "ready_for_review" {
+            let transcript = if lifecycle == SessionLifecycle::ReadyForReview {
                 self.runtime_transcript_snapshot(&transaction, &session_id)?
             } else {
                 RuntimeTranscriptSnapshot::default()
             };
+            let resolved = title_row.resolve()?;
             let snapshot = RuntimeSessionSnapshot {
                 session_id: SessionId(session_id),
                 title,
-                lifecycle: lifecycle.clone(),
+                display_title: resolved.display_title,
+                title_source: resolved.source,
+                placeholder_at_ms: resolved.placeholder_at_ms,
+                created_at_ms,
+                lifecycle,
                 health,
                 elapsed_seconds,
                 journal_durable,
@@ -382,13 +413,19 @@ impl SessionStore {
                 recovered,
                 has_capture_timeline,
                 capture_recovery_isolated,
+                preserved_audio: holds_audio,
+                can_move_to_trash: trash_eligible(
+                    lifecycle,
+                    capture_recovery_isolated,
+                    holds_audio,
+                ),
                 sources,
                 playable_media,
                 transcript,
             };
-            if lifecycle == "ready_for_review" || capture_recovery_isolated {
+            if lifecycle == SessionLifecycle::ReadyForReview || capture_recovery_isolated {
                 saved_sessions.push(snapshot);
-            } else if lifecycle == "interrupted" {
+            } else if lifecycle == SessionLifecycle::Interrupted {
                 // The newest nonterminal session stays in Now. Older
                 // interrupted sessions remain listable so they can be reviewed
                 // and deleted; they are not saved recordings.
@@ -397,12 +434,7 @@ impl SessionStore {
                 } else {
                     saved_sessions.push(snapshot);
                 }
-            } else if current_session.is_none()
-                && matches!(
-                    lifecycle.as_str(),
-                    "preparing" | "recording" | "paused" | "finalizing"
-                )
-            {
+            } else if current_session.is_none() && lifecycle.is_open_capture() {
                 current_session = Some(snapshot);
             }
         }
@@ -438,6 +470,8 @@ impl SessionStore {
             .map(|(_, revision, _)| revision.clone())
             .collect();
         snapshot.document_version = super::digest_json(&versions)?;
+        snapshot.draft_windows =
+            super::conversation_document::readable_draft_count(connection, session_id)?;
         let mut selected = connection.prepare_cached(
             "SELECT EXISTS(SELECT 1 FROM transcript_selections
                            WHERE session_id = ?1 AND track_id = ?2)",
@@ -466,8 +500,20 @@ impl SessionStore {
                     Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
                 })
                 .optional()?;
+            // Unknown tokens mark the posture unsupported rather than failing
+            // the whole library snapshot.
+            let run = run.map(|(state, failure_class, complete, total)| {
+                (
+                    TranscriptionRunState::parse(&state).ok(),
+                    failure_class
+                        .as_deref()
+                        .and_then(|class| TranscriptionFailureClass::parse(class).ok()),
+                    complete,
+                    total,
+                )
+            });
             match run {
-                Some((state, _, complete, total)) if state == "running" => {
+                Some((Some(TranscriptionRunState::Running), _, complete, total)) => {
                     if !is_selected {
                         running += 1;
                     }
@@ -478,7 +524,7 @@ impl SessionStore {
                     snapshot.completed_chunks += u32::try_from(complete).unwrap_or(u32::MAX);
                     snapshot.total_chunks += u32::try_from(total).unwrap_or(u32::MAX);
                 }
-                Some((state, failure_class, _, _)) if state == "failed" => {
+                Some((Some(TranscriptionRunState::Failed), failure_class, _, _)) => {
                     if !is_selected {
                         failed += 1;
                     }
@@ -487,7 +533,7 @@ impl SessionStore {
                         open_scribe_types::AttemptState::Failed,
                     );
                     if snapshot.attempt == open_scribe_types::AttemptState::Failed {
-                        snapshot.attempt_failure = failure_class.clone();
+                        snapshot.attempt_failure = failure_class;
                     }
                     if snapshot.failure_class.is_none() {
                         snapshot.failure_class = failure_class;
@@ -495,26 +541,28 @@ impl SessionStore {
                 }
                 // A superseded cancellation always has a newer run, so the
                 // latest cancelled run is one the user stopped.
-                Some((state, failure_class, _, _))
-                    if state == "cancelled"
-                        && matches!(
-                            failure_class.as_deref(),
-                            Some("cancelled" | "capture_preempted")
-                        ) =>
-                {
+                Some((
+                    Some(TranscriptionRunState::Cancelled),
+                    Some(
+                        failure_class @ (TranscriptionFailureClass::Cancelled
+                        | TranscriptionFailureClass::CapturePreempted),
+                    ),
+                    _,
+                    _,
+                )) => {
                     if !is_selected {
                         cancelled += 1;
                     }
                     snapshot.attempt = open_scribe_domain::merge_transcription_attempt(
                         snapshot.attempt,
-                        if failure_class.as_deref() == Some("capture_preempted") {
+                        if failure_class == TranscriptionFailureClass::CapturePreempted {
                             open_scribe_types::AttemptState::Preempted
                         } else {
                             open_scribe_types::AttemptState::Cancelled
                         },
                     );
                 }
-                Some((state, _, _, _)) if state == "complete" => {
+                Some((Some(TranscriptionRunState::Complete), _, _, _)) => {
                     snapshot.attempt = open_scribe_domain::merge_transcription_attempt(
                         snapshot.attempt,
                         open_scribe_types::AttemptState::Complete,
@@ -590,21 +638,14 @@ impl SessionStore {
     fn runtime_source_snapshots(
         connection: &rusqlite::Connection,
         session_id: &str,
-        session_lifecycle: &str,
+        session_lifecycle: SessionLifecycle,
     ) -> Result<Vec<RuntimeSourceSnapshot>, StoreError> {
         let mut statement = connection.prepare_cached(
             "SELECT required.kind,
-                    COALESCE(
-                      (SELECT sources.display_name FROM sources
-                       WHERE sources.session_id = required.session_id
-                         AND sources.kind = required.kind
-                       ORDER BY sources.id DESC LIMIT 1),
-                      CASE required.kind
-                        WHEN 'microphone' THEN 'Mac microphone'
-                        WHEN 'application_audio' THEN 'Selected application audio'
-                        WHEN 'system_audio' THEN 'Mac system audio'
-                      END
-                    ),
+                    (SELECT sources.display_name FROM sources
+                     WHERE sources.session_id = required.session_id
+                       AND sources.kind = required.kind
+                     ORDER BY sources.id DESC LIMIT 1),
                     required.lifecycle
              FROM required_sources required
              WHERE required.session_id = ?1
@@ -614,18 +655,23 @@ impl SessionStore {
             .query_map([session_id], |row| {
                 Ok((
                     row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(1)?,
                     row.get::<_, String>(2)?,
                 ))
             })?
             .map(|row| {
-                let (kind, display_name, mut lifecycle) = row?;
-                if session_lifecycle == "interrupted" && lifecycle != "sealed" {
-                    lifecycle = "failed".to_owned();
+                let (kind, display_name, lifecycle) = row?;
+                let kind = parse_source_kind(&kind)?;
+                let mut lifecycle = SourceLifecycle::parse(&lifecycle)?;
+                if session_lifecycle == SessionLifecycle::Interrupted
+                    && lifecycle != SourceLifecycle::Sealed
+                {
+                    lifecycle = SourceLifecycle::Failed;
                 }
                 Ok(RuntimeSourceSnapshot {
-                    kind: MediaSourceKind::from_str(&kind)?,
-                    display_name,
+                    kind,
+                    display_name: display_name
+                        .unwrap_or_else(|| source_defaults(kind).display_name.to_owned()),
                     lifecycle,
                 })
             })
@@ -637,9 +683,9 @@ impl SessionStore {
         connection: &rusqlite::Connection,
         session_id: &str,
         origin: &str,
-        lifecycle: &str,
+        lifecycle: SessionLifecycle,
     ) -> Result<Option<RuntimePlayableMediaSnapshot>, StoreError> {
-        if lifecycle != "ready_for_review" {
+        if lifecycle != SessionLifecycle::ReadyForReview {
             return Ok(None);
         }
         let rows = if origin == "import" {
@@ -727,7 +773,7 @@ impl SessionStore {
         ) = &rows[0];
         let sample_count = u64::try_from(*stored_sample_count).unwrap_or(0);
         let byte_length = u64::try_from(*stored_byte_length).unwrap_or(0);
-        let duration_nanoseconds = sample_count.saturating_mul(1_000_000_000) / 48_000;
+        let duration_nanoseconds = saturating_frames_to_nanoseconds(sample_count);
         let base = |availability| RuntimePlayableMediaSnapshot {
             source_display_name: source_display_name.clone(),
             availability,

@@ -5,6 +5,14 @@ use super::*;
 #[path = "timeline_tests.rs"]
 mod tests;
 
+/// One sample at the media rate, rounded up: the host-clock placement overlap
+/// a current timeline may carry before it is rejected.
+pub(crate) const ONE_SAMPLE_NANOSECONDS: i64 =
+    1_000_000_000_u64.div_ceil(MEDIA_SAMPLE_RATE_HZ as u64) as i64;
+/// ADR 0005: a source drifting further than this is degraded. A first-version
+/// timeline may also correct up to this much accumulated placement overlap.
+pub(crate) const MAX_SOURCE_DRIFT_NANOSECONDS: i64 = 50_000_000;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct CaptureClock {
     pub host_anchor: u64,
@@ -56,8 +64,7 @@ impl SessionStore {
                 clock,
                 payload_u64(seal, "final_sample_host_time")?,
             )?;
-            let duration = i128::from(payload_u64(seal, "sample_count")?) * 1_000_000_000
-                / i128::from(MEDIA_SAMPLE_RATE_HZ);
+            let duration = frames_to_nanoseconds(payload_u64(seal, "sample_count")?) as i128;
             let drift =
                 i64::try_from(i128::from(end) - i128::from(start) - duration).map_err(|_| {
                     StoreError::IntegrityMismatch("segment drift exceeds timeline range")
@@ -101,7 +108,7 @@ impl SessionStore {
         payload["playback_alignment_version"] = json!(1);
         let record =
             self.append_session_journal(&session.0, "capture_clock_anchored", None, payload)?;
-        self.project_clock(&session.0, &record)
+        self.project_clock(&record)
     }
 
     /// Source kinds with capture evidence: at least one segment reached a first
@@ -161,33 +168,15 @@ impl SessionStore {
                     return Err(StoreError::IntegrityMismatch("capture clock changed"));
                 }
             } else {
-                self.project_clock(session, record)?;
+                self.project_clock(record)?;
             }
         }
         Ok(())
     }
 
-    fn project_clock(&mut self, session: &str, record: &JournalRecord) -> Result<(), StoreError> {
-        let (sequence, prior) = next_database_event(&self.connection, session)?;
-        let digest = event_digest(
-            session,
-            sequence,
-            "capture_clock_anchored",
-            &record.body.payload,
-            prior.as_deref(),
-        )?;
+    fn project_clock(&mut self, record: &JournalRecord) -> Result<(), StoreError> {
         let tx = self.connection.transaction()?;
-        insert_event_with_id(
-            &tx,
-            &record.body.event_id,
-            session,
-            sequence,
-            "capture_clock_anchored",
-            record.body.wall_time_milliseconds,
-            &record.body.payload,
-            prior.as_deref(),
-            &digest,
-        )?;
+        insert_journaled_event(&tx, record, "capture_clock_anchored")?;
         tx.commit()?;
         Ok(())
     }
@@ -213,22 +202,19 @@ impl SessionStore {
         // A later segment that is an abandoned, never-captured gap does not
         // replace its predecessor; the successor is numbered after it.
         let (source_id, source_kind, display, track_id, sequence, channels): (String, String, String, String, i64, i64) = self.connection.query_row(
-            "SELECT sources.id, sources.kind, sources.display_name, tracks.id,
+            concat!("SELECT sources.id, sources.kind, sources.display_name, tracks.id,
                     (SELECT MAX(sequence) FROM segments track_segments WHERE track_segments.track_id = tracks.id),
                     segments.channels
              FROM segments JOIN tracks ON tracks.id = segments.track_id
              JOIN sources ON sources.id = tracks.source_id JOIN sessions ON sessions.id = segments.session_id
              WHERE segments.id = ?1 AND sessions.id = ?2
-               AND ((sessions.lifecycle IN ('preparing', 'recording', 'finalizing') AND sources.lifecycle = 'capturing' AND segments.lifecycle = 'capturing')
+               AND ((sessions.lifecycle IN ", interruptible_lifecycles_sql!(), " AND sources.lifecycle = 'capturing' AND segments.lifecycle = 'capturing')
                  OR (sessions.lifecycle = 'preparing' AND sources.lifecycle = 'sealed' AND segments.lifecycle = 'sealed'
                     AND EXISTS(SELECT 1 FROM session_events WHERE session_id = ?2 AND event_kind = 'resume_requested')))
                AND NOT EXISTS(SELECT 1 FROM segments later WHERE later.track_id = tracks.id AND later.sequence > segments.sequence
-                   AND NOT (later.lifecycle = 'gap' AND later.original_start IS NULL))",
+                   AND NOT (later.lifecycle = 'gap' AND later.original_start IS NULL))"),
             params![previous, session.0], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?)),
-        ).map_err(|e| match e {
-            rusqlite::Error::QueryReturnedNoRows => StoreError::InvalidState("source is not ready for one successor"),
-            e => StoreError::Sqlite(e),
-        })?;
+        ).map_err(missing_row("source is not ready for one successor"))?;
         let sequence = sequence
             .checked_add(1)
             .ok_or(StoreError::InvalidState("segment sequence exhausted"))?;
@@ -245,7 +231,7 @@ impl SessionStore {
         .map_err(|_| StoreError::InvalidState("invalid segment generation"))?;
         let segment_id = Uuid::now_v7().to_string();
         let open_token = Uuid::now_v7().to_string();
-        let relative_path = format!("audio/{track_id}/{sequence:06}-0.caf");
+        let relative_path = track_file_path(&track_id, &capture_segment_file(sequence as u64));
         let absolute_path = self.session_directory(&session.0)?.join(&relative_path);
         if fs::symlink_metadata(&absolute_path).is_ok() {
             return Err(StoreError::IntegrityMismatch(
@@ -265,7 +251,7 @@ impl SessionStore {
             Some(&relative_path),
             payload.clone(),
         )?;
-        self.project_media_authorization(&session.0, &payload, &record)?;
+        self.project_media_authorization(&session.0, &record)?;
         self.connection.execute(
             "UPDATE sources SET lifecycle = 'opening' WHERE id = ?1 AND lifecycle = 'sealed'",
             [&source_id],
@@ -316,12 +302,7 @@ impl SessionStore {
                 params![segment, session.0],
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
             )
-            .map_err(|error| match error {
-                rusqlite::Error::QueryReturnedNoRows => {
-                    StoreError::InvalidState("abandoned segment does not exist")
-                }
-                other => StoreError::Sqlite(other),
-            })?;
+            .map_err(missing_row("abandoned segment does not exist"))?;
         if lifecycle == "gap" {
             return Ok(());
         }
@@ -357,14 +338,6 @@ impl SessionStore {
                 "reason": "reserved_successor_abandoned", "media_preserved": true,
             }),
         )?;
-        let (sequence, prior) = next_database_event(&self.connection, &session.0)?;
-        let digest = event_digest(
-            &session.0,
-            sequence,
-            "segment_capture_gap",
-            &record.body.payload,
-            prior.as_deref(),
-        )?;
         let now = wall_time_milliseconds();
         let tx = self.connection.transaction()?;
         tx.execute(
@@ -376,8 +349,12 @@ impl SessionStore {
         // with no active segment: the source rests on its sealed media, as a
         // seal would leave it, so a source failure can retire it.
         let active: bool = tx.query_row(
-            "SELECT EXISTS(SELECT 1 FROM segments
-             WHERE track_id = ?1 AND lifecycle IN ('opening', 'open', 'capturing'))",
+            concat!(
+                "SELECT EXISTS(SELECT 1 FROM segments
+             WHERE track_id = ?1 AND lifecycle IN ",
+                active_media_sql!(),
+                ")"
+            ),
             [&track_id],
             |row| row.get(0),
         )?;
@@ -403,23 +380,16 @@ impl SessionStore {
             )?;
         }
         tx.execute(
-            "UPDATE sessions SET media_files_open = EXISTS(
+            concat!(
+                "UPDATE sessions SET media_files_open = EXISTS(
                  SELECT 1 FROM segments
-                 WHERE session_id = ?1 AND lifecycle IN ('opening', 'open', 'capturing')
-             ), updated_at_ms = ?2 WHERE id = ?1",
+                 WHERE session_id = ?1 AND lifecycle IN ",
+                active_media_sql!(),
+                "), updated_at_ms = ?2 WHERE id = ?1"
+            ),
             params![session.0, now],
         )?;
-        insert_event_with_id(
-            &tx,
-            &record.body.event_id,
-            &session.0,
-            sequence,
-            "segment_capture_gap",
-            record.body.wall_time_milliseconds,
-            &record.body.payload,
-            prior.as_deref(),
-            &digest,
-        )?;
+        insert_journaled_event(&tx, &record, "segment_capture_gap")?;
         tx.commit()?;
         Ok(())
     }
@@ -525,10 +495,8 @@ impl SessionStore {
                     "timeline changed accepted timestamp evidence",
                 ));
             }
-            let duration = i64::try_from(
-                i128::from(samples) * 1_000_000_000 / i128::from(MEDIA_SAMPLE_RATE_HZ),
-            )
-            .map_err(|_| StoreError::IntegrityMismatch("timeline duration overflow"))?;
+            let duration = i64::try_from(frames_to_nanoseconds(samples as u64))
+                .map_err(|_| StoreError::IntegrityMismatch("timeline duration overflow"))?;
             let (playback_start, gap) =
                 align_playback_start(start, ends.get(&track_id).copied(), alignment_version)?;
             ends.insert(
@@ -573,7 +541,11 @@ fn align_playback_start(
     let gap = start
         .checked_sub(end)
         .ok_or(StoreError::IntegrityMismatch("timeline gap overflow"))?;
-    let limit = if version == 1 { 50_000_000 } else { 20_834 };
+    let limit = if version == 1 {
+        MAX_SOURCE_DRIFT_NANOSECONDS
+    } else {
+        ONE_SAMPLE_NANOSECONDS
+    };
     if gap < -limit {
         return Err(StoreError::IntegrityMismatch(
             "timeline overlap exceeds clock alignment bound",

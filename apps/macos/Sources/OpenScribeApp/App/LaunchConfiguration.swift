@@ -16,19 +16,38 @@ struct LaunchConfiguration {
     case selectedAppExit = "selected-app-exit"
     case sleepWake = "sleep-wake"
     case livePauseResume = "live-pause-resume"
+    case pauseResume = "pause-resume"
     case killPreparation = "kill-preparation"
     case killRecording = "kill-recording"
     case killStop = "kill-stop"
     case killSeal = "kill-seal"
     case killProcessing = "kill-processing"
+
+    /// The recording boundary where a forced-termination case stops the app.
+    var killBoundary: RecordingBoundary? {
+      switch self {
+      case .killPreparation: .preparation
+      case .killRecording: .recording
+      case .killStop: .stop
+      case .killSeal: .seal
+      case .killProcessing: .processing
+      default: nil
+      }
+    }
   }
   enum Action: Equatable {
     case none
-    case injected(String)
-    case injectedRecovery, review, liveRecovery
+    case injected(InjectedCase)
+    case injectedRecovery, liveRecovery
     case syntheticCapture, syntheticRecovery, microphone, forcedCapture, forcedRecovery
     case localOnly
     case drift(UInt64)
+  }
+  /// A root flag's action; injected and drift actions take a second flag.
+  private enum RootAction {
+    case ready(Action)
+    case injected
+    case drift
   }
   enum Rejection: Error {
     case malformed, conflict, missingRoot, unsafeRoot, releaseProof, preferencesNotIsolated
@@ -41,25 +60,37 @@ struct LaunchConfiguration {
   let mediaRoot: URL?
   let preferences: UserDefaults
   var suspendsAutomation: Bool { mode != .normal }
+  /// Debug proof, scene and hosted-test launches neither save nor restore
+  /// window state. Release builds keep AppKit's restoration.
+  var restoresState: Bool { mode == .normal || !Self.developmentBuild }
+
+  /// The production library, `~/Library/Application Support/Open Scribe`.
+  /// Proof roots are validated against it; nothing else computes it.
+  static let libraryDirectoryName = "Open Scribe"
+  /// The longest `--m1-drift-run-seconds` a drift run accepts.
+  static let maximumDriftSeconds: UInt64 = 3 * 60 * 60
+  static var productionRoot: URL? {
+    FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
+      .appendingPathComponent(libraryDirectoryName, isDirectory: true)
+  }
 
   static func resolve(
     arguments: [String], environment: [String: String], normalRoot: URL,
     permitsProofs: Bool = developmentBuild,
     verificationBuild: Bool = Bundle.main.bundleIdentifier?.hasSuffix(".verification") == true
   ) throws -> LaunchConfiguration {
-    let rootFlags: [String: (Mode, Action)] = [
-      "--m1-injected-proof-root": (.synthetic, .injected("invalid")),
-      "--m1-injected-recovery-root": (.synthetic, .injectedRecovery),
-      "--foundation-review-root": (.synthetic, .review),
-      "--foundation-live-recovery-root": (.live, .liveRecovery),
-      "--foundation-synthetic-capture-root": (.synthetic, .syntheticCapture),
-      "--foundation-synthetic-recovery-root": (.synthetic, .syntheticRecovery),
-      "--m1-live-microphone-proof-root": (.live, .microphone),
-      "--m1-forced-termination-capture-root": (.live, .forcedCapture),
-      "--m1-forced-termination-recovery-root": (.live, .forcedRecovery),
-      "--local-only-proof-root": (.live, .localOnly),
-      "--local-only-synthetic-proof-root": (.synthetic, .localOnly),
-      "--m1-drift-run-root": (.live, .drift(0)),
+    let rootFlags: [String: (Mode, RootAction)] = [
+      "--m1-injected-proof-root": (.synthetic, .injected),
+      "--m1-injected-recovery-root": (.synthetic, .ready(.injectedRecovery)),
+      "--foundation-live-recovery-root": (.live, .ready(.liveRecovery)),
+      "--foundation-synthetic-capture-root": (.synthetic, .ready(.syntheticCapture)),
+      "--foundation-synthetic-recovery-root": (.synthetic, .ready(.syntheticRecovery)),
+      "--m1-live-microphone-proof-root": (.live, .ready(.microphone)),
+      "--m1-forced-termination-capture-root": (.live, .ready(.forcedCapture)),
+      "--m1-forced-termination-recovery-root": (.live, .ready(.forcedRecovery)),
+      "--local-only-proof-root": (.live, .ready(.localOnly)),
+      "--local-only-synthetic-proof-root": (.synthetic, .ready(.localOnly)),
+      "--m1-drift-run-root": (.live, .drift),
     ]
     let valueFlags = Set(rootFlags.keys).union([
       "--verification-root", "--verification-preferences", "--m1-proof-media-root",
@@ -113,12 +144,12 @@ struct LaunchConfiguration {
     guard permitsProofs else { throw Rejection.releaseProof }
     guard verificationBuild else { throw Rejection.preferencesNotIsolated }
     var mode: Mode = scenes ? .scenes : .testHost
-    var action: Action = .none
+    var rootAction: RootAction = .ready(.none)
     var suppliedRoot = values["--verification-root"] ?? environment["OPEN_SCRIBE_PROOF_ROOT"]
     if let flag = selected.first, let choice = rootFlags[flag] {
       guard suppliedRoot == nil else { throw Rejection.conflict }
       suppliedRoot = values[flag]
-      (mode, action) = choice
+      (mode, rootAction) = choice
     }
     guard let suppliedRoot else { throw Rejection.missingRoot }
     if let fromEnvironment = environment["OPEN_SCRIBE_PROOF_ROOT"],
@@ -129,29 +160,31 @@ struct LaunchConfiguration {
     let root = try validatedRoot(suppliedRoot, excluding: normalRoot)
     var mediaRoot: URL?
     if let value = values["--m1-proof-media-root"] {
-      switch action {
-      case .injected, .injectedRecovery: break
+      switch rootAction {
+      case .injected, .ready(.injectedRecovery): break
       default: throw Rejection.conflict
       }
       mediaRoot = try validatedRoot(value, excluding: normalRoot)
     }
-    if case .injected = action {
-      guard let text = values["--m1-injected-case"], let scenario = InjectedCase(rawValue: text)
-      else {
-        throw Rejection.malformed
-      }
-      action = .injected(scenario.rawValue)
-      if scenario == .livePauseResume { mode = .live }
-    } else if values["--m1-injected-case"] != nil {
+    if case .injected = rootAction {} else if values["--m1-injected-case"] != nil {
       throw Rejection.conflict
     }
-    if case .drift = action {
+    if case .drift = rootAction {} else if values["--m1-drift-run-seconds"] != nil {
+      throw Rejection.conflict
+    }
+    let action: Action
+    switch rootAction {
+    case .ready(let ready):
+      action = ready
+    case .injected:
+      guard let text = values["--m1-injected-case"], let scenario = InjectedCase(rawValue: text)
+      else { throw Rejection.malformed }
+      action = .injected(scenario)
+    case .drift:
       guard let text = values["--m1-drift-run-seconds"], let seconds = UInt64(text),
-        (1...10_800).contains(seconds)
+        (1...maximumDriftSeconds).contains(seconds)
       else { throw Rejection.malformed }
       action = .drift(seconds)
-    } else if values["--m1-drift-run-seconds"] != nil {
-      throw Rejection.conflict
     }
     return try make(mode, action, root, mediaRoot, values, environment, normalRoot)
   }
@@ -177,7 +210,7 @@ struct LaunchConfiguration {
     {
       throw Rejection.conflict
     }
-    let token = SHA256.hash(data: Data(root.path.utf8)).map { String(format: "%02x", $0) }.joined()
+    let token = SHA256.hash(data: Data(root.path.utf8)).lowercaseHex
     let suite =
       values["--verification-preferences"]
       ?? environment["OPEN_SCRIBE_PROOF_PREFERENCES"] ?? "OpenScribe.Proof.\(token)"
@@ -204,8 +237,8 @@ struct LaunchConfiguration {
     guard root.path == real.path, root.path != production,
       !root.path.hasPrefix(production + "/"), !production.hasPrefix(root.path + "/"),
       root.path != "/", root.path != NSHomeDirectory(),
-      !root.path.contains("/Library/Application Support/Open Scribe/")
-        && !root.path.hasSuffix("/Library/Application Support/Open Scribe")
+      !root.path.contains("/Library/Application Support/\(libraryDirectoryName)/")
+        && !root.path.hasSuffix("/Library/Application Support/\(libraryDirectoryName)")
     else { throw Rejection.unsafeRoot }
     let attributes = try FileManager.default.attributesOfItem(atPath: root.path)
     guard attributes[.type] as? FileAttributeType == .typeDirectory,

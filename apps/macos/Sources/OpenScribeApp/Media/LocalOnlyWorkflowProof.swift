@@ -1,3 +1,5 @@
+// Proof launches exist only in Debug builds; candidates build Debug.
+#if DEBUG
 import AppKit
 import Foundation
 
@@ -27,12 +29,10 @@ enum LocalOnlyWorkflowProof {
   static func run(root: URL, contextInput: ContextInput) async {
     do {
       let report = try await perform(root: root, contextInput: contextInput)
-      try JSONSerialization.data(withJSONObject: report, options: [.sortedKeys])
-        .write(to: root.appendingPathComponent("local-only-verified.json"), options: .atomic)
+      try ProofFiles.write(report, name: "local-only-verified.json", root: root)
     } catch {
       // Error descriptions carry step names and platform codes, never content.
-      try? String(describing: error).write(
-        to: root.appendingPathComponent("proof-error"), atomically: true, encoding: .utf8)
+      ProofFiles.fail(error, root: root)
     }
     NSApp.terminate(nil)
   }
@@ -145,27 +145,31 @@ enum LocalOnlyWorkflowProof {
       timeline: { [preparation = capture.preparation] id in
         try preparation.playbackTimeline(sessionId: id)
       })
-    review.load(sessionId: spoken)
+    await review.load(sessionId: spoken)
     guard review.availability == .final, let first = review.segments.first else {
       throw ProofError.step("final transcript")
     }
     report["transcript_segments"] = review.segments.count
     let verbatim = exports.appendingPathComponent("verbatim.txt")
-    guard review.export(format: .plainText, to: verbatim) else {
+    guard await review.export(format: .plainText, to: verbatim) else {
       throw ProofError.step("verbatim export")
     }
-    guard try String(contentsOf: verbatim, encoding: .utf8)
+    guard
+      try String(contentsOf: verbatim, encoding: .utf8)
       .localizedCaseInsensitiveContains("recording safe")
     else { throw ProofError.step("speech known answer") }
     report["speech_known_answer"] = true
-    guard review.correct(first, text: correction) else { throw ProofError.step("correction") }
-    review.search(correction)
+    guard await review.correct(first, text: correction) else { throw ProofError.step("correction") }
+    await review.search(correction)
     report["correction_search_hits"] = review.searchResults.count
-    guard review.export(format: .transcriptJson, to: exports.appendingPathComponent("transcript.json"))
+    guard
+      await review.export(
+        format: .transcriptJson, to: exports.appendingPathComponent("transcript.json"))
     else { throw ProofError.step("transcript export") }
 
-    review.load(sessionId: session)
-    guard await review.export(.sessionManifest, to: exports.appendingPathComponent("manifest.json")),
+    await review.load(sessionId: session)
+    guard
+      await review.export(.sessionManifest, to: exports.appendingPathComponent("manifest.json")),
       await review.export(.mixWAV, to: exports.appendingPathComponent("mix.wav"))
     else { throw ProofError.step("conversation export") }
     let package = exports.appendingPathComponent("Conversation.openscribe")
@@ -185,8 +189,8 @@ enum LocalOnlyWorkflowProof {
     report["declared_participants"] = review.contextDetail?.declaration.participants.count ?? 0
 
     // Delete the spoken conversation through both phases.
-    review.requestDeletion(sessionId: spoken)
-    guard review.pendingDeletion != nil, review.confirmDeletion() else {
+    await review.requestDeletion(sessionId: spoken)
+    guard review.pendingDeletion != nil, await review.confirmDeletion() else {
       throw ProofError.step("deletion")
     }
     report["deleted_sessions"] = 1
@@ -194,3 +198,4 @@ enum LocalOnlyWorkflowProof {
     return report
   }
 }
+#endif

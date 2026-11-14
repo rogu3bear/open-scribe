@@ -2,6 +2,7 @@ use std::fs::OpenOptions;
 use std::io::{SeekFrom, Write};
 use std::os::unix::fs::{FileExt, MetadataExt, symlink};
 
+use sha2::{Digest, Sha256};
 use tempfile::TempDir;
 
 use super::*;
@@ -67,6 +68,67 @@ fn compressed_import_is_byte_preserving_and_reopens_with_a_streaming_lease() {
 }
 
 #[test]
+fn a_symlinked_import_adds_no_conversation_and_leaves_the_target() {
+    let temp = TempDir::new().unwrap();
+    let target = temp.path().join("interview.caf");
+    write_recoverable_caf(&target, 960);
+    let original = fs::read(&target).unwrap();
+    let link = temp.path().join("link.caf");
+    symlink(&target, &link).unwrap();
+    let mut store = SessionStore::open(temp.path().join("Open Scribe")).unwrap();
+    let error = store
+        .import_recoverable_caf(ImportMediaRequest {
+            title: "Interview".into(),
+            source_path: link.clone(),
+        })
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        StoreError::InvalidRequest("import source must be a regular file, not a symlink")
+    ));
+    let snapshot = store.runtime_library_snapshot().unwrap();
+    assert!(snapshot.current_session.is_none());
+    assert!(snapshot.saved_sessions.is_empty());
+    assert_eq!(fs::read(&target).unwrap(), original);
+    assert!(
+        fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+}
+
+#[test]
+fn a_source_replaced_during_validation_adds_no_conversation() {
+    let temp = TempDir::new().unwrap();
+    let source_path = temp.path().join("interview.caf");
+    write_recoverable_caf(&source_path, 960);
+    let replacement_path = temp.path().join("replacement.caf");
+    fs::write(&replacement_path, b"replaced-audio").unwrap();
+    let replacement = fs::read(&replacement_path).unwrap();
+    let mut store = SessionStore::open(temp.path().join("Open Scribe")).unwrap();
+    let race_source = source_path.clone();
+    let race_replacement = replacement_path.clone();
+    *store.media_validation_hook.borrow_mut() = Some(Box::new(move || {
+        fs::rename(&race_replacement, &race_source).unwrap();
+    }));
+    let error = store
+        .import_recoverable_caf(ImportMediaRequest {
+            title: "Interview".into(),
+            source_path: source_path.clone(),
+        })
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        StoreError::IntegrityMismatch("import source changed during admission")
+    ));
+    let snapshot = store.runtime_library_snapshot().unwrap();
+    assert!(snapshot.current_session.is_none());
+    assert!(snapshot.saved_sessions.is_empty());
+    assert_eq!(fs::read(&source_path).unwrap(), replacement);
+}
+
+#[test]
 fn compressed_import_rejects_source_drift_before_creating_library_rows() {
     let temp = TempDir::new().unwrap();
     let source = temp.path().join("source.m4a");
@@ -107,7 +169,7 @@ fn compressed_import_policy_rejects_excess_and_unsupported_metadata_without_rows
             0 => candidate.original.byte_length = MAX_COMPRESSED_IMPORT_BYTES + 1,
             1 => candidate.sample_count = MAX_IMPORT_SAMPLES + 1,
             2 => candidate.original.duration_nanoseconds = MAX_IMPORT_DURATION_NANOSECONDS + 1,
-            3 => candidate.original.sample_rate_hz = 44_100,
+            3 => candidate.original.sample_rate_hz = 0,
             4 => candidate.original.channel_count = 3,
             _ => unreachable!(),
         }
@@ -237,6 +299,7 @@ fn managed_caf_import_preserves_original_and_enters_the_existing_library() {
 
     assert!(evidence.ready_for_review);
     assert!(evidence.original_untouched);
+    assert!(!evidence.repeated_source);
     assert_eq!(evidence.sample_count, 960);
     assert_eq!(evidence.digest_sha256.len(), 64);
     assert_eq!(fs::read(&source_path).unwrap(), original);
@@ -290,6 +353,62 @@ fn managed_caf_import_preserves_original_and_enters_the_existing_library() {
 }
 
 #[test]
+fn a_repeated_import_keeps_a_separate_conversation_and_the_first_bytes() {
+    let temp = TempDir::new().unwrap();
+    let source_path = temp.path().join("donella-review.caf");
+    write_recoverable_caf(&source_path, 960);
+    let original = fs::read(&source_path).unwrap();
+    let mut store = SessionStore::open(temp.path().join("Open Scribe")).unwrap();
+    let first = store
+        .import_recoverable_caf(ImportMediaRequest {
+            title: "Donella review".to_owned(),
+            source_path: source_path.clone(),
+        })
+        .unwrap();
+    let second = store
+        .import_recoverable_caf(ImportMediaRequest {
+            title: "Donella review again".to_owned(),
+            source_path,
+        })
+        .unwrap();
+
+    assert!(!first.repeated_source);
+    assert!(second.repeated_source);
+    assert_ne!(first.session_id, second.session_id);
+    assert_eq!(first.digest_sha256, second.digest_sha256);
+    assert_eq!(
+        fs::read(temp.path().join("donella-review.caf")).unwrap(),
+        original
+    );
+    let first_copy = store
+        .session_directory(&first.session_id.0)
+        .unwrap()
+        .join(&first.relative_path);
+    let second_copy = store
+        .session_directory(&second.session_id.0)
+        .unwrap()
+        .join(&second.relative_path);
+    assert_eq!(fs::read(first_copy).unwrap(), original);
+    assert_eq!(fs::read(second_copy).unwrap(), original);
+    let snapshot = store.runtime_library_snapshot().unwrap();
+    assert_eq!(snapshot.saved_sessions.len(), 2);
+    let first_saved = snapshot
+        .saved_sessions
+        .iter()
+        .find(|session| session.session_id == first.session_id)
+        .unwrap();
+    let second_saved = snapshot
+        .saved_sessions
+        .iter()
+        .find(|session| session.session_id == second.session_id)
+        .unwrap();
+    assert_eq!(first_saved.title, "Donella review");
+    assert_eq!(second_saved.title, "Donella review again");
+    assert_eq!(first_saved.lifecycle, "ready_for_review");
+    assert_eq!(second_saved.lifecycle, "ready_for_review");
+}
+
+#[test]
 fn normalized_import_retains_original_metadata_and_reopens_as_playable_media() {
     let temp = TempDir::new().unwrap();
     let caf_path = temp.path().join("normalized.caf");
@@ -314,6 +433,11 @@ fn normalized_import_retains_original_metadata_and_reopens_as_playable_media() {
         )
         .unwrap();
     assert_eq!(fs::read(&caf_path).unwrap(), original_caf);
+    assert!(
+        !store
+            .retains_imported_original(&evidence.session_id)
+            .unwrap()
+    );
     let snapshot = store.runtime_library_snapshot().unwrap();
     assert_eq!(snapshot.saved_sessions.len(), 1);
     assert_eq!(
@@ -335,6 +459,11 @@ fn normalized_import_retains_original_metadata_and_reopens_as_playable_media() {
     assert!(journal.contains("\"sample_rate_hz\":44100"));
     drop(store);
     let reopened = SessionStore::open(managed_root).unwrap();
+    assert!(
+        !reopened
+            .retains_imported_original(&evidence.session_id)
+            .unwrap()
+    );
     assert!(
         reopened
             .lease_imported_playback(&evidence.session_id)
@@ -1095,4 +1224,22 @@ fn compressed_import_transcribes_only_through_a_matching_decoded_companion() {
             .open_decoded_transcription_input(&input, &decoded)
             .is_err()
     );
+}
+
+#[test]
+fn a_file_name_with_control_characters_imports_under_a_cleaned_title() {
+    let temp = TempDir::new().unwrap();
+    let source = temp.path().join("call.caf");
+    write_recoverable_caf(&source, 960);
+    let mut store = SessionStore::open(temp.path().join("Open Scribe")).unwrap();
+    store
+        .import_recoverable_caf(ImportMediaRequest {
+            title: "Weekly\tcall\u{7}".into(),
+            source_path: source,
+        })
+        .unwrap();
+    let snapshot = store.runtime_library_snapshot().unwrap();
+    assert_eq!(snapshot.saved_sessions[0].title, "Weekly call");
+    assert!(snapshot.saved_sessions[0].preserved_audio);
+    assert!(snapshot.saved_sessions[0].can_move_to_trash);
 }

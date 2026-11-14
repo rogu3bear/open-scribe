@@ -13,14 +13,10 @@ pub fn hydrate() {
     leptos::mount::hydrate_body(app::App);
 }
 
-/// ADR 0015's exact Worker SSR policy. Hydration boots from a hashed
-/// same-origin module, so no inline script is admitted.
+/// ADR 0015's exact Worker SSR policy. Static pages need no script;
+/// retain the approved policy without introducing an inline exception.
 #[cfg(feature = "ssr")]
 const CONTENT_SECURITY_POLICY: &str = "default-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'; object-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self' data:; connect-src 'self'; font-src 'none'; media-src 'none'; manifest-src 'self'; upgrade-insecure-requests";
-
-/// An unhashed development build has no boot module and hydrates inline.
-#[cfg(feature = "ssr")]
-const DEVELOPMENT_CONTENT_SECURITY_POLICY: &str = "default-src 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; form-action 'none'; img-src 'self' data:; connect-src 'self'; style-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'";
 
 /// Denies camera, microphone, display capture, geolocation, and other unused
 /// device and sensor features (ADR 0015).
@@ -80,11 +76,7 @@ async fn fetch(
 
 #[cfg(feature = "ssr")]
 fn content_security_policy() -> &'static str {
-    if asset_hashes::BOOT_HASH.is_empty() {
-        DEVELOPMENT_CONTENT_SECURITY_POLICY
-    } else {
-        CONTENT_SECURITY_POLICY
-    }
+    CONTENT_SECURITY_POLICY
 }
 
 #[cfg(feature = "ssr")]

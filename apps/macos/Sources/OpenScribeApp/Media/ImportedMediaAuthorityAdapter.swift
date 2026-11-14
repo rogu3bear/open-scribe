@@ -1,5 +1,11 @@
 import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
+
+/// Audio the user dropped on the library and has not confirmed.
+struct PendingAudioImport: Equatable {
+  let urls: [URL]
+}
 
 enum ImportedMediaAuthorityPhase: Equatable {
   case idle
@@ -34,6 +40,8 @@ final class ImportedMediaAuthorityAdapter: ObservableObject {
   @Published private(set) var hasPendingAudioImports = false
   @Published private(set) var pauseRequested = false
   @Published private(set) var failedImports: [ImportedAudioFailure] = []
+  /// Set by a drop. Import starts only after `confirmPendingAudioImport()`.
+  @Published private(set) var pendingAudioImport: PendingAudioImport?
 
   private let picker: BatchPicker
   private let startSecurityScope: StartSecurityScope
@@ -101,6 +109,114 @@ final class ImportedMediaAuthorityAdapter: ObservableObject {
       phase = .idle
       return
     }
+    pendingAudioImport = nil
+    importSelectedFiles(selected)
+  }
+
+  /// Remembers a library drop. Nothing is copied until the user confirms.
+  func stageDroppedAudio(_ urls: [URL]) {
+    guard operationTask == nil, !hasPendingAudioImports else {
+      statusMessage = "Finish the current import before adding more audio. Nothing was added."
+      return
+    }
+    guard canBeginImport() else {
+      statusMessage = "Finish the current recording before importing audio. Nothing was added."
+      return
+    }
+    let files = urls.filter(\.isFileURL)
+    guard !files.isEmpty, files.allSatisfy(Self.isDroppableAudioFile) else {
+      pendingAudioImport = nil
+      phase = .idle
+      statusMessage = "Drop a PCM CAF or an AAC or Apple Lossless M4A file. Nothing was added."
+      return
+    }
+    pendingAudioImport = PendingAudioImport(urls: files)
+    phase = .idle
+    importedSessionId = nil
+    importedSessionIds = []
+    failedImports = []
+    statusMessage = Self.dropConfirmationMessage(urls: files)
+  }
+
+  func confirmPendingAudioImport() {
+    guard operationTask == nil, let pending = pendingAudioImport else { return }
+    pendingAudioImport = nil
+    guard canBeginImport() else {
+      statusMessage = "Finish the current recording before importing audio. Nothing was added."
+      return
+    }
+    importedSessionId = nil
+    importedSessionIds = []
+    failedImports = []
+    pauseRequested = false
+    selectedFileCount = pending.urls.count
+    importSelectedFiles(pending.urls)
+  }
+
+  func cancelPendingAudioImport() {
+    guard pendingAudioImport != nil else { return }
+    pendingAudioImport = nil
+    phase = .idle
+    statusMessage = "Import cancelled. No conversation was added."
+  }
+
+  /// A file URL from a library drop. Directories and other types are refused.
+  static func isDroppableAudioFile(_ url: URL) -> Bool {
+    guard url.isFileURL else { return false }
+    var isDirectory: ObjCBool = false
+    if FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory),
+      isDirectory.boolValue
+    {
+      return false
+    }
+    switch url.pathExtension.lowercased() {
+    case "caf", "m4a": return true
+    default: return false
+    }
+  }
+
+  static func dropConfirmationMessage(urls: [URL]) -> String {
+    if urls.count == 1 {
+      return "Import \(urls[0].lastPathComponent)? The original file stays where it is."
+    }
+    return "Import \(urls.count) audio files? The original files stay where they are."
+  }
+
+  /// File URLs carried by a drop. Order follows the providers.
+  /// The drop handler owns the providers, so this stays on the main actor with it.
+  static func fileURLs(from providers: [NSItemProvider]) async -> [URL] {
+    var urls: [URL] = []
+    for provider in providers {
+      if let url = await fileURL(from: provider) {
+        urls.append(url)
+      }
+    }
+    return urls
+  }
+
+  private static func fileURL(from provider: NSItemProvider) async -> URL? {
+    for identifier in [UTType.fileURL.identifier, UTType.url.identifier] {
+      guard provider.hasItemConformingToTypeIdentifier(identifier) else { continue }
+      let loaded = await withCheckedContinuation { continuation in
+        provider.loadItem(forTypeIdentifier: identifier, options: nil) { item, _ in
+          continuation.resume(returning: url(from: item))
+        }
+      }
+      if let loaded { return loaded }
+    }
+    return nil
+  }
+
+  nonisolated private static func url(from item: NSSecureCoding?) -> URL? {
+    if let url = item as? URL { return url }
+    if let url = item as? NSURL { return url as URL }
+    if let data = item as? Data {
+      return URL(dataRepresentation: data, relativeTo: nil)
+    }
+    return nil
+  }
+
+  private func importSelectedFiles(_ selected: [URL]) {
     // Preserve immediate single-file permission failures. A batch acquires
     // just one file's scope at a time and reports each refused file separately.
     var firstAuthorized = false
@@ -304,11 +420,11 @@ final class ImportedMediaAuthorityAdapter: ObservableObject {
   nonisolated static func packageFailureMessage(_ error: Error) -> String {
     switch error as? NativeStorageError {
     case .IntegrityMismatch:
-      "This package did not verify: a file is missing, changed, linked, or not listed in its manifest. Nothing was added."
+      "This package couldn't be opened: a file is missing, changed, linked, or not listed in its manifest. Nothing was added."
     case .InvalidRequest:
       "This package's transcript, timeline, or markers do not match its audio. Nothing was added."
     case .InvalidState:
-      "This package holds something this version cannot open yet, such as a compressed import. Nothing was added."
+      "This package holds something this version cannot open yet. Nothing was added."
     default:
       "Open Scribe could not save a local copy of this package. Check that this Mac has enough free space, then try again. Nothing was added."
     }
@@ -318,7 +434,7 @@ final class ImportedMediaAuthorityAdapter: ObservableObject {
     let panel = NSOpenPanel()
     panel.title = "Open Portable Package"
     panel.message =
-      "Choose a .openscribe package exported by Open Scribe. It is verified before anything is copied."
+      "Choose a .openscribe package exported by Open Scribe. It is checked before anything is copied."
     panel.prompt = "Open"
     panel.canChooseFiles = false
     panel.canChooseDirectories = true
@@ -367,7 +483,7 @@ final class ImportedMediaAuthorityAdapter: ObservableObject {
           "This M4A contains multiple or unreadable audio tracks. Choose a single-track file. Nothing was added."
       case .unsupportedFormat:
         return
-          "This file is not supported. Large or stereo M4A must be 48 kHz AAC or Apple Lossless. Nothing was added."
+          "This file is not supported. Choose a PCM CAF or a single-track AAC or Apple Lossless M4A. Nothing was added."
       case .invalidSource, .decodeFailed:
         return "The selected audio could not be read safely. Nothing was added."
       }
@@ -382,19 +498,24 @@ final class ImportedMediaAuthorityAdapter: ObservableObject {
       case .InvalidRequest:
         return "This file is not a supported PCM CAF or 48 kHz mono/stereo M4A. Nothing was added."
       default:
-        return "Open Scribe could not save a verified local copy. Nothing was added."
+        return "Open Scribe couldn't save a copy of this audio. Nothing was added."
       }
     }
     return
       "The selected audio could not be imported. Nothing was added to the conversation library."
   }
 
+  static let portablePackageHelp =
+    "Open a .openscribe package exported on another Mac as a new conversation"
+  static let portablePackageWaitHelp =
+    "Wait for the current recording or import to finish before opening a package"
+
   static var importLimitHelp: String {
-    "Add local CAF or M4A audio (PCM CAF up to \(pcmLimitMiB) MiB, M4A up to \(m4aLimitGiB) GiB, four hours)"
+    "Add local CAF or M4A audio (PCM CAF up to \(pcmLimitMiB) MiB, M4A up to \(m4aLimitGiB) GiB, \(durationLimit)). Choose Audio Files, or drop a file on the library and confirm the import."
   }
 
   private static var importLimitPrompt: String {
-    "Choose local PCM CAF files (up to \(pcmLimitMiB) MiB each) or 48 kHz AAC/Apple Lossless M4A files (up to \(m4aLimitGiB) GiB each), up to four hours per recording. Files are imported one at a time; originals are kept. Transcription follows your Settings preference."
+    "Choose local PCM CAF files (up to \(pcmLimitMiB) MiB each) or AAC/Apple Lossless M4A files (up to \(m4aLimitGiB) GiB each), up to \(durationLimit) per recording. Files are imported one at a time; originals are kept. Transcription follows your Settings preference."
   }
 
   private static var pcmLimitMiB: UInt64 {
@@ -403,5 +524,15 @@ final class ImportedMediaAuthorityAdapter: ObservableObject {
 
   private static var m4aLimitGiB: UInt64 {
     nativeImportPolicy().maximumSourceBytes / 1_073_741_824
+  }
+
+  /// Rust's import duration limit in whole hours, spelled out ("four hours").
+  private static var durationLimit: String {
+    let hours = nativeImportPolicy().maximumDurationNanoseconds / 3_600_000_000_000
+    let words = NumberFormatter()
+    words.locale = Locale(identifier: "en_US_POSIX")
+    words.numberStyle = .spellOut
+    let count = words.string(from: NSNumber(value: hours)) ?? String(hours)
+    return hours == 1 ? "\(count) hour" : "\(count) hours"
   }
 }

@@ -3,7 +3,7 @@
 //! revision, and the sealed-media digest each revision was produced from.
 //! Rendering lives in the core; this module only reads.
 
-use super::{MEDIA_SAMPLE_RATE_HZ, SessionStore, StoreError};
+use super::{MEDIA_SAMPLE_RATE_HZ, SessionStore, StoreError, TranscriptionRunState, missing_row};
 use open_scribe_types::SessionId;
 use rusqlite::{OptionalExtension, params};
 
@@ -45,40 +45,23 @@ impl SessionStore {
         &self,
         session: &SessionId,
     ) -> Result<TranscriptExportContext, StoreError> {
-        let (title, created_at_ms): (String, i64) = self
+        let created_at_ms: i64 = self
             .connection
             .query_row(
-                "SELECT title, created_at_ms FROM sessions
+                "SELECT created_at_ms FROM sessions
                  WHERE id = ?1 AND lifecycle = 'ready_for_review'",
                 [&session.0],
-                |row| Ok((row.get(0)?, row.get(1)?)),
+                |row| row.get(0),
             )
-            .map_err(|error| match error {
-                rusqlite::Error::QueryReturnedNoRows => {
-                    StoreError::InvalidState("session is not saved for review")
-                }
-                other => StoreError::Sqlite(other),
-            })?;
-        let transcribable_tracks = self.transcription_tracks(session)?;
-        let mut track_input_digests = Vec::with_capacity(transcribable_tracks.len());
-        let mut duration_nanoseconds = 0_i64;
-        for track in &transcribable_tracks {
-            let input = self.transcription_input(session, track)?;
-            for span in &input.spans {
-                let frames = i64::try_from(span.frames).map_err(|_| {
-                    StoreError::IntegrityMismatch("track frame count exceeds the timeline")
-                })?;
-                let end = frames
-                    .checked_mul(1_000_000_000)
-                    .map(|nanoseconds| nanoseconds / i64::from(MEDIA_SAMPLE_RATE_HZ))
-                    .and_then(|length| span.start_nanoseconds.checked_add(length))
-                    .ok_or(StoreError::IntegrityMismatch(
-                        "track duration exceeds the timeline",
-                    ))?;
-                duration_nanoseconds = duration_nanoseconds.max(end);
-            }
-            track_input_digests.push((track.clone(), input.input_digest));
-        }
+            .map_err(missing_row("session is not saved for review"))?;
+        // Exports carry the title the reader sees, including a suggestion
+        // that is still standing in for the capture placeholder.
+        let title = self.conversation_title(session)?.display_title;
+        let SealedInputs {
+            tracks: transcribable_tracks,
+            digests: track_input_digests,
+            duration_nanoseconds,
+        } = self.sealed_inputs(session)?;
 
         let mut statement = self.connection.prepare(
             "SELECT selections.track_id, revisions.id, runs.id, runs.engine, runs.engine_version,
@@ -116,7 +99,7 @@ impl SessionStore {
             if selected.iter().any(|revision| &revision.track_id == track) {
                 continue;
             }
-            let latest: Option<String> = self
+            let latest: Option<TranscriptionRunState> = self
                 .connection
                 .query_row(
                     "SELECT state FROM transcription_runs
@@ -126,7 +109,7 @@ impl SessionStore {
                     |row| row.get(0),
                 )
                 .optional()?;
-            if latest.as_deref() == Some("failed") {
+            if latest == Some(TranscriptionRunState::Failed) {
                 failed_tracks.push(track.clone());
             }
         }
@@ -142,4 +125,46 @@ impl SessionStore {
             duration_nanoseconds,
         })
     }
+
+    /// The session-timeline end of the latest sealed sample of any
+    /// transcribable track; zero until the session is saved for review.
+    pub fn transcript_duration_nanoseconds(&self, session: &SessionId) -> Result<i64, StoreError> {
+        Ok(self.sealed_inputs(session)?.duration_nanoseconds)
+    }
+
+    fn sealed_inputs(&self, session: &SessionId) -> Result<SealedInputs, StoreError> {
+        let tracks = self.transcription_tracks(session)?;
+        let mut digests = Vec::with_capacity(tracks.len());
+        let mut duration_nanoseconds = 0_i64;
+        for track in &tracks {
+            let input = self.transcription_input(session, track)?;
+            for span in &input.spans {
+                let frames = i64::try_from(span.frames).map_err(|_| {
+                    StoreError::IntegrityMismatch("track frame count exceeds the timeline")
+                })?;
+                let end = frames
+                    .checked_mul(1_000_000_000)
+                    .map(|nanoseconds| nanoseconds / i64::from(MEDIA_SAMPLE_RATE_HZ))
+                    .and_then(|length| span.start_nanoseconds.checked_add(length))
+                    .ok_or(StoreError::IntegrityMismatch(
+                        "track duration exceeds the timeline",
+                    ))?;
+                duration_nanoseconds = duration_nanoseconds.max(end);
+            }
+            digests.push((track.clone(), input.input_digest));
+        }
+        Ok(SealedInputs {
+            tracks,
+            digests,
+            duration_nanoseconds,
+        })
+    }
+}
+
+/// Sealed PCM tracks that can carry a transcript, with their current input
+/// digests and the timeline end of their latest sample.
+struct SealedInputs {
+    tracks: Vec<String>,
+    digests: Vec<(String, String)>,
+    duration_nanoseconds: i64,
 }

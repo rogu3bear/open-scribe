@@ -18,6 +18,7 @@ if [[ "$#" -ge 3 && "$2" == --candidate ]]; then
 	--m1-live-controls) exec "$script_dir/check_m1_injected.sh" "$@" --case live-pause-resume ;;
 	--m1-two-hour) exec "$script_dir/check_m1_two_hour.sh" "$@" ;;
 	--m1-complete) exec "$script_dir/check_m1_complete.sh" "$@" ;;
+	--m2-complete) exec "$script_dir/check_m2_complete.sh" "$@" ;;
 	--m4-local-only) exec "$script_dir/check_m4_local_only.sh" "$@" ;;
 	--m4-complete) exec "$script_dir/check_m4_complete.sh" "$@" ;;
 	esac

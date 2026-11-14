@@ -2,11 +2,31 @@
 
 #![forbid(unsafe_code)]
 
+mod capability;
 mod work;
+pub use capability::{NO_PUBLIC_RELEASE, public_capability_label};
 pub use work::{
     AttemptState, DocumentAvailability, ModelReadiness, TranscriptionIntent, WorkHold,
     WorkObservations, WorkOutcome,
 };
+
+/// Every managed PCM file, captured or imported, is 48 kHz. The native
+/// writers, the store's timeline arithmetic and the recognizer's decimator
+/// all read this one value.
+pub const MEDIA_SAMPLE_RATE_HZ: u32 = 48_000;
+
+/// Lowercase hexadecimal: the encoding of every stored, exported and
+/// manifest digest.
+#[must_use]
+pub fn lowercase_hex(bytes: &[u8]) -> String {
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        out.push(char::from(DIGITS[usize::from(byte >> 4)]));
+        out.push(char::from(DIGITS[usize::from(byte & 0x0f)]));
+    }
+    out
+}
 
 /// Stable identity for one conversation session.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -28,11 +48,31 @@ pub enum Lifecycle {
     Interrupted,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// One capture source kind. `as_str` is the token stored in SQLite, journal
+/// payloads and exports.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum SourceKind {
     Microphone,
     ApplicationAudio,
     SystemAudio,
+}
+
+impl SourceKind {
+    pub const ALL: [Self; 3] = [Self::Microphone, Self::ApplicationAudio, Self::SystemAudio];
+
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Microphone => "microphone",
+            Self::ApplicationAudio => "application_audio",
+            Self::SystemAudio => "system_audio",
+        }
+    }
+
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|kind| kind.as_str() == value)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -122,4 +162,13 @@ pub struct SessionRecord {
     pub sources: Vec<SourceRecord>,
     pub durability: DurabilityRecord,
     pub recovery: RecoveryRecord,
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn lowercase_hex_writes_two_lowercase_digits_per_byte() {
+        assert_eq!(super::lowercase_hex(&[]), "");
+        assert_eq!(super::lowercase_hex(&[0x00, 0x0f, 0xa0, 0xff]), "000fa0ff");
+    }
 }

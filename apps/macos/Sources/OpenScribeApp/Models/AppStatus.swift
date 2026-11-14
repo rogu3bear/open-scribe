@@ -6,10 +6,10 @@ struct AppStatus: Equatable, Sendable {
     let intelligence: String
 }
 
-enum RustStatusSource {
+extension AppStatus {
+    /// The status the Rust core reports for this build.
     static func load() -> AppStatus {
         let status = nativeStatus()
-
         return AppStatus(
             productName: status.productName,
             coreVersion: status.coreVersion,

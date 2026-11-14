@@ -59,7 +59,8 @@ final class ManagedCAFWriter: CapturedAudioWriting, @unchecked Sendable {
 
   init(authorization: NativeMediaOpenAuthorization) throws {
     guard authorization.writerGeneration > 0,
-      authorization.channels == 1 || authorization.channels == 2
+      authorization.channels == 1 || authorization.channels == 2,
+      authorization.sampleRateHz == NativeCapturePolicy.current.sampleRateHz
     else {
       throw ManagedCAFWriterError.unsupportedAuthorization
     }
@@ -81,7 +82,7 @@ final class ManagedCAFWriter: CapturedAudioWriting, @unchecked Sendable {
 
     let settings: [String: Any] = [
       AVFormatIDKey: kAudioFormatLinearPCM,
-      AVSampleRateKey: 48_000.0,
+      AVSampleRateKey: Double(authorization.sampleRateHz),
       AVNumberOfChannelsKey: Int(authorization.channels),
       AVLinearPCMBitDepthKey: 16,
       AVLinearPCMIsFloatKey: false,

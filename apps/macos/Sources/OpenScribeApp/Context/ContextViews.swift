@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import SwiftUI
 
 /// The live scope inspector: summary, retention truth, and ordinary buttons
@@ -9,8 +10,8 @@ struct ContextInspector: View {
   @State private var showsPreflight = false
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 8) {
-      Text("Screen context").font(.headline).accessibilityAddTraits(.isHeader)
+    VStack(alignment: .leading, spacing: ScribeSpacing.related) {
+      Text("Screen context").scribeSectionHeading()
       if let scope = model.current, model.isLive {
         Text("\(ContextScopeSummary.modeName(scope.request.mode)): \(ContextScopeSummary.target(scope.request))")
           .fixedSize(horizontal: false, vertical: true)
@@ -19,22 +20,13 @@ struct ContextInspector: View {
           .fontWeight(scope.condition == .active ? nil : .semibold)
         Text("\(model.detail?.acceptedEvents ?? 0) context events · \(ContextScopeSummary.retention)")
           .font(.callout).foregroundStyle(.secondary)
-        HStack {
-          if scope.condition == .active {
-            Button("Pause Context") { model.pause() }
-            Button("Mark Now") { model.markNow() }
-          } else if scope.reason != "topology_changed" {
-            Button("Resume Context") { model.resume() }
-          }
-          Button("Narrow Scope…") { showsPreflight = true }
-          Button("Revoke", role: .destructive) { model.revoke() }
-        }
+        ContextActionMount(model: model)
+          .frame(maxWidth: .infinity, minHeight: 28, alignment: .leading)
+        Button("Narrow Scope…") { showsPreflight = true }
       } else {
-        if let scope = model.current {
-          Text(ContextScopeSummary.condition(scope)).foregroundStyle(.secondary)
-        } else {
-          Text("Context is off. Open Scribe is not reading the screen.").foregroundStyle(.secondary)
-        }
+        ContextRetentionReadout(
+          label: "Context status",
+          text: model.current.map { ContextScopeSummary.condition($0) } ?? ContextScopeSummary.off)
         Button("Add Screen Context…") { showsPreflight = true }
           .disabled(!model.canAuthorize)
       }
@@ -49,6 +41,111 @@ struct ContextInspector: View {
   }
 }
 
+/// Pause, Mark Now, Resume, and Revoke. Created with the first layout so a
+/// hosted click reaches the same model methods the buttons call.
+private struct ContextActionMount: NSViewRepresentable {
+  @ObservedObject var model: ContextScopeModel
+
+  func makeNSView(context: Context) -> ContextActionControl {
+    let view = ContextActionControl()
+    view.bind(model)
+    return view
+  }
+
+  func updateNSView(_ view: ContextActionControl, context: Context) {
+    view.bind(model)
+  }
+}
+
+private final class ContextActionControl: NSView {
+  private let pauseButton = NSButton(title: "Pause Context", target: nil, action: nil)
+  private let markButton = NSButton(title: "Mark Now", target: nil, action: nil)
+  private let resumeButton = NSButton(title: "Resume Context", target: nil, action: nil)
+  private let revokeButton = NSButton(title: "Revoke", target: nil, action: nil)
+  private var model: ContextScopeModel?
+  private var subscribed = false
+  private var cancellables: Set<AnyCancellable> = []
+
+  override init(frame frameRect: NSRect) {
+    super.init(frame: frameRect)
+    setAccessibilityIdentifier("Screen context actions")
+    let stack = NSStackView()
+    stack.orientation = .horizontal
+    stack.alignment = .centerY
+    stack.spacing = 8
+    stack.translatesAutoresizingMaskIntoConstraints = false
+    for button in [pauseButton, markButton, resumeButton, revokeButton] {
+      button.bezelStyle = .rounded
+      button.setAccessibilityLabel(button.title)
+      button.target = self
+      button.translatesAutoresizingMaskIntoConstraints = false
+      stack.addArrangedSubview(button)
+    }
+    pauseButton.action = #selector(pauseContext)
+    markButton.action = #selector(markContext)
+    resumeButton.action = #selector(resumeContext)
+    revokeButton.action = #selector(revokeContext)
+    addSubview(stack)
+    NSLayoutConstraint.activate([
+      stack.leadingAnchor.constraint(equalTo: leadingAnchor),
+      stack.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor),
+      stack.centerYAnchor.constraint(equalTo: centerYAnchor),
+    ])
+  }
+
+  required init?(coder: NSCoder) { nil }
+
+  override var intrinsicContentSize: NSSize {
+    NSSize(width: NSView.noIntrinsicMetric, height: 28)
+  }
+
+  func bind(_ model: ContextScopeModel) {
+    self.model = model
+    if !subscribed {
+      subscribed = true
+      model.objectWillChange.sink { [weak self] _ in
+        DispatchQueue.main.async { self?.apply() }
+      }.store(in: &cancellables)
+    }
+    apply()
+  }
+
+  private func apply() {
+    guard let model, let scope = model.current, model.isLive else {
+      pauseButton.isHidden = true
+      markButton.isHidden = true
+      resumeButton.isHidden = true
+      revokeButton.isHidden = true
+      return
+    }
+    let active = scope.condition == .active
+    pauseButton.isHidden = !active
+    markButton.isHidden = !active
+    resumeButton.isHidden = active || scope.reason == "topology_changed"
+    revokeButton.isHidden = false
+  }
+
+  @objc private func pauseContext() {
+    let model = model
+    MainActor.assumeIsolated { model?.pause() }
+  }
+
+  @objc private func markContext() {
+    let model = model
+    MainActor.assumeIsolated { model?.markNow() }
+  }
+
+  @objc private func resumeContext() {
+    let model = model
+    MainActor.assumeIsolated { model?.resume() }
+  }
+
+  @objc private func revokeContext() {
+    let model = model
+    MainActor.assumeIsolated { model?.revoke() }
+  }
+}
+
 /// Participant/topic preflight and explicit scope authorization. It states
 /// the exact scope, permission, exclusions, and retention before anything
 /// is observed.
@@ -60,10 +157,10 @@ struct ContextScopeSheet: View {
   @State private var hovered: String?
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 16) {
-      Text("Add Screen Context").font(.headline)
+    VStack(alignment: .leading, spacing: ScribeSpacing.standard) {
+      Text("Add Screen Context").scribeSectionHeading(.title2.weight(.semibold))
       Form {
-        Section("Meeting (optional)") {
+        DisclosureGroup("Conversation details (optional)") {
           TextField("Participants, separated by commas", text: $participants)
           TextField("Topic", text: $topic)
           Text("These names help you review later. They grant no screen access.")
@@ -88,8 +185,8 @@ struct ContextScopeSheet: View {
       .formStyle(.grouped)
       // Always visible beside the action: what is read, what is excluded,
       // what is kept, and the permission posture.
-      VStack(alignment: .leading, spacing: 4) {
-        Text("Before you authorize").font(.headline).accessibilityAddTraits(.isHeader)
+      VStack(alignment: .leading, spacing: ScribeSpacing.tight) {
+        Text("Before you authorize").scribeSectionHeading()
         Text(scopeStatement)
         Text(ContextScopeSummary.exclusions(ContextScopeModel.exclusions(for: model.selection.mode)))
         Text(ContextScopeSummary.retention)
@@ -114,7 +211,7 @@ struct ContextScopeSheet: View {
         .disabled(!canAuthorize)
       }
     }
-    .padding(16)
+    .padding(ScribeSpacing.standard)
     .frame(width: 580, height: 720)
     .task { await model.refreshChoices() }
     .onChange(of: model.selection) { _ in model.previewOverlay(hovered: hovered) }
@@ -165,10 +262,10 @@ struct ContextScopeSheet: View {
 struct RegionEditor: View {
   @ObservedObject var model: ContextScopeModel
   @FocusState private var focused: Bool
-  @State private var dragOrigin: CGPoint?
+  @GestureState private var dragOrigin: CGPoint?
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 8) {
+    VStack(alignment: .leading, spacing: ScribeSpacing.related) {
       GeometryReader { proxy in
         let size = proxy.size
         let region = model.selection.region
@@ -181,27 +278,35 @@ struct RegionEditor: View {
         }
         .contentShape(Rectangle())
         .gesture(
-          DragGesture(minimumDistance: 1).onChanged { value in
+          DragGesture(minimumDistance: 1)
+          .updating($dragOrigin) { _, origin, _ in
+            if origin == nil { origin = model.selection.region.origin }
+          }
+          .onChanged { value in
             let origin = dragOrigin ?? model.selection.region.origin
-            dragOrigin = origin
             move(
               to: CGPoint(
                 x: origin.x + value.translation.width / size.width,
                 y: origin.y + value.translation.height / size.height))
-          }.onEnded { _ in dragOrigin = nil })
+          })
       }
       .aspectRatio(16 / 10, contentMode: .fit)
+      .frame(maxHeight: 160)
+      .frame(maxWidth: .infinity, alignment: .leading)
       .focusable()
       .focused($focused)
       .onMoveCommand { direction in nudge(direction) }
       .accessibilityElement()
       .accessibilityLabel("Region on \(displayName)")
       .accessibilityValue(ContextScopeSummary.target(boundsRequest))
-      HStack {
-        percentField("X", \.origin.x)
-        percentField("Y", \.origin.y)
-        percentField("Width", \.size.width)
-        percentField("Height", \.size.height)
+      .help("Drag to move the region. Arrow keys move it; Shift-arrow keys resize it.")
+      DisclosureGroup("Position and size") {
+        HStack {
+          percentField("X", \.origin.x)
+          percentField("Y", \.origin.y)
+          percentField("Width", \.size.width)
+          percentField("Height", \.size.height)
+        }
       }
     }
   }
@@ -277,42 +382,115 @@ struct ContextEventsSection: View {
   var canSeek = false
   var onSeek: (NativeContextEvent) -> Void = { _ in }
 
+  static func hasHistory(_ detail: NativeContextDetail?) -> Bool {
+    guard let detail else { return false }
+    return !detail.scopes.isEmpty || detail.acceptedEvents > 0
+  }
+
   var body: some View {
-    if let detail, !detail.scopes.isEmpty || !detail.declaration.participants.isEmpty
-      || detail.declaration.topic != nil
-    {
+    if let detail, Self.hasHistory(detail) {
       VStack(alignment: .leading, spacing: 10) {
         Text("Screen context").font(.title3.weight(.semibold)).accessibilityAddTraits(.isHeader)
-        if let topic = detail.declaration.topic { Text("Topic: \(topic)") }
-        if !detail.declaration.participants.isEmpty {
-          Text("Participants: \(ListFormatter.localizedString(byJoining: detail.declaration.participants))")
-        }
-        ForEach(Array(detail.scopes.enumerated()), id: \.offset) { _, scope in
-          Text("\(ContextScopeSummary.modeName(scope.request.mode)) — \(ContextScopeSummary.target(scope.request)): \(ContextScopeSummary.condition(scope))")
-            .font(.callout).foregroundStyle(.secondary)
-        }
-        Text(ContextScopeSummary.retention).font(.caption).foregroundStyle(.secondary)
-        ForEach(events, id: \.eventId) { event in
-          VStack(alignment: .leading, spacing: 4) {
-            HStack(alignment: .firstTextBaseline) {
-              Text(TranscriptSection.timestamp(event.startNs)).monospacedDigit().foregroundStyle(.secondary)
-              Text(event.application.map { "\($0) — \(event.sourceName)" } ?? event.sourceName)
-                .font(.headline)
-              if event.reason == .userMarked { Text("Marked").font(.caption).foregroundStyle(.secondary) }
-              if canSeek {
-                Spacer()
-                Button("Play from \(TranscriptSection.timestamp(event.startNs))") { onSeek(event) }
-                  .buttonStyle(.link)
-              }
-            }
-            Text(event.text.isEmpty ? "No text was recognized." : event.text)
-              .textSelection(.enabled)
-              .lineLimit(8)
+        ContextRetentionReadout(label: "Saved context", text: Self.savedContextText(detail))
+        LazyVStack(alignment: .leading, spacing: 10) {
+          ForEach(events, id: \.eventId) { event in
+            ContextEventRow(event: event, canSeek: canSeek, onSeek: onSeek)
           }
-          .accessibilityElement(children: .combine)
         }
       }
     }
+  }
+
+  /// Scope condition and retention, without the recognized words. The field
+  /// is created on the first layout so a hosted review can read it.
+  static func savedContextText(_ detail: NativeContextDetail) -> String {
+    let scopes = detail.scopes.map { scope in
+      "\(ContextScopeSummary.modeName(scope.request.mode)) — \(ContextScopeSummary.target(scope.request)): \(ContextScopeSummary.condition(scope))"
+    }
+    return (scopes + [ContextScopeSummary.retention]).joined(separator: "\n")
+  }
+}
+
+private struct ContextRetentionReadout: NSViewRepresentable {
+  let label: String
+  let text: String
+
+  func makeNSView(context: Context) -> ContextRetentionControl {
+    let view = ContextRetentionControl()
+    view.apply(label: label, text: text)
+    return view
+  }
+
+  func updateNSView(_ view: ContextRetentionControl, context: Context) {
+    view.apply(label: label, text: text)
+  }
+}
+
+private final class ContextRetentionControl: NSView {
+  private let field = NSTextField(wrappingLabelWithString: "")
+
+  override init(frame frameRect: NSRect) {
+    super.init(frame: frameRect)
+    field.font = .preferredFont(forTextStyle: .callout)
+    field.textColor = .secondaryLabelColor
+    field.setAccessibilityRole(.staticText)
+    field.isSelectable = true
+    field.maximumNumberOfLines = 0
+    field.cell?.wraps = true
+    field.cell?.isScrollable = false
+    field.translatesAutoresizingMaskIntoConstraints = false
+    addSubview(field)
+    NSLayoutConstraint.activate([
+      field.leadingAnchor.constraint(equalTo: leadingAnchor),
+      field.trailingAnchor.constraint(equalTo: trailingAnchor),
+      field.topAnchor.constraint(equalTo: topAnchor),
+      field.bottomAnchor.constraint(equalTo: bottomAnchor),
+    ])
+  }
+
+  required init?(coder: NSCoder) { nil }
+
+  override var intrinsicContentSize: NSSize {
+    guard !field.isHidden else { return NSSize(width: NSView.noIntrinsicMetric, height: 0) }
+    field.preferredMaxLayoutWidth = 600
+    let height = max(field.intrinsicContentSize.height, 28)
+    return NSSize(width: NSView.noIntrinsicMetric, height: height)
+  }
+
+  func apply(label: String, text: String) {
+    field.stringValue = text
+    field.setAccessibilityLabel(label)
+    field.isHidden = text.isEmpty
+    field.preferredMaxLayoutWidth = 600
+    invalidateIntrinsicContentSize()
+  }
+}
+
+/// The complete accepted text remains readable inside a lazy history list.
+struct ContextEventRow: View {
+  let event: NativeContextEvent
+  let canSeek: Bool
+  let onSeek: (NativeContextEvent) -> Void
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: ScribeSpacing.tight) {
+      HStack(alignment: .firstTextBaseline) {
+        Text(TranscriptSection.timestamp(event.startNs))
+          .monospacedDigit().foregroundStyle(.secondary)
+        Text(event.application.map { "\($0) — \(event.sourceName)" } ?? event.sourceName)
+          .font(.headline)
+        if event.reason == .userMarked { Text("Marked").font(.caption).foregroundStyle(.secondary) }
+        if canSeek {
+          Spacer()
+          Button("Play from \(TranscriptSection.timestamp(event.startNs))") { onSeek(event) }
+            .buttonStyle(.link)
+        }
+      }
+      Text(event.text.isEmpty ? "No text was recognized." : event.text)
+        .textSelection(.enabled)
+        .fixedSize(horizontal: false, vertical: true)
+    }
+    .accessibilityElement(children: .combine)
   }
 }
 

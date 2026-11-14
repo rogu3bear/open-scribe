@@ -459,12 +459,15 @@ fn proposal(value: NativeContextProposal) -> ContextProposal {
 
 #[uniffi::export]
 impl NativeRecordingPreparation {
+    /// Scope changes share the recording writer, so context records and
+    /// media records never race for the session journal.
     pub fn context_action(
         &self,
         session_id: String,
         action: NativeContextAction,
     ) -> Result<NativeContextDetail, NativeStorageError> {
         self.controller()?
+            .store_mut()
             .context_action(SessionId(session_id), self::action(action))
             .map(native_detail)
             .map_err(map_storage_error)
@@ -478,6 +481,7 @@ impl NativeRecordingPreparation {
     ) -> Result<NativeContextDecision, NativeStorageError> {
         let decision = self
             .controller()?
+            .store_mut()
             .propose_context_event(SessionId(session_id), self::proposal(proposal))
             .map_err(map_storage_error)?;
         Ok(match decision {
@@ -511,6 +515,7 @@ impl NativeRecordingPreparation {
         session_id: String,
     ) -> Result<NativeContextDetail, NativeStorageError> {
         self.controller()?
+            .store()
             .context_detail(&SessionId(session_id))
             .map(native_detail)
             .map_err(map_storage_error)
@@ -523,6 +528,7 @@ impl NativeRecordingPreparation {
         declaration: NativeSessionDeclaration,
     ) -> Result<NativeSessionDeclaration, NativeStorageError> {
         self.controller()?
+            .store_mut()
             .declare_session(
                 SessionId(session_id),
                 SessionDeclaration {
@@ -545,6 +551,7 @@ impl NativeTranscriptLibrary {
         session_id: String,
     ) -> Result<NativeContextDetail, NativeStorageError> {
         self.library()?
+            .store()
             .context_detail(&SessionId(session_id))
             .map(native_detail)
             .map_err(map_storage_error)
@@ -556,6 +563,7 @@ impl NativeTranscriptLibrary {
     ) -> Result<Vec<NativeContextEvent>, NativeStorageError> {
         let events = self
             .library()?
+            .store()
             .context_events(&SessionId(session_id))
             .map_err(map_storage_error)?;
         events

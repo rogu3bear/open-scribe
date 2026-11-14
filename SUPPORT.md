@@ -18,7 +18,7 @@ and visible state/error. Use synthetic or nonprivate steps. Separate expected
 and observed behavior. The public form does not require a recording, database,
 package, model or log upload.
 
-Settings → Diagnostics → Export Diagnostics creates a local text file for
+Settings → Export Diagnostics… creates a local text file for
 inspection; it does not send it. It omits titles, transcript text and paths,
 but can contain session/model identifiers, permission state, OS/build information
 and operation notes. Read the whole file and redact sensitive details before
@@ -62,13 +62,15 @@ Deliberate reprocessing is separate and cannot repair unverifiable source audio.
 
 ## Models and offline use
 
-Recording needs no speech model. The implemented speech engine runs locally;
-Open Scribe never downloads weights. Settings → Speech Models shows the pinned
-origin, size, SHA-256 and local readiness. A browser download is a separate user
-choice. **Install from File…** verifies the selected file and test-runs the
-engine; an invalid model offers **Repair from File…**. Do not rename arbitrary
-weights to satisfy the catalog or bypass verification. Both catalog models
-remain Pending release review and unbundled. See [model authority](docs/models/README.md).
+Recording needs no speech model and does not use the network. The implemented
+speech engine runs locally. Settings → Speech Models shows the pinned origin,
+size, SHA-256 and local readiness. **Download** fetches that one published
+file. **Install from File…** verifies a file you already have. Either way the
+app checks the file and test-runs the engine before installing it; an invalid
+model offers **Repair from File…**. **Remove** takes an installed model out of
+transcription. Do not rename arbitrary weights to satisfy the catalog or bypass
+verification. Both catalog models remain Pending release review and unbundled.
+See [model authority](docs/models/README.md).
 
 ## Compatibility and exports
 
@@ -77,10 +79,10 @@ remain Pending release review and unbundled. See [model authority](docs/models/R
 - Import accepts bounded PCM CAF and supported M4A AAC/Apple Lossless layouts.
   Four-hour and source/decoded size limits apply. Other extensions, layouts and
   rates can be refused. See [the exact import limits](apps/macos/README.md#local-audio-import).
-- Import/playback does not establish portable round-trip support. A package
-  containing compressed M4A cannot currently be reopened. Context events are
-  omitted, and failed transcription restores as pending. A package is not a
-  complete backup of all history; see [format authority](docs/data-format/README.md).
+- A portable package can include a compressed M4A import and restore those
+  bytes. Context events are omitted, failed transcription restores as pending,
+  and passage-level names are refused. A package is not a complete backup of
+  all history; see [format authority](docs/data-format/README.md).
 - Corrections change selected review text while original hypotheses and immutable
   history remain. Export contains private content and goes to a user-selected
   destination. Review output and evidence references before sharing.
@@ -88,9 +90,12 @@ remain Pending release review and unbundled. See [model authority](docs/models/R
 ## Installation, removal and documents
 
 Use [isolated contributor qualification](CONTRIBUTING.md). The local
-`install_app.sh` and `uninstall_app.sh` tools change installed bytes, Launch
-Services registration and development privacy decisions. They are not routine
-troubleshooting/source checks; invoke them only when intending those effects.
+`install_app.sh` replaces the installed app and signs it with the local
+Developer ID so a microphone grant for `app.open-scribe.dev` survives the next
+build of that same identity. Screen Recording can still ask again after the
+executable changes. `uninstall_app.sh` still clears both grants. An unsigned
+Xcode product named `OpenScribeApp.app` is a different privacy client. Neither
+tool is a routine source check; invoke one only when intending that effect.
 Uninstall preserves the ordinary library; Trash, backups, exports and original
 imports remain separate.
 

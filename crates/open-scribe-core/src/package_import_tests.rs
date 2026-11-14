@@ -5,8 +5,10 @@ use crate::transcription::tests::{BurstRecognizer, imported, write_burst_caf};
 use open_scribe_asr::{DecodeOptions, Language};
 use open_scribe_evidence::{EvidenceRef, ResolutionState};
 use open_scribe_store::{
-    DigestedSegment, PackageRestoreRequest, RestoredMarker, RestoredSegment, RestoredTrack,
-    SessionOrigin, SessionStore, StoreError, transcription_input_digest,
+    CompressedImportMetadata, DigestedSegment, ImportMediaRequest, OriginalImportMetadata,
+    PackageRestoreRequest, PlannedTranscriptChunk, RestoredMarker, RestoredSegment, RestoredTrack,
+    RevisionSegmentInput, SessionOrigin, SessionStore, StoreError, TranscriptionRunIdentity,
+    transcription_input_digest,
 };
 use open_scribe_types::SessionId;
 use serde_json::{Value, json};
@@ -33,7 +35,11 @@ fn transcribe(store: &mut SessionStore, session: &SessionId, track: &str) {
 
 /// Corrects the first segment and names the first track's speaker.
 fn review(store: &mut SessionStore, session: &SessionId) {
-    let first = store.transcript_document(session).unwrap().remove(0);
+    let first = store
+        .conversation_document(session, crate::DocumentScope::FinalOnly)
+        .map(|document| document.segments)
+        .unwrap()
+        .remove(0);
     store
         .correct_transcript_segment(
             session,
@@ -198,6 +204,18 @@ fn an_imported_conversation_survives_a_round_trip_with_its_review() {
 
     // Every reference the second library exports resolves there.
     let other = SessionStore::open(parent.join("Other Mac")).unwrap();
+    assert!(other.retains_imported_original(&restored).unwrap());
+    let library =
+        crate::transcript_library::TranscriptLibrary::open(parent.join("Other Mac")).unwrap();
+    let options = library.audio_export_options(&restored).unwrap();
+    assert_eq!(options.original_extension.as_deref(), Some("caf"));
+    assert_eq!(options.pcm_tracks.len(), 1);
+    let exported = parent.join("Restored original.caf");
+    library.export_original_media(&restored, &exported).unwrap();
+    assert_eq!(
+        fs::read(&exported).unwrap(),
+        fs::read(&fixture.media).unwrap()
+    );
     let transcript = read(&parent.join("Second.openscribe"), "transcript.json");
     for segment in transcript["segments"].as_array().unwrap() {
         let reference = EvidenceRef::parse(&segment["evidence_ref"].to_string()).unwrap();
@@ -224,6 +242,7 @@ pub(crate) fn captured(temp: &TempDir) -> (SessionStore, SessionId, String) {
             start_nanoseconds: start,
             sample_count: seconds * 48_000,
             channels: 1,
+            media_format: "caf-pcm-s16le".into(),
             byte_length: bytes.len() as u64,
             digest_sha256: Sha256::digest(&bytes)
                 .iter()
@@ -365,6 +384,170 @@ fn a_package_whose_documents_disagree_with_its_media_is_refused() {
         Err(SessionExportError::Store(StoreError::InvalidRequest(
             "a transcript does not match its media"
         )))
+    ));
+    assert!(
+        fs::read_dir(parent.join("Other Mac/Sessions"))
+            .unwrap()
+            .next()
+            .is_none()
+    );
+}
+
+fn reseal(package: &Path, name: &str, bytes: &[u8]) {
+    fs::write(package.join(name), bytes).unwrap();
+    let mut manifest = read(package, "manifest.json");
+    for file in manifest["files"].as_array_mut().unwrap() {
+        if file["path"] == name {
+            file["byte_length"] = bytes.len().into();
+            file["sha256"] = format!("{:x}", Sha256::digest(bytes)).into();
+        }
+    }
+    fs::write(
+        package.join("manifest.json"),
+        serde_json::to_vec(&manifest).unwrap(),
+    )
+    .unwrap();
+}
+
+/// The same synthetic M4A the store admits: an ftyp box plus payload bytes.
+fn compressed_memo(path: &Path) -> (Vec<u8>, CompressedImportMetadata) {
+    let mut bytes = b"\x00\x00\x00\x1cftypM4A \x00\x00\x00\x00M4A isommp42".to_vec();
+    bytes.extend_from_slice(&[42; 256]);
+    fs::write(path, &bytes).unwrap();
+    let metadata = CompressedImportMetadata {
+        original: OriginalImportMetadata {
+            display_name: "Stereo memo.m4a".into(),
+            byte_length: bytes.len() as u64,
+            duration_nanoseconds: SECOND as u64,
+            sample_rate_hz: 48_000,
+            channel_count: 2,
+            media_format: "m4a".into(),
+        },
+        sample_count: 48_000,
+        digest_sha256: format!("{:x}", Sha256::digest(&bytes)),
+    };
+    (bytes, metadata)
+}
+
+fn commit_compressed_transcript(store: &mut SessionStore, session: &SessionId) {
+    let track = store.transcription_tracks(session).unwrap().remove(0);
+    let input = store.transcription_input(session, &track).unwrap();
+    assert!(input.compressed);
+    let identity = TranscriptionRunIdentity {
+        session_id: session.clone(),
+        track_id: track,
+        input_digest: input.input_digest,
+        engine: "fixture-engine".into(),
+        engine_version: "1".into(),
+        model_id: "fixture-model".into(),
+        model_sha256: "a".repeat(64),
+        options_digest: "options-a".into(),
+        reconciliation_version: "overlap-midpoint-v1".into(),
+    };
+    let plan = [PlannedTranscriptChunk {
+        span_index: 0,
+        start_nanoseconds: 0,
+        end_nanoseconds: SECOND,
+    }];
+    let run = store.begin_transcription_run(&identity, &plan).unwrap();
+    let chunk = &run.chunks[0];
+    let hypothesis = serde_json::json!({
+        "language": "en",
+        "segments": [{ "start_ms": 100, "end_ms": 900, "text": "hello" }]
+    })
+    .to_string();
+    store
+        .complete_transcript_chunk(&run.run_id, chunk.sequence, "en", &hypothesis)
+        .unwrap();
+    store
+        .commit_transcript_revision(
+            &run.run_id,
+            &[RevisionSegmentInput {
+                start_nanoseconds: SECOND / 10,
+                end_nanoseconds: SECOND / 2,
+                text: "hello".into(),
+                mean_probability: Some(0.8),
+                no_speech_probability: None,
+                chunk_identity: chunk.identity.clone(),
+            }],
+            "{}",
+            "[]",
+        )
+        .unwrap();
+}
+
+#[test]
+fn a_compressed_import_round_trips_through_a_portable_package() {
+    let temp = TempDir::new().unwrap();
+    let source = temp.path().join("memo.m4a");
+    let (original, metadata) = compressed_memo(&source);
+    let root = temp.path().join("Open Scribe");
+    let mut store = SessionStore::open(&root).unwrap();
+    let evidence = store
+        .import_compressed_m4a(
+            ImportMediaRequest {
+                title: "Stereo memo".into(),
+                source_path: source,
+            },
+            metadata,
+        )
+        .unwrap();
+    commit_compressed_transcript(&mut store, &evidence.session_id);
+    review(&mut store, &evidence.session_id);
+    let (first, second, restored) = round_trip(&store, &evidence.session_id, temp.path());
+    assert_eq!(first["origin"], "import");
+    assert_eq!(first["tracks"][0]["segments"][0][1], "m4a-alac-or-aac");
+    assert_eq!(first["tracks"][0]["segments"][0][4], 2);
+    assert_eq!(first["segments"][0][5], "Corrected words");
+    assert_eq!(first["tracks"][0]["speaker"]["label"], "Grace");
+    assert_eq!(first, second);
+
+    let other = SessionStore::open(temp.path().join("Other Mac")).unwrap();
+    assert!(other.retains_imported_original(&restored).unwrap());
+    let inventory = other.session_inventory(&restored).unwrap();
+    let media = &inventory.media[0];
+    assert_eq!(media.media_format, "m4a-alac-or-aac");
+    assert!(media.relative_path.ends_with("/000000-import.m4a"));
+    assert_eq!(
+        media.digest_sha256,
+        format!("{:x}", Sha256::digest(&original))
+    );
+    let lease = other.lease_imported_playback(&restored).unwrap();
+    assert_eq!(lease.media_format(), "m4a-alac-or-aac");
+    assert_eq!(lease.byte_length(), original.len() as u64);
+    let input = other
+        .transcription_input(&restored, &media.track_id)
+        .unwrap();
+    assert!(input.compressed);
+    assert_eq!((input.channels, input.spans[0].frames), (2, 48_000));
+    let library = crate::TranscriptLibrary::open(temp.path().join("Other Mac")).unwrap();
+    let options = library.audio_export_options(&restored).unwrap();
+    assert_eq!(options.original_extension.as_deref(), Some("m4a"));
+    assert!(options.pcm_tracks.is_empty());
+    let exported = temp.path().join("Restored original.m4a");
+    library.export_original_media(&restored, &exported).unwrap();
+    assert_eq!(fs::read(&exported).unwrap(), original);
+}
+
+#[test]
+fn a_package_with_an_unknown_media_format_is_not_opened() {
+    let fixture = imported(2);
+    let parent = fixture.root.parent().unwrap().to_path_buf();
+    let package = parent.join("Format.openscribe");
+    write_portable_package(&fixture.store, &fixture.session, &package).unwrap();
+    let mut session = read(&package, "session.json");
+    session["tracks"][0]["segments"][0]["media_format"] = "wav".into();
+    reseal(
+        &package,
+        "session.json",
+        &serde_json::to_vec(&session).unwrap(),
+    );
+    let mut other = SessionStore::open(parent.join("Other Mac")).unwrap();
+    assert!(matches!(
+        import_portable_package(&mut other, &package),
+        Err(SessionExportError::InvalidPackage(
+            "a media format is not restorable"
+        ))
     ));
     assert!(
         fs::read_dir(parent.join("Other Mac/Sessions"))

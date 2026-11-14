@@ -1,8 +1,10 @@
 //! Restoring a verified portable package as a new local session (ADR 0010
 //! round trip). The core verifies the package and parses its documents; this
 //! module copies each sealed media file into the managed library, checks it
-//! against the package's length, digest, sample count, and channels, and
-//! journals its placement before projecting it. The session gets new local
+//! against the package's length and digest. PCM is also checked for its
+//! sample count and channels. A compressed import is checked as M4A and
+//! keeps the manifest's companion frame count and channel count. The
+//! placement is journaled before it is projected. The session gets new local
 //! identities; the portable source session ID and package digest remain as
 //! provenance. A restored capture plays from its journaled placements, never
 //! from a synthesized capture clock. A transcript is restored only when its
@@ -11,18 +13,27 @@
 //! the next launch, and leaves a deletion tombstone.
 
 use super::conversation_identity::{PrepareSessionRequest, SessionOrigin};
-use super::import::IMPORT_SOURCE_KIND;
+use super::import::{
+    COMPRESSED_IMPORT_MEDIA_FORMAT, IMPORT_SOURCE_KIND, IMPORTED_AUDIO_DISPLAY_NAME,
+    validate_compressed_import_bounds,
+};
 use super::library_recovery::isolated_disposition;
-use super::recorder::RESERVE_BYTES;
+use super::storage_reserve::RESERVE_BYTES;
+use super::timeline::ONE_SAMPLE_NANOSECONDS;
 use super::transcript_input::{DigestedSegment, transcription_input_digest};
-use super::transcript_review::{SOURCE_CLUSTER, reindex_session_search};
-use super::transcripts::{TRANSCRIPT_SCHEMA_VERSION, TranscriptionRunIdentity, select_revision};
+use super::transcript_review::{SOURCE_CLUSTER, insert_correction};
+use super::transcripts::{
+    ChunkRow, RevisionRow, SegmentRow, TranscriptChunkState, TranscriptionRunIdentity,
+    insert_chunk, insert_revision, insert_run, select_revision,
+};
 use super::{
     JOURNAL_NAME, JournalRecord, JournalValidation, MEDIA_FORMAT_CAF_PCM_S16LE,
-    MEDIA_SAMPLE_RATE_HZ, MediaLengthRequirement, MediaSourceKind, SCHEMA_VERSION, SessionStore,
-    StoreError, TimelineSegment, event_digest, insert_event_with_id, journal_record_for_segment,
-    next_database_event, open_managed_directory_at, payload_i64, payload_string, payload_u64,
-    sync_directory, validate_journal, wall_time_milliseconds,
+    MediaLengthRequirement, MediaSourceKind, SCHEMA_VERSION, SessionStore, StoreError,
+    TimelineSegment, TranscriptFinality, TranscriptionRunState, capture_segment_file,
+    frames_to_nanoseconds, import_file, insert_journaled_event, is_sha256,
+    journal_record_for_segment, lowercase_hex, open_managed_directory_at, payload_i64,
+    payload_string, payload_u64, sha256_hex, source_defaults, sync_directory, track_file_path,
+    validate_journal, wall_time_milliseconds,
 };
 use open_scribe_types::SessionId;
 use rusqlite::{Transaction, params};
@@ -37,7 +48,6 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::path::PathBuf;
 use uuid::Uuid;
 
-pub(super) const RESTORE_MIGRATION_VERSION: i64 = 9;
 /// Names a restored revision's reconciliation and run options.
 const RESTORE_RECONCILIATION: &str = "open-scribe.package-restore/v1";
 const MAX_RESTORED_TRACKS: usize = 64;
@@ -53,8 +63,6 @@ const MAX_SEGMENT_TEXT_BYTES: usize = 64 * 1024;
 const MAX_CORRECTION_BYTES: usize = 4096;
 /// Journal and database growth a restore may need beyond its media.
 const RESTORE_OVERHEAD_BYTES: u64 = 64 << 20;
-/// The one-sample overlap a first-version capture timeline may carry.
-const MAX_OVERLAP_NANOSECONDS: i64 = 20_834;
 
 pub(super) fn apply_restore_schema(transaction: &Transaction<'_>) -> Result<(), StoreError> {
     transaction.execute_batch(
@@ -103,6 +111,8 @@ pub struct RestoredSegment {
     pub start_nanoseconds: i64,
     pub sample_count: u64,
     pub channels: u16,
+    /// `caf-pcm-s16le`, or `m4a-alac-or-aac` for one imported original.
+    pub media_format: String,
     pub byte_length: u64,
     pub digest_sha256: String,
     /// The media file inside the verified package.
@@ -195,7 +205,7 @@ impl SessionStore {
         self.require_restore_space(media_bytes)?;
         let prepared = self.prepare_session_recorded(
             PrepareSessionRequest {
-                title: request.title.clone(),
+                title: super::conversation_titles::imported_title(&request.title),
                 origin: request.origin,
             },
             None,
@@ -263,47 +273,68 @@ impl SessionStore {
             let mut placements = Vec::with_capacity(track.segments.len());
             for segment in &track.segments {
                 let segment_id = Uuid::now_v7().to_string();
-                let file_name = if import {
-                    "000000-import.caf".to_owned()
+                let compressed = segment.media_format == COMPRESSED_IMPORT_MEDIA_FORMAT;
+                let file_name = if import && compressed {
+                    import_file("m4a")
+                } else if import {
+                    import_file("caf")
                 } else {
-                    format!("{:06}-0.caf", segment.sequence)
+                    capture_segment_file(segment.sequence)
                 };
-                let relative_path = format!("audio/{track_id}/{file_name}");
+                let relative_path = track_file_path(&track_id, &file_name);
                 copy_restored_media(segment, &directory, &file_name)?;
-                let validated = self.validate_media_file(
-                    &session.0,
-                    &relative_path,
-                    MediaLengthRequirement::Exact(segment.byte_length),
-                    true,
-                )?;
-                if validated.digest_sha256.as_deref() != Some(segment.digest_sha256.as_str())
-                    || validated.recoverable_sample_count != Some(segment.sample_count)
-                    || validated.channels != Some(segment.channels)
+                let validated = if compressed {
+                    self.validate_import_media_file(
+                        &session.0,
+                        &relative_path,
+                        segment.byte_length,
+                        COMPRESSED_IMPORT_MEDIA_FORMAT,
+                        true,
+                    )?
+                } else {
+                    self.validate_media_file(
+                        &session.0,
+                        &relative_path,
+                        MediaLengthRequirement::Exact(segment.byte_length),
+                        true,
+                    )?
+                };
+                let pcm_matches = compressed
+                    || (validated.recoverable_sample_count == Some(segment.sample_count)
+                        && validated.channels == Some(segment.channels));
+                if !pcm_matches
+                    || validated.digest_sha256.as_deref() != Some(segment.digest_sha256.as_str())
                 {
                     return Err(StoreError::IntegrityMismatch(
                         "restored media differs from its package entry",
                     ));
                 }
-                entries.push((
-                    "segment_restored",
-                    Some(relative_path.clone()),
-                    json!({
-                        "source_id": source_id,
-                        "source_kind": track.source_kind,
-                        "track_id": track_id,
-                        "segment_id": segment_id,
-                        "sequence": segment.sequence,
-                        "relative_path": relative_path,
-                        "start_nanoseconds": segment.start_nanoseconds,
-                        "sample_count": segment.sample_count,
-                        "channels": segment.channels,
-                        "byte_length": segment.byte_length,
-                        "digest_sha256": segment.digest_sha256,
-                        "file_device": validated.device,
-                        "file_inode": validated.inode,
-                        "source_segment_id": segment.source_segment_id,
-                    }),
-                ));
+                let mut payload = json!({
+                    "source_id": source_id,
+                    "source_kind": track.source_kind,
+                    "track_id": track_id,
+                    "segment_id": segment_id,
+                    "sequence": segment.sequence,
+                    "relative_path": relative_path,
+                    "start_nanoseconds": segment.start_nanoseconds,
+                    "sample_count": segment.sample_count,
+                    "channels": segment.channels,
+                    "media_format": segment.media_format,
+                    "byte_length": segment.byte_length,
+                    "digest_sha256": segment.digest_sha256,
+                    "file_device": validated.device,
+                    "file_inode": validated.inode,
+                    "source_segment_id": segment.source_segment_id,
+                });
+                if compressed {
+                    // The container is not PCM. Channel count stays with the
+                    // original-media record the import lease already reads.
+                    payload["original_media"] = json!({
+                        "format": "m4a",
+                        "channel_count": segment.channels,
+                    });
+                }
+                entries.push(("segment_restored", Some(relative_path.clone()), payload));
                 placements.push(DigestedSegment {
                     segment_id,
                     digest_sha256: segment.digest_sha256.clone(),
@@ -364,7 +395,6 @@ impl SessionStore {
         records: &[JournalRecord],
         local_tracks: &[LocalTrack],
     ) -> Result<(), StoreError> {
-        let (mut sequence, mut prior) = next_database_event(&self.connection, session)?;
         let now = wall_time_milliseconds();
         let transaction = self.connection.transaction()?;
         for record in records {
@@ -392,20 +422,7 @@ impl SessionStore {
                 }
                 _ => {}
             }
-            let digest = event_digest(session, sequence, kind, payload, prior.as_deref())?;
-            insert_event_with_id(
-                &transaction,
-                &record.body.event_id,
-                session,
-                sequence,
-                kind,
-                record.body.wall_time_milliseconds,
-                payload,
-                prior.as_deref(),
-                &digest,
-            )?;
-            prior = Some(digest);
-            sequence += 1;
+            insert_journaled_event(&transaction, record, kind)?;
         }
         transaction.commit()?;
         Ok(())
@@ -438,7 +455,7 @@ impl SessionStore {
                     != transcription_input_digest(
                         &session.0,
                         &local.track_id,
-                        false,
+                        compressed_track(track),
                         &local.placements,
                     )
             {
@@ -574,7 +591,7 @@ impl SessionStore {
             let gap = ends
                 .insert(track_id.clone(), end)
                 .map_or(0, |prior_end| start - prior_end);
-            if gap < -MAX_OVERLAP_NANOSECONDS {
+            if gap < -ONE_SAMPLE_NANOSECONDS {
                 return Err(StoreError::IntegrityMismatch(
                     "restored timeline overlaps itself",
                 ));
@@ -636,7 +653,6 @@ fn complete_restoration(
             )?;
         }
     }
-    reindex_session_search(transaction, session)?;
     let ready = transaction.execute(
         "UPDATE sessions SET lifecycle = 'ready_for_review', updated_at_ms = ?2
          WHERE id = ?1 AND lifecycle = 'preparing'",
@@ -655,6 +671,40 @@ fn complete_restoration(
     Ok(())
 }
 
+fn compressed_track(track: &RestoredTrack) -> bool {
+    track
+        .segments
+        .first()
+        .is_some_and(|segment| segment.media_format == COMPRESSED_IMPORT_MEDIA_FORMAT)
+}
+
+/// PCM capture and PCM import, or exactly one compressed import.
+fn restorable_format(
+    import: bool,
+    segment_count: usize,
+    segment: &RestoredSegment,
+) -> Result<&'static str, StoreError> {
+    match segment.media_format.as_str() {
+        MEDIA_FORMAT_CAF_PCM_S16LE => Ok(MEDIA_FORMAT_CAF_PCM_S16LE),
+        COMPRESSED_IMPORT_MEDIA_FORMAT if import && segment_count == 1 => {
+            Ok(COMPRESSED_IMPORT_MEDIA_FORMAT)
+        }
+        _ => Err(StoreError::InvalidRequest(
+            "a package media file is not restorable",
+        )),
+    }
+}
+
+fn restored_media_format(payload: &Value) -> Result<&'static str, StoreError> {
+    match payload_string(payload, "media_format")? {
+        MEDIA_FORMAT_CAF_PCM_S16LE => Ok(MEDIA_FORMAT_CAF_PCM_S16LE),
+        COMPRESSED_IMPORT_MEDIA_FORMAT => Ok(COMPRESSED_IMPORT_MEDIA_FORMAT),
+        _ => Err(StoreError::IntegrityMismatch(
+            "restored media format is not supported",
+        )),
+    }
+}
+
 fn project_restored_segment(
     transaction: &Transaction<'_>,
     session: &str,
@@ -662,12 +712,10 @@ fn project_restored_segment(
     payload: &Value,
 ) -> Result<(), StoreError> {
     let source_kind = payload_string(payload, "source_kind")?;
-    let display_name = match source_kind {
-        "microphone" => "Mac microphone",
-        "application_audio" => "Selected application audio",
-        "system_audio" => "Mac system audio",
-        _ => "Imported audio",
-    };
+    let display_name = MediaSourceKind::parse(source_kind)
+        .map_or(IMPORTED_AUDIO_DISPLAY_NAME, |kind| {
+            source_defaults(kind).display_name
+        });
     let source_id = payload_string(payload, "source_id")?;
     let track_id = payload_string(payload, "track_id")?;
     let relative_path = payload_string(payload, "relative_path")?;
@@ -705,7 +753,7 @@ fn project_restored_segment(
             payload_u64(payload, "sequence")? as i64,
             relative_path,
             payload_i64(payload, "start_nanoseconds")?,
-            MEDIA_FORMAT_CAF_PCM_S16LE,
+            restored_media_format(payload)?,
             payload_u64(payload, "channels")? as i64,
             payload_u64(payload, "sample_count")? as i64,
             payload_u64(payload, "byte_length")? as i64,
@@ -749,14 +797,14 @@ fn insert_restored_transcript(
         input_digest: transcription_input_digest(
             session,
             &local.track_id,
-            false,
+            compressed_track(track),
             &local.placements,
         ),
         engine: transcript.engine.clone(),
         engine_version: transcript.engine_version.clone(),
         model_id: transcript.model_id.clone(),
         model_sha256: transcript.model_sha256.clone(),
-        options_digest: hex(&Sha256::digest(RESTORE_RECONCILIATION.as_bytes())),
+        options_digest: sha256_hex(RESTORE_RECONCILIATION.as_bytes()),
         reconciliation_version: RESTORE_RECONCILIATION.to_owned(),
     };
     let start = transcript
@@ -783,87 +831,71 @@ fn insert_restored_transcript(
         }
     });
     let run_id = Uuid::now_v7().to_string();
-    transaction.execute(
-        "INSERT INTO transcription_runs(
-            id, schema_version, session_id, track_id, identity, input_digest, engine,
-            engine_version, model_id, model_sha256, options_digest, reconciliation_version,
-            state, created_at_ms, updated_at_ms)
-         VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 'complete', ?13, ?13)",
-        params![
-            run_id,
-            TRANSCRIPT_SCHEMA_VERSION,
-            session,
-            identity.track_id,
-            identity.digest(),
-            identity.input_digest,
-            identity.engine,
-            identity.engine_version,
-            identity.model_id,
-            identity.model_sha256,
-            identity.options_digest,
-            identity.reconciliation_version,
-            now
-        ],
+    insert_run(
+        transaction,
+        &run_id,
+        &identity,
+        TranscriptionRunState::Complete,
+        None,
+        now,
     )?;
-    transaction.execute(
-        "INSERT INTO transcript_chunks(
-            run_id, sequence, identity, span_index, start_ns, end_ns, state,
-            language, hypothesis_json, reused_from_run, updated_at_ms)
-         VALUES(?1, 0, ?2, 0, ?3, ?4, 'complete', ?5, ?6, NULL, ?7)",
-        params![
-            run_id,
-            chunk_identity,
-            start,
-            end,
-            transcript.language,
-            provenance.to_string(),
-            now
-        ],
+    let provenance = provenance.to_string();
+    insert_chunk(
+        transaction,
+        &ChunkRow {
+            run_id: &run_id,
+            sequence: 0,
+            identity: &chunk_identity,
+            span_index: 0,
+            start_nanoseconds: start,
+            end_nanoseconds: end,
+            state: TranscriptChunkState::Complete,
+            language: transcript.language.as_deref(),
+            hypothesis_json: Some(&provenance),
+            reused_from_run: None,
+        },
+        now,
     )?;
     let revision_id = Uuid::now_v7().to_string();
-    transaction.execute(
-        "INSERT INTO transcript_revisions(
-            id, schema_version, session_id, track_id, run_id, kind, finality,
-            reconciliation_version, rejections_json, discontinuities_json, created_at_ms)
-         VALUES(?1, ?2, ?3, ?4, ?5, 'verbatim', 'final', ?6, '[]', '[]', ?7)",
-        params![
-            revision_id,
-            TRANSCRIPT_SCHEMA_VERSION,
-            session,
-            local.track_id,
-            run_id,
-            RESTORE_RECONCILIATION,
-            now
-        ],
+    let segments: Vec<SegmentRow<'_>> = transcript
+        .segments
+        .iter()
+        .map(|segment| SegmentRow {
+            start_nanoseconds: segment.start_nanoseconds,
+            end_nanoseconds: segment.end_nanoseconds,
+            text: &segment.verbatim_text,
+            mean_probability: None,
+            no_speech_probability: None,
+            chunk_identity: &chunk_identity,
+        })
+        .collect();
+    insert_revision(
+        transaction,
+        &RevisionRow {
+            revision_id: &revision_id,
+            session_id: session,
+            track_id: &local.track_id,
+            run_id: &run_id,
+            finality: TranscriptFinality::Final,
+            reconciliation_version: RESTORE_RECONCILIATION,
+            rejections_json: "[]",
+            discontinuities_json: "[]",
+        },
+        &segments,
+        now,
     )?;
+    // The revision is not selected yet, so its corrections need no reindex
+    // before the selection below rebuilds the session's search rows.
     for (sequence, segment) in transcript.segments.iter().enumerate() {
-        transaction.execute(
-            "INSERT INTO transcript_segments(
-                revision_id, sequence, start_ns, end_ns, text, mean_probability,
-                no_speech_probability, chunk_identity)
-             VALUES(?1, ?2, ?3, ?4, ?5, NULL, NULL, ?6)",
-            params![
-                revision_id,
-                sequence as i64,
-                segment.start_nanoseconds,
-                segment.end_nanoseconds,
-                segment.verbatim_text,
-                chunk_identity
-            ],
-        )?;
         if let Some(correction) = &segment.correction {
-            transaction.execute(
-                "INSERT INTO transcript_corrections(
-                    id, session_id, revision_id, sequence, text, created_at_ms)
-                 VALUES(?1, ?2, ?3, ?4, ?5, ?6)",
-                params![
-                    Uuid::now_v7().to_string(),
-                    session,
-                    revision_id,
-                    sequence as i64,
-                    correction,
-                    now
-                ],
+            insert_correction(
+                transaction,
+                session,
+                &revision_id,
+                u32::try_from(sequence)
+                    .map_err(|_| StoreError::IntegrityMismatch("too many restored segments"))?,
+                Some(correction),
+                now,
             )?;
         }
     }
@@ -912,7 +944,7 @@ fn copy_restored_media(
         target.write_all(&buffer[..read])?;
         copied += read as u64;
     }
-    if copied != segment.byte_length || hex(&hasher.finalize()) != segment.digest_sha256 {
+    if copied != segment.byte_length || lowercase_hex(&hasher.finalize()) != segment.digest_sha256 {
         return Err(mismatch());
     }
     target.sync_all()?;
@@ -947,7 +979,7 @@ fn validate_restore(request: &PackageRestoreRequest) -> Result<u64, StoreError> 
         let kind_valid = if import {
             track.source_kind == IMPORT_SOURCE_KIND
         } else {
-            MediaSourceKind::from_str(&track.source_kind).is_ok()
+            MediaSourceKind::parse(&track.source_kind).is_some()
         };
         if !kind_valid
             || !bounded(&track.source_track_id, MAX_IDENTIFIER_BYTES)
@@ -974,8 +1006,13 @@ fn validate_restore(request: &PackageRestoreRequest) -> Result<u64, StoreError> 
                 || segment.byte_length == 0
                 || segment.byte_length > MAX_RESTORED_MEDIA_BYTES
                 || !is_sha256(&segment.digest_sha256)
+                || restorable_format(import, track.segments.len(), segment).is_err()
             {
                 return Err(invalid("a package media file is not restorable"));
+            }
+            if segment.media_format == COMPRESSED_IMPORT_MEDIA_FORMAT {
+                validate_compressed_import_bounds(segment.byte_length, segment.sample_count)
+                    .map_err(|_| invalid("a package media file is not restorable"))?;
             }
             placements.push(DigestedSegment {
                 segment_id: segment.source_segment_id.clone(),
@@ -992,7 +1029,7 @@ fn validate_restore(request: &PackageRestoreRequest) -> Result<u64, StoreError> 
             let source_input = transcription_input_digest(
                 &request.source_session_id,
                 &track.source_track_id,
-                false,
+                compressed_track(track),
                 &placements,
             );
             if source_input != transcript.input_digest {
@@ -1065,7 +1102,7 @@ fn fill_gaps(placements: &mut [DigestedSegment]) -> Result<(), StoreError> {
             .ok_or(StoreError::InvalidRequest("package timeline overflows"))?;
         placement.gap_nanoseconds =
             prior_end.map_or(0, |prior| placement.start_nanoseconds - prior);
-        if placement.gap_nanoseconds < -MAX_OVERLAP_NANOSECONDS {
+        if placement.gap_nanoseconds < -ONE_SAMPLE_NANOSECONDS {
             return Err(StoreError::InvalidRequest(
                 "package timeline overlaps itself",
             ));
@@ -1076,19 +1113,8 @@ fn fill_gaps(placements: &mut [DigestedSegment]) -> Result<(), StoreError> {
 }
 
 fn duration_nanoseconds(frames: u64) -> Result<i64, StoreError> {
-    i64::try_from(u128::from(frames) * 1_000_000_000 / u128::from(MEDIA_SAMPLE_RATE_HZ))
+    i64::try_from(frames_to_nanoseconds(frames))
         .map_err(|_| StoreError::InvalidRequest("package timeline overflows"))
-}
-
-fn is_sha256(value: &str) -> bool {
-    value.len() == 64
-        && value
-            .bytes()
-            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
-}
-
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 #[cfg(test)]

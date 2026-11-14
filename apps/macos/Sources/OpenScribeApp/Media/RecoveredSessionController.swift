@@ -86,7 +86,7 @@ final class RecoveredSessionController: ObservableObject {
   private let recoveredPlaybackLeaseProvider: RecoveredPlaybackLeaseProvider
   private let player: RecoveredAudioPlaying
   private let timelineProvider: (@Sendable (String) throws -> [NativeTimelineSegment])?
-  private let timelinePlayer = TimelineAudioPlayer()
+  let timelinePlayer = TimelineAudioPlayer()
   private let playbackTerminationDecisionObserver: PlaybackTerminationDecisionObserver
   private var playbackTask: Task<Void, Never>?
   private var recoveryTask: Task<Void, Never>?
@@ -223,7 +223,7 @@ final class RecoveredSessionController: ObservableObject {
     let generation = UUID()
     recoveryGeneration = generation
     let recoveryFactory = recoveryFactory
-    AppTelemetry.recoveryProof(stage: "scan-started", detail: "launch")
+    AppTelemetry.recoveryProof(stage: .scanStarted, detail: "launch")
     let started = ContinuousClock.now
     let signpost = AppTelemetry.signposter.beginInterval("launch_recovery")
     recoveryTask = Task { [weak self] in
@@ -262,11 +262,10 @@ final class RecoveredSessionController: ObservableObject {
       let result = try outcome.get()
       let recovered = result.playable
       guard
-        result.captureSafetyComplete
-          && recovered.allSatisfy({
-            $0.mediaPreserved && $0.readyForReview && !$0.recordingStarted
-              && $0.sampleCount > 0 && $0.byteLength > 0
-          })
+        recovered.allSatisfy({
+          $0.mediaPreserved && $0.readyForReview && !$0.recordingStarted
+            && $0.sampleCount > 0 && $0.byteLength > 0
+        })
       else {
         throw RecoveredSessionError.invalidEvidence
       }
@@ -275,7 +274,7 @@ final class RecoveredSessionController: ObservableObject {
       captureSafetyComplete = true
       phase = recovered.isEmpty ? .none : .available
       AppTelemetry.recoveryProof(
-        stage: "scan-finished",
+        stage: .scanFinished,
         detail:
           "phase=\(phase.diagnosticName) count=\(recovered.count) milliseconds=\(milliseconds)"
       )
@@ -284,7 +283,7 @@ final class RecoveredSessionController: ObservableObject {
       clearPlaybackError()
       phase = .none
       AppTelemetry.recoveryProof(
-        stage: "scan-cancelled", detail: "milliseconds=\(milliseconds)")
+        stage: .scanCancelled, detail: "milliseconds=\(milliseconds)")
     } catch RecoveredSessionError.invalidEvidence {
       publishRecoveryFailure(code: "invalid_evidence", milliseconds: milliseconds)
     } catch {
@@ -300,7 +299,7 @@ final class RecoveredSessionController: ObservableObject {
     errorRecoveredMediaIdentity = nil
     phase = .failed
     AppTelemetry.recoveryProof(
-      stage: code == "invalid_evidence" ? "scan-rejected" : "scan-failed",
+      stage: code == "invalid_evidence" ? .scanRejected : .scanFailed,
       detail: "code=\(code) milliseconds=\(milliseconds)")
   }
 
@@ -317,7 +316,7 @@ final class RecoveredSessionController: ObservableObject {
     activePlaybackSessionId = session.sessionId
     pendingRecoveredMediaIdentity = identity
     clearPlaybackError()
-    notePlayback("playback-requested", sessionId: session.sessionId)
+    notePlayback(.playbackRequested, sessionId: session.sessionId)
     let leaseProvider = recoveredPlaybackLeaseProvider
     playbackTask = Task { [weak self] in
       guard let self else { return }
@@ -339,7 +338,7 @@ final class RecoveredSessionController: ObservableObject {
         self.settleRecoveredPlaybackStartup(generation: generation, state: .playing)
         self.playbackTask = nil
         self.playingSessionId = session.sessionId
-        self.notePlayback("playback-opened", sessionId: session.sessionId)
+        self.notePlayback(.playbackOpened, sessionId: session.sessionId)
         self.pendingRecoveredMediaIdentity = nil
         self.playingRecoveredMediaIdentity = identity
         self.clearPlaybackError()
@@ -389,7 +388,7 @@ final class RecoveredSessionController: ObservableObject {
     }
     guard media.isPlayable else {
       setPlaybackError(
-        media.availability == "corrupt"
+        media.availability == .corrupt
           ? "Saved audio appears corrupt and was not opened."
           : "Saved audio is unavailable and was not opened.",
         sessionId: session.sessionId
@@ -398,7 +397,7 @@ final class RecoveredSessionController: ObservableObject {
     }
     let leaseProvider = importedPlaybackLeaseProvider
     let sessionId = session.sessionId
-    notePlayback("playback-requested", sessionId: sessionId)
+    notePlayback(.playbackRequested, sessionId: sessionId)
     let generation = UUID()
     activePlaybackGeneration = generation
     activePlaybackSessionId = session.sessionId
@@ -418,7 +417,7 @@ final class RecoveredSessionController: ObservableObject {
         guard self.activePlaybackGeneration == generation else { return }
         self.playbackTask = nil
         self.playingSessionId = session.sessionId
-        self.notePlayback("playback-opened", sessionId: session.sessionId)
+        self.notePlayback(.playbackOpened, sessionId: session.sessionId)
         self.clearPlaybackError()
       } catch is CancellationError {
         guard self.activePlaybackGeneration == generation else { return }
@@ -463,7 +462,7 @@ final class RecoveredSessionController: ObservableObject {
     let generation = UUID()
     activePlaybackGeneration = generation
     activePlaybackSessionId = sessionId
-    notePlayback("playback-requested", sessionId: sessionId)
+    notePlayback(.playbackRequested, sessionId: sessionId)
     playbackTask = Task { [weak self] in
       guard let self else { return }
       do {
@@ -492,14 +491,14 @@ final class RecoveredSessionController: ObservableObject {
         self.timelineClockAdjustmentNanoseconds =
           segments.map(\.clockAdjustmentNanoseconds).max() ?? 0
         self.playingSessionId = sessionId
-        self.notePlayback("playback-opened", sessionId: sessionId)
+        self.notePlayback(.playbackOpened, sessionId: sessionId)
         self.playbackTask = nil
       } catch {
         guard self.activePlaybackGeneration == generation else { return }
         self.stopPlayback(generation: generation)
         if !(error is CancellationError) {
           self.setPlaybackError(
-            "A synchronized timeline could not be verified. Older recordings may have no shared clock.",
+            "The sources couldn't be lined up to play together. Older recordings may have no shared clock.",
             sessionId: sessionId)
         }
       }
@@ -517,7 +516,7 @@ final class RecoveredSessionController: ObservableObject {
     activePlaybackGeneration = generation
     activePlaybackSessionId = sessionId
     activeMixdownSessionId = sessionId
-    notePlayback("playback-requested", sessionId: sessionId)
+    notePlayback(.playbackRequested, sessionId: sessionId)
     playbackTask = Task { [weak self] in
       guard let self else { return }
       do {
@@ -530,14 +529,14 @@ final class RecoveredSessionController: ObservableObject {
           receipt: lease.playbackPath(), retaining: lease, generation: generation)
         guard self.activePlaybackGeneration == generation else { return }
         self.playingSessionId = sessionId
-        self.notePlayback("playback-opened", sessionId: sessionId)
+        self.notePlayback(.playbackOpened, sessionId: sessionId)
         self.playbackTask = nil
       } catch {
         guard self.activePlaybackGeneration == generation else { return }
         self.stopPlayback(generation: generation)
         if !(error is CancellationError) {
           self.setPlaybackError(
-            "The stereo mix could not be verified. Source tracks remain available below.",
+            "The stereo mix couldn't be played. Each source still plays on its own below.",
             sessionId: sessionId)
         }
       }
@@ -613,12 +612,12 @@ final class RecoveredSessionController: ObservableObject {
     errorSessionId = sessionId
     errorRecoveredMediaIdentity = recoveredMediaIdentity
     AppTelemetry.recoveryProof(
-      stage: "playback-failed",
+      stage: .playbackFailed,
       detail: "session=\(DiagnosticPrivacy.token(sessionId ?? "none"))"
     )
   }
 
-  private func notePlayback(_ stage: String, sessionId: String) {
+  private func notePlayback(_ stage: RecoveryProofStage, sessionId: String) {
     AppTelemetry.recoveryProof(
       stage: stage,
       detail: "session=\(DiagnosticPrivacy.token(sessionId))"

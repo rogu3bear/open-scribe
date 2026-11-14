@@ -1,5 +1,5 @@
 use super::*;
-use crate::drift_stimulus::write_stimulus_wav;
+use crate::stimulus::write_stimulus_wav;
 use open_scribe_store::{PackageRestoreRequest, RestoredSegment, RestoredTrack, SessionOrigin};
 use sha2::{Digest, Sha256};
 use std::fs::{self, File};
@@ -125,6 +125,7 @@ fn restore(
                     + shift,
                 sample_count: (end - start) as u64,
                 channels: track.channels as u16,
+                media_format: "caf-pcm-s16le".into(),
                 byte_length,
                 digest_sha256,
                 path,

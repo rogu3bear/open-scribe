@@ -1,11 +1,38 @@
-//! Physically allocated emergency space for journaling and sealing after ENOSPC.
-//! Only explicit capture preparation replenishes it; opening/recovering a library
-//! must leave released space available. The ordinary capture floor stays intact.
+//! Storage policy for capture.
+//!
+//! Two floors protect a recording. The capture floor (`RESERVE_BYTES`) is free
+//! space sealing and recovery may spend; opening another source segment under
+//! critical pressure never does. The emergency reserve is physically allocated
+//! space for journaling and sealing after ENOSPC. Only explicit capture
+//! preparation replenishes it; opening/recovering a library must leave
+//! released space available.
 use super::*;
+
+/// Below this free space the volume is critical for capture.
+pub(crate) const RESERVE_BYTES: u64 = 512 * 1024 * 1024;
+/// Below this free space a recording continues with a visible warning.
+pub(crate) const WARNING_BYTES: u64 = 1024 * 1024 * 1024;
+/// The allocated emergency reserve, released before journaling at ENOSPC.
+pub(crate) const EMERGENCY_RESERVE_BYTES: u64 = 16 * 1024 * 1024;
+/// A preparing or paused capture must have room for this much new audio.
+const PREFLIGHT_SECONDS: u64 = 5 * 60;
 
 const NAME: &str = ".capture-journal-reserve-v1";
 const MAGIC: &[u8] = b"Open Scribe emergency journal reserve v1\n";
-const BYTES: u64 = 16 * 1024 * 1024;
+
+/// The capture floor plus `PREFLIGHT_SECONDS` of 16-bit PCM for each source.
+pub(crate) fn preflight_bytes(sources: impl IntoIterator<Item = MediaSourceKind>) -> u64 {
+    let pcm_bytes: u64 = sources
+        .into_iter()
+        .map(|kind| {
+            u64::from(capture_channels(kind))
+                * u64::from(MEDIA_SAMPLE_RATE_HZ)
+                * 2
+                * PREFLIGHT_SECONDS
+        })
+        .sum();
+    RESERVE_BYTES + pcm_bytes
+}
 
 impl SessionStore {
     pub(super) fn prepare_storage_reserve(&self) -> Result<(), StoreError> {
@@ -18,7 +45,7 @@ impl SessionStore {
         file.seek(std::io::SeekFrom::Start(MAGIC.len() as u64))?;
         let block = [0xa5; 64 * 1024];
         let allocation = (|| -> std::io::Result<()> {
-            let mut remaining = BYTES - MAGIC.len() as u64;
+            let mut remaining = EMERGENCY_RESERVE_BYTES - MAGIC.len() as u64;
             while remaining > 0 {
                 let count = remaining.min(block.len() as u64) as usize;
                 file.write_all(&block[..count])?;
@@ -95,7 +122,10 @@ impl SessionStore {
         } else {
             let mut header = vec![0; MAGIC.len()];
             file.read_exact(&mut header)?;
-            if header != MAGIC || stat.st_size < MAGIC.len() as i64 || stat.st_size > BYTES as i64 {
+            if header != MAGIC
+                || stat.st_size < MAGIC.len() as i64
+                || stat.st_size > EMERGENCY_RESERVE_BYTES as i64
+            {
                 return Err(StoreError::IntegrityMismatch(
                     "emergency reserve ownership is invalid",
                 ));

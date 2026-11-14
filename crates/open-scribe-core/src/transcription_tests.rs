@@ -41,6 +41,11 @@ impl BurstRecognizer {
             ..Self::new(model_sha256)
         }
     }
+
+    pub(crate) fn with_model_id(mut self, model_id: &str) -> Self {
+        self.identity.model_id = model_id.to_owned();
+        self
+    }
 }
 
 impl SpeechRecognizer for BurstRecognizer {
@@ -173,6 +178,13 @@ fn digest(path: &Path) -> Vec<u8> {
     Sha256::digest(std::fs::read(path).unwrap()).to_vec()
 }
 
+fn hex_digest(path: &Path) -> String {
+    digest(path)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
 pub(crate) fn run(
     imported: &mut Imported,
     recognizer: &mut BurstRecognizer,
@@ -283,8 +295,309 @@ fn engine_failure_ends_only_the_run_and_retry_reuses_committed_chunks() {
         .store
         .transcription_runs(&imported.session)
         .unwrap();
-    assert_eq!(runs[0].state, "failed");
-    assert_eq!(runs[1].state, "complete");
+    assert_eq!(runs[0].state.as_str(), "failed");
+    assert_eq!(runs[1].state.as_str(), "complete");
+}
+
+#[test]
+fn failed_or_cancelled_transcription_keeps_playable_audio_and_a_distinct_run() {
+    for (label, error, failure, state, availability) in [
+        (
+            "engine",
+            RecognizerError::Engine("injected"),
+            TranscriptionFailure::EngineError,
+            "failed",
+            crate::TranscriptAvailability::Failed,
+        ),
+        (
+            "cancelled",
+            RecognizerError::Cancelled,
+            TranscriptionFailure::Cancelled,
+            "cancelled",
+            crate::TranscriptAvailability::Unavailable,
+        ),
+        (
+            "exhausted",
+            RecognizerError::ResourceExhausted,
+            TranscriptionFailure::ResourceExhausted,
+            "failed",
+            crate::TranscriptAvailability::Failed,
+        ),
+    ] {
+        let mut imported = imported(10);
+        let audio = std::fs::read(&imported.media).unwrap();
+        let before = digest(&imported.media);
+        let first_lease = imported
+            .store
+            .lease_imported_playback(&imported.session)
+            .unwrap();
+        assert_eq!(first_lease.byte_length(), audio.len() as u64, "{label}");
+        assert_eq!(
+            first_lease.digest_sha256(),
+            hex_digest(&imported.media),
+            "{label}"
+        );
+
+        let stopped = run(
+            &mut imported,
+            &mut BurstRecognizer::failing(&"a".repeat(64), 1, error).with_model_id("fixture-a"),
+        );
+        let Err(TranscriptionError::RunEnded {
+            run_id,
+            failure: stopped_failure,
+        }) = stopped
+        else {
+            panic!("{label} must end the run");
+        };
+        assert_eq!(stopped_failure, failure, "{label}");
+        assert_eq!(std::fs::read(&imported.media).unwrap(), audio, "{label}");
+        let lease = imported
+            .store
+            .lease_imported_playback(&imported.session)
+            .unwrap();
+        assert_eq!(lease.byte_length(), audio.len() as u64, "{label}");
+        assert_eq!(
+            lease.digest_sha256(),
+            hex_digest(&imported.media),
+            "{label}"
+        );
+        let library = crate::TranscriptLibrary::open(&imported.root).unwrap();
+        assert_eq!(
+            library.availability(&imported.session).unwrap(),
+            availability,
+            "{label}"
+        );
+        assert!(
+            library
+                .document(&imported.session)
+                .unwrap()
+                .segments
+                .is_empty(),
+            "{label}"
+        );
+        let runs = imported
+            .store
+            .transcription_runs(&imported.session)
+            .unwrap();
+        assert_eq!(runs.len(), 1, "{label}");
+        assert_eq!(runs[0].run_id, run_id, "{label}");
+        assert_eq!(runs[0].state.as_str(), state, "{label}");
+        assert_eq!(runs[0].model_id, "fixture-a", "{label}");
+        assert!(
+            imported
+                .store
+                .transcript_revisions(&imported.session)
+                .unwrap()
+                .is_empty(),
+            "{label}"
+        );
+
+        let retry = run(
+            &mut imported,
+            &mut BurstRecognizer::new(&"b".repeat(64)).with_model_id("fixture-b"),
+        )
+        .unwrap();
+        assert_ne!(retry.run_id, run_id, "{label}");
+        let library = crate::TranscriptLibrary::open(&imported.root).unwrap();
+        assert_eq!(
+            library.availability(&imported.session).unwrap(),
+            crate::TranscriptAvailability::Final,
+            "{label}"
+        );
+        let document = library.document(&imported.session).unwrap().segments;
+        assert!(!document.is_empty(), "{label}");
+        assert!(
+            document
+                .iter()
+                .all(|segment| segment.finality.as_str() == "final"),
+            "{label}"
+        );
+        let runs = imported
+            .store
+            .transcription_runs(&imported.session)
+            .unwrap();
+        let stopped_run = runs.iter().find(|run| run.run_id == run_id).unwrap();
+        assert_eq!(stopped_run.state.as_str(), state, "{label}");
+        assert_eq!(stopped_run.model_id, "fixture-a", "{label}");
+        let completed = runs.iter().find(|run| run.run_id == retry.run_id).unwrap();
+        assert_eq!(completed.state.as_str(), "complete", "{label}");
+        assert_eq!(completed.model_id, "fixture-b", "{label}");
+        let revisions = imported
+            .store
+            .transcript_revisions(&imported.session)
+            .unwrap();
+        assert!(
+            revisions
+                .iter()
+                .any(|revision| revision.run_id == retry.run_id
+                    && revision.finality.as_str() == "final"),
+            "{label}"
+        );
+        assert!(
+            revisions.iter().all(|revision| revision.run_id != run_id),
+            "{label}"
+        );
+        assert_eq!(digest(&imported.media), before, "{label}");
+        let lease = imported
+            .store
+            .lease_imported_playback(&imported.session)
+            .unwrap();
+        assert_eq!(lease.byte_length(), audio.len() as u64, "{label}");
+        assert_eq!(
+            lease.digest_sha256(),
+            hex_digest(&imported.media),
+            "{label}"
+        );
+    }
+}
+
+#[test]
+fn invalid_finalize_result_keeps_playable_audio_and_a_distinct_run() {
+    let mut imported = imported(10);
+    let audio = std::fs::read(&imported.media).unwrap();
+    let before = digest(&imported.media);
+    let first_lease = imported
+        .store
+        .lease_imported_playback(&imported.session)
+        .unwrap();
+    assert_eq!(first_lease.byte_length(), audio.len() as u64);
+    assert_eq!(first_lease.digest_sha256(), hex_digest(&imported.media));
+
+    let input = imported
+        .store
+        .transcription_input(&imported.session, &imported.track)
+        .unwrap();
+    let identity = TranscriptionRunIdentity {
+        session_id: imported.session.clone(),
+        track_id: imported.track.clone(),
+        input_digest: input.input_digest.clone(),
+        engine: "burst-fixture".into(),
+        engine_version: "1".into(),
+        model_id: "fixture-a".into(),
+        model_sha256: "a".repeat(64),
+        options_digest: DecodeOptions::final_pass(Language::English).digest(),
+        reconciliation_version: RECONCILIATION_VERSION.to_owned(),
+    };
+    let plan: Vec<_> = plan_windows(&input)
+        .iter()
+        .map(|window| window.chunk)
+        .collect();
+    assert!(!plan.is_empty());
+    let handle = imported
+        .store
+        .begin_transcription_run(&identity, &plan)
+        .unwrap();
+    for chunk in &handle.chunks {
+        imported
+            .store
+            .complete_transcript_chunk(
+                &handle.run_id,
+                chunk.sequence,
+                "en",
+                r#"{"not":"a-hypothesis"}"#,
+            )
+            .unwrap();
+    }
+
+    let stopped = finalize_transcription_run(&mut imported.store, &handle.run_id);
+    let Err(TranscriptionError::RunEnded {
+        run_id,
+        failure: stopped_failure,
+    }) = stopped
+    else {
+        panic!("an unreadable hypothesis must end the run");
+    };
+    assert_eq!(stopped_failure, TranscriptionFailure::InvalidResult);
+    assert_eq!(run_id, handle.run_id);
+    assert_eq!(std::fs::read(&imported.media).unwrap(), audio);
+    let lease = imported
+        .store
+        .lease_imported_playback(&imported.session)
+        .unwrap();
+    assert_eq!(lease.byte_length(), audio.len() as u64);
+    assert_eq!(lease.digest_sha256(), hex_digest(&imported.media));
+    let library = crate::TranscriptLibrary::open(&imported.root).unwrap();
+    assert_eq!(
+        library.availability(&imported.session).unwrap(),
+        crate::TranscriptAvailability::Failed
+    );
+    assert!(
+        library
+            .document(&imported.session)
+            .unwrap()
+            .segments
+            .is_empty()
+    );
+    let runs = imported
+        .store
+        .transcription_runs(&imported.session)
+        .unwrap();
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0].run_id, run_id);
+    assert_eq!(runs[0].state.as_str(), "failed");
+    assert_eq!(
+        runs[0].failure_class.map(|class| class.as_str()),
+        Some("invalid_result")
+    );
+    assert_eq!(runs[0].model_id, "fixture-a");
+    assert!(
+        imported
+            .store
+            .transcript_revisions(&imported.session)
+            .unwrap()
+            .is_empty()
+    );
+    drop(library);
+
+    let retry = run(
+        &mut imported,
+        &mut BurstRecognizer::new(&"b".repeat(64)).with_model_id("fixture-b"),
+    )
+    .unwrap();
+    assert_ne!(retry.run_id, run_id);
+    let library = crate::TranscriptLibrary::open(&imported.root).unwrap();
+    assert_eq!(
+        library.availability(&imported.session).unwrap(),
+        crate::TranscriptAvailability::Final
+    );
+    let document = library.document(&imported.session).unwrap().segments;
+    assert!(!document.is_empty());
+    assert!(
+        document
+            .iter()
+            .all(|segment| segment.finality.as_str() == "final")
+    );
+    let runs = imported
+        .store
+        .transcription_runs(&imported.session)
+        .unwrap();
+    let stopped_run = runs.iter().find(|run| run.run_id == run_id).unwrap();
+    assert_eq!(stopped_run.state.as_str(), "failed");
+    assert_eq!(
+        stopped_run.failure_class.map(|class| class.as_str()),
+        Some("invalid_result")
+    );
+    assert_eq!(stopped_run.model_id, "fixture-a");
+    let completed = runs.iter().find(|run| run.run_id == retry.run_id).unwrap();
+    assert_eq!(completed.state.as_str(), "complete");
+    assert_eq!(completed.model_id, "fixture-b");
+    let revisions = imported
+        .store
+        .transcript_revisions(&imported.session)
+        .unwrap();
+    assert!(
+        revisions.iter().any(
+            |revision| revision.run_id == retry.run_id && revision.finality.as_str() == "final"
+        )
+    );
+    assert!(revisions.iter().all(|revision| revision.run_id != run_id));
+    assert_eq!(digest(&imported.media), before);
+    let lease = imported
+        .store
+        .lease_imported_playback(&imported.session)
+        .unwrap();
+    assert_eq!(lease.byte_length(), audio.len() as u64);
+    assert_eq!(lease.digest_sha256(), hex_digest(&imported.media));
 }
 
 #[test]
@@ -308,7 +621,10 @@ fn retry_restart_and_recovery_preserve_a_corrected_final_companion_track() {
         store
             .correct_transcript_segment(&session, &first.revision_id, 0, Some("Reviewed alpha"))
             .unwrap();
-        let before = store.transcript_document(&session).unwrap();
+        let before = store
+            .conversation_document(&session, crate::DocumentScope::FinalOnly)
+            .map(|document| document.segments)
+            .unwrap();
         let runs_before = store
             .transcription_runs(&session)
             .unwrap()
@@ -371,7 +687,8 @@ fn retry_restart_and_recovery_preserve_a_corrected_final_companion_track() {
         .unwrap();
         assert_eq!(
             store
-                .transcript_document(&session)
+                .conversation_document(&session, crate::DocumentScope::FinalOnly)
+                .map(|document| document.segments)
                 .unwrap()
                 .into_iter()
                 .filter(|part| part.track_id == tracks[0])
@@ -501,7 +818,11 @@ fn queued_replacement_cannot_override_an_edit_made_before_model_loading() {
             Some("Reviewed before loading"),
         )
         .unwrap();
-    let reviewed = fixture.store.transcript_document(&fixture.session).unwrap();
+    let reviewed = fixture
+        .store
+        .conversation_document(&fixture.session, crate::DocumentScope::FinalOnly)
+        .map(|document| document.segments)
+        .unwrap();
     let after_edit = fixture
         .store
         .runtime_library_snapshot()
@@ -541,7 +862,11 @@ fn queued_replacement_cannot_override_an_edit_made_before_model_loading() {
     )
     .unwrap();
     assert_eq!(
-        fixture.store.transcript_document(&fixture.session).unwrap(),
+        fixture
+            .store
+            .conversation_document(&fixture.session, crate::DocumentScope::FinalOnly)
+            .map(|document| document.segments)
+            .unwrap(),
         reviewed
     );
     let revisions = fixture
@@ -631,7 +956,10 @@ fn deliberate_replacement_resumes_only_unfinished_tracks_with_its_original_guard
                 Some("Reviewed replacement A"),
             )
             .unwrap();
-        let reviewed = store.transcript_document(&session).unwrap();
+        let reviewed = store
+            .conversation_document(&session, crate::DocumentScope::FinalOnly)
+            .map(|document| document.segments)
+            .unwrap();
         let run_count = store
             .transcription_runs(&session)
             .unwrap()
@@ -715,7 +1043,8 @@ fn deliberate_replacement_resumes_only_unfinished_tracks_with_its_original_guard
         );
         assert_eq!(
             store
-                .transcript_document(&session)
+                .conversation_document(&session, crate::DocumentScope::FinalOnly)
+                .map(|document| document.segments)
                 .unwrap()
                 .into_iter()
                 .filter(|r| r.track_id == track_a)
@@ -737,9 +1066,9 @@ fn cancelled_complete_chunks_are_not_selected_by_restart_maintenance() {
         .cancel_transcription(&fixture.session)
         .unwrap();
     let mut recovery = crate::RecordingPreparationController::open(&fixture.root).unwrap();
-    recovery.recover_capture_safety().unwrap();
+    recovery.store_mut().recover_library().unwrap();
     recovery
-        .maintain_transcripts(&AtomicBool::new(false))
+        .maintain_transcripts(&AtomicBool::new(false), Default::default())
         .unwrap();
     let reopened = SessionStore::open(&fixture.root).unwrap();
     assert!(
@@ -749,7 +1078,11 @@ fn cancelled_complete_chunks_are_not_selected_by_restart_maintenance() {
             .is_empty()
     );
     assert_eq!(
-        reopened.transcription_run_record(&run).unwrap().state,
+        reopened
+            .transcription_run_record(&run)
+            .unwrap()
+            .state
+            .as_str(),
         "cancelled"
     );
     assert!(
@@ -889,18 +1222,19 @@ fn transcript_only_failure_leaves_capture_safety_results_and_playback_available(
     complete_fixture_chunks(&mut store, &session, &track);
     let mut controller =
         crate::RecordingPreparationController::open(temp.path().join("Open Scribe")).unwrap();
-    let media = controller.recover_capture_safety().unwrap();
-    let snapshot = controller.runtime_library_snapshot().unwrap();
+    let media = controller.store_mut().recover_library().unwrap();
+    let snapshot = controller.store().runtime_library_snapshot().unwrap();
     let database =
         rusqlite::Connection::open(temp.path().join("Open Scribe/Library.sqlite3")).unwrap();
     database.execute_batch("CREATE TRIGGER transcript_only_failure BEFORE INSERT ON transcript_revisions BEGIN SELECT RAISE(ABORT, 'derived-only failure'); END;").unwrap();
     assert!(
         controller
-            .maintain_transcripts(&AtomicBool::new(false))
+            .maintain_transcripts(&AtomicBool::new(false), Default::default())
             .is_err()
     );
     assert_eq!(
         controller
+            .store()
             .runtime_library_snapshot()
             .unwrap()
             .saved_sessions
@@ -1090,7 +1424,7 @@ fn finalize_completes_a_run_whose_chunks_are_already_durable() {
         .store
         .transcription_runs(&imported.session)
         .unwrap();
-    assert_eq!(runs[0].state, "complete");
+    assert_eq!(runs[0].state.as_str(), "complete");
     assert_eq!(runs[0].failure_class, None);
     assert_eq!(
         imported
@@ -1218,14 +1552,19 @@ fn corrected_reconciliation_reuses_failed_run_chunks_and_commits_in_order() {
         .transcription_runs(&imported.session)
         .unwrap();
     assert_eq!(
-        runs.iter().find(|r| r.run_id == old.run_id).unwrap().state,
+        runs.iter()
+            .find(|r| r.run_id == old.run_id)
+            .unwrap()
+            .state
+            .as_str(),
         "failed"
     );
     assert_eq!(
         runs.iter()
             .find(|r| r.run_id == successor.run_id)
             .unwrap()
-            .state,
+            .state
+            .as_str(),
         "complete"
     );
 }
@@ -1261,8 +1600,11 @@ fn finalize_refuses_unavailable_input_instead_of_committing_gap_free_success() {
         .store
         .transcription_runs(&imported.session)
         .unwrap();
-    assert_eq!(runs[0].state, "failed");
-    assert_eq!(runs[0].failure_class.as_deref(), Some("invalid_result"));
+    assert_eq!(runs[0].state.as_str(), "failed");
+    assert_eq!(
+        runs[0].failure_class.map(|class| class.as_str()),
+        Some("invalid_result")
+    );
 }
 
 #[test]
@@ -1288,7 +1630,9 @@ fn finalize_accepts_verified_gapped_input_with_explicit_discontinuities() {
         gaps
     );
     assert_eq!(
-        store.transcription_runs(&session).unwrap()[0].state,
+        store.transcription_runs(&session).unwrap()[0]
+            .state
+            .as_str(),
         "complete"
     );
     assert_eq!(
@@ -1381,14 +1725,14 @@ fn launch_recovery_finalizes_class_a_orphans_without_recognizer() {
     drop(store);
 
     let mut controller = crate::RecordingPreparationController::open(&root).unwrap();
-    let _playable = controller.recover_playable_sessions().unwrap();
+    let _playable = controller.store_mut().recover_library().unwrap().playable;
     controller
-        .maintain_transcripts(&AtomicBool::new(false))
+        .maintain_transcripts(&AtomicBool::new(false), Default::default())
         .unwrap();
     let store = SessionStore::open(&root).unwrap();
     let runs = store.transcription_runs(&session).unwrap();
     assert_eq!(runs.len(), 1);
-    assert_eq!(runs[0].state, "complete");
+    assert_eq!(runs[0].state.as_str(), "complete");
     assert!(runs[0].failure_class.is_none());
     assert_eq!(store.transcript_revisions(&session).unwrap().len(), 1);
     drop(_temp);
@@ -1407,7 +1751,7 @@ fn held_retained_maintenance_does_not_report_completed() {
         .unwrap();
     let mut controller = crate::RecordingPreparationController::open(&imported.root).unwrap();
     let outcome = controller
-        .maintain_transcripts(&AtomicBool::new(false))
+        .maintain_transcripts(&AtomicBool::new(false), Default::default())
         .unwrap();
     assert_eq!(outcome, open_scribe_types::WorkOutcome::Deferred);
     assert!(
@@ -1470,8 +1814,11 @@ fn commit_failure_after_complete_chunks_fails_the_run_closed() {
         .store
         .transcription_runs(&imported.session)
         .unwrap();
-    assert_eq!(runs[0].state, "failed");
-    assert_eq!(runs[0].failure_class.as_deref(), Some("invalid_result"));
+    assert_eq!(runs[0].state.as_str(), "failed");
+    assert_eq!(
+        runs[0].failure_class.map(|class| class.as_str()),
+        Some("invalid_result")
+    );
 }
 
 /// The identity a real run stores: the burst fixture's engine and model
@@ -1566,7 +1913,7 @@ fn assert_recovered_in_order(store: &SessionStore, session: &SessionId, source_r
         successor.identity.reconciliation_version,
         RECONCILIATION_VERSION
     );
-    assert_eq!(successor.state, "complete");
+    assert_eq!(successor.state.as_str(), "complete");
     assert!(
         store
             .transcript_chunks_for_run(&revisions[0].run_id)
@@ -1601,16 +1948,19 @@ fn launch_recovery_rebuilds_a_stale_class_a_orphan_under_the_current_version() {
     drop(store);
 
     let mut controller = crate::RecordingPreparationController::open(&root).unwrap();
-    controller.recover_playable_sessions().unwrap();
+    controller.store_mut().recover_library().unwrap();
     controller
-        .maintain_transcripts(&AtomicBool::new(false))
+        .maintain_transcripts(&AtomicBool::new(false), Default::default())
         .unwrap();
     let store = SessionStore::open(&root).unwrap();
     let runs = store.transcription_runs(&session).unwrap();
     assert_eq!(runs.len(), 2);
     assert_eq!(runs[0].run_id, old.run_id);
-    assert_eq!(runs[0].state, "cancelled");
-    assert_eq!(runs[0].failure_class.as_deref(), Some("superseded"));
+    assert_eq!(runs[0].state.as_str(), "cancelled");
+    assert_eq!(
+        runs[0].failure_class.map(|class| class.as_str()),
+        Some("superseded")
+    );
     assert_eq!(
         store.transcript_chunks_for_run(&old.run_id).unwrap(),
         preserved
@@ -1620,9 +1970,9 @@ fn launch_recovery_rebuilds_a_stale_class_a_orphan_under_the_current_version() {
     // A second launch finds nothing left to rebuild.
     drop(store);
     let mut controller = crate::RecordingPreparationController::open(&root).unwrap();
-    controller.recover_playable_sessions().unwrap();
+    controller.store_mut().recover_library().unwrap();
     controller
-        .maintain_transcripts(&AtomicBool::new(false))
+        .maintain_transcripts(&AtomicBool::new(false), Default::default())
         .unwrap();
     let store = SessionStore::open(&root).unwrap();
     assert_eq!(store.transcription_runs(&session).unwrap().len(), 2);
@@ -1697,16 +2047,19 @@ fn launch_recovery_rebuilds_a_failed_stale_run_once_and_leaves_current_failures_
 
     for launch in 0..2 {
         let mut controller = crate::RecordingPreparationController::open(&root).unwrap();
-        controller.recover_playable_sessions().unwrap();
+        controller.store_mut().recover_library().unwrap();
         controller
-            .maintain_transcripts(&AtomicBool::new(false))
+            .maintain_transcripts(&AtomicBool::new(false), Default::default())
             .unwrap();
         let store = SessionStore::open(&root).unwrap();
         let runs = store.transcription_runs(&session).unwrap();
         assert_eq!(runs.len(), 2, "launch {launch} adds no further runs");
         assert_eq!(runs[0].run_id, old.run_id);
-        assert_eq!(runs[0].state, "failed");
-        assert_eq!(runs[0].failure_class.as_deref(), Some("invalid_result"));
+        assert_eq!(runs[0].state.as_str(), "failed");
+        assert_eq!(
+            runs[0].failure_class.map(|class| class.as_str()),
+            Some("invalid_result")
+        );
         assert_eq!(
             store.transcript_chunks_for_run(&old.run_id).unwrap(),
             preserved
@@ -1714,7 +2067,7 @@ fn launch_recovery_rebuilds_a_failed_stale_run_once_and_leaves_current_failures_
         assert_recovered_in_order(&store, &session, &old.run_id);
         let other_runs = store.transcription_runs(&other).unwrap();
         assert_eq!(other_runs.len(), 1);
-        assert_eq!(other_runs[0].state, "failed");
+        assert_eq!(other_runs[0].state.as_str(), "failed");
         assert!(store.transcript_revisions(&other).unwrap().is_empty());
     }
     drop(_temp);
@@ -1748,9 +2101,9 @@ fn finalize_refuses_to_label_a_stale_run_with_the_current_version() {
         .transcription_runs(&imported.session)
         .unwrap();
     assert_eq!(runs.len(), 1);
-    assert_eq!(runs[0].state, "failed");
+    assert_eq!(runs[0].state.as_str(), "failed");
     assert_eq!(
-        runs[0].failure_class.as_deref(),
+        runs[0].failure_class.map(|class| class.as_str()),
         Some("stale_reconciliation")
     );
     assert!(
@@ -1814,7 +2167,7 @@ fn reconcile_retained_chunks_refuses_incomplete_runs_without_a_successor() {
         .transcription_runs(&imported.session)
         .unwrap();
     assert_eq!(runs.len(), 1);
-    assert_eq!(runs[0].state, "running");
+    assert_eq!(runs[0].state.as_str(), "running");
     assert!(
         recover_retained_transcripts(&mut imported.store, None)
             .unwrap()

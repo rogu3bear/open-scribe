@@ -51,10 +51,6 @@ pub(super) fn apply_schema(transaction: &Transaction<'_>) -> Result<(), StoreErr
             ON CONFLICT(session_id, track_id) DO UPDATE SET epoch = epoch + 1;
          END;",
     )?;
-    transaction.execute(
-        "INSERT OR IGNORE INTO schema_migrations VALUES(10, ?1)",
-        [wall_time_milliseconds()],
-    )?;
     Ok(())
 }
 

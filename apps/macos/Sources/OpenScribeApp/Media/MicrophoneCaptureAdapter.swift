@@ -10,6 +10,8 @@ enum MicrophoneCaptureAdapterError: Error, Equatable {
   case bufferByteSizeMismatch
   case missingHostTime
   case writerFailed
+  case inputDeviceUnavailable
+  case inputDeviceChanged
 }
 
 enum MicrophoneRouteEvent: String, Equatable, Sendable {
@@ -69,10 +71,12 @@ struct MicrophoneSourceHealthObservation: Equatable, Sendable {
   let lastProgressMonotonicNanoseconds: UInt64
 }
 
-typealias MicrophoneObservationHandler = @Sendable (MicrophoneSourceHealthObservation) -> Void
-
 protocol MicrophoneCaptureBackend: AnyObject, Sendable {
   var inputFormat: AVAudioFormat { get }
+  /// False when a tap in `inputFormat` would not match the microphone's
+  /// current hardware rate, which AVAudioEngine treats as a fatal error.
+  var inputFormatMatchesHardware: Bool { get }
+  func bindInput(to device: MicrophoneDeviceIdentity?) throws
   func installTap(
     bufferSize: AVAudioFrameCount,
     handler: @escaping (AVAudioPCMBuffer, AVAudioTime) -> Void
@@ -82,11 +86,20 @@ protocol MicrophoneCaptureBackend: AnyObject, Sendable {
   func setRouteEventHandler(_ handler: MicrophoneRouteEventHandler?)
 }
 
+extension MicrophoneCaptureBackend {
+  var inputFormatMatchesHardware: Bool { true }
+
+  func bindInput(to device: MicrophoneDeviceIdentity?) throws {
+    if device != nil { throw MicrophoneCaptureAdapterError.inputDeviceUnavailable }
+  }
+}
+
 final class AVAudioEngineMicrophoneBackend: MicrophoneCaptureBackend, @unchecked Sendable {
   private let engine: AVAudioEngine
   private let routeEventLock = NSLock()
   private var routeEventHandler: MicrophoneRouteEventHandler?
   private var configurationObserver: NSObjectProtocol?
+  private var boundInput: MicrophoneDeviceIdentity?
 
   init(engine: AVAudioEngine = AVAudioEngine()) {
     self.engine = engine
@@ -94,6 +107,29 @@ final class AVAudioEngineMicrophoneBackend: MicrophoneCaptureBackend, @unchecked
 
   var inputFormat: AVAudioFormat {
     engine.inputNode.outputFormat(forBus: 0)
+  }
+
+  /// A call app or headset can change the microphone's rate after the engine
+  /// read it. Installing a tap then raises an exception that ends the app, so
+  /// the adapter checks first and reports the microphone as unavailable.
+  var inputFormatMatchesHardware: Bool {
+    let hardware = engine.inputNode.inputFormat(forBus: 0)
+    return hardware.sampleRate > 0 && hardware.channelCount > 0
+      && hardware.sampleRate == inputFormat.sampleRate
+  }
+
+  private var inputBinding: MicrophoneInputBinding {
+    MicrophoneInputBinding(
+      resolve: CoreAudioInputDevice.resolve,
+      select: { [self] in try engine.inputNode.auAudioUnit.setDeviceID($0) },
+      selectedUID: { [self] in
+        try CoreAudioInputDevice.uniqueID(engine.inputNode.auAudioUnit.deviceID)
+      })
+  }
+
+  func bindInput(to device: MicrophoneDeviceIdentity?) throws {
+    try inputBinding.bind(device)
+    boundInput = device
   }
 
   func installTap(
@@ -109,8 +145,14 @@ final class AVAudioEngineMicrophoneBackend: MicrophoneCaptureBackend, @unchecked
   }
 
   func start() throws {
+    guard let boundInput else { throw MicrophoneCaptureAdapterError.inputDeviceUnavailable }
+    try inputBinding.validate(boundInput)
     engine.prepare()
     try engine.start()
+    do { try inputBinding.validate(boundInput) } catch {
+      engine.stop()
+      throw error
+    }
   }
 
   func stop() {
@@ -229,9 +271,6 @@ private final class CaptureBufferPool: @unchecked Sendable {
 /// the AVAudioEngine callback and written on a dedicated serial queue. Only one
 /// coarse first-sample receipt leaves Swift.
 final class MicrophoneCaptureAdapter: @unchecked Sendable {
-  typealias FirstSampleHandler = @Sendable (NativeFirstSampleReceipt) -> Void
-  typealias FailureHandler = @Sendable (MicrophoneCaptureAdapterError) -> Void
-
   private static let bufferSize: AVAudioFrameCount = 4_096
   // AVAudioEngine treats the tap buffer size as a request. Hardware and
   // aggregate devices may deliver larger callbacks, so the real-time pool has
@@ -240,7 +279,7 @@ final class MicrophoneCaptureAdapter: @unchecked Sendable {
   private static let poolCount = 8
 
   private let backend: MicrophoneCaptureBackend
-  private let writer: CapturedAudioWriting
+  private let core: CaptureSourceCore
   private let identity: MicrophoneCaptureIdentity
   private let observationCadenceNanoseconds: UInt64
   private let monotonicClock: @Sendable () -> UInt64
@@ -258,18 +297,20 @@ final class MicrophoneCaptureAdapter: @unchecked Sendable {
   private let observationLock = NSLock()
   private var started = false
   private var acceptingCallbacks = false
+  private var inputAdmitted = false
   private var hasStarted = false
   private var failureReported = false
-  private var firstSampleReported = false
   private var backendActive = false
-  private var lastWrittenSampleHostTime: UInt64?
-  private var observationHandler: MicrophoneObservationHandler?
+  private var observationHandler: MicrophoneHealthHandler?
   private var observationActive = false
   private var progressObservationPending = false
   private var observationSequence: UInt64 = 0
   private var callbackCount: UInt64 = 0
   private var successfullyWrittenFrameCount: UInt64 = 0
   private var lastProgressMonotonicNanoseconds: UInt64 = 0
+  private let provisionalLock = NSLock()
+  private var provisionalQueue: ProvisionalDraftQueue?
+  var liveAudio: LiveAudioListenerSlot { core.liveAudio }
 
   init(
     backend: MicrophoneCaptureBackend,
@@ -281,24 +322,66 @@ final class MicrophoneCaptureAdapter: @unchecked Sendable {
     }
   ) {
     self.backend = backend
-    self.writer = writer
+    core = CaptureSourceCore(writer: writer)
     self.identity = identity
     self.observationCadenceNanoseconds = observationCadenceNanoseconds
     self.monotonicClock = monotonicClock
   }
 
-  convenience init(writer: ManagedCAFWriter) {
-    self.init(
-      backend: AVAudioEngineMicrophoneBackend(),
-      writer: writer,
-      identity: MicrophoneCaptureIdentity(authorization: writer.authorization)
+  /// Installs admission of sealed provisional windows. `hypothesis` is nil in
+  /// the shipped app until a real recognizer supplies text. A nil or empty
+  /// hypothesis does not create transcript words. A sealed window whose
+  /// accepted frames are all silent is not admitted. The writer queue only
+  /// counts accepted frames; the store call runs on the queue's own serial queue.
+  func installProvisionalDraftAdmission(
+    preparation: NativeRecordingPreparationProtocol,
+    hypothesis: ProvisionalHypothesisProvider? = nil,
+    originNanoseconds: Int64 = 0,
+    windowFrames: UInt64 = ProvisionalDraftQueue.defaultWindowFrames,
+    overlapFrames: UInt64 = ProvisionalDraftQueue.defaultOverlapFrames
+  ) {
+    let queue = ProvisionalDraftQueue(
+      preparation: preparation,
+      sessionId: identity.sessionId,
+      trackId: identity.trackId,
+      hypothesis: hypothesis,
+      originNanoseconds: originNanoseconds,
+      windowFrames: windowFrames,
+      overlapFrames: overlapFrames
     )
+    provisionalLock.withLock { provisionalQueue = queue }
+  }
+
+  func provisionalDraftWindowFrameCount() -> UInt64? {
+    provisionalLock.withLock { provisionalQueue?.windowFrames }
+  }
+
+  func provisionalDraftOverlapFrameCount() -> UInt64? {
+    provisionalLock.withLock { provisionalQueue?.overlapFrames }
+  }
+
+  /// Returns after accepted frames have been offered to the provisional queue.
+  /// The capture callback never calls this.
+  func waitForAcceptedAudio() {
+    writerQueue.sync {}
+  }
+
+  func waitForProvisionalDraftAdmission() {
+    let queue = provisionalLock.withLock { provisionalQueue }
+    queue?.waitUntilIdle()
+  }
+
+  func bindInput(to device: MicrophoneDeviceIdentity?) throws {
+    try lifecycleQueue.sync {
+      guard !hasStarted else { throw MicrophoneCaptureAdapterError.alreadyStarted }
+      try backend.bindInput(to: device)
+    }
   }
 
   func start(
-    onFirstSample: @escaping FirstSampleHandler,
-    onObservation: @escaping MicrophoneObservationHandler = { _ in },
-    onFailure: @escaping FailureHandler
+    onFirstSample: @escaping MicrophoneFirstSampleHandler,
+    onObservation: @escaping MicrophoneHealthHandler = { _ in },
+    onFailure: @escaping MicrophoneFailureHandler
   ) throws {
     try lifecycleQueue.sync {
       try startIsolated(
@@ -310,9 +393,9 @@ final class MicrophoneCaptureAdapter: @unchecked Sendable {
   }
 
   private func startIsolated(
-    onFirstSample: @escaping FirstSampleHandler,
-    onObservation: @escaping MicrophoneObservationHandler,
-    onFailure: @escaping FailureHandler
+    onFirstSample: @escaping MicrophoneFirstSampleHandler,
+    onObservation: @escaping MicrophoneHealthHandler,
+    onFailure: @escaping MicrophoneFailureHandler
   ) throws {
     stateLock.lock()
     guard !hasStarted else {
@@ -320,7 +403,8 @@ final class MicrophoneCaptureAdapter: @unchecked Sendable {
       throw MicrophoneCaptureAdapterError.alreadyStarted
     }
     let format = backend.inputFormat
-    guard format.sampleRate > 0, format.channelCount > 0 else {
+    guard format.sampleRate > 0, format.channelCount > 0, backend.inputFormatMatchesHardware
+    else {
       stateLock.unlock()
       throw MicrophoneCaptureAdapterError.invalidInputFormat
     }
@@ -336,9 +420,10 @@ final class MicrophoneCaptureAdapter: @unchecked Sendable {
     }
     started = true
     acceptingCallbacks = true
+    inputAdmitted = false
     hasStarted = true
     failureReported = false
-    firstSampleReported = false
+    core.reset()
     stateLock.unlock()
 
     observationLock.withLock {
@@ -357,7 +442,7 @@ final class MicrophoneCaptureAdapter: @unchecked Sendable {
     backend.installTap(bufferSize: Self.bufferSize) { [weak self] buffer, time in
       guard let self else { return }
       let accepted = self.stateLock.withLock {
-        guard self.acceptingCallbacks else { return false }
+        guard self.acceptingCallbacks, self.inputAdmitted else { return false }
         self.acceptedCallbacks.enter()
         return true
       }
@@ -397,21 +482,14 @@ final class MicrophoneCaptureAdapter: @unchecked Sendable {
         self.stateLock.unlock()
         guard stillStarted else { return }
         do {
-          let writtenFrames = try self.writer.writeCapturedBuffer(copy, hostTime: hostTime)
-          guard writtenFrames > 0 else { return }
-          self.recordWrittenProgress(UInt64(writtenFrames))
-          self.stateLock.lock()
-          self.lastWrittenSampleHostTime = hostTime
-          let shouldReport = self.started && self.acceptingCallbacks && !self.firstSampleReported
-          if shouldReport {
-            self.firstSampleReported = true
-          }
-          self.stateLock.unlock()
-          if shouldReport {
-            let receipt = try self.writer.firstSampleReceipt(
-              hostTime: hostTime,
-              frameCount: UInt64(writtenFrames)
-            )
+          let (_, receipt) = try self.core.write(
+            copy, hostTime: hostTime,
+            onWritten: { written in
+              self.recordWrittenProgress(UInt64(written))
+              self.noteProvisionalAudio(written, of: copy)
+            },
+            admitsFirstSample: self.stateLock.withLock { self.started && self.acceptingCallbacks })
+          if let receipt {
             self.eventQueue.async { onFirstSample(receipt) }
           }
         } catch {
@@ -424,6 +502,7 @@ final class MicrophoneCaptureAdapter: @unchecked Sendable {
 
     do {
       try backend.start()
+      stateLock.withLock { inputAdmitted = true }
     } catch {
       _ = stopIsolated()
       throw error
@@ -439,6 +518,7 @@ final class MicrophoneCaptureAdapter: @unchecked Sendable {
   private func stopIsolated() -> UInt64? {
     stateLock.lock()
     acceptingCallbacks = false
+    inputAdmitted = false
     stateLock.unlock()
     if backendActive {
       backend.stop()
@@ -452,15 +532,20 @@ final class MicrophoneCaptureAdapter: @unchecked Sendable {
     writerQueue.sync {
       stateLock.withLock { started = false }
     }
-    stateLock.lock()
-    let lastHostTime = lastWrittenSampleHostTime
-    stateLock.unlock()
+    let lastHostTime = core.lastWrittenHostTime
     observationLock.withLock {
       observationActive = false
       progressObservationPending = false
       observationHandler = nil
     }
     return lastHostTime
+  }
+
+  /// Only an installed provisional queue pays for the silence scan.
+  private func noteProvisionalAudio(_ writtenFrames: AVAudioFrameCount, of buffer: AVAudioPCMBuffer) {
+    guard let queue = provisionalLock.withLock({ provisionalQueue }) else { return }
+    let silent = writtenFrames == buffer.frameLength && bufferIsSilent(buffer)
+    queue.accept(writtenFrames: writtenFrames, silent: silent)
   }
 
   private func recordCallbackProgress() {
@@ -523,7 +608,7 @@ final class MicrophoneCaptureAdapter: @unchecked Sendable {
 
   private func emitObservation(_ event: MicrophoneSourceHealthEvent) {
     let delivery = observationLock.withLock {
-      () -> (MicrophoneObservationHandler, MicrophoneSourceHealthObservation)? in
+      () -> (MicrophoneHealthHandler, MicrophoneSourceHealthObservation)? in
       guard observationActive, let observationHandler else { return nil }
       if event == .progress {
         progressObservationPending = false
@@ -548,7 +633,7 @@ final class MicrophoneCaptureAdapter: @unchecked Sendable {
 
   private func reportFailureFromCallback(
     _ failure: MicrophoneCaptureAdapterError,
-    handler: @escaping FailureHandler
+    handler: @escaping MicrophoneFailureHandler
   ) {
     guard stateLock.try() else {
       writerQueue.async { [weak self] in
@@ -570,7 +655,7 @@ final class MicrophoneCaptureAdapter: @unchecked Sendable {
 
   private func reportFailure(
     _ failure: MicrophoneCaptureAdapterError,
-    handler: @escaping FailureHandler
+    handler: @escaping MicrophoneFailureHandler
   ) {
     stateLock.lock()
     let shouldReport = !failureReported
@@ -587,7 +672,7 @@ final class MicrophoneCaptureAdapter: @unchecked Sendable {
 
   private func scheduleFailure(
     _ failure: MicrophoneCaptureAdapterError,
-    handler: @escaping FailureHandler
+    handler: @escaping MicrophoneFailureHandler
   ) {
     lifecycleQueue.async { [weak self, eventQueue] in
       guard let self else { return }
@@ -598,4 +683,256 @@ final class MicrophoneCaptureAdapter: @unchecked Sendable {
       eventQueue.async { handler(failure) }
     }
   }
+}
+
+struct ProvisionalDraftHypothesis: Equatable, Sendable {
+  var text: String
+  var engine: String
+  var engineVersion: String
+  var modelId: String
+  var modelSha256: String
+  var optionsDigest: String
+  var reconciliationVersion: String
+}
+
+typealias ProvisionalHypothesisProvider = @Sendable (_ startNanoseconds: Int64, _ endNanoseconds: Int64)
+  -> ProvisionalDraftHypothesis?
+
+private struct ProvisionalWindow {
+  var startFrames: UInt64
+  var endFrames: UInt64
+}
+
+/// Counts accepted capture frames and admits at most two sealed windows.
+/// The writer queue returns after the count. A commit, if the hypothesis has
+/// text, happens on `commitQueue`. A third sealed window drops the oldest
+/// window that has not started. Dropped audio stays in the capture file. A
+/// window whose accepted frames are all silent is not admitted, so the
+/// hypothesis cannot invent speech for that interval.
+final class ProvisionalDraftQueue: @unchecked Sendable {
+  static let captureSampleRate = UInt64(NativeCapturePolicy.current.sampleRateHz)
+  /// The longest window Rust accepts.
+  static let defaultWindowFrames =
+    UInt64(NativeCapturePolicy.current.liveDraftWindowMaxNanoseconds) * captureSampleRate
+    / 1_000_000_000
+  static let defaultOverlapFrames = 2 * captureSampleRate
+  static let maximumWindows = 2
+
+  let windowFrames: UInt64
+  let overlapFrames: UInt64
+  private let hopFrames: UInt64
+  private let preparation: NativeRecordingPreparationProtocol
+  private let sessionId: String
+  private let trackId: String
+  private let hypothesisProvider: ProvisionalHypothesisProvider?
+  private let originNanoseconds: Int64
+  private let commitQueue = DispatchQueue(
+    label: "app.open-scribe.microphone-provisional-draft",
+    qos: .utility
+  )
+  private let stateLock = NSLock()
+  private var acceptedFrames: UInt64 = 0
+  private var nextWindowStartFrames: UInt64 = 0
+  private var sampleRuns: [SampleRun] = []
+  private var pending: [ProvisionalWindow] = []
+  private var inFlight = 0
+
+  init(
+    preparation: NativeRecordingPreparationProtocol,
+    sessionId: String,
+    trackId: String,
+    hypothesis: ProvisionalHypothesisProvider?,
+    originNanoseconds: Int64,
+    windowFrames: UInt64,
+    overlapFrames: UInt64
+  ) {
+    self.preparation = preparation
+    self.sessionId = sessionId
+    self.trackId = trackId
+    self.hypothesisProvider = hypothesis
+    self.originNanoseconds = originNanoseconds
+    self.windowFrames = windowFrames
+    self.overlapFrames = overlapFrames
+    self.hopFrames = overlapFrames < windowFrames ? windowFrames - overlapFrames : 0
+  }
+
+  static func nanoseconds(forFrames frames: UInt64) -> Int64 {
+    let wholeSeconds = frames / captureSampleRate
+    let remainder = frames % captureSampleRate
+    return Int64(wholeSeconds * 1_000_000_000 + remainder * 1_000_000_000 / captureSampleRate)
+  }
+
+  func accept(writtenFrames: AVAudioFrameCount, silent: Bool) {
+    guard writtenFrames > 0, hopFrames > 0 else { return }
+    let count = UInt64(writtenFrames)
+    let start = acceptedFrames
+    acceptedFrames += count
+    if var last = sampleRuns.last, last.silent == silent, last.endFrames == start {
+      last.endFrames = acceptedFrames
+      sampleRuns[sampleRuns.count - 1] = last
+    } else {
+      sampleRuns.append(
+        SampleRun(startFrames: start, endFrames: acceptedFrames, silent: silent))
+    }
+    var sealed: [ProvisionalWindow] = []
+    while acceptedFrames >= nextWindowStartFrames + windowFrames {
+      let windowStart = nextWindowStartFrames
+      let windowEnd = windowStart + windowFrames
+      if !windowIsSilent(startFrames: windowStart, endFrames: windowEnd) {
+        sealed.append(ProvisionalWindow(startFrames: windowStart, endFrames: windowEnd))
+      }
+      nextWindowStartFrames += hopFrames
+    }
+    sampleRuns.removeAll { $0.endFrames <= nextWindowStartFrames }
+    guard !sealed.isEmpty else { return }
+    schedule(sealed)
+  }
+
+  func waitUntilIdle() {
+    commitQueue.sync {}
+  }
+
+  private func schedule(_ windows: [ProvisionalWindow]) {
+    var starting: ProvisionalWindow?
+    stateLock.lock()
+    pending.append(contentsOf: windows)
+    while pending.count + inFlight > Self.maximumWindows {
+      pending.removeFirst()
+    }
+    if inFlight == 0, !pending.isEmpty {
+      inFlight = 1
+      starting = pending.removeFirst()
+    }
+    stateLock.unlock()
+    if let starting {
+      commitQueue.async { [weak self] in
+        self?.commit(starting)
+      }
+    }
+  }
+
+  private func commit(_ window: ProvisionalWindow) {
+    defer { finishCommit() }
+    guard let start = timelineNanoseconds(window.startFrames),
+      let end = timelineNanoseconds(window.endFrames),
+      end > start,
+      let hypothesis = hypothesisProvider?(start, end)
+    else { return }
+    let text = hypothesis.text.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !text.isEmpty else { return }
+    do {
+      _ = try preparation.commitLiveDraftWindow(
+        window: NativeLiveDraftWindow(
+          sessionId: sessionId,
+          trackId: trackId,
+          startNanoseconds: start,
+          endNanoseconds: end,
+          text: text,
+          engine: hypothesis.engine,
+          engineVersion: hypothesis.engineVersion,
+          modelId: hypothesis.modelId,
+          modelSha256: hypothesis.modelSha256,
+          optionsDigest: hypothesis.optionsDigest,
+          reconciliationVersion: hypothesis.reconciliationVersion
+        ))
+    } catch {
+      // The store rejected this window. Capture keeps the audio.
+    }
+  }
+
+  private func finishCommit() {
+    var next: ProvisionalWindow?
+    stateLock.lock()
+    inFlight = 0
+    if !pending.isEmpty {
+      inFlight = 1
+      next = pending.removeFirst()
+    }
+    stateLock.unlock()
+    if let next {
+      commit(next)
+    }
+  }
+
+  private func timelineNanoseconds(_ frames: UInt64) -> Int64? {
+    let (sum, overflow) = originNanoseconds.addingReportingOverflow(
+      Self.nanoseconds(forFrames: frames))
+    guard !overflow else { return nil }
+    return sum
+  }
+
+  /// A window is silent only when every accepted frame in it belongs to a
+  /// silent run. A gap or any non-silent sample keeps the window admissible.
+  private func windowIsSilent(startFrames: UInt64, endFrames: UInt64) -> Bool {
+    guard endFrames > startFrames else { return false }
+    var cursor = startFrames
+    for run in sampleRuns {
+      if run.endFrames <= cursor { continue }
+      if run.startFrames > cursor { return false }
+      if run.startFrames >= endFrames { break }
+      if !run.silent { return false }
+      cursor = min(run.endFrames, endFrames)
+      if cursor >= endFrames { return true }
+    }
+    return false
+  }
+}
+
+private struct SampleRun {
+  var startFrames: UInt64
+  var endFrames: UInt64
+  var silent: Bool
+}
+
+/// Exact digital silence in the buffer that was written. Any other sample,
+/// or a format this scan does not know, stays admissible as speech.
+private func bufferIsSilent(_ buffer: AVAudioPCMBuffer) -> Bool {
+  let frames = Int(buffer.frameLength)
+  guard frames > 0 else { return true }
+  let channels = Int(buffer.format.channelCount)
+  guard channels > 0 else { return false }
+  switch buffer.format.commonFormat {
+  case .pcmFormatInt16:
+    guard let samples = buffer.int16ChannelData else { return false }
+    return pcmSamplesAreSilent(samples, channels: channels, frames: frames, format: buffer.format) {
+      $0 == 0
+    }
+  case .pcmFormatInt32:
+    guard let samples = buffer.int32ChannelData else { return false }
+    return pcmSamplesAreSilent(samples, channels: channels, frames: frames, format: buffer.format) {
+      $0 == 0
+    }
+  case .pcmFormatFloat32:
+    guard let samples = buffer.floatChannelData else { return false }
+    return pcmSamplesAreSilent(samples, channels: channels, frames: frames, format: buffer.format) {
+      $0 == 0
+    }
+  default:
+    return false
+  }
+}
+
+private func pcmSamplesAreSilent<Sample>(
+  _ samples: UnsafePointer<UnsafeMutablePointer<Sample>>,
+  channels: Int,
+  frames: Int,
+  format: AVAudioFormat,
+  isZero: (Sample) -> Bool
+) -> Bool {
+  if format.isInterleaved {
+    let stride = channels
+    for frame in 0..<frames {
+      for channel in 0..<channels where !isZero(samples[0][frame * stride + channel]) {
+        return false
+      }
+    }
+    return true
+  }
+  for channel in 0..<channels {
+    let channelSamples = samples[channel]
+    for frame in 0..<frames where !isZero(channelSamples[frame]) {
+      return false
+    }
+  }
+  return true
 }

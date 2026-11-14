@@ -15,14 +15,6 @@ extension EnvironmentValues {
   /// this receives any production component; release builds cannot invoke it.
   @MainActor
   enum ProofLaunchRunner {
-    static func configurePresentation(_ configuration: LaunchConfiguration) {
-      guard configuration.mode != .normal else { return }
-      AppDelegate.isVerificationLaunch = true
-      var arguments = UserDefaults.standard.volatileDomain(forName: UserDefaults.argumentDomain)
-      arguments["ApplePersistenceIgnoreState"] = true
-      arguments["NSQuitAlwaysKeepsWindows"] = false
-      UserDefaults.standard.setVolatileDomain(arguments, forName: UserDefaults.argumentDomain)
-    }
     typealias CaptureProof = @MainActor (LaunchConfiguration.Action) async -> Void
 
     @discardableResult
@@ -40,11 +32,8 @@ extension EnvironmentValues {
           recovery.recoverOnLaunch()
           await recovery.waitForLaunchRecovery()
           guard recovery.captureSafetyComplete else {
-            AppTelemetry.recoveryProof(stage: "capture-proof-refused", detail: "media-recovery")
-            if let root {
-              try? "capture_safety_recovery_failed".write(
-                to: root.appendingPathComponent("proof-error"), atomically: true, encoding: .utf8)
-            }
+            AppTelemetry.recoveryProof(stage: .captureProofRefused, detail: "media-recovery")
+            if let root { ProofFiles.fail("capture_safety_recovery_failed", root: root) }
             if captureProof == nil { NSApp.terminate(nil) }
             return
           }
@@ -86,9 +75,10 @@ extension EnvironmentValues {
           }
         case .forcedRecovery:
           recovery.recoverOnLaunch()
+          // The scan publishes before this returns, so `phase` is settled.
           await recovery.waitForLaunchRecovery()
           await runForcedTerminationRecoveryProof(controller: recovery)
-        case .none, .review:
+        case .none:
           recovery.recoverOnLaunch()
         }
       }
@@ -98,24 +88,22 @@ extension EnvironmentValues {
     static func runLiveMicrophoneProof(
       controller: LiveMicrophoneRecordingController
     ) async {
-      AppTelemetry.captureProof(stage: "requested", detail: "explicit-command")
+      AppTelemetry.captureProof(stage: .requested, detail: "explicit-command")
       await controller.start()
-      for _ in 0..<600 where controller.phase == .starting {
-        try? await Task.sleep(nanoseconds: 100_000_000)
-      }
+      await controller.waitWhile(.starting)
       guard controller.phase == .capturing else {
         AppTelemetry.captureProof(
-          stage: "failed",
+          stage: .failed,
           detail: controller.failureCode ?? "unknown"
         )
         try? await Task.sleep(nanoseconds: 500_000_000)
         NSApp.terminate(nil)
         return
       }
-      AppTelemetry.captureProof(stage: "capturing", detail: "first-sample-durable")
+      AppTelemetry.captureProof(stage: .capturing, detail: "first-sample-durable")
       try? await Task.sleep(nanoseconds: 2_000_000_000)
       await controller.stop()
-      let result = controller.phase == .saved ? "saved" : "failed"
+      let result: CaptureProofStage = controller.phase == .saved ? .saved : .failed
       AppTelemetry.captureProof(stage: result, detail: controller.phase.rawValue)
       try? await Task.sleep(nanoseconds: 500_000_000)
       NSApp.terminate(nil)
@@ -125,19 +113,17 @@ extension EnvironmentValues {
     static func runForcedTerminationCaptureProof(
       controller: LiveMicrophoneRecordingController
     ) async {
-      AppTelemetry.recoveryProof(stage: "capture-requested", detail: "explicit-command")
+      AppTelemetry.recoveryProof(stage: .captureRequested, detail: "explicit-command")
       await controller.start()
-      for _ in 0..<600 where controller.phase == .starting {
-        try? await Task.sleep(nanoseconds: 100_000_000)
-      }
+      await controller.waitWhile(.starting)
       guard controller.phase == .capturing else {
         AppTelemetry.recoveryProof(
-          stage: "capture-failed",
+          stage: .captureFailed,
           detail: controller.failureCode ?? "unknown"
         )
         return
       }
-      AppTelemetry.recoveryProof(stage: "capture-durable", detail: "awaiting-external-kill")
+      AppTelemetry.recoveryProof(stage: .captureDurable, detail: "awaiting-external-kill")
       while !Task.isCancelled {
         try? await Task.sleep(nanoseconds: 1_000_000_000)
       }
@@ -147,22 +133,18 @@ extension EnvironmentValues {
     static func runForcedTerminationRecoveryProof(
       controller: RecoveredSessionController
     ) async {
-      // Launch recovery scans off the main actor; wait for it to publish.
-      for _ in 0..<600 where controller.phase == .scanning {
-        try? await Task.sleep(nanoseconds: 100_000_000)
-      }
       guard let recovered = controller.sessions.first else {
-        let stage = controller.phase == .none ? "recovery-empty" : "recovery-failed"
+        let stage: RecoveryProofStage = controller.phase == .none ? .recoveryEmpty : .recoveryFailed
         AppTelemetry.recoveryProof(stage: stage, detail: "no-playable-session")
         NSApp.terminate(nil)
         return
       }
       AppTelemetry.recoveryProof(
-        stage: "recovered",
+        stage: .recovered,
         detail: "bytes-\(recovered.byteLength)-frames-\(recovered.sampleCount)"
       )
       guard let generation = controller.play(recovered) else {
-        AppTelemetry.recoveryProof(stage: "recovery-failed", detail: "playback-not-admitted")
+        AppTelemetry.recoveryProof(stage: .recoveryFailed, detail: "playback-not-admitted")
         NSApp.terminate(nil)
         return
       }
@@ -176,7 +158,7 @@ extension EnvironmentValues {
           try await Task.sleep(nanoseconds: 25_000_000)
         } catch {
           controller.stopPlayback(generation: generation)
-          AppTelemetry.recoveryProof(stage: "recovery-failed", detail: "playback-wait-cancelled")
+          AppTelemetry.recoveryProof(stage: .recoveryFailed, detail: "playback-wait-cancelled")
           NSApp.terminate(nil)
           return
         }
@@ -195,11 +177,11 @@ extension EnvironmentValues {
           case .some(.playing): "playback-opened"
           case nil: "playback-open-state-unavailable"
           }
-        AppTelemetry.recoveryProof(stage: "recovery-failed", detail: detail)
+        AppTelemetry.recoveryProof(stage: .recoveryFailed, detail: detail)
         NSApp.terminate(nil)
         return
       }
-      AppTelemetry.recoveryProof(stage: "playback-opened", detail: "native-audio-engine")
+      AppTelemetry.recoveryProof(stage: .playbackOpened, detail: "native-audio-engine")
       try? await Task.sleep(nanoseconds: 750_000_000)
       controller.stopPlayback(generation: generation)
       NSApp.terminate(nil)

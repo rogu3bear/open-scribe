@@ -60,6 +60,56 @@ impl ModelLayout {
             .join(format!("{}-{}.part", record.id, record.version))
     }
 
+    /// Creates or truncates the download partial. A symlink or extra hard
+    /// link is left untouched. This does not open a socket or read model bytes.
+    /// Callers append only after `resume_decision` returns `Resume`; this
+    /// restart path never appends.
+    pub fn prepare_download_partial(
+        &self,
+        record: &ModelRecord,
+    ) -> Result<PreparedPartial, InstallError> {
+        self.ensure_owned_directory(&self.staging_directory())?;
+        let path = self.partial_path(record);
+        match fs::symlink_metadata(&path) {
+            Ok(metadata) => {
+                if !single_regular_file(&metadata) {
+                    return Err(InstallError::NotRegularFile);
+                }
+                let file = OpenOptions::new()
+                    .write(true)
+                    .truncate(true)
+                    .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
+                    .open(&path)?;
+                let current = file.metadata()?;
+                if !single_regular_file(&current)
+                    || current.dev() != metadata.dev()
+                    || current.ino() != metadata.ino()
+                {
+                    return Err(InstallError::NotRegularFile);
+                }
+                file.sync_all()?;
+                sync_directory(&self.staging_directory())?;
+                Ok(PreparedPartial { path, length: 0 })
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                let file = OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .mode(0o600)
+                    .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
+                    .open(&path)?;
+                let metadata = file.metadata()?;
+                if !single_regular_file(&metadata) {
+                    return Err(InstallError::NotRegularFile);
+                }
+                file.sync_all()?;
+                sync_directory(&self.staging_directory())?;
+                Ok(PreparedPartial { path, length: 0 })
+            }
+            Err(error) => Err(error.into()),
+        }
+    }
+
     pub fn install_directory(&self, record: &ModelRecord) -> PathBuf {
         self.models.join(&record.id).join(&record.version)
     }
@@ -91,6 +141,13 @@ pub struct TransferValidator {
 pub enum ResumeDecision {
     Resume { offset: u64 },
     Restart,
+}
+
+/// An empty regular file at the catalog partial path.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PreparedPartial {
+    pub path: PathBuf,
+    pub length: u64,
 }
 
 pub fn resume_decision(
@@ -127,6 +184,16 @@ pub struct InstalledArtifact {
     pub relative_path: String,
 }
 
+/// An installed version directory renamed out of its loadable path.
+/// The bytes are still in `directory`. The platform may move that directory
+/// to Trash; this crate does not delete them.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct QuarantinedModel {
+    pub model_id: String,
+    pub version: String,
+    pub directory: PathBuf,
+}
+
 #[derive(Debug)]
 pub enum InstallError {
     RecordMismatch,
@@ -135,6 +202,8 @@ pub enum InstallError {
     ChangedSinceVerification,
     ConflictingInstallation,
     StagingExists,
+    NotInstalled,
+    NotOwnedDirectory,
     Io(io::Error),
 }
 
@@ -147,6 +216,8 @@ impl InstallError {
             Self::ChangedSinceVerification => "changed_since_verification",
             Self::ConflictingInstallation => "conflicting_installation",
             Self::StagingExists => "staging_exists",
+            Self::NotInstalled => "not_installed",
+            Self::NotOwnedDirectory => "not_owned_directory",
             Self::Io(_) => "io",
         }
     }
@@ -284,7 +355,7 @@ impl ModelLayout {
                     && modified_nanoseconds(&observed) == modified_nanoseconds(&existing);
                 if unchanged
                     && existing.len() == record.byte_length
-                    && format!("{:x}", digest.finalize()) == record.sha256
+                    && open_scribe_types::lowercase_hex(&digest.finalize()) == record.sha256
                 {
                     fs::remove_file(staged)?;
                     sync_directory(&self.staging_directory())?;
@@ -394,6 +465,72 @@ impl ModelLayout {
         discard_owned_file(&self.partial_path(record), device, inode)
     }
 
+    /// Renames `Models/<id>/<version>` out of the loadable path. The bytes
+    /// stay in the returned directory. A symlink, or a directory that is not
+    /// directly owned, is left untouched. An absent version is `NotInstalled`.
+    pub fn quarantine_installed(
+        &self,
+        record: &ModelRecord,
+    ) -> Result<QuarantinedModel, InstallError> {
+        let source = self.install_directory(record);
+        if !source.starts_with(&self.models) {
+            return Err(InstallError::NotOwnedDirectory);
+        }
+        let metadata = match fs::symlink_metadata(&source) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                return Err(InstallError::NotInstalled);
+            }
+            Err(error) => return Err(error.into()),
+        };
+        self.require_direct_owned(&source, &metadata)?;
+        let removed_root = self.models.join(".removed").join(&record.id);
+        self.ensure_owned_directory(&removed_root)?;
+        let destination = quarantine_destination(&removed_root, &record.version, metadata.ino())?;
+        let current = fs::symlink_metadata(&source)?;
+        if current.file_type() != metadata.file_type()
+            || current.dev() != metadata.dev()
+            || current.ino() != metadata.ino()
+        {
+            return Err(InstallError::NotOwnedDirectory);
+        }
+        fs::rename(&source, &destination)?;
+        sync_directory(&removed_root)?;
+        if let Some(parent) = source.parent() {
+            sync_directory(parent)?;
+        }
+        Ok(QuarantinedModel {
+            model_id: record.id.clone(),
+            version: record.version.clone(),
+            directory: destination,
+        })
+    }
+
+    fn require_direct_owned(
+        &self,
+        directory: &Path,
+        metadata: &fs::Metadata,
+    ) -> Result<(), InstallError> {
+        let root = self.models.parent().expect("managed model parent");
+        let owner = fs::symlink_metadata(root)?.uid();
+        if !metadata.is_dir() || metadata.file_type().is_symlink() || metadata.uid() != owner {
+            return Err(InstallError::NotOwnedDirectory);
+        }
+        let mut path = root.to_path_buf();
+        for part in directory
+            .strip_prefix(root)
+            .map_err(|_| InstallError::NotOwnedDirectory)?
+            .components()
+        {
+            path.push(part);
+            let metadata = fs::symlink_metadata(&path)?;
+            if !metadata.is_dir() || metadata.file_type().is_symlink() || metadata.uid() != owner {
+                return Err(InstallError::NotOwnedDirectory);
+            }
+        }
+        Ok(())
+    }
+
     fn ensure_owned_directory(&self, directory: &Path) -> io::Result<()> {
         let root = self.models.parent().expect("managed model parent");
         let metadata = fs::symlink_metadata(root)?;
@@ -435,6 +572,27 @@ fn retained_invalid_pair(existing: &fs::Metadata, retained: &Path) -> io::Result
         && retained.dev() == existing.dev()
         && retained.ino() == existing.ino()
         && retained.uid() == existing.uid())
+}
+
+fn quarantine_destination(root: &Path, version: &str, inode: u64) -> io::Result<PathBuf> {
+    for attempt in 0..1_000 {
+        let name = if attempt == 0 {
+            format!("{version}-{inode}")
+        } else {
+            format!("{version}-{inode}-{attempt}")
+        };
+        let path = root.join(name);
+        match fs::symlink_metadata(&path) {
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(path),
+            Ok(_) => continue,
+            Err(error) => return Err(error),
+        }
+    }
+    Err(io::Error::other("model quarantine name is exhausted"))
+}
+
+fn single_regular_file(metadata: &fs::Metadata) -> bool {
+    metadata.is_file() && !metadata.file_type().is_symlink() && metadata.nlink() == 1
 }
 
 fn discard_owned_file(path: &Path, device: u64, inode: u64) -> io::Result<()> {
@@ -775,6 +933,52 @@ mod tests {
     }
 
     #[test]
+    fn quarantine_moves_an_installed_version_and_leaves_a_recording_in_place() {
+        let root = tempfile::tempdir().unwrap();
+        let layout = ModelLayout::new(root.path());
+        let bytes = fixture_bytes(51864);
+        let record = fixture(&bytes);
+        let staged = stage(&layout, &record, &bytes);
+        let verified = verify_staged(&record, ENGINE, COMPATIBILITY, &staged).unwrap();
+        layout.install(&record, &verified, &staged).unwrap();
+        let installed = layout.installed_path(&record);
+        let recording = root.path().join("Sessions/s/audio/mic/000000-0.caf");
+        fs::create_dir_all(recording.parent().unwrap()).unwrap();
+        fs::write(&recording, b"recording-bytes").unwrap();
+
+        let removed = layout.quarantine_installed(&record).unwrap();
+        assert!(!installed.exists());
+        assert!(
+            removed
+                .directory
+                .starts_with(root.path().join("Models/.removed"))
+        );
+        assert_eq!(
+            fs::read(removed.directory.join(&record.file_name)).unwrap(),
+            bytes
+        );
+        assert_eq!(fs::read(&recording).unwrap(), b"recording-bytes");
+        assert!(matches!(
+            layout.quarantine_installed(&record),
+            Err(InstallError::NotInstalled)
+        ));
+
+        let outside = root.path().join("outside-model");
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(outside.join(&record.file_name), b"keep-me").unwrap();
+        fs::create_dir_all(layout.install_directory(&record).parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(&outside, layout.install_directory(&record)).unwrap();
+        assert!(matches!(
+            layout.quarantine_installed(&record),
+            Err(InstallError::NotOwnedDirectory)
+        ));
+        assert_eq!(
+            fs::read(outside.join(&record.file_name)).unwrap(),
+            b"keep-me"
+        );
+    }
+
+    #[test]
     fn discarding_a_missing_partial_is_not_an_error() {
         let root = tempfile::tempdir().unwrap();
         let layout = ModelLayout::new(root.path());
@@ -874,5 +1078,47 @@ mod tests {
         drop(staged);
         assert_eq!(fs::read(path).unwrap(), b"foreign replacement");
         assert!(!layout.installed_path(&record).exists());
+    }
+
+    #[test]
+    fn prepare_download_partial_truncates_a_regular_file_and_leaves_links_untouched() {
+        use std::os::unix::fs::symlink;
+        let root = tempfile::tempdir().unwrap();
+        let layout = ModelLayout::new(root.path());
+        let record = fixture(&fixture_bytes(51864));
+        let path = layout.partial_path(&record);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, b"stale partial").unwrap();
+        let prepared = layout.prepare_download_partial(&record).unwrap();
+        assert_eq!(prepared.path, path);
+        assert_eq!(prepared.length, 0);
+        assert_eq!(fs::metadata(&path).unwrap().len(), 0);
+        assert_eq!(fs::metadata(&path).unwrap().nlink(), 1);
+
+        let foreign = root.path().join("foreign.bin");
+        fs::write(&foreign, b"preserve").unwrap();
+        fs::remove_file(&path).unwrap();
+        symlink(&foreign, &path).unwrap();
+        assert!(matches!(
+            layout.prepare_download_partial(&record),
+            Err(InstallError::NotRegularFile)
+        ));
+        assert!(
+            fs::symlink_metadata(&path)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(fs::read(&foreign).unwrap(), b"preserve");
+
+        fs::remove_file(&path).unwrap();
+        fs::hard_link(&foreign, &path).unwrap();
+        assert!(matches!(
+            layout.prepare_download_partial(&record),
+            Err(InstallError::NotRegularFile)
+        ));
+        assert_eq!(fs::metadata(&path).unwrap().nlink(), 2);
+        assert_eq!(fs::read(&foreign).unwrap(), b"preserve");
+        assert_eq!(fs::read(&path).unwrap(), b"preserve");
     }
 }

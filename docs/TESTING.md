@@ -232,9 +232,18 @@ The candidate directory retains the proof root, reports, diagnostic logs and
 an atomically published, non-replacing `m4-local-only-<mode>.json` receipt.
 Candidate, artifact, input, report and log identities remain bound; failures
 retain their evidence. Completion rejects changed, redirected or stale
-evidence and reports qualified modes, but still returns `M4_COMPLETE_HOLD`
-for the remaining provider, deletion, crash-report and intelligence boundaries.
-This development-artifact result does not qualify signed sandboxing, system
+evidence and reports qualified modes, but still returns `M4_COMPLETE_HOLD`.
+`secret_handling` and `crash_report_content_check` leave `missing` only when
+this checkout's committed diagnostics export source re-verifies.
+`provider_category_authorization` leaves only when the committed hosted
+Settings provider proof re-verifies. Each check is not a candidate receipt,
+leaves `qualification=none at the M4 completion plane`, and restores its
+names when any marker is absent. `system_trash_deletion_runtime` leaves
+only when the hosted Trash confirm and the interrupted-move launch recovery
+both re-verify. A checkout without those files, including the
+candidate-record fixture, keeps the names. Capability and intelligence
+boundaries stay until their own qualification exists. This
+development-artifact result does not qualify signed sandboxing, system
 Trash, live capture, omitted context, platform support or public release.
 Earlier dated commands and receipts below retain their historical scope.
 

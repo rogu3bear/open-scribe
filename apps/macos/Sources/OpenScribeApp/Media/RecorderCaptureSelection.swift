@@ -11,7 +11,9 @@ struct RecorderCaptureSelection: @unchecked Sendable {
   let filter: SCContentFilter?
   let processId: pid_t?
 
-  static let system = Self(kind: .systemAudio, identity: "authorized-system-audio", name: "Mac system audio", filter: nil, processId: nil)
+  static let system = Self(
+    kind: .systemAudio, identity: "authorized-system-audio",
+    name: NativeCapturePolicy.current.systemAudio.displayName, filter: nil, processId: nil)
   static let microphoneOnly = Self(kind: nil, identity: "microphone-only", name: "Microphone only", filter: nil, processId: nil)
 
   /// The audio this selection records, as a phrase. The microphone is always
@@ -73,7 +75,7 @@ final class RecorderApplicationPicker: NSObject, ObservableObject {
       var configuration = SCContentSharingPickerConfiguration()
       configuration.allowedPickerModes = [.singleApplication]
       configuration.allowsChangingSelectedContent = false
-      configuration.excludedBundleIDs = [Bundle.main.bundleIdentifier ?? "app.open-scribe"]
+      configuration.excludedBundleIDs = [AppTelemetry.bundleIdentifier]
       picker.defaultConfiguration = configuration
       picker.add(self)
       picker.isActive = true
@@ -122,22 +124,6 @@ extension RecorderApplicationPicker: SCContentSharingPickerObserver {
 
   nonisolated func contentSharingPickerStartDidFailWithError(_ error: Error) {
     Task { @MainActor [weak self] in self?.errorMessage = "The macOS application picker could not open." }
-  }
-}
-
-enum RecorderStorage {
-  /// Space available for important usage, which includes purgeable APFS space
-  /// the system can reclaim. The plain free size omits it and trips the reserve
-  /// preflight while space is available. A volume that does not report the
-  /// capacity is unknown under the existing reserve policy: this surfaces an
-  /// error (handled conservatively by callers), never unlimited space.
-  static func availableBytes(at path: String) throws -> UInt64 {
-    let values = try URL(fileURLWithPath: path).resourceValues(
-      forKeys: [.volumeAvailableCapacityForImportantUsageKey])
-    guard let importantUsage = values.volumeAvailableCapacityForImportantUsage else {
-      throw ManagedCAFWriterError.mediaAttributesUnavailable
-    }
-    return UInt64(max(0, importantUsage))
   }
 }
 

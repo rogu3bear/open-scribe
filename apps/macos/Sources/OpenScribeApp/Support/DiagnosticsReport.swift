@@ -25,7 +25,12 @@ final class DiagnosticJournal: @unchecked Sendable {
   private var events: [DiagnosticEvent] = []
 
   func record(category: String, message: String) {
-    let safe = DiagnosticPrivacy.sanitize(category: category, message: message)
+    CrashReportContent.observe(message)
+    append(DiagnosticPrivacy.sanitize(category: category, message: message))
+  }
+
+  /// Stores a record that `AppTelemetry` already observed and sanitized.
+  func append(_ safe: (category: String, message: String)) {
     lock.lock()
     events.append(DiagnosticEvent(category: safe.category, message: safe.message))
     if events.count > Self.limit {
@@ -101,6 +106,100 @@ enum DiagnosticsSignature {
     let identifier = values[kSecCodeInfoIdentifier as String] as? String
     if identifier?.isEmpty != false { return "unsigned" }
     return "ad_hoc"
+  }
+}
+
+/// The only crash annotation this process keeps. Raw notes are classified
+/// here before they can be repeated. A refusal stores a fixed marker, never
+/// the transcript, credential, path, prompt, name, or screen text offered.
+private final class CrashReportState: @unchecked Sendable {
+  let lock = NSLock()
+  var annotation = "none"
+  var refusals: [String] = []
+}
+
+enum CrashReportContent {
+  private static let state = CrashReportState()
+
+  static func resetForTest() {
+    state.lock.lock()
+    state.annotation = "none"
+    state.refusals.removeAll()
+    state.lock.unlock()
+  }
+
+  static func observe(_ proposed: String) {
+    let assessment = assess(proposed)
+    state.lock.lock()
+    if assessment.refusals.isEmpty {
+      if assessment.keepsAnnotation {
+        state.annotation = assessment.annotation
+      }
+    } else {
+      state.annotation = DiagnosticPrivacy.redactedMessage
+      for item in assessment.refusals where !state.refusals.contains(item) {
+        state.refusals.append(item)
+      }
+    }
+    state.lock.unlock()
+  }
+
+  static func snapshot() -> (annotation: String, refusals: String) {
+    state.lock.lock()
+    defer { state.lock.unlock() }
+    let refused = state.refusals.isEmpty ? "none" : state.refusals.joined(separator: ",")
+    return (state.annotation, refused)
+  }
+
+  private struct Assessment {
+    var annotation: String
+    var refusals: [String]
+    var keepsAnnotation: Bool
+  }
+
+  private static func assess(_ proposed: String) -> Assessment {
+    if DiagnosticPrivacy.isCategory(proposed) {
+      return Assessment(annotation: proposed, refusals: [], keepsAnnotation: false)
+    }
+    var refusals: [String] = []
+    if proposed.contains("/") || proposed.contains("\\") || proposed.contains("~")
+      || proposed.contains("..")
+    {
+      refusals.append("private_path")
+    }
+    let lower = proposed.lowercased()
+    if lower.contains("sk-") || lower.contains("bearer ") || lower.contains("api_key")
+      || lower.contains("api-key") || lower.contains("apikey")
+      || lower.range(of: #"password\s*="#, options: .regularExpression) != nil
+    {
+      refusals.append("credential")
+    }
+    if lower.contains("ignore previous") || lower.contains("system prompt")
+      || lower.contains("prompt=")
+    {
+      refusals.append("prompt")
+    }
+    if lower.contains("participant=") {
+      refusals.append("participant")
+    }
+    if lower.contains("ocr=") || lower.contains("screenshot") || lower.contains("window content")
+    {
+      refusals.append("screen")
+    }
+    let sanitized = DiagnosticPrivacy.sanitize(category: "RecoveryProof", message: proposed).message
+    let unchanged = sanitized == proposed
+    let sessionIdentifier = DiagnosticPrivacy.session(proposed) == proposed
+    if !unchanged && !sessionIdentifier
+      && (refusals.isEmpty || proposed.split(separator: " ").count >= 3)
+    {
+      refusals.append("transcript")
+    }
+    let keeps = refusals.isEmpty && unchanged
+    return Assessment(
+      annotation: keeps ? sanitized : DiagnosticPrivacy.redactedMessage,
+      refusals: refusals,
+      keepsAnnotation: keeps
+    )
   }
 }
 
@@ -186,6 +285,17 @@ enum DiagnosticsReport {
       lines.append(
         "\(formatter.string(from: event.recordedAt)) \(safe.category) \(safe.message)")
     }
+    for session in sessions {
+      CrashReportContent.observe(session.sessionId)
+    }
+    for event in events {
+      CrashReportContent.observe(event.category)
+      CrashReportContent.observe(event.message)
+    }
+    let crash = CrashReportContent.snapshot()
+    lines.append("crash_report=content_free")
+    lines.append("crash_report_refused=\(crash.refusals)")
+    lines.append("crash_annotation=\(crash.annotation)")
     lines.append(
       "note=session titles, transcript text, and file paths are omitted")
     return lines.joined(separator: "\n") + "\n"

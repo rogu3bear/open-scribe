@@ -31,7 +31,7 @@ impl SessionStore {
                 |row| row.get(0),
             )?;
             if !exists {
-                self.project_media_authorization(session_id, &record.body.payload, record)?;
+                self.project_media_authorization(session_id, record)?;
             }
         }
         let mut disposition = if repaired_directory {
@@ -77,11 +77,7 @@ impl SessionStore {
             |row| row.get(0),
         )?;
         if !projected {
-            self.project_media_authorization(
-                session_id,
-                &authorization_record.body.payload,
-                authorization_record,
-            )?;
+            self.project_media_authorization(session_id, authorization_record)?;
         }
 
         if let Some(opened_record) = opened_record {
@@ -156,7 +152,7 @@ impl SessionStore {
             )?;
             let media_open = lifecycle != "opening";
             if !media_open {
-                self.project_media_open(session_id, &opened_record.body.payload, opened_record)?;
+                self.project_media_open(session_id, opened_record)?;
             }
             if let Some(sealed_record) = sealed_record {
                 let payload = &sealed_record.body.payload;
@@ -202,11 +198,11 @@ impl SessionStore {
                     let Some(first) = first_sample_record else {
                         return Ok(RecoveryDisposition::IntegrityMismatch);
                     };
-                    self.project_first_sample(session_id, &first.body.payload, first)?;
+                    self.project_first_sample(session_id, first)?;
                 } else if segment_lifecycle != "capturing" {
                     return Ok(RecoveryDisposition::IntegrityMismatch);
                 }
-                self.project_segment_seal(session_id, payload, sealed_record)?;
+                self.project_segment_seal(session_id, sealed_record)?;
                 return Ok(RecoveryDisposition::SegmentSealProjectionRepaired);
             }
             if let Some(first_sample_record) = first_sample_record {
@@ -283,7 +279,7 @@ impl SessionStore {
                 if segment_lifecycle != "open" {
                     return Ok(RecoveryDisposition::IntegrityMismatch);
                 }
-                self.project_first_sample(session_id, payload, first_sample_record)?;
+                self.project_first_sample(session_id, first_sample_record)?;
                 return Ok(RecoveryDisposition::FirstSampleProjectionRepaired);
             }
 

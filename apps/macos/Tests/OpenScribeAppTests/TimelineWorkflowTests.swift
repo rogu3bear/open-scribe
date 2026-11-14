@@ -141,6 +141,67 @@ final class TimelineWorkflowTests: XCTestCase {
     withExtendedLifetime(capture) {}
   }
 
+  /// Recovered microphone and computer audio stay playable together near the
+  /// beginning, middle, and end. The boundary gap stays inside the 100 ms
+  /// limit. This capture is 32.25 seconds, so it is not a two-hour measurement.
+  func testBothChannelsStayPlayableNearTheBeginningMiddleAndEnd() throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let capture = try TimelineRuntimeProof.capture(root: root)
+    let preparation = try NativeRecordingPreparation.open(managedRoot: root.path)
+    XCTAssertEqual(
+      try preparation.recoverPlayableSessions().filter { $0.sessionId == capture.sessionId }.count,
+      4)
+    let plan = try preparation.playbackTimeline(sessionId: capture.sessionId)
+    XCTAssertEqual(Set(plan.map(\.trackId)).count, 2)
+    let boundaryGap = plan.filter { $0.sequence > 0 }.map { abs($0.gapNanoseconds) }.max()
+    let gap = try XCTUnwrap(boundaryGap, "the continued segment is missing")
+    XCTAssertLessThanOrEqual(
+      gap, 100_000_000, "boundary gap \(gap) ns exceeds the 100 ms synchronization limit")
+
+    let full = try TimelinePCMReader(segments: plan)
+    defer { full.close() }
+    var left: [Float] = []
+    var right: [Float] = []
+    while let buffer = try full.read(maximumFrames: 16_384) {
+      let count = Int(buffer.frameLength)
+      left.append(contentsOf: UnsafeBufferPointer(start: buffer.floatChannelData![0], count: count))
+      right.append(
+        contentsOf: UnsafeBufferPointer(start: buffer.floatChannelData![1], count: count))
+    }
+    XCTAssertEqual(left.count, 1_548_000)
+    XCTAssertEqual(right.count, left.count)
+    XCTAssertLessThan(left.count, 48_000 * 7_200)
+    XCTAssertEqual(Int64(left.count) * 1_000_000_000 / 48_000, 32_250_000_000)
+
+    // 1.125s is microphone only, 16s is both sources, 32.125s is computer audio only.
+    let moments: [Int64] = [1_125_000_000, 16_000_000_000, 32_125_000_000]
+    for start in moments {
+      let frame = Int((Double(start) / 1_000_000_000 * 48_000).rounded())
+      let seeked = try TimelinePCMReader(segments: plan, startNanoseconds: start)
+      defer { seeked.close() }
+      XCTAssertEqual(seeked.playbackStartNanoseconds, start)
+      let buffer = try XCTUnwrap(try seeked.read(maximumFrames: 4_096))
+      let count = Int(buffer.frameLength)
+      XCTAssertEqual(count, 4_096)
+      let soughtLeft = Array(
+        UnsafeBufferPointer(start: buffer.floatChannelData![0], count: count))
+      let soughtRight = Array(
+        UnsafeBufferPointer(start: buffer.floatChannelData![1], count: count))
+      XCTAssertEqual(soughtLeft, Array(left[frame..<frame + count]), "left \(start)")
+      XCTAssertEqual(soughtRight, Array(right[frame..<frame + count]), "right \(start)")
+    }
+    let beginning = Int((1.125 * 48_000).rounded())
+    let middle = Int((16.0 * 48_000).rounded())
+    let end = Int((32.125 * 48_000).rounded())
+    XCTAssertGreaterThan(left[beginning], 0.05)
+    XCTAssertEqual(left[beginning], right[beginning])
+    XCTAssertGreaterThan(left[middle], right[middle])
+    XCTAssertGreaterThan(left[end], 0)
+    XCTAssertLessThan(right[end], 0)
+    withExtendedLifetime(capture) {}
+  }
+
   func testSourceDiscontinuityIsARealGapInRecoveredPlayback() throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }
