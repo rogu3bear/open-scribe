@@ -2334,19 +2334,15 @@ final class RecorderPauseResumeTests: XCTestCase {
 
   /// F13: the storage probe reports important-usage capacity, which includes
   /// purgeable APFS space, so the reserve preflight is not tripped while space
-  /// is available. The existing per-source storage seam consumes this number.
+  /// is available. When CacheDelete cannot answer, the plain free size is the
+  /// lower bound; a volume reporting neither is unknown, never unlimited.
   func testStorageProbeReportsImportantUsageIncludingPurgeableSpace() throws {
-    let root = FileManager.default.temporaryDirectory
-    let reported = try RecorderStorage.availableBytes(at: root.path)
-    // Read the same metric back immediately; free space drifts under concurrent
-    // I/O, so compare within a tolerance rather than for exact equality.
-    let importantUsage = try XCTUnwrap(
-      root.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
-        .volumeAvailableCapacityForImportantUsage)
-    XCTAssertGreaterThan(reported, 0)
-    XCTAssertLessThan(
-      abs(Int64(reported) - importantUsage), 64 * 1024 * 1024,
-      "the probe tracks important-usage capacity (purgeable included), not the plain free size")
+    XCTAssertEqual(try RecorderStorage.availableBytes(importantUsage: 9_000, free: 4_000), 9_000)
+    XCTAssertEqual(try RecorderStorage.availableBytes(importantUsage: nil, free: 4_000), 4_000)
+    XCTAssertEqual(try RecorderStorage.availableBytes(importantUsage: -1, free: 4_000), 0)
+    XCTAssertThrowsError(try RecorderStorage.availableBytes(importantUsage: nil, free: nil))
+    let live = try RecorderStorage.availableBytes(at: FileManager.default.temporaryDirectory.path)
+    XCTAssertGreaterThan(live, 0)
   }
 
   /// F13: a volume that cannot report capacity is unknown under the reserve

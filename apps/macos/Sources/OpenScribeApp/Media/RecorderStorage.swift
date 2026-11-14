@@ -11,10 +11,17 @@ enum RecorderStorage {
   static func availableBytes(at path: String) throws -> UInt64 {
     let values = try URL(fileURLWithPath: path).resourceValues(
       forKeys: [.volumeAvailableCapacityForImportantUsageKey, .volumeAvailableCapacityKey])
-    if let importantUsage = values.volumeAvailableCapacityForImportantUsage {
+    return try availableBytes(
+      importantUsage: values.volumeAvailableCapacityForImportantUsage,
+      free: values.volumeAvailableCapacity)
+  }
+
+  /// The choice `availableBytes(at:)` makes from what the volume reported.
+  static func availableBytes(importantUsage: Int64?, free: Int?) throws -> UInt64 {
+    if let importantUsage {
       return UInt64(max(0, importantUsage))
     }
-    guard let free = values.volumeAvailableCapacity else {
+    guard let free else {
       throw ManagedCAFWriterError.mediaAttributesUnavailable
     }
     return UInt64(max(0, free))
