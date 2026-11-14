@@ -81,12 +81,14 @@ final class TranscriptionSchedulerTests: XCTestCase {
     }
     func removeOwnedFixture() { try? FileManager.default.removeItem(at: root) }
   }
-  private func waitUntil(_ condition: () -> Bool) async {
+  private func waitUntil(
+    file: StaticString = #filePath, line: UInt = #line, _ condition: () -> Bool
+  ) async {
     for _ in 0..<500 {
       if condition() { return }
       try? await Task.sleep(for: .milliseconds(10))
     }
-    XCTFail("The isolated scheduler did not reach the expected state.")
+    XCTFail("The isolated scheduler did not reach the expected state.", file: file, line: line)
   }
 
   func testRefreshAfterFixtureOwnerEndsHasNoBorrowedObservation() async throws {
